@@ -137,7 +137,7 @@ export async function selectedGrantGitJourney(
   t: TestContext,
   testUrl: string,
   exercise: (journey: SelectedGrantJourney) => Promise<void>,
-  scope?: { readonly contents: "read" | "write"; readonly set?: true },
+  scope?: { readonly contents: "read" | "write"; readonly set?: true; readonly pullPreview?: true },
   sharedGitIssuance?: true,
 ) {
   await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
@@ -240,7 +240,11 @@ async function repositoryGitJourney(
   selectedGrant?: {
     exercise: (journey: SelectedGrantJourney) => Promise<void>;
     sharedGitIssuance?: true;
-    scope?: { readonly contents: "read" | "write"; readonly set?: true };
+    scope?: {
+      readonly contents: "read" | "write";
+      readonly set?: true;
+      readonly pullPreview?: true;
+    };
   },
 ) {
   const selectedRead = selectedGrant?.exercise;
@@ -249,12 +253,19 @@ async function repositoryGitJourney(
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
   const set = selectedGrant?.scope?.set;
-  const grantProfile = set
-    ? "selected-repository-set"
-    : selectedGrant?.scope && "selected-repository-write";
+  const pullPreview = selectedGrant?.scope?.pullPreview;
+  const grantProfile = pullPreview
+    ? "selected-repository-pull-preview"
+    : set
+      ? "selected-repository-set"
+      : selectedGrant?.scope && "selected-repository-write";
   const selectedRepositories = repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
   const selectedPermissions = selectedRead
-    ? ({ metadata: "read", contents: selectedGrant?.scope?.contents ?? "read" } as const)
+    ? ({
+        metadata: "read",
+        contents: selectedGrant?.scope?.contents ?? "read",
+        ...(pullPreview && { pull_requests: "write" as const }),
+      } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -273,6 +284,7 @@ async function repositoryGitJourney(
     sandbox: "selected",
     policy: {} as object,
     gitRule: {} as { name: string },
+    pullApiRule: undefined as { name: string } | undefined,
     installed: undefined as string | undefined,
     started: { seconds: Math.floor(Date.now() / 1000) },
     runtimeProvider: "oce-runtime-" + "a".repeat(16),
@@ -471,6 +483,7 @@ async function repositoryGitJourney(
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     prepareGitOnDemand: grantProfile ?? !!selectedRead,
     ...(selectedGrant?.sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+    ...(pullPreview && { pullPreview }),
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
@@ -946,6 +959,7 @@ async function repositoryGitJourney(
         }
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
+        state.pullApiRule = entry.pullApi?.provider.previewNetworkRule();
         stage = "recipient-bind";
         await runtime.bind(
           r.id,
@@ -967,12 +981,22 @@ async function repositoryGitJourney(
               await reconcile();
             }
             retry = true;
-            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
-              startupId,
-              probePath: path,
-              reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
-                .reason_code,
-            }));
+            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => {
+              const target = path.startsWith("/graphql?")
+                ? {
+                    ...probe.target,
+                    host: "api.github.com",
+                    method: "POST",
+                    path: "/graphql",
+                    query: path.slice("/graphql?".length),
+                  }
+                : { ...probe.target, path };
+              return {
+                startupId,
+                probePath: path,
+                reasonCode: (await evaluate({ ...probe, target })).reason_code,
+              };
+            });
           },
           { timeoutMs: 20_000 },
         );

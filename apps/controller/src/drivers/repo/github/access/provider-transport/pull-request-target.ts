@@ -69,8 +69,11 @@ export function createGitHubPullTargetReader(
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
     return new Promise<boolean>((resolve) => {
       const req = request(
-        new URL("/graphql", origin),
         {
+          protocol: "https:",
+          hostname: origin.hostname.replace(/^\[|\]$/g, ""),
+          port: origin.port || 443,
+          path: "/graphql",
           method: "POST",
           signal: deadline,
           agent: false,

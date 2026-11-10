@@ -170,7 +170,7 @@ export async function gitExpiryGateway(
     };
   }
   world.retainedProviders = Object.keys(providers);
-  let gitName;
+  let gitName, pullApiName;
   const receiptEnvironments = new Map();
   const observe = (req) => {
     const name = req.provider;
@@ -308,7 +308,7 @@ export async function gitExpiryGateway(
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
-              : [...world.retainedProviders, gitName],
+              : [...world.retainedProviders, gitName, ...(pullApiName ? [pullApiName] : [])],
             provider_attachment_epoch: world.detaches.length
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
@@ -367,18 +367,25 @@ export async function gitExpiryGateway(
     CreateProvider: ({ provider: { metadata, type, profile_workspace, credentials } }) => {
       world.providerCreates.push(metadata.name);
       world.providerCredentialKeys.push(...Object.keys(credentials ?? {}));
-      gitName = metadata.name;
+      const pullApi =
+        profiles[type]?.endpoints.some((endpoint) => endpoint.host === "api.github.com") &&
+        profiles[type].endpoints.length === 1;
+      if (pullApi) {
+        pullApiName = metadata.name;
+      } else {
+        gitName = metadata.name;
+      }
       const provider = {
         metadata: {
           ...metadata,
           workspace,
-          id: repositoryGitRecipient.providerId,
+          id: pullApi ? "pull-api-id" : repositoryGitRecipient.providerId,
           resource_version: "1",
         },
         type,
         profile_workspace,
       };
-      providers[gitName] = provider;
+      providers[metadata.name] = provider;
       return { provider };
     },
     UpdateProvider: ({ provider: { metadata, credentials }, credential_expiration_times }) => {
@@ -443,6 +450,15 @@ export async function gitExpiryGateway(
                   })),
                 }
               : supervisor.gitRule,
+            ...(supervisor.pullApiRule && {
+              [supervisor.pullApiRule.name]: {
+                ...supervisor.pullApiRule,
+                endpoints: supervisor.pullApiRule.endpoints.map((endpoint) => ({
+                  ...endpoint,
+                  token_grant_owner: "grant-owner:v1:" + "b".repeat(64),
+                })),
+              },
+            }),
             ["_provider_" + model.replaceAll("-", "_")]: {
               name: "_provider_" + model.replaceAll("-", "_"),
               endpoints: [{ host: "api.openai.com", port: 443 }],

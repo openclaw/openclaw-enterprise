@@ -19,6 +19,7 @@ import {
   preparationIssuerAuthority,
 } from "../../drivers/repo/github/access/origin.ts";
 import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
+import { createGitHubPullTargetReader } from "../../drivers/repo/github/access/provider-transport/pull-request-target.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
 import {
@@ -406,7 +407,13 @@ export async function startPreparedGitHubGitOwner(
         );
   const onDemand = (source: PreparedRepositoryGitSource) =>
     source.grant.profile === "github-repository" &&
-    preparedGitGrantContents(source.grant, options.prepareGitOnDemand) !== undefined;
+    (preparedGitGrantContents(source.grant, options.prepareGitOnDemand) ||
+      (options.prepareGitOnDemand === "selected-repository-pull-preview" &&
+        source.key.source.id.endsWith(":pull-api") &&
+        source.grant.repositories.length === 1 &&
+        Object.keys(source.grant.permissions).length === 2 &&
+        source.grant.permissions.metadata === "read" &&
+        source.grant.permissions.pull_requests === "write"));
   async function withAppKey<T>(
     use: (key: Awaited<ReturnType<typeof appSigningKey>>["owner"], version: string) => Promise<T>,
   ) {
@@ -564,6 +571,9 @@ export async function startPreparedGitHubGitOwner(
     stop.signal,
     useRequest,
     options.prepareGitOnDemand ? prepareApproved : undefined,
+    options.prepareGitOnDemand === "selected-repository-pull-preview"
+      ? createGitHubPullTargetReader({ origin: apiOrigin, ...(ca && { ca }) })
+      : undefined,
   );
   return {
     protectedGit,

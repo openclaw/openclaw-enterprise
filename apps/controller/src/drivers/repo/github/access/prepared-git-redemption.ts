@@ -7,15 +7,18 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { postgresRequestCredentialApprovals } from "@openclaw-enterprise/occ";
 import { maxSelectedGitHubRepositories } from "./repository-grant.ts";
-import type { InstalledGitRoute } from "./prepared-repository-git.ts";
+import type { InstalledGitRoute, PreparedRepositoryGitSource } from "./prepared-repository-git.ts";
+import type { StockGitHubPullAction } from "./routes/stock-gh-pull-request.ts";
 
 /** Private, worker-local port. Existing protected senders cannot invoke grant redemption. */
 export const preparedGitRedemption = Symbol("preparedGitRedemption");
 export type PreparedGitGrantApprovals = typeof postgresRequestCredentialApprovals;
 
-export type PreparedGitGrantRequest = PreparedGitHubRepositoryUseRequest & {
-  readonly operation: GitGrantOperation;
-};
+export type PreparedGitGrantRequest = PreparedGitHubRepositoryUseRequest &
+  (
+    | { readonly operation: GitGrantOperation; readonly stockPullRequest?: never }
+    | { readonly operation: "github-graphql"; readonly stockPullRequest: StockGitHubPullAction }
+  );
 
 export type PreparedGitGrantBinding = Omit<
   ProtectedGitHubRepositoryMaterial,
@@ -30,7 +33,8 @@ type GitGrantScope = {
   readonly permissions: Readonly<Record<string, string>>;
 };
 
-export type PreparedGitGrantProfile = "selected-repository-write" | "selected-repository-set";
+export type PreparedGitGrantProfile =
+  "selected-repository-write" | "selected-repository-set" | "selected-repository-pull-preview";
 export type PreparedGitGrantMode = true | PreparedGitGrantProfile;
 
 /** Default grant redemption stays read-only and accepts one repository. */
@@ -38,6 +42,9 @@ export function preparedGitGrantContents(
   scope: GitGrantScope,
   mode: PreparedGitGrantMode | false | undefined,
 ): "read" | "write" | undefined {
+  if (mode === "selected-repository-pull-preview" && allowsStockGitHubPullGrant(scope)) {
+    return "write";
+  }
   const limit = mode === "selected-repository-set" ? maxSelectedGitHubRepositories : 1;
   const { contents, metadata } = scope.permissions;
   if (
@@ -50,6 +57,43 @@ export function preparedGitGrantContents(
     return;
   }
   return contents === "read" || (mode !== true && contents === "write") ? contents : undefined;
+}
+
+export function allowsStockGitHubPullGrant(scope: GitGrantScope): boolean {
+  return (
+    scope.repositories.length === 1 &&
+    Object.keys(scope.permissions).length === 3 &&
+    scope.permissions.metadata === "read" &&
+    scope.permissions.contents === "write" &&
+    scope.permissions.pull_requests === "write"
+  );
+}
+
+/** One admitted entitlement owns two separate material families. The API token never carries
+ * Contents access. The two projections still carry the same live session and grant identity. */
+export function projectPreparedGitGrant(
+  source: PreparedRepositoryGitSource,
+  mode: PreparedGitGrantMode | undefined,
+  api: boolean,
+): PreparedRepositoryGitSource | undefined {
+  const { grant } = source;
+  if (
+    mode !== "selected-repository-pull-preview" ||
+    grant.profile !== "github-repository" ||
+    !allowsStockGitHubPullGrant(grant)
+  ) {
+    return api ? undefined : source;
+  }
+  return {
+    ...source,
+    ...(api && { key: { source: { id: source.key.source.id + ":pull-api" } } }),
+    grant: {
+      ...grant,
+      permissions: api
+        ? { metadata: "read", pull_requests: "write" }
+        : { metadata: "read", contents: "write" },
+    },
+  };
 }
 
 export function gitGrantOperationAllowed(

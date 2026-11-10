@@ -29,6 +29,7 @@ import type {
   RepositoryGitDeliveryBinding,
 } from "../repo/access/delivery.ts";
 import {
+  allowsStockGitHubPullGrant,
   preparedGitGrantContents,
   preparedGitRedemption,
   type PreparedGitGrantProfile,
@@ -572,6 +573,7 @@ export class OpenShellGitRuntime {
   private grantProfile(
     delivery: RepositoryGitDeliveryBinding["delivery"],
     audience: string,
+    pullApi?: true,
   ): OpenShellPreparedGitScope["tokenGrant"] {
     const endpoint = this.configuration.grantRedemption?.endpoint;
     if (!endpoint || !("scope" in delivery)) {
@@ -580,7 +582,12 @@ export class OpenShellGitRuntime {
     const mode = this.configuration.grantRedemptionProfile ?? true;
     const contents = preparedGitGrantContents(delivery, mode);
     const repository = delivery.repositories[0]?.repository;
-    if (!contents || !repository) {
+    if (
+      !contents ||
+      !repository ||
+      (pullApi &&
+        (mode !== "selected-repository-pull-preview" || !allowsStockGitHubPullGrant(delivery)))
+    ) {
       return;
     }
     return {
@@ -588,7 +595,7 @@ export class OpenShellGitRuntime {
       audience,
       repository,
       ...(mode === "selected-repository-set" && { selectedRepositories: delivery.repositories }),
-      ...(contents === "write" && { allowPush: true as const }),
+      ...(pullApi ? { pullApi } : contents === "write" ? { allowPush: true as const } : {}),
     };
   }
 
@@ -760,16 +767,30 @@ export class OpenShellGitRuntime {
           });
           throw new Error("OpenShell Git requires a new revision after worker restart.");
         }
+        const workspaceId = await read(() => this.gateway(client, workspace, signal), signal);
         const provider = gitProvider(
           client,
           workspace,
-          await read(() => this.gateway(client, workspace, signal), signal),
+          workspaceId,
           sandbox,
           revision.id,
           scope.delivery,
           true,
           this.grantProfile(scope.delivery, admittedExecutionId),
         );
+        const pullApiGrant = this.grantProfile(scope.delivery, admittedExecutionId, true);
+        const pullApiProvider =
+          pullApiGrant &&
+          gitProvider(
+            client,
+            workspace,
+            workspaceId,
+            sandbox,
+            revision.id,
+            scope.delivery,
+            true,
+            pullApiGrant,
+          );
         const bindingId = admittedExecutionId;
         const route = {
           revisionId: revision.id,
@@ -789,11 +810,23 @@ export class OpenShellGitRuntime {
           await this.routes?.block(revision.id, fence, "repository_expired").catch(() => {});
           throw new OpenShellGitRouteBlockedError("repository_expired");
         }
-        let binding: OpenShellPreparedGitBinding;
+        let binding: OpenShellPreparedGitBinding | undefined;
+        let pullApi: Entry["pullApi"];
         try {
           binding = await provider.bootstrap(signal);
+          if (pullApiProvider) {
+            pullApi = {
+              provider: pullApiProvider,
+              binding: await pullApiProvider.bootstrap(signal),
+              preview: new ObservedHookPreview(workspace, bindingId, true),
+            };
+          }
         } catch (error) {
-          if (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused") {
+          if (
+            !binding &&
+            error instanceof OpenShellPreparedGitProviderError &&
+            error.outcome === "refused"
+          ) {
             // Nothing was written: the row says so, instead of outliving this attempt as a
             // pending write (which a later worker would have to read as write_unknown).
             await this.routes?.block(revision.id, fence, "bootstrap_failed").catch(() => {});
@@ -805,6 +838,7 @@ export class OpenShellGitRuntime {
           client,
           provider,
           binding,
+          ...(pullApi && { pullApi }),
           authorization: structuredClone(scope),
           otherProviders: [...otherProviders],
           bindingId,
@@ -866,6 +900,7 @@ export class OpenShellGitRuntime {
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
+      ...(entry.pullApi && { pullApiProvider: entry.pullApi.binding.provider }),
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
         ...(draft ? [{ name: "PATH", value: OPENSHELL_GIT_DRAFT_PATH }] : []),
@@ -880,6 +915,7 @@ export class OpenShellGitRuntime {
             ]
           : []),
         { name: "GIT_TERMINAL_PROMPT", value: "0" },
+        ...(entry.pullApi ? [{ name: "GH_TOKEN", value: "openclaw-github-cli-placeholder" }] : []),
         ...(this.configuration.grantRedemption
           ? [
               { name: "GIT_CONFIG_COUNT", value: "4" },
@@ -1142,6 +1178,10 @@ export class OpenShellGitRuntime {
           }
         }
         preview.confirm(result);
+        if (entry.pullApi) {
+          const api = entry.pullApi.preview;
+          api.confirm(await probe(api.arm(startupId, undefined, true)));
+        }
         await this.fenced(entry, signal);
       } catch (error) {
         this.block(entry, "bootstrap_failed");
@@ -1179,6 +1219,7 @@ export class OpenShellGitRuntime {
     if (
       !preview?.hook ||
       !entry ||
+      (entry.pullApi && !entry.pullApi.preview.hook) ||
       entry.blocked ||
       !entry.installed ||
       preview.release ||
@@ -1238,6 +1279,7 @@ export class OpenShellGitRuntime {
       registration: this.configuration.registrationName,
       audience: this.configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      ...(entry.pullApi && { pullApiRule: entry.pullApi.provider.previewNetworkRule() }),
       modelProvider: entry.continuity.model,
       workload: entry.continuity.workload,
       signal: context.signal,
@@ -1367,6 +1409,10 @@ export class OpenShellGitRuntime {
     if (delivery !== undefined) {
       const current = await client.getWorkspace(workspace, signal);
       if (current?.id) {
+        const gitGrant = this.grantProfile(
+          delivery,
+          revision.egressPlan?.execution.executionId ?? "",
+        );
         await gitProvider(
           client,
           workspace,
@@ -1374,12 +1420,29 @@ export class OpenShellGitRuntime {
           sandbox,
           revision.id,
           delivery,
-          undefined,
-          this.grantProfile(delivery, revision.egressPlan?.execution.executionId ?? ""),
+          gitGrant ? true : undefined,
+          gitGrant,
         ).remove(signal);
+        const pullApiGrant = this.grantProfile(
+          delivery,
+          revision.egressPlan?.execution.executionId ?? "",
+          true,
+        );
+        if (pullApiGrant) {
+          await gitProvider(
+            client,
+            workspace,
+            current.id,
+            sandbox,
+            revision.id,
+            delivery,
+            true,
+            pullApiGrant,
+          ).remove(signal);
+        }
       }
     }
-    // The derived provider is gone by now, so this finds only another prepared Git provider the
+    // The derived providers are gone by now, so this finds only another prepared Git provider the
     // Sandbox attached; deleteOpenShellPreparedGitProvider skips every provider that is not one.
     for (const name of attached) {
       const provider = await client.getProvider(workspace, name, signal);
@@ -1780,7 +1843,7 @@ export class OpenShellGitRuntime {
       }
       // Commit the observed generation before the credential owner selects exactly that row.
       await this.persist(entry, signal);
-      if (!entry.preview.hook) {
+      if (!entry.preview.hook || (entry.pullApi && !entry.pullApi.preview.hook)) {
         return;
       }
       const owner = this.owner;
@@ -1798,10 +1861,17 @@ export class OpenShellGitRuntime {
         // The attached pull profile and mandatory hook are the startup dependency.
         // An admitted sandbox never receives a provider token during activation.
         if (entry.binding.credentialState === "bootstrap") {
-          entry.binding = entry.provider.activateGrant(
-            entry.binding,
-            new Date(entry.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
-          );
+          const expiry = new Date(
+            entry.revision.repositoryCredentials!.deadlineWallMs,
+          ).toISOString();
+          const binding = entry.provider.activateGrant(entry.binding, expiry);
+          if (entry.pullApi) {
+            entry.pullApi.binding = entry.pullApi.provider.activateGrant(
+              entry.pullApi.binding,
+              expiry,
+            );
+          }
+          entry.binding = binding;
         }
         const installed = await this.observation(entry, signal, { adopt: true });
         if (installed?.credentialState !== "active" || entry.blocked || signal.aborted) {
@@ -2170,6 +2240,12 @@ export class OpenShellGitRuntime {
               observed.providerId,
               "installation_token",
             ),
+            ...(observed.pullApi && {
+              pullApiCredentialIdentity: openShellGrantCredentialIdentity(
+                observed.pullApi.providerId,
+                "installation_token",
+              ),
+            }),
             ...(this.grantProfile(entry.authorization.delivery, entry.bindingId)?.allowPush && {
               grantAllowPush: true as const,
             }),
@@ -2286,7 +2362,9 @@ export class OpenShellGitRuntime {
               !entry.material &&
               entry.binding.credentialState === "bootstrap"
             ) {
-              return entry.preview.deny(q, entry.sandboxId);
+              return q.target.host === "api.github.com"
+                ? entry.pullApi?.preview.deny(q, entry.sandboxId)
+                : entry.preview.deny(q, entry.sandboxId);
             }
           }
         },

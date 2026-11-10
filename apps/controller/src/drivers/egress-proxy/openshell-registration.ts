@@ -76,6 +76,9 @@ export function createOpenShellCapabilities(input: {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
+        ...(configuration?.grantRedemptionProfile === "selected-repository-pull-preview" && {
+          repositoryPullPreview: true as const,
+        }),
       }),
     });
   const repositoryTransport: RepositoryTransportBinding | undefined = git && {

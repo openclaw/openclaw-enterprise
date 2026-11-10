@@ -45,6 +45,7 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
     readonly repository: string;
     readonly selectedRepositories?: GitHubRepositoryGrant["repositories"];
     readonly allowPush?: true;
+    readonly pullApi?: true;
   };
 };
 
@@ -96,6 +97,12 @@ export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
   readonly configRevision: string;
   readonly policyHash: string;
   readonly supervisorSessionId: string;
+  readonly pullApi?: Readonly<{
+    provider: string;
+    providerId: string;
+    profileVersion: string;
+    providerResourceVersion: string;
+  }>;
 }
 
 /** The class of a failed gateway read behind a refusal: a fixed token, never the gateway's
@@ -119,6 +126,7 @@ export class OpenShellPreparedGitProviderError extends Error {
 const KEY = "GITHUB_TOKEN";
 const CREDENTIAL = "installation_token";
 const GRANT_BINARIES = ["/usr/lib/git-core/git-remote-http", "/usr/bin/curl"] as const;
+const PULL_API_BINARIES = ["/usr/local/bin/gh", "/usr/bin/curl"] as const;
 const OWNER = "openclaw.dev/prepared-git-binding";
 const REPOSITORY_PROVIDER_PREFIX = "oce-git-";
 
@@ -232,6 +240,7 @@ export class OpenShellPreparedGitProvider {
         !grant.audience.trim() ||
         repositories[0] !== grant.repository ||
         repositories.length > maxSelectedGitHubRepositories ||
+        (grant.pullApi && (repositories.length !== 1 || grant.allowPush)) ||
         new Set(repositories.map((repo) => repo.toLowerCase())).size !== repositories.length ||
         repositories.some(
           (repo) =>
@@ -251,7 +260,9 @@ export class OpenShellPreparedGitProvider {
     this.client = client;
     this.scope = Object.freeze({
       ...scope,
-      binaries: Object.freeze([...(grant ? GRANT_BINARIES : scope.binaries)]),
+      binaries: Object.freeze([
+        ...(grant?.pullApi ? PULL_API_BINARIES : grant ? GRANT_BINARIES : scope.binaries),
+      ]),
       ...(grant && { tokenGrant: Object.freeze({ ...grant }) }),
     });
     this.fingerprint = createHash("sha256")
@@ -272,6 +283,7 @@ export class OpenShellPreparedGitProvider {
                   grant.audience,
                   selected ?? grant.repository,
                   ...(grant.allowPush ? ["write"] : []),
+                  ...(grant.pullApi ? ["pull-api"] : []),
                 ],
               ]
             : []),
@@ -286,7 +298,9 @@ export class OpenShellPreparedGitProvider {
     const grantPath = grant ? "/" + grant.repository + ".git" : undefined;
     this.profile = {
       id: this.provider,
-      displayName: "Prepared Git installation token",
+      displayName: grant?.pullApi
+        ? "Prepared GitHub pull request token"
+        : "Prepared Git installation token",
       category: "PROVIDER_PROFILE_CATEGORY_OTHER",
       credentials: grant
         ? [
@@ -294,7 +308,7 @@ export class OpenShellPreparedGitProvider {
               name: CREDENTIAL,
               envVars: [],
               required: false,
-              authStyle: "basic",
+              authStyle: grant.pullApi ? "bearer" : "basic",
               headerName: "Authorization",
               tokenGrant: {
                 token_endpoint: grant.endpoint,
@@ -316,75 +330,85 @@ export class OpenShellPreparedGitProvider {
           ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: grantPath
+      endpoints: grant?.pullApi
         ? [
             {
-              host: git.hostname,
+              host: api.hostname,
               port: 443,
               protocol: "rest",
-              ...(repositories.length === 1 && { path: grantPath + "/**" }),
-              rules: [
-                ...repositories.flatMap((repository) => {
-                  const path = "/" + repository + ".git";
-                  return [
-                    { allow: { method: "GET", path: path + "/info/refs" } },
-                    { allow: { method: "POST", path: path + "/git-upload-pack" } },
-                    ...(grant?.allowPush
-                      ? [{ allow: { method: "POST", path: path + "/git-receive-pack" } }]
-                      : []),
-                  ];
-                }),
-                // The held launcher proves that the mandatory middleware denies this
-                // path before OpenShell obtains a token or dispatches the request.
-                {
-                  allow: {
-                    method: "GET",
-                    path: grantPath + "/oce-observe-request/*/info/refs",
-                  },
-                },
-              ],
+              path: "/graphql",
+              rules: [{ allow: { method: "POST", path: "/graphql" } }],
             },
           ]
-        : scope.installationId
+        : grantPath
           ? [
               {
                 host: git.hostname,
                 port: 443,
                 protocol: "rest",
+                ...(repositories.length === 1 && { path: grantPath + "/**" }),
                 rules: [
-                  { allow: { method: "GET", path: "/**/info/refs" } },
-                  { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                  { allow: { method: "POST", path: "/**/git-receive-pack" } },
+                  ...repositories.flatMap((repository) => {
+                    const path = "/" + repository + ".git";
+                    return [
+                      { allow: { method: "GET", path: path + "/info/refs" } },
+                      { allow: { method: "POST", path: path + "/git-upload-pack" } },
+                      ...(grant?.allowPush
+                        ? [{ allow: { method: "POST", path: path + "/git-receive-pack" } }]
+                        : []),
+                    ];
+                  }),
+                  // The held launcher proves that the mandatory middleware denies this
+                  // path before OpenShell obtains a token or dispatches the request.
+                  {
+                    allow: {
+                      method: "GET",
+                      path: grantPath + "/oce-observe-request/*/info/refs",
+                    },
+                  },
                 ],
               },
-              {
-                host: api.hostname,
-                port: 443,
-                protocol: "rest",
-                access: "NETWORK_ACCESS_PRESET_FULL",
-              },
-              {
-                host: api.hostname,
-                port: 443,
-                protocol: "graphql",
-                path: "/graphql",
-                access: "NETWORK_ACCESS_PRESET_FULL",
-              },
             ]
-          : [
-              {
-                host: git.hostname,
-                port: Number(git.port || 443),
-                protocol: "rest",
-                path: "/" + scope.repository + ".git/**",
-              },
-              {
-                host: api.hostname,
-                port: Number(api.port || 443),
-                protocol: "rest",
-                path: "/repos/" + scope.repository + "/pulls",
-              },
-            ],
+          : scope.installationId
+            ? [
+                {
+                  host: git.hostname,
+                  port: 443,
+                  protocol: "rest",
+                  rules: [
+                    { allow: { method: "GET", path: "/**/info/refs" } },
+                    { allow: { method: "POST", path: "/**/git-upload-pack" } },
+                    { allow: { method: "POST", path: "/**/git-receive-pack" } },
+                  ],
+                },
+                {
+                  host: api.hostname,
+                  port: 443,
+                  protocol: "rest",
+                  access: "NETWORK_ACCESS_PRESET_FULL",
+                },
+                {
+                  host: api.hostname,
+                  port: 443,
+                  protocol: "graphql",
+                  path: "/graphql",
+                  access: "NETWORK_ACCESS_PRESET_FULL",
+                },
+              ]
+            : [
+                {
+                  host: git.hostname,
+                  port: Number(git.port || 443),
+                  protocol: "rest",
+                  path: "/" + scope.repository + ".git/**",
+                },
+                {
+                  host: api.hostname,
+                  port: Number(api.port || 443),
+                  protocol: "rest",
+                  path: "/repos/" + scope.repository + "/pulls",
+                },
+              ],
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint },
@@ -459,7 +483,7 @@ export class OpenShellPreparedGitProvider {
           credential.required !== true ||
           credential.stable_placeholder !== true ||
           credential.token_grant !== undefined) ||
-      credential.auth_style !== (grant ? "basic" : "bearer") ||
+      credential.auth_style !== (grant && !grant.pullApi ? "basic" : "bearer") ||
       credential.header_name !== (grant ? "Authorization" : "authorization") ||
       credential.refresh !== undefined ||
       !isDeepStrictEqual(

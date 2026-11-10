@@ -1,4 +1,7 @@
-import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
+import {
+  HARNESS_GIT_PROBE_PREFIX,
+  HARNESS_GITHUB_API_PROBE_QUERY,
+} from "../compute/harness-egress-enrollment.ts";
 import type {
   InstalledGitMaterial,
   InstalledGitRoute,
@@ -47,6 +50,7 @@ type GitBindingIdentity = {
   readonly installed: InstalledGitMaterial | InstalledGitRoute;
   readonly grantCredentialIdentity?: string;
   readonly grantAllowPush?: true;
+  readonly pullApiCredentialIdentity?: string;
 };
 
 type RepositoryBinding = GitBindingIdentity & {
@@ -250,7 +254,13 @@ export function createOpenShellOnlineGitAuthority(
     ...options,
     async authorize(request, signal) {
       const { sandboxId, bindingId, requestId, workspace } = request;
-      if (options.previewDenial && HARNESS_GIT_PROBE_PREFIX.test(request.target.path)) {
+      if (
+        options.previewDenial &&
+        (HARNESS_GIT_PROBE_PREFIX.test(request.target.path) ||
+          (request.target.host === "api.github.com" &&
+            request.target.path === "/graphql" &&
+            HARNESS_GITHUB_API_PROBE_QUERY.test(request.target.query)))
+      ) {
         return {
           reasonCode: options.previewDenial(request) ?? "preview_challenge_refused",
         };
@@ -287,7 +297,13 @@ export function createOpenShellOnlineGitAuthority(
       if (!validBinding(binding, request)) {
         return deny("binding_mismatch");
       }
-      const selection = selectGitHubRequest(request, binding, randomUUID);
+      const selection = selectGitHubRequest(
+        request,
+        binding.scope === "github-repository" && binding.pullApiCredentialIdentity
+          ? { ...binding, allowStockPullRequestApi: true as const }
+          : binding,
+        randomUUID,
+      );
       if ("denied" in selection) {
         return deny(selection.denied);
       }
@@ -358,16 +374,23 @@ export function createOpenShellOnlineGitAuthority(
       try {
         if (options.approveGrantRequest) {
           const { operation } = q;
-          if (
-            !binding.grantCredentialIdentity ||
-            !("scope" in q) ||
-            q.scope !== "github-repository" ||
-            !gitGrantOperationAllowed(operation, binding.grantAllowPush === true)
-          ) {
+          if (!("scope" in q) || q.scope !== "github-repository") {
+            return deny("route_unsupported", operation);
+          }
+          const grantRequest: PreparedGitGrantRequest | undefined =
+            binding.pullApiCredentialIdentity &&
+            operation === "github-graphql" &&
+            selected.stockPullRequest
+              ? { ...q, operation, stockPullRequest: selected.stockPullRequest }
+              : binding.grantCredentialIdentity &&
+                  gitGrantOperationAllowed(operation, binding.grantAllowPush === true)
+                ? { ...q, operation }
+                : undefined;
+          if (!grantRequest) {
             return deny("route_unsupported", operation);
           }
           const replyBy = await options.approveGrantRequest(
-            { ...q, operation },
+            grantRequest,
             binding,
             { sandboxId, bindingId, requestId, workspace },
             signal,
@@ -376,7 +399,7 @@ export function createOpenShellOnlineGitAuthority(
             ? { kind: "allow", replyBy }
             : deny("approval_denied", operation);
         }
-        if (installed.materialVersion === undefined) {
+        if (selected.stockPullRequest || installed.materialVersion === undefined) {
           return deny("binding_mismatch", q.operation);
         }
         const result = await options.authorizeOnlineRequest(q, installed, signal);

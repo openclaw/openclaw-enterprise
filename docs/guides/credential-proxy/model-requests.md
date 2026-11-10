@@ -199,6 +199,31 @@ same recipient, grant and material before release, then OpenShell injects the
 token into the authorized Git HTTPS request. OpenShell does not cache the
 redeemed token. Installed candidate qualification remains pending.
 
+## Preview stock GitHub CLI pull requests
+
+Set `repository.openShell.grantRedemptionProfile: selected-repository-pull-preview`
+on a compatible installation to test one selected repository. The admitted
+GitHub App scope must be exactly Metadata read, Contents write, and Pull
+requests write. One entitlement controls both attachments. The Worker asks for
+a Contents write token for Git and a separate Pull requests write token for
+the GitHub API. Both carry Metadata read and the same selected repository ID.
+The API attachment uses Bearer injection at `api.github.com/graphql`. Stock
+`gh` receives a nonsecret startup value.
+
+The preview supports the bundled `gh` version with explicit repository, head,
+base, title and body for `gh pr create --draft`, and an explicit PR number and
+title for `gh pr edit --title`. It checks the CLI's discovery requests and
+compares each write target against the selected repository using GitHub's
+authoritative identity response. The exact check runs before every write,
+including when a sender can reuse a token. GitHub still enforces the App's
+permissions and repository rules.
+
+Remove the repository entitlement to refuse future Git and API requests.
+The original issuer owner retires each token family. Qualify the running model
+separately on a mixed online execution. See the
+[repository credential flow](../../flows/repository-credentials.md#selected-repository-pull-request-preview)
+for the order of checks.
+
 ## Verify the installed path
 
 Run these checks against the exact images and configuration selected for rollout:
