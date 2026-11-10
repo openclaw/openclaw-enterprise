@@ -7802,11 +7802,13 @@ test("a staged retry cannot replace the published Helm attempt and an actual ret
   await assert.rejects(f.run(), injectedFault);
   const original = await assertHelmIntent(f, 1, 2);
   const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
-  // The new candidate is staged before quiescence; stopping here must leave
-  // the accepted failed submission authoritative on the next resume.
-  await f.failNext("fail-scale-worker");
+  const values = await readFile(join(f.directory, "values.json"), "utf8");
+  // The retry's dry-run fails after staging values, before replacing the local
+  // values or publishing a new intent. The failed submission stays authoritative.
+  await f.failNext("fail-server-dry-run");
   await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
   assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
+  assert.equal(await readFile(join(f.directory, "values.json"), "utf8"), values);
   await assert.rejects(f.run("--resume"), /migration --check/);
   assert.equal((await f.state()).helmSubmissions, 1);
   await f.failNext("lost-helm-response");
