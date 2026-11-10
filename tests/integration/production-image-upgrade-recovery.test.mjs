@@ -2683,6 +2683,20 @@ test("controller compatibility preserves Agent continuity through interrupted up
   assert.equal((await f.state()).worker, 1);
 });
 
+async function assertCompatibilityReceiptRejected(t, change) {
+  const f = await fixture(t, { controllerOnly: true });
+  const receipt = controllerCompatibilityResults();
+  change(receipt);
+  const path = join(f.directory, "compatibility.json");
+  await writeFile(path, JSON.stringify(receipt));
+  await assert.rejects(
+    f.run("--controller-compatibility-results", path),
+    /controller compatibility receipt must pass/,
+  );
+  assert.deepEqual(await f.events(), []);
+  return f;
+}
+
 test("controller compatibility rejects unqualified evidence before changing writers", async (t) => {
   const changes = {
     "unselected green": (r) => (r.files[0].tests[1].name = "Another migration case"),
@@ -2709,16 +2723,7 @@ test("controller compatibility rejects unqualified evidence before changing writ
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      const f = await assertCompatibilityReceiptRejected(subtest, change);
       assert.equal((await f.state()).api, 1);
       assert.equal((await f.state()).worker, 1);
       assert.equal(existsSync(join(f.evidence, "prepared")), false);
@@ -2735,16 +2740,7 @@ test("controller compatibility rejects contradictory runner summaries", async (t
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
@@ -2764,16 +2760,7 @@ test("controller compatibility rejects passing summaries with explicit failure e
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
