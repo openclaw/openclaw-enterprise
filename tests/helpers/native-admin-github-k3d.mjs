@@ -131,7 +131,6 @@ export async function enableInstalledGithubNativeAdmin({
     egressCidrs: ["192.0.2.1/32"],
   });
   expected.agentNativeAdmin.sessionMode = "host-only-exchange";
-  expected.agentNativeAdmin.sharedCookieDomain = "";
   const valuesFile = join(directory, "values.json");
   await writeFile(valuesFile, JSON.stringify(expected), { mode: 0o600 });
 

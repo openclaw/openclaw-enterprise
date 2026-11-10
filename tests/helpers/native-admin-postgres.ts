@@ -17,11 +17,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 
 import { createPostgresControllerAuth } from "./password-hasher.mjs";
+import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  PostgresPlatformState,
+  PostgresHumanAuthentication,
+} from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
@@ -109,6 +114,11 @@ function nativeComputeDriver(upstreamPort: number): ComputeDriver {
     {
       implementation: "native-admin-postgres-test-upstream",
       validateHarnessAuth() {},
+      getGatewayChatEndpoint(
+        revision: Parameters<NonNullable<ComputeDriver["getGatewayChatEndpoint"]>>[0],
+      ) {
+        return `wss://localhost:${upstreamPort}/native-chat/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
+      },
       getGatewayEndpoint(
         revision: Parameters<NonNullable<ComputeDriver["getGatewayEndpoint"]>>[0],
       ) {
@@ -224,10 +234,14 @@ export async function createApi(
     id: `native-admin-iam-${label}`,
   });
   const origin = options.origin ?? publicOrigin;
-  const recoveryUserId = options.exchange
-    ? (await pool.query<{ id: string }>('SELECT id FROM occ."user" WHERE email=$1', [adminEmail]))
-        .rows[0]!.id
-    : undefined;
+  const recoveryUserId = (
+    await pool.query<{ id: string }>('SELECT id FROM occ."user" WHERE email=$1', [adminEmail])
+  ).rows[0]!.id;
+  const humanAuthentication = new PostgresHumanAuthentication(
+    state,
+    installation.id,
+    betterAuthIssuer(installation.id),
+  );
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
@@ -235,17 +249,33 @@ export async function createApi(
     secret: authSecret,
     pool,
     secureCookies: true,
+    state,
+    iamDriver,
+    agentDomain: nativeDomain,
+    sessionMode: options.exchange ? "host-only-exchange" : "shared-cookie",
     ...(options.exchange
       ? {
-          state,
-          iamDriver,
           github: {
             clientId: "native-browser-fixture",
             clientSecret: "native-browser-fixture-secret",
             recoveryUserId,
           },
         }
-      : { sharedCookieDomain: cookieDomain }),
+      : {
+          // Shared native sessions retain main's guarded OIDC account path. Provider redirects
+          // are exercised separately; these cases sign in with the recovery password.
+          oidc: {
+            issuer: "https://idp.example.test",
+            authorizationUrl: "https://idp.example.test/authorize",
+            tokenUrl: "https://idp.example.test/token",
+            jwksUrl: "https://idp.example.test/jwks",
+            clientId: "native-session-proof",
+            clientSecret: "native-session-proof-secret",
+            tokenAuth: "client_secret_post",
+            displayName: "Test SSO",
+            recoveryUserId,
+          },
+        }),
   });
   const computeDriver = nativeComputeDriver(upstreamPort);
   const configurationDriver = createTestConfigurationDriver({
@@ -271,6 +301,8 @@ export async function createApi(
     resolveHarness: resolveApprovedHarness,
     auditSink: options.auditSink?.(state.auditSink) ?? state.auditSink,
     auth,
+    provisionAuthAccount: (seed, audit, prepared, external) =>
+      humanAuthentication.provisionPasswordAccount(prepared, seed, audit, external),
     development: { enabled: false },
     publicOrigin: origin,
     nativeAdmin: {
@@ -278,7 +310,21 @@ export async function createApi(
       domain: nativeDomain,
       ...(options.exchange
         ? { sessionMode: "host-only-exchange" }
-        : { sharedCookieDomain: cookieDomain }),
+        : {
+            // Shared native sessions retain main's guarded OIDC account path. Provider redirects
+            // are exercised separately; these cases sign in with the recovery password.
+            oidc: {
+              issuer: "https://idp.example.test",
+              authorizationUrl: "https://idp.example.test/authorize",
+              tokenUrl: "https://idp.example.test/token",
+              jwksUrl: "https://idp.example.test/jwks",
+              clientId: "native-session-proof",
+              clientSecret: "native-session-proof-secret",
+              tokenAuth: "client_secret_post",
+              displayName: "Test SSO",
+              recoveryUserId,
+            },
+          }),
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
     nativeAdminWebSocketLeaseIntervalMs: leaseIntervalMs,
@@ -433,12 +479,12 @@ export async function nativeGet(
   });
 }
 
-export async function createReadOperateSession(
+export async function createAgentPermissionSession(
   api: NativeApi,
   namespaceId: string,
   agentId: string,
   label: string,
-  action: PermissionAction = "operate",
+  actions: PermissionAction[] = ["read"],
 ) {
   const suffix = randomUUID();
   const credentials = {
@@ -446,10 +492,21 @@ export async function createReadOperateSession(
     password: `native-admin-denial-${suffix}`,
     name: `Native admin ${label}`,
   };
-  const account = await api.auth.createAccount(credentials);
+  const administrator = await signIn(api.app, undefined, api.origin);
+  const created = await inject(api.app, "POST", "/api/auth/accounts", {
+    session: administrator,
+    body: credentials,
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const account = created.json().data;
   const roleId = `role-${label}-${suffix}`;
   const bindingId = `binding-${label}-${suffix}`;
-  const seed = api.auth.principalSeed(account, { roleId });
+  const principal = await api.iamDriver.lookupIdentity({
+    issuer: betterAuthIssuer(api.controller.installation.id),
+    subject: account.id,
+  });
+  assert.ok(principal?.kind === "principal", "the created account must have a human principal");
+  assert.equal(principal.id, account.principalId);
   const client = await api.pool.connect();
   try {
     await client.query("BEGIN");
@@ -460,22 +517,14 @@ export async function createReadOperateSession(
         roleId,
         namespaceId,
         `Native admin ${label}`,
-        JSON.stringify([
-          { action: "read", resourceKind: "agent" },
-          { action, resourceKind: "agent" },
-        ]),
+        JSON.stringify(actions.map((action) => ({ action, resourceKind: "agent" }))),
       ],
-    );
-    await client.query(
-      `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)
-       VALUES ($1, NULL, NULL, 'principal', $2, $3)`,
-      [seed.principal.id, seed.principal.issuer, seed.principal.subject],
     );
     await client.query(
       `INSERT INTO occ.iam_access_bindings
        (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
        VALUES ($1, $2, $3, NULL, $4, 'agent', $5)`,
-      [bindingId, namespaceId, seed.principal.id, roleId, agentId],
+      [bindingId, namespaceId, principal.id, roleId, agentId],
     );
     await client.query("COMMIT");
   } catch (error) {
@@ -484,7 +533,23 @@ export async function createReadOperateSession(
   } finally {
     client.release();
   }
-  return { session: await signIn(api.app, credentials, api.origin), principal: seed.principal };
+  return {
+    session: await signIn(api.app, credentials, api.origin),
+    principal,
+    account,
+    credentials,
+    roleId,
+  };
+}
+
+export async function createReadOperateSession(
+  api: NativeApi,
+  namespaceId: string,
+  agentId: string,
+  label: string,
+  action: PermissionAction = "operate",
+) {
+  return createAgentPermissionSession(api, namespaceId, agentId, label, ["read", action]);
 }
 
 export function trustLocalUpstreamCertificate(t: TestContext, cert: string) {

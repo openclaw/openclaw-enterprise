@@ -116,7 +116,6 @@ one `@` and a dotted domain.
     "gatewayClassName": "eg",
     "gatewayApiKeySecretName": "occ-private-gateway-key",
     "agentNativeAdminDomain": "agents.example.internal",
-    "sharedCookieDomain": "example.internal",
     "gatewayTrustedProxyCidrs": ["10.46.0.0/24"],
     "pluginStatusProxySourceCidrs": ["10.47.0.10/32"],
     "nodeSelector": { "oce-role": "control" }
@@ -212,9 +211,11 @@ GitHub, Google and OIDC activation is one-way. Keep these inputs when rerenderin
 the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
 `authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
 `auth.github`, `auth.google` or `auth.oidc` with
-`enabled: true` and, by default, `agentNativeAdmin.enabled: false`. With native admin disabled, omit
-`agentNativeAdminDomain` and `sharedCookieDomain`. `recoveryUserId` and an HTTPS
-`authBaseUrl` are required. Optional `passwordSignIn: "recovery-only"` renders
+`enabled: true`. GitHub disables native access unless host-only exchange is selected; Google
+disables it, and OIDC keeps it enabled.
+`agentNativeAdminDomain`, `recoveryUserId` and an HTTPS `authBaseUrl` are required.
+Shared-cookie mode derives their non-public cookie suffix; host-only exchange
+requires same-site HTTPS. Optional `passwordSignIn: "recovery-only"` renders
 [`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
 preflight lists attaching every ordinary account's identity first. Follow
 [Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).

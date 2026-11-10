@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
@@ -35,6 +36,7 @@ export function selectQaMatrix(env = process.env) {
               "openshell-linear-read",
               "codex-search-config",
               "harness-overrides",
+              "oidc-agent-chat",
             ].includes(name),
         )
       : input.split(",").map((name) => name.trim());
@@ -43,6 +45,12 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const oidcAgentChat = scenarios.includes("oidc-agent-chat");
+  if (oidcAgentChat) {
+    assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
+    assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
+  }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
     assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
@@ -67,6 +75,7 @@ export function selectQaMatrix(env = process.env) {
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
+            "oidc-agent-chat",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -76,6 +85,7 @@ export function selectQaMatrix(env = process.env) {
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
+            "oidc-agent-chat",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -87,6 +97,7 @@ export function selectQaMatrix(env = process.env) {
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
+            "oidc-agent-chat",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -116,6 +127,24 @@ export function selectQaMatrix(env = process.env) {
       ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
       : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
+  if (oidcAgentChat) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OPENAI_API_KEY",
+      "OCC_TEST_OPENAI_MODEL",
+      "OCC_TEST_GATEWAY_CA_CERT_PATH",
+      "OCC_TEST_GATEWAY_CA_KEY_PATH",
+      "OCC_TEST_KEYCLOAK_ISSUER",
+      "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+      "OCC_TEST_KEYCLOAK_CA_CERT",
+      "OCC_TEST_KEYCLOAK_CONTAINER",
+      "NODE_EXTRA_CA_CERTS",
+    );
+  }
   if (codexSearchConfig) {
     if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
       requiredEnv.splice(
@@ -194,6 +223,7 @@ export function selectQaMatrix(env = process.env) {
   return {
     installations,
     exclusions,
+    oidcAgentChat,
     sandboxPolicy,
     pluginInstall,
     linearRead,
@@ -208,7 +238,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 5
+      scenarios.length === allScenarios.length - 6
         ? "full"
         : "partial:selected",
   };

@@ -66,6 +66,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     agentPermissionSummary?: unknown;
     nativeAdmin?: string;
     nativeAdminSessionMode?: "host-only-exchange";
+    nativeAdminMode?: "admin" | "chat";
     nativeAdminUrl?: string;
     harness?: unknown;
     runtimeImages?: unknown;
@@ -810,14 +811,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
-      // A member reads the Installation's capabilities from the Namespace, minus guided
-      // provisioning and its native admin option (RFC-0026).
+      // Members can configure browser access; guided provisioning remains administrator-only.
       if (resource === "agent-capabilities" && method === "GET") {
-        const {
-          nativeAdmin: _provisioningOnly,
-          agentProvisioning: _administratorOnly,
-          ...capabilities
-        } = installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
+        const { agentProvisioning: _administratorOnly, ...capabilities } =
+          installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
         return response({ capabilities });
       }
       if (
@@ -888,6 +885,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             ...(scenario.nativeAdminSessionMode
               ? { sessionMode: scenario.nativeAdminSessionMode }
               : {}),
+            mode: scenario.nativeAdminMode ?? "admin",
             url:
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",

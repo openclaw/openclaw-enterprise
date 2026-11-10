@@ -746,71 +746,39 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
   return cidrs;
 }
 
-// The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
-// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
-// list without a new root dependency; load it only when native admin is configured.
-function isPublicSuffix(hostname) {
-  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-  let tldts;
-  try {
-    tldts = require("tldts");
-  } catch {
-    return undefined;
-  }
-  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
-  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
-}
-
-function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, diagnostics) {
-  const lowerDomain = domain.toLowerCase();
-  const lowerSharedCookieDomain = sharedCookieDomain.toLowerCase();
-  if (!dnsHostname.test(lowerDomain)) {
+function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
+  if (!dnsHostname.test(domain.toLowerCase())) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
-  }
-  if (!dnsHostname.test(lowerSharedCookieDomain)) {
-    diagnostics.errors.push(
-      "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
-    );
-  } else {
-    const publicSuffix = isPublicSuffix(lowerSharedCookieDomain);
-    if (publicSuffix === undefined) {
-      diagnostics.errors.push(
-        "controlPlane.sharedCookieDomain needs the public suffix list: run pnpm install first.",
-      );
-    } else if (publicSuffix) {
-      diagnostics.errors.push("controlPlane.sharedCookieDomain must not be a public suffix.");
-    }
-  }
-  if (
-    dnsHostname.test(lowerDomain) &&
-    dnsHostname.test(lowerSharedCookieDomain) &&
-    lowerDomain !== lowerSharedCookieDomain &&
-    !lowerDomain.endsWith(`.${lowerSharedCookieDomain}`)
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain.",
-    );
-  }
-  // The API refuses these at startup: shared session cookies are secure-only, and the
-  // console host must be inside their parent.
-  let baseUrl;
-  try {
-    baseUrl = new URL(authBaseUrl);
-  } catch {
-    // asString already reported it as not an absolute HTTP(S) origin.
     return;
   }
-  if (baseUrl.protocol !== "https:") {
-    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with native admin.");
-  } else if (dnsHostname.test(lowerSharedCookieDomain)) {
-    const host = baseUrl.hostname.replace(/\.$/, "");
-    if (host !== lowerSharedCookieDomain && !host.endsWith(`.${lowerSharedCookieDomain}`)) {
-      diagnostics.errors.push(
-        "controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain.",
-      );
+  if (diagnostics.errors.some((error) => error.startsWith("controlPlane.authBaseUrl"))) {
+    return;
+  }
+  // Load the auth owner lazily so a plain checkout still writes a useful preflight refusal.
+  let deriveSharedCookieDomain;
+  try {
+    ({ deriveSharedCookieDomain } = createRequire(import.meta.url)(
+      "../apps/controller/src/auth/configuration.ts",
+    ));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
     }
+    diagnostics.errors.push(
+      "Shared browser sessions need the public suffix list: run pnpm install first.",
+    );
+    return;
+  }
+  try {
+    deriveSharedCookieDomain(authBaseUrl, domain);
+  } catch {
+    diagnostics.errors.push(
+      new URL(authBaseUrl).protocol !== "https:"
+        ? "controlPlane.authBaseUrl must use HTTPS for shared browser sessions."
+        : "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
+    );
   }
 }
 
@@ -1038,15 +1006,6 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
-  for (const key of controlPlane.agentNativeAdminSessionMode === "host-only-exchange"
-    ? []
-    : ["agentNativeAdminDomain", "sharedCookieDomain"]) {
-    if (controlPlane[key] !== undefined) {
-      diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in in this mode. GitHub native admin requires host-only-exchange; Google and OIDC do not support native admin.`,
-      );
-    }
-  }
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
     diagnostics.errors.push(
@@ -1211,7 +1170,6 @@ function buildInput(rawInput, diagnostics) {
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
       "agentNativeAdminSessionMode",
-      "sharedCookieDomain",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1582,77 +1540,29 @@ function buildRendered(profile, parsed, diagnostics) {
       validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
       description: "shared-cookie or host-only-exchange",
     }) ?? "shared-cookie";
-  let agentNativeAdmin = { enabled: false };
-  if (sessionMode === "host-only-exchange") {
-    if (
-      controlPlane.github === undefined ||
+  const agentNativeAdminDomain = asString(
+    controlPlane,
+    ["controlPlane", "agentNativeAdminDomain"],
+    diagnostics,
+  );
+  validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
+  if (
+    sessionMode === "host-only-exchange" &&
+    (controlPlane.github === undefined ||
       controlPlane.google !== undefined ||
-      controlPlane.oidc !== undefined
-    ) {
-      diagnostics.errors.push(
-        "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
-      );
-    }
-    const domain = asString(
-      controlPlane,
-      ["controlPlane", "agentNativeAdminDomain"],
-      diagnostics,
-    ).toLowerCase();
-    if (controlPlane.sharedCookieDomain !== undefined) {
-      diagnostics.errors.push(
-        "controlPlane.sharedCookieDomain must be omitted with host-only-exchange.",
-      );
-    }
-    if (!dnsHostname.test(domain)) {
-      diagnostics.errors.push(
-        "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
-      );
-    }
-    try {
-      const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-      const { getDomain } = require("tldts");
-      const options = { allowPrivateDomains: true, validateHostname: true };
-      const site = getDomain(domain, options);
-      const consoleUrl = new URL(authBaseUrl);
-      if (
-        consoleUrl.protocol !== "https:" ||
-        !site ||
-        site !== getDomain(consoleUrl.hostname, options)
-      ) {
-        diagnostics.errors.push(
-          "Host-only native admin requires HTTPS and the same registrable site for Console and Agent hosts.",
-        );
-      }
-    } catch {
-      diagnostics.errors.push(
-        "Host-only native admin needs a valid authBaseUrl and the public suffix list: run pnpm install first.",
-      );
-    }
-    agentNativeAdmin = { enabled: true, sessionMode, domain, sharedCookieDomain: "" };
-  } else if (!externalSignIn) {
-    const agentNativeAdminDomain = asString(
-      controlPlane,
-      ["controlPlane", "agentNativeAdminDomain"],
-      diagnostics,
+      controlPlane.oidc !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
     );
-    const sharedCookieDomain = asString(
-      controlPlane,
-      ["controlPlane", "sharedCookieDomain"],
-      diagnostics,
-    );
-    validateNativeAdminDomains(
-      agentNativeAdminDomain,
-      sharedCookieDomain,
-      authBaseUrl,
-      diagnostics,
-    );
-    // The API lowercases both at startup; the chart accepts only lowercase.
-    agentNativeAdmin = {
-      enabled: true,
-      domain: agentNativeAdminDomain.toLowerCase(),
-      sharedCookieDomain: sharedCookieDomain.toLowerCase(),
-    };
   }
+  const agentNativeAdmin = {
+    enabled:
+      sessionMode === "host-only-exchange" ||
+      (controlPlane.github === undefined && controlPlane.google === undefined),
+    domain: agentNativeAdminDomain.toLowerCase(),
+    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
+  };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
@@ -2272,12 +2182,11 @@ function buildRendered(profile, parsed, diagnostics) {
     "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
     "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
   );
+  diagnostics.prerequisites.push(
+    "HTTPS Console and Agent DNS hosts configured under a shared non-public DNS suffix.",
+  );
   if (agentNativeAdmin.enabled) {
-    diagnostics.prerequisites.push(
-      sessionMode === "host-only-exchange"
-        ? "Wildcard DNS and TLS configured for the native admin domain, with Console and Agent origins routed to OCC on the same site."
-        : "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
-    );
+    diagnostics.prerequisites.push("Wildcard DNS and TLS configured for the native admin domain.");
   }
   if (externalSignIn) {
     diagnostics.prerequisites.push(

@@ -31,7 +31,7 @@ test(
       email,
       password,
       authSecret: secret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       installationName: "Trusted proxy proof",
     });
     const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
@@ -47,6 +47,7 @@ test(
       installationId: installation.id,
       secret,
       baseURL: origin,
+      agentDomain: "agents.example.test",
       pool,
       state,
       iamDriver,

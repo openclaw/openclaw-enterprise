@@ -24,3 +24,5 @@ export const NativeAvailableAfterDeploy = {
   ...story("nativeAvailableAfterDeploy"),
   name: "Available once a deployment completes",
 };
+
+export const OperatorChat = { ...story("nativeOperatorChat"), name: "Operator chat" };

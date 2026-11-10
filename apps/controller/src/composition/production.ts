@@ -135,9 +135,6 @@ export async function composeProduction(
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
   }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
-  }
 
   let phaseStartedAt = performance.now();
   const phaseCompleted = (phase: ProductionStartupPhase) => {
@@ -171,10 +168,8 @@ export async function composeProduction(
       installationId: persistedInstallation.id,
       secret: config.authSecret,
       baseURL: config.authBaseURL,
-      ...(config.nativeAdmin?.enabled === true &&
-      config.nativeAdmin.sessionMode !== "host-only-exchange"
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       pool,
       state,
       iamDriver,

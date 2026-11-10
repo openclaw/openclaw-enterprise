@@ -4,6 +4,11 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const browserEnvironment = {
+  OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.development.oce.localhost:8443",
+  OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.development.oce.localhost",
+};
+
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 
 export function commandPath(name) {
@@ -24,6 +29,7 @@ export function commandPath(name) {
 export function composeConfigurationProvider() {
   const cleanEnvironment = {
     PATH: process.env.PATH,
+    ...browserEnvironment,
   };
   const docker = commandPath("docker");
   if (docker) {
@@ -64,7 +70,7 @@ export function composeConfiguration(files = ["compose.yaml"], environment = {})
   }
   const rendered = spawnSync(provider.command, args, {
     cwd: repository,
-    env: { PATH: process.env.PATH, ...environment },
+    env: { PATH: process.env.PATH, ...browserEnvironment, ...environment },
     encoding: "utf8",
     maxBuffer: 2_000_000,
   });

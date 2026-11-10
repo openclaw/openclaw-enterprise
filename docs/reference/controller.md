@@ -230,14 +230,10 @@ A prepared repository App key that cannot sign stops the worker with
   Confirm the API and worker egress policy still allows that address (Helm
   `cluster.cidrs` and `cluster.port`) and that the server is running.
 - **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
-  and the initialization Job refuse a missing `OCC_AUTH_SECRET` or one under 32
-  characters (`AUTH_SECRET_INVALID`), and an `OCC_AUTH_BASE_URL` that is not an
-  absolute HTTP(S) origin (`AUTH_BASE_URL_INVALID`). In production the Job also
-  requires HTTPS unless the host is loopback; in development the base URL host
-  must be loopback. With native admin enabled, the API also reports
-  `AUTH_BASE_URL_INVALID` for an `OCC_AUTH_COOKIE_DOMAIN` that is malformed, a
-  public suffix, does not contain the base URL host, or is used without HTTPS
-  session cookies.
+  and initialization Job require an auth secret of at least 32 characters,
+  an HTTPS Console origin, and an Agent DNS domain. The two hosts must share
+  a non-public DNS suffix. IP-based origins and the removed cookie-domain
+  settings are rejected. See [shared browser sessions](authentication.md#native-admin-shared-sessions).
 - **`GATEWAY_API_KEY_UNAVAILABLE` at startup:** The API refuses an
   `OCC_GATEWAY_API_KEY_PATH` that is blank or not absolute, and a key file that
   is missing, not a regular file, over 4 KiB, or not printable ASCII without
@@ -247,10 +243,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
   The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
   that is relative, names a directory, or cannot be written.
-- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** External sign-in
-  cannot use shared-cookie native admin. With GitHub, select
-  [host-only exchange](agent-native-admin.md#host-only-session-exchange) or disable
-  native admin. Google and OIDC require native admin disabled.
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub native access
+  requires [host-only exchange](agent-native-admin.md#host-only-session-exchange).
+  Google does not support native access; OIDC supports it with shared cookies.
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;

@@ -123,9 +123,6 @@ export async function composePostgresDevelopment(
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
   }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
-  }
 
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
@@ -197,11 +194,9 @@ export async function composePostgresDevelopment(
             onUnmatchedCallback: (provider) =>
               config.metrics!.observeUnmatchedSignInCallback(provider),
           }),
-      secureCookies: config.nativeAdmin?.enabled === true,
-      ...(config.nativeAdmin?.enabled === true &&
-      config.nativeAdmin.sessionMode !== "host-only-exchange"
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
+
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       ...(dependencies.passwordHasher === undefined
         ? {}
         : { passwordHasher: dependencies.passwordHasher }),

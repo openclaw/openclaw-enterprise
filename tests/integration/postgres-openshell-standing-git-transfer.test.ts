@@ -19,7 +19,7 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   OpenShellGitRuntime,
   openShellRepositoryAccess,

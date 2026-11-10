@@ -158,14 +158,14 @@ account and method checks and the State transaction. Password verification captu
 credential and account versions for the session transaction to recheck. Both methods
 pass a private proof to guarded session creation; session and audit commit before
 Better Auth releases the cookie. Session reads check the current account, method,
-version, and Principal; sessions expire after eight hours without refresh. HTTPS uses
-a `__Host-` cookie that sibling hosts cannot plant; session reads and logout reject
-duplicate active-session cookies.
+version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
+session reads and logout reject duplicates.
 
 For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
 `POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
 secret digests, provider instance, callback, and PKCE verifier. A host-only
-HttpOnly cookie binds the browser; this profile rejects shared-domain sessions.
+HttpOnly attempt cookie binds the browser. The eventual session cookie uses
+the shared Console and Agent domain.
 Callback consumption commits before exchange; a losing, expired, or invalid
 attempt does not exchange a code.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
@@ -236,15 +236,13 @@ properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
 and exit codes.
 
-Activation requires stopped admission, drained or terminated requests, and every
-old controller stopped; startup cannot fence live readers. Both PostgreSQL
-compositions require GitHub native administration to use
-[host-only exchange](../reference/agent-native-admin.md#host-only-session-exchange).
-Google and OIDC require native administration disabled.
-`apps/controller/src/auth/index.ts:createPostgresControllerAuth` constructs and
-initializes authentication before activation, checking the secret, canonical HTTP
-origin, and supported profile. Invalid static configuration leaves legacy sessions,
-account enrollment, and the recovery designation unchanged.
+Activation requires stopped admission, drained or terminated requests, and stopped
+old controllers; startup does not fence live readers. Both PostgreSQL compositions
+require host-only exchange for GitHub native access, reject Google native access,
+and permit OIDC native access with shared cookies.
+`apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
+canonical origin and profile before activation. Invalid configuration leaves
+sessions, enrollment and recovery designation unchanged.
 `PostgresHumanAuthentication.activateRecovery` then validates and enrolls the complete existing password-user/Principal population,
 fixes the usable recovery administrator, and removes unbound historical sessions
 in one State transaction before serving resumes. Unsupported or incomplete
