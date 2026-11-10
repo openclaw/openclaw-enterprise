@@ -18,6 +18,7 @@ const signals = new Set(Object.keys(constants.signals));
 const outcomes = new Set(["exit", "signal", "cancelled", "deadline", "transport"]);
 const failedOperations = new WeakMap();
 const kubectlOutcomes = new WeakMap();
+const custodyOutcomes = new WeakMap();
 export const nativeFailureMarker = "OCC_NATIVE_FAILURE_V1 ";
 const acknowledgementsByPhase = new Map([
   ["connect", [null]],
@@ -344,6 +345,48 @@ export function rememberKubectlOutcome(
   return error;
 }
 
+// A fixed projection of observer-owned counters; supplier strings and request
+// IDs never become diagnostic fields, even when validation rejects a log entry.
+export function rememberCustodyOutcome(error, value) {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  const count = (number) =>
+    Number.isSafeInteger(number) && number >= 0 && number <= 2000 ? number : null;
+  const choice = (value, allowed) => (allowed.includes(value) ? value : "unknown");
+  const labels = new Set([
+    "resolve_accepted",
+    "resolve_no_material_accepted",
+    "resolve_refused",
+    "permit_accepted",
+    "permit_no_material_accepted",
+    "no_permit",
+    "response_released",
+    "response_blocked",
+    "response_delivery_incomplete",
+  ]);
+  custodyOutcomes.set(error, {
+    readAttempts: count(value.readAttempts),
+    successfulReads: count(value.successfulReads),
+    lastRead: choice(value.lastRead, ["pending", "returned", "deadline", "error"]),
+    ring: choice(value.ring, [
+      "unobserved",
+      "valid",
+      "incomplete",
+      "prefix-disappeared",
+      "prefix-changed",
+      "foreign-sandbox",
+      "invalid-transition",
+    ]),
+    lineCount: count(value.lineCount),
+    bufferTotal: count(value.bufferTotal),
+    freshCount: count(value.freshCount),
+    labels: value.labels.filter((label) => labels.has(label)).slice(0, 9),
+    sequence: choice(value.sequence, ["unobserved", "none", "partial", "complete", "invalid"]),
+  });
+  return error;
+}
+
 // The test owns stage through its checkpoints. Error payloads cannot choose it.
 export async function safeConnectedFailure(error, stage, recordFailure) {
   // Only fixed source names and bounded V8 coordinates can reach the reporter.
@@ -356,6 +399,7 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const { operation = null, nativeTurnResult } = failedOperations.get(error) ?? {};
   const local = kubectlOutcomes.get(error);
   const kubectl = local?.kubectl ?? null;
+  const custody = custodyOutcomes.get(error);
   const nativeExec = operation === "gateway-codex-exec" ? local?.nativeExec : undefined;
   if (operation !== null || kubectl !== null) {
     try {
@@ -364,6 +408,7 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
         operation,
         kubectl,
         ...(nativeExec && { nativeExec }),
+        ...(custody && { custody }),
         ...(nativeTurnResult && { nativeTurnResult }),
       });
     } catch {
@@ -373,8 +418,9 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const step = operation === null ? "" : ` / ${operation}`;
   const process = kubectl === null ? "" : ` kubectl=${JSON.stringify(kubectl)}`;
   const native = nativeExec === undefined ? "" : ` nativeExec=${JSON.stringify(nativeExec)}`;
+  const observed = custody ? ` custody=${JSON.stringify(custody)}` : "";
   const turn = nativeTurnResult ? ` nativeTurnResult=${JSON.stringify(nativeTurnResult)}` : "";
   return new Error(
-    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}${native}${turn}; inspect the per-run ledger`,
+    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}${native}${turn}${observed}; inspect the per-run ledger`,
   );
 }

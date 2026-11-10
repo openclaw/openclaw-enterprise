@@ -233,11 +233,9 @@ cluster or model runtime and supplies no installation receipt.
 
 ## Select the prepared connected lane
 
-Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the manual `egress-connected` lane, outside CI/GitHub dispatch.
-Use an owner accepting fresh sources, or the
-[A-to-B procedure](static-egress-upgrade.md) for bundled retirement.
-Use authenticated controllers.
+Run [the test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
+via manual `egress-connected`, outside CI. Authenticated controllers must accept
+fresh sources, or use [A-to-B](static-egress-upgrade.md) for bundled retirement.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
 NetworkPolicies and the [OpenShell prerequisites](openshell.md).
@@ -248,6 +246,10 @@ Select immutable product and supplier images agreeing on physical namespace
 mapping, loaded-enforcement readiness, finite Responses protection and zero
 automatic retries, including the startup probe. Missing contracts and legacy
 gateway-copy setups cannot qualify.
+
+Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.mjs)
+to its image receipt. Reject missing producer code; source presence,
+enforcement capabilities and native replies cannot prove installed delivery.
 
 Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute private JSON path.
 The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing inputs:
@@ -350,12 +352,14 @@ no partial assistant output and private `response_blocked` evidence. Leak checks
 cover Agent/Codex environments, responses, logs, diagnostics, audit, Pod specs
 and ConfigMaps.
 
-Each controller attempt records its operation ID and uncertain outcome; a response
-alone does not prove effects. Failures retain the operation and `failure.kubectl`.
-`failure.nativeExec` is `recorded`, `absent` or `invalid`; frames include client
-step, last acknowledged RPC, failure site, URL shape and token-presence boolean.
-Absent frames leave startup uncertain; Pod declarations do not prove effective
-inputs. Errors omit raw output. Deployment records public owner capability.
+Controller attempts record operation IDs and uncertain outcomes; responses alone
+do not prove effects. Failures retain the operation and `failure.kubectl`.
+`failure.nativeExec` records bounded client progress, or `absent`/`invalid`; absent
+frames leave startup uncertain. Pod declarations do not prove effective inputs.
+`failure.custody` retains bounded read/ring counts, fixed failure categories and
+known transition labels without payloads/IDs. Failed reads preserve
+prior ring/sequence. Missing events are not `no_permit`. Errors omit raw output.
+Deployment records public owner capability.
 
 Cleanup deletes owned Agents, confirms API/Sandbox/Pod absence, removes supporting
 resources and closes the provider. Reconcile missing Sandbox identities and

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
   deploymentErrorForWork,
@@ -1014,11 +1015,17 @@ test("connected turn failure receipts distinguish custody reads from the local k
         assert.equal(beforeCleanup.failure, undefined);
         await rm(evidence.directory + "/observations.pending.json", { recursive: true });
       } else {
-        assert.deepEqual(beforeCleanup.failure, expected, "failure is durable before cleanup");
+        const { custody: _custody, ...failure } = beforeCleanup.failure;
+        assert.deepEqual(failure, expected, "failure is durable before cleanup");
       }
       await evidence.checkpoint("cleanup");
       const raw = await readFile(observations, "utf8");
-      assert.deepEqual(JSON.parse(raw).failure, expected, "cleanup preserves the original failure");
+      const { custody: observedCustody, ...failure } = JSON.parse(raw).failure;
+      assert.deepEqual(failure, expected, "cleanup preserves the original failure");
+      assert.equal(observedCustody !== undefined, !item.pod);
+      if (!item.writeFailure) {
+        assert.deepEqual(JSON.parse(raw).failure, beforeCleanup.failure);
+      }
       assert.equal(raw.includes(marker), false);
     }
   });
@@ -1976,4 +1983,137 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
       ),
     { name: "AssertionError", message: /conflicting accepted session event/ },
   );
+});
+
+// Scripted log replies exercise the real observer and terminal projection, not
+// supplier emission or delivery. A final read failure must retain prior evidence.
+test("custody failures retain bounded last observations without supplier payloads", async (t) => {
+  const marker = "PRIVATE-CUSTODY-DIAGNOSTIC-SENTINEL";
+  const sandboxId = "sandbox-observation";
+  const supervisor = {
+    metadata: {
+      uid: "supervisor-uid",
+      namespace: "workspace",
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: { containerStatuses: [{ containerID: "container-id", restartCount: 0 }] },
+  };
+  const line = {
+    sandboxId,
+    source: "sandbox",
+    level: "INFO",
+    target: "openshell_supervisor_network::l7::rest::credentials",
+    message: "Protected response custody transition",
+    fields: {
+      request_id: "aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
+      response_custody_event: "resolve_accepted",
+      private: marker,
+    },
+  };
+  await t.test("non-Error rejection stays unchanged", async () => {
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw marker;
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(custody.snapshot(), (error) => error === marker);
+  });
+  for (const kind of ["empty", "partial", "ring", "malformed"]) {
+    await t.test(kind, async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions(
+        {
+          workspace: "workspace",
+          sandbox: "sandbox",
+          sandboxId,
+          supervisor,
+          readSupervisor: async () => supervisor,
+          gatewayClient: {
+            async getSandboxLogs(_request, signal) {
+              reads++;
+              if (reads === 1) {
+                return { lines: [], bufferTotal: 0 };
+              }
+              if (reads === 2) {
+                if (kind === "ring") {
+                  return { lines: [line], bufferTotal: 2001 };
+                }
+                if (kind === "malformed") {
+                  return {
+                    lines: [
+                      { ...line, fields: { ...line.fields, response_custody_event: marker } },
+                    ],
+                    bufferTotal: 1,
+                  };
+                }
+                return {
+                  lines: kind === "partial" ? [line] : [],
+                  bufferTotal: kind === "partial" ? 1 : 0,
+                };
+              }
+              try {
+                await delay(10000, undefined, { signal });
+              } catch {
+                throw signal.reason;
+              }
+              throw new Error("deadline did not abort the scripted read");
+            },
+          },
+        },
+        { deliveryTimeoutMs: 1000, pollIntervalMs: 1 },
+      );
+      const before = await custody.snapshot();
+      let recorded;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            const safe = await safeConnectedFailure(error, "turn-result", async (value) => {
+              recorded = value;
+            });
+            assert.equal(safe.message.includes(marker), false);
+            assert.equal(safe.cause, undefined);
+            throw safe;
+          }
+        },
+        {
+          message:
+            /Connected egress (?:assertion|operation) failed at turn-result \/ after-custody-log-read/,
+        },
+      );
+      assert.equal(recorded.custody.successfulReads, 2);
+      assert.equal(recorded.custody.readAttempts, kind === "empty" || kind === "partial" ? 3 : 2);
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+      assert.equal(JSON.stringify(recorded).includes(line.fields.request_id), false);
+      if (kind === "empty" || kind === "partial") {
+        assert.equal(recorded.custody.lastRead, "deadline");
+        assert.equal(recorded.custody.ring, "valid");
+        assert.equal(recorded.custody.lineCount, kind === "partial" ? 1 : 0);
+        assert.equal(recorded.custody.sequence, kind === "partial" ? "partial" : "none");
+        assert.deepEqual(recorded.custody.labels, kind === "partial" ? ["resolve_accepted"] : []);
+      } else {
+        assert.equal(recorded.custody.lastRead, "returned");
+        assert.equal(recorded.custody.ring, kind === "ring" ? "incomplete" : "invalid-transition");
+        assert.equal(recorded.custody.sequence, "unobserved");
+        assert.equal(recorded.custody.bufferTotal, kind === "ring" ? null : 1);
+      }
+    });
+  }
 });
