@@ -234,13 +234,7 @@ function configuration(env) {
     }
   }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
-  const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
-  if (!["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
-    throw new Error(
-      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
-    );
-  }
-  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain, sessionMode };
+  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain };
 
   const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
   let parsedAuthBaseURL;

@@ -193,8 +193,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
-{{- $nativeSessionMode := .Values.agentNativeAdmin.sessionMode -}}
-{{- if not (has $nativeSessionMode (list "shared-cookie" "host-only-exchange")) -}}{{- fail "agentNativeAdmin.sessionMode must be shared-cookie or host-only-exchange" -}}{{- end -}}
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -295,11 +293,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for browser sessions" -}}{{- end -}}
 {{- $cookieDomain := include "openclaw.sharedCookieDomain" . -}}
 {{- if lt (len (splitList "." $cookieDomain)) 2 -}}{{- fail "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix" -}}{{- end -}}
-{{- if eq $nativeSessionMode "host-only-exchange" -}}
-{{- if or (not .Values.auth.oidc.enabled) .Values.auth.google.enabled -}}{{- fail "agentNativeAdmin host-only-exchange requires guarded OIDC sign-in without Google" -}}{{- end -}}
-{{- if .Values.gatewayRouting.sandbox.enabled -}}{{- fail "agentNativeAdmin host-only-exchange does not support sandbox preview" -}}{{- end -}}
-{{- /* API startup validates the registrable site with the public suffix list. */ -}}
-{{- end -}}
 {{- if and .Values.agentNativeAdmin.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "agentNativeAdmin.enabled requires gatewayRouting.enabled so the API can reach private Agent gateways" -}}{{- end -}}
 {{- /* The bootstrap Job refuses plain HTTP unless the host is 127.0.0.1, localhost, or ::1. Helm reads http://[::1] as hostname ::1. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost" "::1"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost or ::1; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}

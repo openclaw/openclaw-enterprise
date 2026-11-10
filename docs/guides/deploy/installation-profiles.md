@@ -211,9 +211,8 @@ Activation of Google or OIDC sign-in is one-way, so keep the selected provider i
 later renders. `controlPlane.google: {}` uses the chart's Secret defaults.
 `controlPlane.oidc` requires `issuer`, `authorizationUrl`, `tokenUrl` and `jwksUrl`;
 see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
-existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
-set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
-same-site HTTPS Console and Agent domains.
+existing `recoveryUserId`. Google disables native access; OIDC supports it with
+[shared browser sessions](../../reference/authentication.md#native-admin-shared-sessions).
 
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including

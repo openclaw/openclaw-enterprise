@@ -448,12 +448,12 @@ export async function verifyOpenShellOwnerSession({
   await grant(account.principalId, "namespace", namespaceId, ["read"]);
   const guardedAccess = await api("GET", agentPath + "/native-admin");
   assert.equal(guardedAccess.status, "available");
-  assert.equal(guardedAccess.sessionMode, "host-only-exchange");
+  assert.equal(guardedAccess.sessionMode, undefined);
   assert.equal(guardedAccess.origin, origin);
 
   const receiptPath =
     process.env.OCC_TEST_NATIVE_BROWSER_RECEIPT ||
-    join(await mkdtemp(join(tmpdir(), "oce-native-host-only-real-")), "receipt.json");
+    join(await mkdtemp(join(tmpdir(), "oce-native-oidc-real-")), "receipt.json");
   const guarded = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => guarded.close());
   await guarded.route("**/*", (route) =>
@@ -495,10 +495,14 @@ export async function verifyOpenShellOwnerSession({
   const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
   assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
   const parent = (await guarded.cookies(consoleOrigin)).find(
-    (cookie) => cookie.name === oidc.parentCookieName,
+    (cookie) => cookie.name === "__Secure-openclaw_occ_shared.session_token",
   );
   assert.ok(parent?.secure && parent.httpOnly);
-  assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
+  assert.equal(
+    parent.domain,
+    `.${cluster}.oce.localhost`,
+    "OIDC uses the derived shared cookie scope",
+  );
   await consolePage.goto(
     `${consoleOrigin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=${rev.id}`,
   );
@@ -529,7 +533,7 @@ export async function verifyOpenShellOwnerSession({
     );
   }
   async function launch() {
-    const popup = consolePage.waitForEvent("popup");
+    const popup = guarded.waitForEvent("page");
     await consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click();
     const page = await popup;
     await hello(page);
@@ -539,13 +543,13 @@ export async function verifyOpenShellOwnerSession({
     return page;
   }
   const first = await launch();
-  assert.ok(!(await guarded.cookies(origin)).some((cookie) => cookie.name === parent.name));
-  const handle = (await guarded.cookies(origin)).find(
-    (cookie) => cookie.name === "__Host-occ_agent_access",
+  const agentCookies = await guarded.cookies(origin);
+  assert.deepEqual(
+    agentCookies.find((cookie) => cookie.name === parent.name),
+    parent,
   );
-  assert.ok(handle?.secure && handle.httpOnly && handle.sameSite === "Strict");
-  assert.equal(handle.domain, host);
-  const marker = "host-only-" + randomUUID();
+  assert.ok(!agentCookies.some((cookie) => cookie.name === "__Host-occ_agent_access"));
+  const marker = "oidc-shared-" + randomUUID();
   const terminal = await submitChatTurnWithAssistantProof(first, marker, received, waitFor);
   assert.equal(terminal.page, first);
   assert.ok(!terminal.socket.isClosed());
@@ -555,7 +559,7 @@ export async function verifyOpenShellOwnerSession({
   assert.match(new URL(conversation).pathname, /^\/chat\//);
   assert.equal(sends.length, 1, "one real turn was submitted");
 
-  // A repeated exchange for the same binding must preserve the first tab's
+  // Opening the same Agent again must preserve the first tab's
   // already-authorized socket through its next renewal.
   const second = await launch();
   const beforeReopen = received.length;
@@ -590,7 +594,7 @@ export async function verifyOpenShellOwnerSession({
   assert.ok((await signedOut).ok());
   await closed;
   const refused = await second.goto(origin + "/settings/advanced");
-  assert.equal(refused.status(), 403, "a revoked parent cannot reuse its native handle");
+  assert.equal(refused.status(), 403, "a revoked session cannot open the Agent");
   assert.equal(sends.length, 1);
   await guarded.close();
   const source = await execute("git", ["rev-parse", "HEAD"], { cwd: import.meta.dirname });
@@ -627,6 +631,6 @@ export async function verifyOpenShellOwnerSession({
   );
   t.diagnostic(`Guarded native browser receipt: ${receiptPath}`);
   t.diagnostic(
-    "Guarded OIDC provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
+    "Guarded OIDC provider fixture: shared-cookie browser access, real Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
   );
 }

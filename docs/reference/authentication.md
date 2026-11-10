@@ -228,15 +228,12 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 
 ## Native admin shared sessions
 
-By default, browser sessions use one shared cookie scope, including when native Agent
+Browser sessions use one shared cookie scope, including when native Agent
 access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
 OCC derives their longest common DNS-label suffix and rejects IP literals,
 missing or unrelated hosts, public suffixes, and malformed DNS names. For
 `console.oce.example.com` and `agents.oce.example.com`, the scope is
-`oce.example.com`. There is no cookie-domain override. Guarded OIDC can instead select the
-[host-only exchange](agent-native-admin.md#host-only-session-exchange): the
-Console cookie stays on its host, and the Agent receives a revocable handle
-bound to the parent session. The exchange creates no account or grant.
+`oce.example.com`. There is no cookie-domain override.
 
 Every host that receives this domain cookie must be a trusted OCE ingress
 endpoint. Public preview hosts must remain outside it. The cookie uses

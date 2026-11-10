@@ -104,8 +104,6 @@ auth:
 
 agentNativeAdmin:
   enabled: false
-  # host-only-exchange is an explicit opt-in for guarded OIDC sign-in.
-  sessionMode: shared-cookie
   # Required even when browser access is disabled; shares a non-public DNS suffix
   # with auth.baseUrl for automatically scoped browser session cookies.
   domain: ""
