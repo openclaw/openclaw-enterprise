@@ -53,6 +53,7 @@ import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
+  validateOpenShellSelection,
 } from "./openshell.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -3070,6 +3071,11 @@ async function prepareLane({ lane, statePath, file }) {
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  // The lane receives source inputs. File preparation later receives its
+  // chart paths and imported image references through the prepared environment.
+  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+    await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {

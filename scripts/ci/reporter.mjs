@@ -1,3 +1,8 @@
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
 import {
   openShellGitRetentionKind,
@@ -195,24 +200,8 @@ function safeMeasurement(value) {
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
+      !openShellProgress({ kind: value.kind, stage: value.stage, outcome: value.outcome }) ||
+      value.stage === "exposure-auth" ||
       !["passed", "failed"].includes(value.outcome) ||
       !Number.isInteger(value.elapsedMs) ||
       value.elapsedMs < 0 ||
@@ -1637,14 +1626,43 @@ function outputTail() {
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
+  // A blank before a marker is its separator, even across chunks or stderr.
+  // Keep its position, but do not let it evict an ordinary line until classified.
+  let pendingStdoutBlank;
+  const settleStdoutBlank = () => {
+    if (pendingStdoutBlank?.index < 0) {
+      omitted += 1;
+    }
+    pendingStdoutBlank = undefined;
+  };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
-    if (lines.length > limit) {
-      omitted += lines.length - outputTailLines;
-      lines.splice(0, lines.length - outputTailLines);
+    const pendingIndex = pendingStdoutBlank?.index ?? -1;
+    const count = lines.length - Number(pendingIndex >= 0);
+    if (count > limit) {
+      const excess = count - outputTailLines;
+      const removed = excess + Number(pendingIndex >= 0 && pendingIndex < excess);
+      omitted += excess;
+      lines.splice(0, removed);
+      if (pendingStdoutBlank) {
+        pendingStdoutBlank.index -= removed;
+      }
     }
   };
   const push = (line) => {
+    if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      if (pendingStdoutBlank?.index >= 0) {
+        lines.splice(pendingStdoutBlank.index, 1);
+      }
+      pendingStdoutBlank = undefined;
+      return;
+    }
+    if (line.startsWith("stdout: ")) {
+      settleStdoutBlank();
+      if (line === "stdout: ") {
+        pendingStdoutBlank = { index: lines.length };
+      }
+    }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
   };
@@ -1680,6 +1698,7 @@ function outputTail() {
           push(`${stream}: ${partial[stream]}`);
         }
       }
+      settleStdoutBlank();
       trim(outputTailLines);
       return { lines, omitted };
     },
@@ -1775,6 +1794,20 @@ function location(data = {}) {
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
   const output = outputTail();
+  const progress = [];
+  const readProgress = boundedProgressLines((line) => {
+    if (!line.startsWith(openShellProgressPrefix)) {
+      return;
+    }
+    try {
+      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+      if (value) {
+        progress.push(value);
+      }
+    } catch {
+      // Invalid progress never becomes raw failure output.
+    }
+  });
   let failed = false;
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
@@ -1818,6 +1851,12 @@ export default async function* jsonLinesReporter(source) {
     }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
+        if (event.type === "test:stdout") {
+          readProgress(event.data.message);
+          for (const value of progress.splice(0)) {
+            yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
+          }
+        }
         output.add(event.type.slice(5), event.data.message);
       }
       continue;

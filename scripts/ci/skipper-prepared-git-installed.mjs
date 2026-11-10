@@ -360,6 +360,22 @@ try {
       } else {
         console.error("Synthetic model completion diagnostics unavailable.");
       }
+      const { nativePolls, nativeStatus, nativeExitCode, nativeSessionPresent } = completion;
+      if (
+        Number.isSafeInteger(nativePolls) &&
+        nativePolls >= 0 &&
+        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
+        typeof nativeSessionPresent === "boolean"
+      ) {
+        console.error(
+          "Native command status=%s, exit=%s, session present=%s, polls=%d.",
+          nativeStatus,
+          nativeExitCode,
+          nativeSessionPresent,
+          nativePolls,
+        );
+      }
     }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
