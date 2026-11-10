@@ -41,7 +41,8 @@ from the read-only cache. The real installer still builds from the checkout, wit
 the same builder and automatic engine loading. Hosted installer children also
 use preparation's fixed `SOURCE_DATE_EPOCH=0`; otherwise [BuildKit invalidates
 WORKDIR and subsequent cache entries](https://docs.docker.com/build/cache/invalidation/#workdir-and-source_date_epoch). Local installation and QA-matrix jobs use the
-same approach. Source-build preparation materializes layers on that builder even when the
+same approach for a selected source-build file or a whole lane containing one.
+Source-build preparation materializes layers on that builder even when the
 host engine already holds an identical image. The model-provider installation
 fixture uses the same selected builder for its checkout images. Cache credentials
 are not passed to tests. Other OpenShell files
@@ -117,6 +118,17 @@ A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
 only. Final timing receipts and test results remain the completion evidence.
 
+For canonical `openshell` and split `openshell-policy` runs, inspect
+`files[].installationPhases` in the lane result artifact for workspace Helm,
+gateway Helm and gateway Pod readiness intervals. These records do not appear
+in the live log. Each interval identifies its invocation, entry offset and
+outcome; a settled interval also has elapsed milliseconds. An entered phase
+without a terminal record remains `unknown`, including after interruption.
+The receipt retains up to eight invocations (24 intervals). The ninth invocation
+emits one workspace-entry marker that sets `truncated` if received; later
+invocations still run but emit no installation records. These intervals do not
+establish model execution or whole-file success.
+
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.
@@ -147,6 +159,19 @@ deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
+
+`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+classifies public placement errors and projects environment/tunnel states, node
+connection and capability counts, and exact workspace-node matches. The expected
+node comes from the selected revision's Gateway Pod. Failure reads of
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget. A matching session response is labeled `fresh`. If the refresh fails,
+placement is labeled `fallback` when an earlier observation exists, or `absent`
+otherwise.
+`scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+booleans and counters again. Raw errors and identifiers do not enter the record.
+Public RPCs do not expose workspace-binding readiness or restoration; a workspace
+reference does not prove either state.
 
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history

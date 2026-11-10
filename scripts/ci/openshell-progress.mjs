@@ -1,3 +1,5 @@
+import { installationPhase } from "./openshell-installation-phase.ts";
+
 export const openShellProgressPrefix = "openclaw-ci-progress ";
 
 const openShellStages = new Set([
@@ -22,6 +24,9 @@ const openShellStages = new Set([
 // A live log carries only fixed categories. Reject extra fields rather than
 // accidentally turning this channel into an arbitrary diagnostic transport.
 export function openShellProgress(value) {
+  if (value?.kind === "openshell-installation") {
+    return installationPhase(value);
+  }
   if (
     !value ||
     typeof value !== "object" ||

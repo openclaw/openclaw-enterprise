@@ -141,6 +141,14 @@ test("artifact qualification refuses routes that widen destination, process, wri
     ["audit only", { ...original, endpoints: [{ ...endpoint, enforcement: "audit" }] }],
     ["write access", { ...original, endpoints: [{ ...endpoint, access: "read_write" }] }],
     ["another process", { ...original, binaries: [{ path: "/usr/bin/curl" }] }],
+    [
+      "package registry for a non-Codex executable",
+      {
+        ...original,
+        binaries: [{ path: "/usr/local/bin/node" }],
+        endpoints: [{ ...endpoint, host: "registry.npmjs.org" }],
+      },
+    ],
   ];
   for (const [name, rule] of cases) {
     await t.test(name, (context) => {

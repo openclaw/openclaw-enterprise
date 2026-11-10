@@ -25,20 +25,20 @@
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
-    "tests/integration/presets-controller.test.mjs",
+    "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.mjs",
     "tests/integration/openshell-plugin-source-reader.test.ts",
-    "tests/integration/runtime-credentials-api.test.mjs",
+    "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
-    "tests/conformance/kubernetes-preflight.test.mjs",
+    "tests/conformance/kubernetes-preflight.test.ts",
     "tests/conformance/kubernetes-client.test.mjs",
-    "tests/conformance/kubernetes-api-read.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
-    "tests/conformance/workspace-files.test.mjs",
+    "tests/conformance/workspace-files.test.ts",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/openshell-device-authorization-api.test.mjs",
@@ -51,16 +51,16 @@
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
-    "tests/integration/service-api-keys.test.mjs",
+    "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.mjs",
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
-    "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
-    "tests/conformance/update-contributors.test.mjs",
-    "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/update-contributors.test.ts",
+    "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -70,36 +70,36 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/integration/bootstrap-volume.test.mjs",
+    "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
     "tests/conformance/occ-read.test.mjs",
     "tests/integration/controller-lifecycle.test.mjs",
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
-    "tests/conformance/kubernetes-real-kubectl.test.mjs",
-    "tests/conformance/k3d-failure-diagnostics.test.mjs",
+    "tests/conformance/kubernetes-real-kubectl.test.ts",
+    "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.mjs",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
-    "tests/conformance/runtime-logs-replay.test.mjs",
+    "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.mjs",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
-    "tests/conformance/presets.test.mjs",
+    "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.mjs",
     "tests/conformance/pr-status.test.ts",
-    "tests/conformance/codex-stderr-filter.test.mjs",
+    "tests/conformance/codex-stderr-filter.test.ts",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
-    "tests/conformance/utils.test.mjs",
+    "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.ts",
@@ -109,10 +109,10 @@
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/console-gateway-safety.test.ts",
-    "tests/conformance/grafana-overview-dashboard.test.mjs",
-    "tests/conformance/split-layout-tenants.test.mjs",
-    "tests/conformance/split-layout-adopt.test.mjs",
-    "tests/conformance/url-authority.test.mjs",
+    "tests/conformance/grafana-overview-dashboard.test.ts",
+    "tests/conformance/split-layout-tenants.test.ts",
+    "tests/conformance/split-layout-adopt.test.ts",
+    "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
@@ -154,7 +154,7 @@
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
-      "path": "tests/conformance/filesystem-configuration.test.mjs"
+      "path": "tests/conformance/filesystem-configuration.test.ts"
     },
     {
       "path": "tests/conformance/console-agent-name-runs.test.ts"
@@ -178,7 +178,7 @@
       "path": "tests/conformance/contracts.test.mjs"
     },
     {
-      "path": "tests/conformance/update-contributors.test.mjs"
+      "path": "tests/conformance/update-contributors.test.ts"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"
@@ -202,7 +202,7 @@
       "path": "tests/conformance/docker-compute.test.mjs"
     },
     {
-      "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
+      "path": "tests/conformance/grafana-overview-dashboard.test.ts"
     },
     {
       "path": "tests/conformance/iam.test.mjs"
@@ -223,7 +223,7 @@
       "path": "tests/conformance/node-enrollment-client.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-preflight.test.mjs"
+      "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-client.test.mjs"
@@ -232,13 +232,13 @@
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+      "path": "tests/conformance/kubernetes-real-kubectl.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-api-read.test.mjs"
+      "path": "tests/conformance/kubernetes-api-read.test.ts"
     },
     {
-      "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
+      "path": "tests/conformance/k3d-failure-diagnostics.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
@@ -263,10 +263,10 @@
       "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-logs-replay.test.mjs"
+      "path": "tests/conformance/runtime-logs-replay.test.ts"
     },
     {
-      "path": "tests/conformance/codex-stderr-filter.test.mjs"
+      "path": "tests/conformance/codex-stderr-filter.test.ts"
     },
     {
       "path": "tests/conformance/occ-read.test.mjs"
@@ -297,7 +297,7 @@
       "path": "tests/conformance/pr-status.test.ts"
     },
     {
-      "path": "tests/conformance/presets.test.mjs"
+      "path": "tests/conformance/presets.test.ts"
     },
     {
       "path": "tests/conformance/secret-gateway-delivery.test.mjs"
@@ -318,13 +318,13 @@
       "path": "tests/conformance/test-files.test.mjs"
     },
     {
-      "path": "tests/conformance/socket-directory.test.mjs"
+      "path": "tests/conformance/socket-directory.test.ts"
     },
     {
       "path": "tests/conformance/temporary-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/utils.test.mjs"
+      "path": "tests/conformance/utils.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-setup.test.ts"
@@ -333,13 +333,13 @@
       "path": "tests/conformance/workspace-files-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/workspace-files.test.mjs"
+      "path": "tests/conformance/workspace-files.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-supervisor.test.mjs"
     },
     {
-      "path": "tests/integration/presets-controller.test.mjs"
+      "path": "tests/integration/presets-controller.test.ts"
     },
     {
       "path": "tests/integration/profile-renderer.test.mjs",
@@ -362,7 +362,7 @@
       "path": "tests/integration/bootstrap-output.test.mjs"
     },
     {
-      "path": "tests/integration/bootstrap-volume.test.mjs"
+      "path": "tests/integration/bootstrap-volume.test.ts"
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
@@ -422,7 +422,7 @@
       "path": "tests/integration/production-healthcheck.test.mjs"
     },
     {
-      "path": "tests/integration/production-image-upgrade.test.mjs"
+      "path": "tests/integration/production-image-upgrade.test.ts"
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
@@ -455,13 +455,13 @@
       "path": "tests/integration/dependency-unavailable-log.test.mjs"
     },
     {
-      "path": "tests/integration/runtime-credentials-api.test.mjs"
+      "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
       "path": "tests/integration/secret-driver-startup.test.mjs"
     },
     {
-      "path": "tests/integration/service-api-keys.test.mjs"
+      "path": "tests/integration/service-api-keys.test.ts"
     },
     {
       "path": "tests/integration/startup-ipv6-loopback.test.mjs"
@@ -523,7 +523,7 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/native-rollout-provenance.test.mjs",
+      "path": "tests/conformance/native-rollout-provenance.test.ts",
       "expectedTests": [
         "native rollout diagnostics keep only the exact thread and turn policy",
         "native rollout diagnostics preserve uncertainty about opaque code-mode escalation",
@@ -533,13 +533,13 @@
       ]
     },
     {
-      "path": "tests/conformance/split-layout-tenants.test.mjs"
+      "path": "tests/conformance/split-layout-tenants.test.ts"
     },
     {
-      "path": "tests/conformance/split-layout-adopt.test.mjs"
+      "path": "tests/conformance/split-layout-adopt.test.ts"
     },
     {
-      "path": "tests/conformance/url-authority.test.mjs"
+      "path": "tests/conformance/url-authority.test.ts"
     },
     {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",

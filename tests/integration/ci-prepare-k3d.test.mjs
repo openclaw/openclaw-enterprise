@@ -100,16 +100,261 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
   await writeFixtureCommand(engine, "docker", server);
 }
 
+// Exercise the real preparation log projection with controlled command output;
+// these counters do not establish a remote cache hit or live BuildKit behavior.
+function imageCacheObservations(stderr, lane) {
+  const prefix = `[prepare:${lane}] `;
+  return stderr.split("\n").flatMap((line) => {
+    if (!line.startsWith(prefix + "{")) {
+      return [];
+    }
+    const record = JSON.parse(line.slice(prefix.length));
+    return record.stage === "image-cache" ? [record] : [];
+  });
+}
+
+function assertImageCacheObservations(stderr, lane) {
+  const records = imageCacheObservations(stderr, lane);
+  assert.equal(records.length, 4, "one summary per image and completed probe/load");
+  for (const role of ["controller", "runtime"]) {
+    assert.deepEqual(
+      records.filter((record) => record.role === role),
+      ["probe", "load"].map((phase) => ({
+        stage: "image-cache",
+        role,
+        phase,
+        cacheImports: phase === "probe" ? 1 : 0,
+        cachedSteps: phase === "probe" ? 2 : 3,
+        openclawBuildSteps: 2,
+        openclawBuildCached: phase === "probe" ? 1 : 2,
+      })),
+    );
+  }
+  assert.doesNotMatch(
+    stderr,
+    /private-step|synthetic-build-command|synthetic-sibling-command|synthetic-build-output/,
+  );
+}
+
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
 describe("CI k3d preparation", { concurrency: true }, () => {
+  for (const lane of ["slack", "production-tui"]) {
+    test(`${lane} prepares checkout images with read-only BuildKit caches`, async (t) => {
+      const commands = await fixtureImageCommands(t, "cache-progress", lane, {
+        GITHUB_ACTIONS: "true",
+        OCC_CI_IMAGE_CACHE: "1",
+        ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+        ACTIONS_RESULTS_URL: "https://cache.example.test/",
+        NODE_BASE_IMAGE: nodeBaseImage,
+        ...(lane === "slack"
+          ? {
+              OCC_TEST_SLACK_CHANNEL_ID: "synthetic-channel",
+              OCC_TEST_SLACK_SENDER_BOT_TOKEN: "synthetic-sender",
+              SLACK_APP_TOKEN: "synthetic-app",
+              SLACK_BOT_TOKEN: "synthetic-bot",
+            }
+          : {
+              OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
+              OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
+            }),
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      });
+      // Stop at image import after both real preparation build commands. This
+      // proves cache selection, not Docker execution, cache hits, or model access.
+      let imports = 0;
+      await interceptFixtureDocker(t, commands, (args) => {
+        if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
+          imports += 1;
+          return "printf 'synthetic import stop\\n' >&2; exit 1";
+        }
+      });
+      const prepared = await commands.prepare();
+      assert.equal(prepared.status, 1);
+      assertStderrMatch(prepared.stderr, /synthetic import stop/);
+      assert.equal(imports, 1);
+      assertImageCacheObservations(prepared.stderr, lane);
+      const calls = await commands.commands();
+      const builds = calls.filter(({ args }) => args[0] === "buildx" && args[1] === "build");
+      assert.equal(builds.length, 4, "probe and load both checkout images");
+      for (const role of ["controller", "runtime"]) {
+        assertStderrMatch(
+          prepared.stderr,
+          new RegExp(`"stage":"${role}-image-reuse","outcome":"absent"`),
+        );
+        const roleBuilds = builds.filter(
+          ({ args }) => args.includes("--target") === (role === "controller"),
+        );
+        assert.equal(roleBuilds.filter(({ args }) => args.includes("--load")).length, 1, role);
+        assert.equal(
+          roleBuilds.filter(
+            ({ args }) =>
+              args[args.indexOf("--output") + 1] === "type=image,push=false,store=false",
+          ).length,
+          1,
+          role,
+        );
+      }
+      for (const { args } of builds) {
+        const role = args.includes("--target") ? "controller" : "runtime";
+        assert.equal(
+          args[args.indexOf("--cache-from") + 1],
+          `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
+        );
+        assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
+        assert.ok(args.includes("--progress=plain"));
+      }
+      assert.equal(
+        calls.some(({ args }) =>
+          args.some((arg) => arg === "--cache-to" || arg.startsWith("--cache-to=")),
+        ),
+        false,
+        "preparation must not export a cache, including in a separate build",
+      );
+      assert.equal(
+        calls.some(({ args }) => args[0] === "build"),
+        false,
+      );
+      assert.doesNotMatch(
+        JSON.stringify(calls) +
+          (await readFile(commands.statePath, "utf8")) +
+          prepared.stdout +
+          prepared.stderr,
+        /synthetic-cache-credential/,
+      );
+      await commands.cleanupSuccessfully();
+    });
+  }
+  test("Gateway Routing prepares checkout images with read-only BuildKit caches", async (t) => {
+    const commands = await fixtureImageCommands(t, "cache-progress", "gateway-routing", {
+      GITHUB_ACTIONS: "true",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    });
+    // Stop at image import after both real preparation build commands. This
+    // proves cache selection, not Docker execution, cache hits, or model access.
+    let imports = 0;
+    await interceptFixtureDocker(t, commands, (args) => {
+      if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
+        imports += 1;
+        return "printf 'synthetic import stop\\n' >&2; exit 1";
+      }
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    assertStderrMatch(prepared.stderr, /synthetic import stop/);
+    assert.equal(imports, 1);
+    assertImageCacheObservations(prepared.stderr, "gateway-routing");
+    const calls = await commands.commands();
+    const builds = calls.filter(
+      ({ command, args }) => command === "docker" && args[0] === "buildx" && args[1] === "build",
+    );
+    assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/);
+    assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/);
+    for (const target of [true, false]) {
+      const roleBuilds = builds.filter(({ args }) => args.includes("--target") === target);
+      assert.equal(roleBuilds.length, 2, "probe and load each checkout image");
+      assert.equal(roleBuilds.filter(({ args }) => args.includes("--load")).length, 1);
+      assert.equal(
+        roleBuilds.filter(({ args }) => args.includes("type=image,push=false,store=false")).length,
+        1,
+      );
+    }
+    for (const { args } of builds) {
+      const role = args.includes("--target") ? "controller" : "runtime";
+      assert.equal(
+        args[args.indexOf("--cache-from") + 1],
+        `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
+      );
+      assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
+      assert.ok(args.includes("--progress=plain"));
+    }
+    assert.equal(
+      calls.some(({ args }) =>
+        args.some((arg) => arg === "--cache-to" || arg.startsWith("--cache-to=")),
+      ),
+      false,
+      "preparation must not export a cache, including in a separate build",
+    );
+    assert.equal(
+      calls.some(({ args }) => args[0] === "build"),
+      false,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(calls) +
+        (await readFile(commands.statePath, "utf8")) +
+        prepared.stdout +
+        prepared.stderr,
+      /synthetic-cache-credential/,
+    );
+    await commands.cleanupSuccessfully();
+  });
+
+  test("alternate OpenClaw source preparation requests plain progress for runtime cache observations", async (t) => {
+    const source = await fixture(t);
+    await writeFile(join(source, "Dockerfile"), "FROM scratch AS native-build\n");
+    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
+      GITHUB_ACTIONS: "true",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      OCC_K3D_OPENCLAW_SOURCE: source,
+      OCC_K3D_OPENCLAW_COMMIT: "a".repeat(40),
+    });
+    // Stop after the real CLI has built both images, before importing into k3d.
+    // The external command is controlled; no Docker or source build is claimed.
+    await interceptFixtureDocker(t, commands, (args) => {
+      if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
+        return "printf 'synthetic import stop\\n' >&2; exit 1";
+      }
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    assertStderrMatch(prepared.stderr, /synthetic import stop/);
+    const builds = (await commands.commands()).filter(({ args }) =>
+      args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1"),
+    );
+    assert.equal(builds.length, 1);
+    assert.equal(builds[0].args.at(-1), source);
+    assert.ok(builds[0].args.includes("--progress=plain"));
+    assert.deepEqual(
+      imageCacheObservations(prepared.stderr, "gateway-routing").filter(
+        (record) => record.role === "runtime",
+      ),
+      [
+        {
+          stage: "image-cache",
+          role: "runtime",
+          phase: "load",
+          cacheImports: 0,
+          cachedSteps: 1,
+          openclawBuildSteps: 0,
+          openclawBuildCached: 0,
+        },
+      ],
+    );
+    assert.doesNotMatch(
+      prepared.stdout + prepared.stderr,
+      /synthetic-native-command|synthetic-cache-credential/,
+    );
+    await commands.cleanupSuccessfully();
+  });
+
   // Only external commands are substituted: the preparation CLI owns child deadlines,
   // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
   for (const stage of ["fixture-engine-version", "fixture-image-build"]) {
     test(`fixture preparation bounds ${stage} before publishing test inputs`, async (t) => {
       const version = stage === "fixture-engine-version";
       const commands = await fixtureImageCommands(t, "success", "k3d-fixture-network", {
-        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "1000" : "30000",
+        OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS: version ? "3000" : "30000",
         OPENCLAW_CI_COMMAND_KILL_GRACE_MS: version ? "3000" : "100",
         OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: "2000",
         // Invalid deadlines still need a finite engine-probe limit. The build uses
@@ -137,21 +382,31 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           // PostgreSQL shares the version probe. Its unmodified caller finishes
           // normally; no arrival-order assumption selects the fixture's child.
           const original = join(dirname(commands.statePath), "bin", "docker.mjs.original");
+          if (version) {
+            // Allow command-server startup on busy runners without booting another
+            // Node process just to record the probe. The real CLI still kills the
+            // fixture probe before this delay ends; PostgreSQL completes normally.
+            return (
+              `printf '%s\\n' "$$" >> ${bashString(pidFile)}; ` +
+              `printf '%s\\n' 'private build output' >&2; ` +
+              `"$__sleep" 6; exec ${bashString(original)} ${args.map(bashString).join(" ")}`
+            );
+          }
           const program = `
             const { appendFileSync } = require("node:fs");
             const { spawn, spawnSync } = require("node:child_process");
             appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
             process.stderr.write("private build output\\n");
-            if (!${version}) process.stderr.write(${JSON.stringify(buildOutput)});
-            const descendant = ${version} ? undefined : spawn(process.execPath, ["-e", ${JSON.stringify(`
+            process.stderr.write(${JSON.stringify(buildOutput)});
+            const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`
               require("node:fs").appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");
               process.on("SIGTERM", () => {});
               setTimeout(() => {}, 30_000);
             `)}], { stdio: "ignore" });
             setTimeout(() => {
-              descendant?.kill("SIGKILL");
+              descendant.kill("SIGKILL");
               process.exit(spawnSync(${JSON.stringify(original)}, ${JSON.stringify(args)}, { stdio: "inherit" }).status);
-            }, ${version ? 3000 : 10000});
+            }, 10000);
           `;
           return `exec ${bashString(process.execPath)} -e ${bashString(program)}`;
         }
@@ -198,8 +453,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           .find((line) => line.includes(`"stage":"${stage}","status":"failed"`));
         const { elapsedMs } = JSON.parse(failed.slice(failed.indexOf("{")));
         // A prompt child exit releases its supervisor; do not wait on a stale
-        // group number for the three-second escalation timer to fire.
-        assert.ok(elapsedMs < 3000, `prompt timeout settlement took ${elapsedMs} ms`);
+        // group number until the three-second escalation grace expires.
+        // Two seconds of scheduling margin still excludes deadline + full grace.
+        assert.ok(elapsedMs < 5000, `prompt timeout settlement took ${elapsedMs} ms`);
       }
       if (!version) {
         assertStderrMatch(

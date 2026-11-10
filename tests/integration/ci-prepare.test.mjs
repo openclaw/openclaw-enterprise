@@ -385,15 +385,34 @@ describe("CI preparation", { concurrency }, () => {
   for (const { scenario, error } of [
     { scenario: "success" },
     { scenario: "podman-success" },
+    { scenario: "docker-manifest" },
+    // An index digest can agree across nodes without identifying a platform image.
+    { scenario: "oci-index", error: /Imported.*does not identify an image manifest/ },
+    { scenario: "docker-manifest-list", error: /Imported.*does not identify an image manifest/ },
     { scenario: "delayed-overlay-route" },
     { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
     {
       scenario: "missing-alias",
-      error: /Unable to find imported OCC_TEST_KUBERNETES_IMAGE reference/,
+      error: /canonical image not found/,
     },
     { scenario: "missing-cri", error: /synthetic CRI image not found/ },
     { scenario: "missing-worker-cri", error: /synthetic CRI image not found/ },
     { scenario: "lagging-worker-cri" },
+    // A present image may still await the CRI label event, but missing retention
+    // must never publish successful offline workload inputs.
+    { scenario: "lagging-worker-pin" },
+    { scenario: "lagging-worker-missing-pin" },
+    // Malformed CRI fields are not delayed cache or pin observations.
+    { scenario: "string-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "mixed-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "malformed-worker-cri-pin", error: /CRI.*reported a malformed.*pin/ },
+    // The worker must independently match containerd even if CRI would agree.
+    {
+      scenario: "wrong-worker-containerd-digest",
+      error: /containerd.*does not match the imported.*digest/,
+    },
+    { scenario: "unpinned-worker-cri", error: /CRI.*did not report the imported.*image pinned/ },
+    { scenario: "wrong-worker-cri-digest", error: /CRI.*does not match the imported.*digest/ },
     { scenario: "absent-worker-cri", error: /level=fatal msg="no such image / },
     // A hung check fails at its own timeout (3 s here, so a busy runner does not trip the
     // host inspects that share it), never retried as a cache miss.
@@ -500,14 +519,23 @@ describe("CI preparation", { concurrency }, () => {
         preparation.filter(
           ({ args }) => args[1] === `k3d-${cluster.name}-${suffix}` && args[2] === "crictl",
         ).length;
-      // Only CRI's "no such image" answer waits for its event-fed cache; other
-      // CRI failures stay final on the first lookup.
+      // Cache misses and valid unpinned observations can lag containerd events;
+      // malformed fields and identity mismatches stay final on the first lookup.
       const expectedWorkerLookups = {
         "missing-worker-cri": 1,
         "lagging-worker-cri": 3,
+        "lagging-worker-pin": 3,
+        "lagging-worker-missing-pin": 3,
+        "string-worker-cri-digests": 1,
+        "mixed-worker-cri-digests": 1,
+        "malformed-worker-cri-pin": 1,
+        "wrong-worker-containerd-digest": 0,
+        "oci-index": 0,
+        "docker-manifest-list": 0,
+        "wrong-worker-cri-digest": 1,
         "hung-worker-cri": 1,
       }[scenario];
-      if (expectedWorkerLookups) {
+      if (expectedWorkerLookups !== undefined) {
         assert.equal(criLookups("agent-0"), expectedWorkerLookups);
       }
       if (scenario === "missing-cri") {
@@ -740,17 +768,35 @@ describe("CI preparation", { concurrency }, () => {
 
   // Only main's warm job exports: a lane export on main could land after a newer
   // commit's warm export and replace main's cache with older layers.
-  test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
+  test("image-building lanes restore read-only caches, on main pushes too", async (t) => {
     const source = JSON.parse(
       await readFile(join(repositoryRoot, "deploy/runtime/openclaw-source.json"), "utf8"),
     );
-    for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
-      const commands = await fixtureImageCommands(t, "success", "images-packaging", {
+    for (const [lane, event, scenario] of [
+      ...["pull_request", "merge_group", "workflow_dispatch", "push"].map((event) => [
+        "images-packaging",
+        event,
+        "success",
+      ]),
+      ["k3d-otel", "push", "save-failed"],
+    ]) {
+      const commands = await fixtureImageCommands(t, scenario, lane, {
         ...imageCacheEnv,
         GITHUB_EVENT_NAME: event,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
       });
       const prepared = await commands.prepare();
-      assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      if (lane === "k3d-otel") {
+        // Stop at image export after both real preparation builds, before routing
+        // downloads. This proves cache orchestration, not Docker or OTLP execution.
+        assert.equal(prepared.status, 1, prepared.stderr);
+        assert.match(prepared.stderr, /synthetic export failure/);
+        await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      } else {
+        assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      }
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
       assert.equal(builds.length, 2, event);
@@ -786,7 +832,7 @@ describe("CI preparation", { concurrency }, () => {
       assert.doesNotMatch(
         JSON.stringify(calls) +
           (await readFile(commands.statePath, "utf8")) +
-          (await readFile(commands.githubEnv, "utf8")) +
+          (prepared.status === 0 ? await readFile(commands.githubEnv, "utf8") : "") +
           prepared.stdout +
           prepared.stderr,
         /synthetic-cache-credential/,
@@ -797,33 +843,44 @@ describe("CI preparation", { concurrency }, () => {
   });
 
   test("installer preparation populates its builder even when the engine holds the images", async (t) => {
-    const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
-      ...imageCacheEnv,
-      NODE_BASE_IMAGE: packagingNodeBaseImage,
-      BUILDX_BUILDER: "owned-installer-builder",
-    });
-    const prepared = await commands.prepare([
-      "--selected-file",
-      "tests/integration/qa-matrix-real.test.mjs",
-    ]);
-    assert.equal(prepared.status, 0, prepared.stderr);
-    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
-    // The installer builds again from source on this builder; tagging an engine image
-    // cannot supply that builder's layers. This checks orchestration, not live image storage.
-    assert.equal(builds.length, 2);
-    assert.ok(builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")));
-    assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
-    assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
-    assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+    for (const file of [undefined, "tests/integration/qa-matrix-real.test.mjs"]) {
+      const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
+        ...imageCacheEnv,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        BUILDX_BUILDER: "owned-installer-builder",
+      });
+      // Full Integration selects the whole lane. It needs the same preparation as
+      // a focused file while retaining whole-lane accounting and installer builds.
+      const prepared = await commands.prepare(file ? ["--selected-file", file] : []);
+      assert.equal(prepared.status, 0, prepared.stderr);
+      const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+      // Tagging an engine image cannot supply this builder's layers. This proves
+      // orchestration, not live cache availability or installation performance.
+      assert.equal(builds.length, 2);
+      assert.ok(
+        builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")),
+      );
+      assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
+      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      assert.equal(state.selectedFile, file);
+      assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
+      assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
+      assert.equal(state.env.OCC_TEST_QA_RUNTIME_IMAGE, undefined);
+      assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+    }
   });
 
-  test("full OpenShell source builds require their selected builder before stack setup", async (t) => {
-    for (const lane of ["openshell-policy", "openshell-installers"]) {
+  test("whole-lane source builds require their selected builder before setup", async (t) => {
+    for (const [lane, view] of [
+      ["qa-matrix", "default"],
+      ["dev-up-k3d", "default"],
+      ["openshell", "default"],
+      ["openshell-policy", "full-integration"],
+      ["openshell-installers", "full-integration"],
+    ]) {
       const commands = await fixtureImageCommands(t, "engine-holds-images", lane, {
         ...imageCacheEnv,
-        OCC_CI_SUITE_VIEW: "full-integration",
+        OCC_CI_SUITE_VIEW: view,
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         CODEX_ACCESS_TOKEN: "synthetic-model-credential",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
@@ -2106,15 +2163,16 @@ assert.equal(commands, 0);
     }
   });
 
-  test("installer cache selection preserves source builds and the unselected manual lane", async (t) => {
+  test("installer cache selection covers whole lanes and preserves focused image selection", async (t) => {
     const action = loadYaml(
       await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
     );
     const select = action.runs.steps.find((step) => step.id === "image-mode");
     const root = await fixture(t);
     for (const [index, [lane, file, sourceBuild, firstAgent, view = "default"]] of [
-      ["dev-up-k3d", "", "false", "false"],
-      ["qa-matrix", "", "false", "false"],
+      ["dev-up-k3d", "", "true", "false"],
+      ["qa-matrix", "", "true", "false"],
+      ["openshell", "", "true", "false"],
       ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
       ["dev-up-k3d", "tests/integration/dev-up-k3d-keycloak-real.test.ts", "true", "false"],
       ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
@@ -2132,7 +2190,7 @@ assert.equal(commands, 0);
     ].entries()) {
       const output = join(root, `image-mode-${index}`);
       // Run the action's actual selector: confusing these paths can replace source-build proof
-      // with selected images, or require cache inputs the manual lane never supplied.
+      // with selected images, or leave whole-lane installer builds without a primed builder.
       const result = spawnSync("bash", ["-e", "-c", select.run], {
         cwd: repositoryRoot,
         env: {
@@ -2762,14 +2820,14 @@ process.exit(2);
     const laneTable = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
     assert.ok(laneTable, "ci.yml declares the CI Impact lane table");
     const fullIntegration = await readFile(
-      join(repositoryRoot, ".github/workflows/full-integration.yml"),
+      join(repositoryRoot, ".github/workflows/full-integration-execution.yml"),
       "utf8",
     );
     const toolProfiles = [
       ...JSON.parse(laneTable[1]).map(({ lane, profile }) => [`ci.yml ${lane}`, lane, profile]),
       ...[
         ...fullIntegration.matchAll(/- lane: ([a-z0-9-]+)\n\s+title: .*\n\s+profile: ([a-z]+)/g),
-      ].map(([, lane, profile]) => [`full-integration.yml ${lane}`, lane, profile]),
+      ].map(([, lane, profile]) => [`full-integration-execution.yml ${lane}`, lane, profile]),
     ];
     for (const [where, lane, profile] of toolProfiles) {
       if (manifest.lanes[lane]?.prepare?.codexSeccomp) {
@@ -2787,7 +2845,10 @@ process.exit(2);
     // so a channel-server outage fails every Compose QA run (finding 1056).
     const workflows = [
       [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
-      [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+      [
+        ".github/workflows/full-integration-execution.yml",
+        (workflow) => workflow.jobs["qa-matrix"].env,
+      ],
     ];
     for (const [path, env] of workflows) {
       const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));
@@ -3271,7 +3332,7 @@ if (args[0] === "pull") {
       assert.equal(result.status, 1, lane);
       assertStderrMatch(
         result.stderr,
-        /Runtime artifacts are supported only by the ordinary image lanes/,
+        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
         lane,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
