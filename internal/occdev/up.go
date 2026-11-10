@@ -33,14 +33,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return fmt.Errorf("%s is no longer supported; browser session cookies derive their domain from the Console and Agent hosts", key)
 		}
 	}
-	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	if sandboxDriver != "none" && sandboxDriver != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	profile := resolveProfile(r.env)
+	if err := profile.CheckSandboxDriver(); err != nil {
+		return err
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
-	if controlPlane != "compose" && controlPlane != "kubernetes" {
-		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
+	if err := profile.CheckControlPlane(); err != nil {
+		return err
 	}
+	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
