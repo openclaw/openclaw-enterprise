@@ -413,7 +413,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     await writeFixture();
     execFileSync(
       process.execPath,
-      ["--import", preload, "scripts/ci/container-resume.mjs", "publish", directory],
+      ["--import", preload, "scripts/ci/container-resume.ts", "publish", directory],
       { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] },
     );
     return parse(await readFile(join(directory, "publication.json"), "utf8"));

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   github,
   githubPages,
@@ -184,7 +185,7 @@ async function resume(directory: string | undefined, env: NodeJS.ProcessEnv) {
   return receipt;
 }
 
-export async function main() {
+async function main() {
   const [command, directory] = process.argv.slice(2);
   if (command === "validate") {
     const result = await verifyPreparation(process.env);
@@ -197,4 +198,11 @@ export async function main() {
   } else {
     throw new Error("Expected validate or publish.");
   }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }
