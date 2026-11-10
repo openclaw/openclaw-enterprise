@@ -6,10 +6,10 @@ author: kevinlin-openai
 
 # Proposal: Link an existing account during OIDC sign-in
 
-- **ID:** RFC-0033
+- **ID:** RFC-0034
 - **Created:** 2026-11-10
 - **Last updated:** 2026-11-10
-- **Implementation plan:** [RFC-0033 delivery](../plans/0033-oidc-account-linking.md)
+- **Implementation plan:** [RFC-0034 delivery](../plans/0034-oidc-account-linking.md)
 - **Related:** [Issue #5179](https://github.com/openclaw/openclaw-enterprise/issues/5179),
   [RFC-0032](0032-oidc-account-enrollment.md),
   [shipped enrollment implementation](https://github.com/openclaw/openclaw-enterprise/pull/5144)
@@ -46,7 +46,7 @@ Source baseline: `af35ce905`. The relevant owners are:
   `attachExternal` advances the account version, deletes its sessions, and audits
   a new attachment in one transaction.
 
-RFC-0033 changes RFC-0032's exclusion of self-service linking. It preserves that
+RFC-0034 changes RFC-0032's exclusion of self-service linking. It preserves that
 RFC's account-creation behavior and historical text.
 
 ## Goals and scope
@@ -251,7 +251,7 @@ unmatched-callback counters for requests that prove no attempt ownership.
 
 ## Acceptance Criteria
 
-The [delivery record](../plans/0033-oidc-account-linking.md#verification) records
+The [delivery record](../plans/0034-oidc-account-linking.md#verification) records
 implemented checks, real-provider proof, and remaining verification. Fixtures alone
 do not establish provider reauthentication or Agent chat.
 
@@ -289,7 +289,7 @@ do not establish provider reauthentication or Agent chat.
 
 ## Delivery and decisions for review
 
-The [implementation plan](../plans/0033-oidc-account-linking.md) covers configuration/profile/Helm parity, schema and transaction changes,
+The [implementation plan](../plans/0034-oidc-account-linking.md) covers configuration/profile/Helm parity, schema and transaction changes,
 HTTP/OpenAPI contracts, Console integration, and AC-1 through AC-6. Update the
 current authentication reference, OIDC guide, authentication flow, database/API
 cheat sheets, and testing guide with implementation. The implemented contract is recorded in the

@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0033-oidc-account-linking.md
+rfc: ../rfcs/0034-oidc-account-linking.md
 ---
 
 # Implementation plan: OIDC account linking
 
-- **ID:** RFC-0033
+- **ID:** RFC-0034
 - **Delivery status:** In progress
 - **Owner:** kevinlin-openai
-- **Authority:** [RFC-0033](../rfcs/0033-oidc-account-linking.md)
+- **Authority:** [RFC-0034](../rfcs/0034-oidc-account-linking.md)
 - **Source baseline:** `af35ce905`
 
 ## Outcome and scope

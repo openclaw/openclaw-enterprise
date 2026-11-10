@@ -1,18 +1,16 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-10"
-last_updated_session: authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e
+last_updated_session: "authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440"
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-Dedicated Codex uses prepared sessions;
-[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers authorize signed requests against live grants.
-See [mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+Codex uses prepared sessions; [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
+receives placeholders. Workers authorize signed requests against live grants.
+[Enrollment](../guides/repository-credentials/openshell-enrollment.md); [qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -94,66 +92,62 @@ graph TD
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
 `listRepositoryOptions` checks Namespace create or exact Agent update permission
-and Compute availability. Bundled listing uses the bound GitHub catalog;
-programmatic listing uses the registered Repo Driver. Stale owner results are
-rejected. Deploy checks the exact Harness. An empty Namespace catalog yields `[]`;
-absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
+and Compute availability. Bundled listings use the bound GitHub catalog. Programmatic
+listings use the registered Repo Driver. Both reject stale owner results. Deploy checks the exact Harness. Empty Namespace catalogs return `[]`.
+Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` requires the bound Installation policy for explicit and
-inherited saves, refusing mismatches. Without that binding it uses the registered
-Repo Driver. The database checks bindings. Only fresh, empty drafts tolerate a
-classified outage. The catalog omits sender metadata, credentials and provider descriptions.
+`repositorySettings` rejects explicit or inherited saves that mismatch bound
+Installation policy. Unbound saves use the registered Repo Driver. The database
+checks bindings. Only fresh, empty drafts tolerate classified outages. Catalogs
+omit sender metadata, credentials and provider descriptions.
 
-Save Configuration first; reuse it after known Agent rejections. Retry repository
-selection only after a successful reload and nonempty selection. After unknown
-outcomes, read the stored Agent and Configuration.
+Save Configuration first. Known Agent rejection permits reuse. Retry only after
+successful reload and nonempty repository selection. Resolve unknown outcomes by
+reading stored Agent and Configuration.
 
 Requests carry refs and optional profiles, never tokens or grant IDs.
-Nonempty selections without a bound built-in policy or selected Repo Driver return `409 RESOURCE_CONFLICT`.
-OCC preserves selection order. GitHub defaults legacy profiles to `git-write`
-without provider or control-socket calls.
+Without bound built-in policy or a selected Repo Driver, nonempty selections return
+`409 RESOURCE_CONFLICT`. OCC preserves order. GitHub defaults legacy profiles
+to `git-write` without provider or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
-requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
+requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
 installation, repository, duration, full Namespace profile policy, exact permissions
-and optional normalized push-ref allowlist. One grant per binding; installations
-can supply several repositories. Omitted updates preserve selections; `[]` clears them.
+and optional normalized push-ref allowlist. Each binding gets one grant. Installations
+can supply several repositories. Omission preserves selections. `[]` clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects GitHub policy with a registry-matched Backend ID.
-Startup snapshots validated policy before loading packages or registries; that snapshot
-determines policy construction and protected Driver identity.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds the owner,
-rejecting missing or mismatched ownership. `repository.policyMode: built-in` omits
-public Repo Driver registration; separate registration is refused.
-Startup rejects `drivers.repo`.
+matches GitHub Backend and registry IDs. It snapshots policy before loading packages
+or registries, preserving the protected Driver identity.
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
+File-based `repository` selects the built-in policy. Optional `repository.policyMode: built-in`
+leaves identity unchanged. Startup rejects other modes, `drivers.repo`, and separate public
+Repo Drivers. Programmatic registration remains available.
 
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
 owns OpenShell parsing and chart constraints.
 
-Bound `OpenClawController.admitRepositoryCredentials` requires `resolveBindings`; unbound controllers call `RepositoryPolicyDriver.resolve`.
-OCC checks Compute topology and freezes Driver identity, grants and a deadline
-unchanged by renewal or recovery. `validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
+`OpenClawController.admitRepositoryCredentials` calls `resolveBindings` when bound and
+`RepositoryPolicyDriver.resolve` otherwise. OCC checks Compute topology
+and freezes Driver identity, grants and deadline across renewals and recovery.
+`validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
 
-After approval lookup, changed bound ownership returns 503 without calling it;
-unbound deploys recheck their Driver. Denial or binding/scope changes prevent
-revision creation.
+After approval lookup, changed bound ownership returns 503 before invocation.
+Unbound deploys recheck their Driver. Denial or binding/scope changes block revision creation.
 
-Protected `repository.preparedGitHub` uses installed Sandbox/Credential Proxy
-Driver. Finite sessions need no native sender, control socket, broker CA or
-session files.
+Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
+Driver. Finite sessions need no native sender, control socket, broker CA or session files.
 
 `repository.nativeSender` selects `GitHubNativeRepositorySender`, which owns native
-sessions and files without an App key. Drain accepted
-work on its original owner before cutover. Cleanup uses recorded identity
-without resolving policy or restoring authority. The worker's prepared provider
-issues and holds credentials.
+sessions and files without an App key. Before cutover, drain accepted work on its
+original owner. Cleanup uses recorded identity without resolving policy or restoring
+authority. The worker's prepared provider issues and holds credentials.
 
 ### 3. Record ownership before opening a session
 
@@ -175,13 +169,13 @@ revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only crea
 `apps/controller/src/drivers/repo/github/access/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
-Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or
-fences unfinished admissions and closes recovered sessions. Fresh material requires
-confirmed disposal or a missing opening without a recorded session ID. Invalidated known
-sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING`, subject to Work
-bounds and the revision deadline. Cleanup uses the configured interval while any session
-closes. Otherwise, an unsettled obligation retains its code and retries at `age / 40`,
-bounded by the configured interval and ten minutes.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or fences
+unfinished admissions and closes recovered sessions. Fresh material requires
+confirmed disposal or a missing opening with no recorded session. Invalidated
+sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING` under Work
+bounds and the revision deadline. Closing cleanup uses the configured interval;
+otherwise obligations keep their code and retry at `age / 40`, bounded by that
+interval and ten minutes.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
@@ -257,36 +251,33 @@ verification stay in force. Codex verifies the named network profile on thread s
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-Stock Git retains commands, remotes, settings and hooks. Configuration rewrites
-canonical HTTPS hosts to their gateway origin. The helper checks host/path,
-generation and deadline before supplying a bearer. `OCE_REPOSITORY_REF` selects
-bindings, not destinations. There is no whole-command preflight or egress confinement.
-See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
-`pushRefAllowlist` selects image-owned hooks.
-`scripts/build-repository-credentials.ts:stage` emits Node launchers that resolve the
-dispatcher from their module URL, supporting symlink chains and package relocation.
+Stock Git keeps commands, remotes, settings and hooks. Configuration routes
+canonical HTTPS hosts to the gateway. The helper checks host, path, generation and
+deadline before returning a bearer. `OCE_REPOSITORY_REF` selects bindings.
+[Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
+`pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
+builds launchers that resolve the dispatcher by module URL through symlinks and relocations.
 `apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
-rejects disallowed destination refs before updates; discovery may contact the service. It delegates arguments and input to common-directory hooks.
-Custom hook paths and API writes remain outside this
-[guardrail](../reference/repository-credentials/push-ref-guardrail.md).
+rejects disallowed refs before updates and passes arguments and input to
+common-directory hooks. See [discovery and hook limits](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/access/client/router.ts:routeRepositoryClient`
-routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
-reference and session, selects private configuration and preserves HOME and shared selection.
+routes `gh` by explicit target or effective remote. It pins generation, ref and
+session, selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
-`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
-validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository);
-cache hints never replace authorization.
+`apps/controller/src/drivers/repo/github/access/routes/request-selection.ts:requestHead`
+accepts [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+For `git-write`, `draftScope` omits the accepted timezone header from planner input.
+The current grant owner authorizes the signed request.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
-uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
-patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
-destination before durable approval. See
-[access levels](../reference/repository-credentials/access-levels.md).
+uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
+Draft heads require concrete refs. Receive-pack rejects disallowed refs before
+durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
-enforces bearer, immutable repository/profile, capacity and deadlines, acquiring
-fresh installation tokens under the same grant until the version deadline.
+checks bearer, fixed repository/profile, capacity and deadlines. It refreshes
+installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
@@ -321,6 +312,10 @@ atomically records `REPOSITORY_GIT_TOKEN_QUARANTINED` or `REPOSITORY_GIT_TOKEN_P
 and maintenance, or retires the version ([first-token handling](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
+
+`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported
+held/preview execution `original-worker-required`; unsupported legacy routes `unknown`.
+[Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) cannot authorize execution.
 
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
 when persisted v5 owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
@@ -379,6 +374,10 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Changelog
 
+- 2026-11-10 11:39: Trace scoped GitHub CLI draft request validation. (authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440 - e8131a4495a3dd34f02bf6f9a5107c994568a313)
+
+- 2026-11-10 07:56: Merge repository flow. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
+
 - 2026-11-10 02:09: Trace built-in repository policy. (authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e - 83c78fb0c2ed8524d906cca60845bc9141424000)
 
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
@@ -386,6 +385,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 - 2026-11-07 12:52: Trace removal supervision. (authoring-run/631f2612-7e8d-438d-a2bf-6ab23999c345 - 6d538feb96fa163d4b74e0dd4d21b29d1cedd641)
 
 - 2026-11-07 05:27: Reconcile predecessor identity and observation freshness. (authoring-run/6c9b5f78-aa31-4b52-9acc-f4b7b99f0dd6 - 8b62face5f6d3e8bda91f18e44755663542efcad)
+
+- 2026-11-07 08:06: Assess repository worker replacement before stopping writers. (authoring-run/dc361ab2-8dc2-4ed3-872d-220eb9cce3c1 - d84756d04bec6aa6499364548cd21a07bbbc86d7)
 
 - 2026-11-07 03:14: Capture policy. (authoring-run/ca379ce8-200d-4822-9b71-87f49f7644dc - 8c600ad53844dca9d2f9eda87ba8733c628d28aa)
 - 2026-11-06 20:39: Distinguish terminal held-launch replacement from transient standing verification. (authoring-run/d966f693-ccc4-4b07-8fbc-f66738672284 - 21a933338904531c51a67f9aaf98c3401ceff025)

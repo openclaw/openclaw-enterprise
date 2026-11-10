@@ -105,7 +105,7 @@ GitHub-backed broker and a recorded browser interaction.
 - [Account-linking contract](../reference/authentication/account-linking.md)
 - [OIDC setup](../guides/deploy/oidc-sign-in.md)
 - [Human authentication](local-password-authentication.md)
-- [RFC-0033](../../specs/rfcs/0033-oidc-account-linking.md)
+- [RFC-0034](../../specs/rfcs/0034-oidc-account-linking.md)
 
 ## Manual Notes
 

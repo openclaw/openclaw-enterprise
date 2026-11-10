@@ -4570,11 +4570,11 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
-test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
-  const fixture = await createInjectedFixture({
+async function bootstrapChatGptBackend(backendId) {
+  const controller = await configuredController({
     backends: [
       {
-        id: "openai",
+        id: backendId,
         type: "chatgpt",
         configuration: {
           workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -4583,12 +4583,15 @@ test("Agent Backend API preserves nullable drafts and immutable revision associa
         drivers: { service_account: "chatgpt-service-accounts" },
       },
     ],
-    backendSummaries: [{ id: "openai", type: "chatgpt" }],
+    backendSummaries: [{ id: backendId, type: "chatgpt" }],
   });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
+  return controller;
+}
+
+test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
+  const controller = await bootstrapChatGptBackend("openai");
+  const { fixture } = controller;
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);
   assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
@@ -4661,24 +4664,7 @@ test("Installation Backend IDs and Agent backendId share the API schema's charac
   // 200 code points (395 UTF-16 units) with interior whitespace: the API schema accepts it,
   // so OCC must accept it as configuration and the state store must save it.
   const id = `open\u00a0${"😀".repeat(195)}`;
-  const fixture = await createInjectedFixture({
-    backends: [
-      {
-        id,
-        type: "chatgpt",
-        configuration: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          apiKeyPath: "/unused-in-api-contract-test",
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
-      },
-    ],
-    backendSummaries: [{ id, type: "chatgpt" }],
-  });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
+  const controller = await bootstrapChatGptBackend(id);
   const namespace = await createNamespace(controller, "backend-id-rule");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -4706,10 +4692,7 @@ test("Installation Backend IDs and Agent backendId share the API schema's charac
 });
 
 test("Names follow the Backend ID text rule, so C1 controls are refused", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
   await bootstrap(controller);
   // 200 code points (400 UTF-16 units) with an interior NBSP is a valid Name.
   const namespace = await createNamespace(controller, `name\u00a0${"😀".repeat(195)}`);
@@ -5018,6 +5001,10 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
     RUNTIME_LOGIN_FAILED:
       "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
+    RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE:
+      "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.",
+    RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE:
+      "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
     // Finding 2537: these fell through to "Deployment reconciliation failed.", which named no
@@ -5179,10 +5166,47 @@ test("Installation deployment inventory fails closed on incomplete authorization
           executionMode: "embedded",
           activeRevisionId: admitted.data.id,
           deploymentInProgress: false,
+          repositoryWorkerRestart: "unknown",
         },
       ],
     },
   );
+
+  // Hold only the external read boundary: the real API and State must detect a new Agent
+  // and reauthorize after observation. These checks do not qualify a Driver's disposition.
+  for (const change of ["new-agent", "authority"]) {
+    const observing = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    fixture.computeDriver.repositoryWorkerRestartDisposition = async () => {
+      observing.resolve();
+      await resume.promise;
+      return "unknown";
+    };
+    const pending = controller.request("GET", inventoryPath);
+    await observing.promise;
+    if (change === "new-agent") {
+      await createAgent(controller, namespace.id, "inventory-arrival");
+    } else {
+      fixture.state.restrictions.push({
+        id: "deny-inventory-during-observation",
+        resourceKind: "installation",
+        resourceId: fixture.installationId,
+        action: "administer",
+        effect: "deny",
+      });
+    }
+    resume.resolve();
+    const changed = await pending;
+    assert.equal(changed.status, change === "new-agent" ? 503 : 403);
+    assert.equal(
+      changed.body.error.code,
+      change === "new-agent" ? "DEPENDENCY_UNAVAILABLE" : "FORBIDDEN",
+    );
+    if (change === "authority") {
+      fixture.state.restrictions.pop();
+    }
+    delete fixture.computeDriver.repositoryWorkerRestartDisposition;
+  }
 
   // The inventory needs Installation administer, and a complete fleet response must not turn
   // any exact-resource denial into omission.
