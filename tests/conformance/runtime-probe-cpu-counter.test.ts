@@ -15,12 +15,25 @@ const helperEnd = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
 assert.ok(helperStart >= 0 && helperEnd > helperStart);
 const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(helperStart, helperEnd);
 
-function probe(pressure, throttling, options = {}) {
-  let phase = 0;
+type CounterReadings = readonly [number | string | null, number | string | null];
+type WaitReadings = readonly [number | null, number | null];
+type ProbeOptions = {
+  quota?: string;
+  periods?: number | undefined;
+  capMs?: number;
+  code?: string | undefined;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function probe(pressure: CounterReadings, throttling: CounterReadings, options: ProbeOptions = {}) {
+  let phase: 0 | 1 = 0;
   let clock = 0;
-  const events = [];
+  const events: Record<string, unknown>[] = [];
   const fs = {
-    readFileSync(path) {
+    readFileSync(path: string) {
       if (path.endsWith("/cpu.max")) {
         return options.quota ?? "100000 100000\n";
       }
@@ -45,29 +58,41 @@ function probe(pressure, throttling, options = {}) {
     },
   };
   const context = {
-    require(name) {
+    require(name: string) {
       assert.equal(name, "node:fs");
       return fs;
     },
     Date: { now: () => (clock++ === 0 ? 1000 : 66000) },
     Math,
     Number,
-    console: { error: (line) => events.push(JSON.parse(line)) },
-    runOpenClawAuthenticationProbe(actualFs, capMs) {
+    console: {
+      error: (line: string) => {
+        const event: unknown = JSON.parse(line);
+        assert.ok(isRecord(event));
+        events.push(event);
+      },
+    },
+    runOpenClawAuthenticationProbe(actualFs: unknown, capMs: number) {
       assert.equal(actualFs, fs);
       assert.equal(capMs, options.capMs ?? 65_000);
       phase = 1;
       return Object.hasOwn(options, "code") ? options.code : "CAP";
     },
   };
-  const failure = vm.runInNewContext(`${helper}\nprobeOpenClawAuthenticationFailure();`, context);
+  const failure: unknown = vm.runInNewContext(
+    `${helper}\nprobeOpenClawAuthenticationFailure();`,
+    context,
+  );
+  assert.ok(failure == null || isRecord(failure));
   const code = failure?.code;
   assert.equal(events.length, 1);
-  assert.equal(events[0].event, "openclaw.model_probe");
-  assert.equal(events[0].elapsedMs, 65_000);
-  assert.equal(events[0].code, code ?? "READY");
+  const event = events[0];
+  assert.ok(event);
+  assert.equal(event.event, "openclaw.model_probe");
+  assert.equal(event.elapsedMs, 65_000);
+  assert.equal(event.code, code ?? "READY");
   // The event logs each counter's own delta beside the wait that classified it.
-  const { cpuWaitMs, pressureWaitMs, throttledWaitMs } = events[0];
+  const { cpuWaitMs, pressureWaitMs, throttledWaitMs } = event;
   return { code, cpuWaitMs, readings: [pressureWaitMs, throttledWaitMs] };
 }
 
@@ -145,7 +170,10 @@ for (const { name, run } of [
     name: "a nonfinite throttled total is not capped into a wait",
     run: [[1_000_000, 3_000_000], [0, "9".repeat(400)], TIMEOUT, 2_000, [2_000, null]],
   },
-]) {
+] satisfies {
+  name: string;
+  run: [CounterReadings, CounterReadings, string, number | null, WaitReadings, number?];
+}[]) {
   test(name, () => {
     const [pressure, throttling, code, cpuWaitMs, readings, periods] = run;
     assert.deepEqual(probe(pressure, throttling, { periods }), { code, cpuWaitMs, readings });

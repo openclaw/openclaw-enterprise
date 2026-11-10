@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -20,7 +20,10 @@ const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
-const { loadYaml } = controllerRequire("@kubernetes/client-node");
+const client: unknown = controllerRequire("@kubernetes/client-node");
+const yamlLoader = record(client).loadYaml;
+assert.ok(typeof yamlLoader === "function");
+const loadYaml = (source: string): unknown => yamlLoader(source);
 const helper = join(repository, "scripts/prepare-bootstrap-volume");
 const image = `registry.example.invalid/openclaw/controller@sha256:${"a".repeat(64)}`;
 const shimTools = {
@@ -29,11 +32,55 @@ const shimTools = {
   setsid: executablePath("setsid") || "/usr/bin/setsid",
 };
 
+type KubectlOptions = {
+  phase?: string;
+  logs?: string;
+  createReplyLost?: boolean;
+  claimName?: string;
+};
+
+type CommandRequest = {
+  args: string[];
+  io: {
+    readInput(): Promise<unknown>;
+    stdout(text: string): void;
+    stderr(text: string): void;
+    exit(code: number): void;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function array(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+async function manifest(path: string): Promise<Record<string, unknown>> {
+  return record(loadYaml(await readFile(path, "utf8")));
+}
+
+function stderr(error: unknown): string {
+  return string(record(error).stderr);
+}
+
 // The stand-in kubectl is a bash shim answered by this test process (see
 // fixture-command-server.mjs), so each call costs a bash start instead of a node start.
 // It appends one JSON line per call to kubectl-state.jsonl, so a file that does not
 // exist means no kubectl call reached the server.
-async function writeFakeKubectl(t, directory, options = {}) {
+async function writeFakeKubectl(t: TestContext, directory: string, options: KubectlOptions = {}) {
   const statePath = join(directory, "kubectl-state.jsonl");
   const manifestPath = join(directory, "manifest.yaml");
   const phase = options.phase ?? "Succeeded";
@@ -42,10 +89,10 @@ async function writeFakeKubectl(t, directory, options = {}) {
     `${JSON.stringify({ event: "bootstrap-volume.prepared", uid: 1000, gid: 1000, mode: "0700" })}\n`;
   const server = await startCommandServer({
     forwardedEnv: [],
-    handle: async ({ args, io }) => {
+    handle: async ({ args, io }: CommandRequest) => {
       await appendFile(statePath, JSON.stringify({ args }) + "\n");
       if (args.includes("create")) {
-        await writeFile(manifestPath, await io.readInput());
+        await writeFile(manifestPath, string(await io.readInput()));
         if (options.createReplyLost) {
           io.stderr("Unable to connect to the server: EOF\n");
           io.exit(17);
@@ -72,7 +119,9 @@ async function writeFakeKubectl(t, directory, options = {}) {
   // each case awaits the helper.
   t.after(() => server.close());
   const kubectl = join(directory, "kubectl");
-  const { port, clientToken, serverToken } = server;
+  const { clientToken, serverToken } = server;
+  const port: unknown = server.port;
+  assert.ok(typeof port === "number");
   await writeFile(
     kubectl,
     commandShim({
@@ -88,7 +137,7 @@ async function writeFakeKubectl(t, directory, options = {}) {
   return { kubectl, statePath, manifestPath };
 }
 
-async function fixture(t, options) {
+async function fixture(t: TestContext, options?: KubectlOptions) {
   const directory = await temporaryDirectory(t, "openclaw-bootstrap-volume-");
   const kubeconfig = join(directory, "kubeconfig");
   await writeFile(kubeconfig, "apiVersion: v1\nkind: Config\n", { mode: 0o600 });
@@ -97,8 +146,11 @@ async function fixture(t, options) {
 }
 
 // The stand-in kubectl appends one JSON line per call.
-async function invocations(statePath) {
-  return (await commandCalls(statePath)).map((line) => JSON.parse(line).args);
+async function invocations(statePath: string): Promise<string[][]> {
+  return (await commandCalls(statePath)).map((line) => {
+    const parsed: unknown = JSON.parse(line);
+    return array(record(parsed).args).map(string);
+  });
 }
 
 test("prepare-bootstrap-volume requires explicit cluster selectors and immutable images", async (t) => {
@@ -310,39 +362,46 @@ test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it
     ),
   );
 
-  const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-  assert.equal(manifest.kind, "Pod");
-  assert.match(manifest.metadata.name, /^occ-bootstrap-volume-prep-[a-z0-9]+$/);
-  assert.equal(manifest.metadata.namespace, "openclaw-system");
-  assert.equal(manifest.metadata.annotations["openclaw.dev/bootstrap-claim"], claim);
-  assert.equal(manifest.spec.automountServiceAccountToken, false);
-  assert.equal(manifest.spec.enableServiceLinks, false);
-  assert.equal(manifest.spec.restartPolicy, "Never");
-  assert.equal(manifest.spec.securityContext.seccompProfile.type, "RuntimeDefault");
-  assert.deepEqual(manifest.spec.nodeSelector, {
+  const pod = await manifest(manifestPath);
+  const metadata = record(pod.metadata);
+  const spec = record(pod.spec);
+  assert.equal(pod.kind, "Pod");
+  assert.match(string(metadata.name), /^occ-bootstrap-volume-prep-[a-z0-9]+$/);
+  assert.equal(metadata.namespace, "openclaw-system");
+  assert.equal(record(metadata.annotations)["openclaw.dev/bootstrap-claim"], claim);
+  assert.equal(spec.automountServiceAccountToken, false);
+  assert.equal(spec.enableServiceLinks, false);
+  assert.equal(spec.restartPolicy, "Never");
+  assert.equal(record(record(spec.securityContext).seccompProfile).type, "RuntimeDefault");
+  assert.deepEqual(spec.nodeSelector, {
     pool: "control",
     "topology.kubernetes.io/zone": "us-west-2a",
     [`${prefix}/pool`]: "control",
   });
-  assert.equal(manifest.spec.volumes.length, 1);
-  assert.equal(manifest.spec.volumes[0].name, "bootstrap-output");
-  assert.equal(manifest.spec.volumes[0].persistentVolumeClaim.claimName, claim);
-  const container = manifest.spec.containers[0];
+  const volumes = array(spec.volumes);
+  assert.equal(volumes.length, 1);
+  const volume = record(volumes[0]);
+  assert.equal(volume.name, "bootstrap-output");
+  assert.equal(record(volume.persistentVolumeClaim).claimName, claim);
+  const container = record(array(spec.containers)[0]);
   assert.equal(container.name, "prepare");
   assert.equal(container.image, image);
   assert.deepEqual(container.command, ["node"]);
-  assert.equal(container.args[2], "/bootstrap");
-  assert.match(container.args[1], /lstatSync\(root\)/);
-  assert.match(container.args[1], /isSymbolicLink\(\)/);
-  assert.match(container.args[1], /entry\.name !== "lost\+found"/);
-  assert.match(container.args[1], /chownSync\(root, 1000, 1000\)/);
-  assert.match(container.args[1], /chmodSync\(root, 0o700\)/);
-  assert.equal(container.securityContext.runAsUser, 0);
-  assert.equal(container.securityContext.runAsGroup, 0);
-  assert.equal(container.securityContext.allowPrivilegeEscalation, false);
-  assert.equal(container.securityContext.readOnlyRootFilesystem, true);
-  assert.deepEqual(container.securityContext.capabilities.drop, ["ALL"]);
-  assert.deepEqual(container.securityContext.capabilities.add, ["CHOWN", "FOWNER"]);
+  const args = array(container.args);
+  assert.equal(args[2], "/bootstrap");
+  const script = string(args[1]);
+  assert.match(script, /lstatSync\(root\)/);
+  assert.match(script, /isSymbolicLink\(\)/);
+  assert.match(script, /entry\.name !== "lost\+found"/);
+  assert.match(script, /chownSync\(root, 1000, 1000\)/);
+  assert.match(script, /chmodSync\(root, 0o700\)/);
+  const securityContext = record(container.securityContext);
+  assert.equal(securityContext.runAsUser, 0);
+  assert.equal(securityContext.runAsGroup, 0);
+  assert.equal(securityContext.allowPrivilegeEscalation, false);
+  assert.equal(securityContext.readOnlyRootFilesystem, true);
+  assert.deepEqual(record(securityContext.capabilities).drop, ["ALL"]);
+  assert.deepEqual(record(securityContext.capabilities).add, ["CHOWN", "FOWNER"]);
 
   const calls = await invocations(statePath);
   assert.ok(calls.some((args) => args.includes("get") && args.includes("persistentvolumeclaim")));
@@ -380,8 +439,8 @@ test("prepare-bootstrap-volume omits nodeSelector unless requested", async (t) =
     },
   );
 
-  const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-  assert.equal(manifest.spec.nodeSelector, undefined);
+  const pod = await manifest(manifestPath);
+  assert.equal(record(pod.spec).nodeSelector, undefined);
 });
 
 test("prepare-bootstrap-volume identifies the attempted Pod when the create reply is lost", async (t) => {
@@ -401,15 +460,15 @@ test("prepare-bootstrap-volume identifies the attempted Pod when the create repl
     env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
   });
   await assert.rejects(run, { code: 17, stdout: "" });
-  const { stderr } = await run.catch((error) => error);
-  const pod = loadYaml(await readFile(manifestPath, "utf8")).metadata.name;
-  assert.match(stderr, /^Unable to connect to the server: EOF$/m);
+  const output = string(await run.catch((error: unknown) => stderr(error)));
+  const pod = string(record((await manifest(manifestPath)).metadata).name);
+  assert.match(output, /^Unable to connect to the server: EOF$/m);
   assert.ok(
-    stderr.includes(`could not confirm creation of preparation Pod openclaw-system/${pod}`),
+    output.includes(`could not confirm creation of preparation Pod openclaw-system/${pod}`),
   );
-  assert.ok(stderr.includes(`--request-timeout 10s describe pod ${pod}`));
-  assert.match(stderr, /Resolve the create outcome before rerunning this helper/);
-  assert.doesNotMatch(stderr, /retained for diagnosis/);
+  assert.ok(output.includes(`--request-timeout 10s describe pod ${pod}`));
+  assert.match(output, /Resolve the create outcome before rerunning this helper/);
+  assert.doesNotMatch(output, /retained for diagnosis/);
   assert.deepEqual(await invocations(statePath), [
     [
       ...cluster,
@@ -453,20 +512,21 @@ test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes repor
       env,
     },
   );
-  await assert.rejects(
-    run,
-    ({ stderr }) =>
-      stderr.includes("preparation Pod failed") &&
-      stderr.includes("Preparation Pod retained for diagnosis") &&
-      !stderr.includes("mounted root is not fresh"),
-  );
+  await assert.rejects(run, (error: unknown) => {
+    const output = stderr(error);
+    return (
+      output.includes("preparation Pod failed") &&
+      output.includes("Preparation Pod retained for diagnosis") &&
+      !output.includes("mounted root is not fresh")
+    );
+  });
 
   const calls = await invocations(statePath);
   assert.ok(!calls.some((args) => args.includes("delete") && args.includes("pod")));
   assert.equal(calls.length, 3, "failure guidance must not execute additional cluster requests");
 
-  const { stderr } = await run.catch((error) => error);
-  const diagnostic = stderr.match(/^Inspect claim: (.+)$/m)?.[1];
+  const output = string(await run.catch((error: unknown) => stderr(error)));
+  const diagnostic = output.match(/^Inspect claim: (.+)$/m)?.[1];
   assert.ok(diagnostic, "failure guidance must include the claim inspection command");
   await execute("/bin/bash", ["-c", diagnostic], { cwd: repository, env });
   assert.deepEqual((await invocations(statePath)).slice(calls.length), [
@@ -518,9 +578,13 @@ test("prepare-bootstrap-volume refuses unverifiable success reports without prin
         env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
       },
     ),
-    ({ stderr }) =>
-      stderr.includes("exactly one JSON success record") &&
-      !stderr.includes("fixture-secret-value"),
+    (error: unknown) => {
+      const output = stderr(error);
+      return (
+        output.includes("exactly one JSON success record") &&
+        !output.includes("fixture-secret-value")
+      );
+    },
   );
 
   const calls = await invocations(statePath);
@@ -550,8 +614,8 @@ test("prepare-bootstrap-volume preserves YAML-scalar namespace names as strings"
           env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
         },
       );
-      const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-      assert.equal(manifest.metadata.namespace, namespace);
+      const pod = await manifest(manifestPath);
+      assert.equal(record(pod.metadata).namespace, namespace);
     });
   }
 });
@@ -583,8 +647,8 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
       env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
     },
   );
-  const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-  assert.deepEqual(manifest.spec.nodeSelector, {
+  const pod = await manifest(manifestPath);
+  assert.deepEqual(record(pod.spec).nodeSelector, {
     ...Object.fromEntries(keys.map((key) => [key, key])),
     "node-role.kubernetes.io/infra": "",
   });
@@ -606,7 +670,8 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
       LC_ALL: locale,
     },
   };
-  const argumentsFor = (overrides) => {
+  type Overrides = { namespace?: string; claim?: string; image?: string; selector?: string };
+  const argumentsFor = (overrides: Overrides) => {
     const values = {
       namespace: "openclaw-system",
       claim: "claim",
@@ -643,9 +708,9 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
     ],
     [{ selector: "pool=ä" }, /--node-selector value must be a Kubernetes label value/],
     [{ selector: "é.example/pool=a" }, /--node-selector key must be a Kubernetes label key/],
-  ]) {
-    await assert.rejects(execute(helper, argumentsFor(overrides), base), (error) => {
-      assert.match(error.stderr, message);
+  ] satisfies [Overrides, RegExp][]) {
+    await assert.rejects(execute(helper, argumentsFor(overrides), base), (error: unknown) => {
+      assert.match(stderr(error), message);
       return true;
     });
   }
@@ -658,6 +723,8 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
 // such as an IPv6 registry host, into the preparation Pod as written.
 test("prepare-bootstrap-volume gives image references Kubernetes' verdict", async (t) => {
   for (const [label, reference, problem] of imageReferenceCases) {
+    assert.ok(typeof label === "string");
+    assert.ok(typeof reference === "string");
     const { directory, kubeconfig, statePath, manifestPath } = await fixture(t);
     const run = execute(
       helper,
@@ -681,7 +748,7 @@ test("prepare-bootstrap-volume gives image references Kubernetes' verdict", asyn
     if (immutableImageAccepted(reference, problem)) {
       await run;
       assert.equal(
-        loadYaml(await readFile(manifestPath, "utf8")).spec.containers[0].image,
+        record(array(record((await manifest(manifestPath)).spec).containers)[0]).image,
         reference,
         label,
       );
@@ -689,9 +756,9 @@ test("prepare-bootstrap-volume gives image references Kubernetes' verdict", asyn
     }
     await assert.rejects(
       run,
-      (error) => {
+      (error: unknown) => {
         assert.match(
-          error.stderr,
+          stderr(error),
           problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/.test(reference)
             ? /--image repository path must be lowercase/
             : /--image must be an approved immutable SHA-256 image reference/,

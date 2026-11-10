@@ -45,7 +45,7 @@ const shellCall = (permissions = "use_default") => ({
     arguments: JSON.stringify({ cmd: canary, sandbox_permissions: permissions }),
   },
 });
-const parse = (...records) =>
+const parse = (...records: { type: string; payload: object }[]) =>
   parseNativeRolloutProvenance({
     ...expected,
     text: records.map((record) => JSON.stringify(record)).join("\n") + "\n",
@@ -95,7 +95,7 @@ test("native rollout diagnostics keep only the exact thread and turn policy", ()
     "activeProfileKind",
     "profileIdMatchesExpected",
     "requestedEscalation",
-  ]) {
+  ] as const) {
     assert.equal(mismatch[field], "unknown");
   }
   const wrongThread = structuredClone(session);
@@ -126,7 +126,8 @@ test("native rollout diagnostics preserve uncertainty about opaque code-mode esc
     },
   };
   assert.equal(parse(session, context, opaque, shellCall()).requestedEscalation, "unknown");
-  assert.equal(globalThis.nativeRolloutExecuted, undefined);
+  const executed: unknown = Reflect.get(globalThis, "nativeRolloutExecuted");
+  assert.equal(executed, undefined);
   const otherTurn = structuredClone(context);
   otherTurn.payload.turn_id = "another-turn";
   assert.equal(
@@ -167,9 +168,17 @@ test("native rollout diagnostics reject conflicting policy even under the same n
   // Compaction can repeat a context. Identical policy is usable; a different
   // compiled policy must not be hidden by a stable display-profile ID.
   assert.equal(parse(session, context, context).status, "available");
-  const changed = structuredClone(context);
-  changed.payload.permission_profile.file_system = { type: "unrestricted" };
-  changed.payload.sandbox_policy = { type: "danger-full-access" };
+  const changed = structuredClone({
+    ...context,
+    payload: {
+      ...context.payload,
+      permission_profile: {
+        ...context.payload.permission_profile,
+        file_system: { type: "unrestricted" },
+      },
+      sandbox_policy: { type: "danger-full-access" },
+    },
+  });
   assert.equal(parse(session, context, changed).reason, "ambiguous-turn");
   assert.equal(parse(session, context, session).reason, "ambiguous-session");
   const builtin = structuredClone(context);
@@ -197,15 +206,18 @@ test("native rollout diagnostics fail closed on malformed and oversized input af
     "size-limit",
   );
   // The runtime reader embeds the actual function, with no module closures.
-  const transported = vm.runInNewContext("(" + parseNativeRolloutProvenance.toString() + ")", {
-    Buffer,
-  });
+  const transported: unknown = vm.runInNewContext(
+    "(" + parseNativeRolloutProvenance.toString() + ")",
+    {
+      Buffer,
+    },
+  );
   const input = {
     ...expected,
     text: [session, context, shellCall()].map((item) => JSON.stringify(item)).join("\n"),
   };
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(transported(input))),
-    parseNativeRolloutProvenance(input),
-  );
+  assert.ok(typeof transported === "function");
+  const transportedResult: unknown = transported(input);
+  const serializedResult: unknown = JSON.parse(JSON.stringify(transportedResult));
+  assert.deepEqual(serializedResult, parseNativeRolloutProvenance(input));
 });

@@ -3180,6 +3180,33 @@ export function createAgentDetailScenarios({
         ],
         gap: "The Secret answer is simulated; the API still authorizes the deployment and every Secret it binds.",
       },
+      deploySecretOperateGrantedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Deployment regains Secret operate on refocus",
+        path: draft,
+        rules: [
+          {
+            method: "POST",
+            suffix: "/deploy",
+            status: 403,
+            code: "FORBIDDEN",
+            message: "The exact platform operation was not authorized.",
+            once: true,
+          },
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions/secrets",
+            // The first read allows Deploy. The read after the refusal sees the changed access.
+            skip: 1,
+            once: true,
+            data: { operateDenied: ["sec_demo_model"], unreadableOperateDenied: 0 },
+          },
+        ],
+        description: "A Deploy request is refused. The next refocus reads a simulated grant.",
+        steps: [
+          "Open the preview in its own tab and select Deploy new version. Read the Secret operate alert beside the unavailable action.",
+          "Switch to another tab and return. Deploy new version is enabled and the refusal clears on the same draft.",
+        ],
+      },
       deployInProgress: {
         group: "Pages/Agent detail",
         name: "Deployment in progress",

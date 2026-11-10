@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KubernetesApiUnavailableError } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import {
+  KubernetesApiUnavailableError,
+  type createKubernetesClientConfiguration,
+} from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import {
   createKubernetesComputeDriver,
   kubernetesGatewayNamespaceName,
+  type KubernetesComputeDriver,
+  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
@@ -20,23 +26,64 @@ import { createInstallationDriverConfiguration } from "../helpers/installation-d
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
-function driverForVersion(gitVersion) {
+type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type CoreClient = InstanceType<KubernetesSdk["CoreV1Api"]>;
+type AuthorizationClient = InstanceType<KubernetesSdk["AuthorizationV1Api"]>;
+type VersionClient = InstanceType<KubernetesSdk["VersionApi"]>;
+type NamespaceList = Awaited<ReturnType<CoreClient["listNamespace"]>>;
+type ListNamespace = (
+  request: NonNullable<Parameters<CoreClient["listNamespace"]>[0]>,
+) => Promise<NamespaceList | { items: null }>;
+type ReviewRequest = Parameters<AuthorizationClient["createSelfSubjectAccessReview"]>[0];
+type ResourceAttributes = NonNullable<ReviewRequest["body"]["spec"]["resourceAttributes"]>;
+type ReviewStatus = Partial<
+  NonNullable<Awaited<ReturnType<AuthorizationClient["createSelfSubjectAccessReview"]>>["status"]>
+>;
+type PreflightClients = {
+  server?: string;
+  version?: {
+    getCode: () => Promise<Pick<Awaited<ReturnType<VersionClient["getCode"]>>, "gitVersion">>;
+  };
+  core?: { listNamespace?: ListNamespace; readNamespace?: CoreClient["readNamespace"] };
+  authorization?: {
+    createSelfSubjectAccessReview: (request: ReviewRequest) => Promise<{ status: ReviewStatus }>;
+  };
+};
+
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
+type ExecutionCluster = NonNullable<KubernetesComputeDriverOptions["executionCluster"]>;
+type MutableExecutionCluster = {
+  authentication: Mutable<ExecutionCluster["authentication"]>;
+  harnessRouting: Mutable<ExecutionCluster["harnessRouting"]>;
+  network: Mutable<ExecutionCluster["network"]>;
+};
+
+function setClients(
+  driver: KubernetesComputeDriver,
+  key: "apiClients" | "executionApiClients",
+  clients: PreflightClients,
+): void {
+  assert.ok(Reflect.set(driver, key, Promise.resolve(clients)));
+}
+
+function driverForVersion(gitVersion: string) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
   let namespaceReads = 0;
-  driver.apiClients = Promise.resolve({
+  const core: { listNamespace: ListNamespace } = {
+    async listNamespace() {
+      namespaceReads += 1;
+      return { items: [] };
+    },
+  };
+  setClients(driver, "apiClients", {
     version: {
       async getCode() {
         return { gitVersion };
       },
     },
-    core: {
-      async listNamespace() {
-        namespaceReads += 1;
-        return { items: [] };
-      },
-    },
+    core,
   });
-  return { driver, namespaceReads: () => namespaceReads };
+  return { driver, core, namespaceReads: () => namespaceReads };
 }
 
 test("Kubernetes preflight warns below 1.35 without blocking authenticated access", async () => {
@@ -69,7 +116,7 @@ test("Kubernetes preflight accepts supported Kubernetes release families", async
 
 test("single-cluster preflight refuses legacy split storage on a later namespace page", async () => {
   const fixture = driverForVersion("v1.35.0");
-  const { core } = await fixture.driver.apiClients;
+  const { core } = fixture;
   const namespaceId = "ns_upgrade_00000000-0000-4000-8000-000000000001";
   const legacy = {
     metadata: {
@@ -94,7 +141,7 @@ test("single-cluster preflight refuses legacy split storage on a later namespace
 
 test("single-cluster preflight accepts canonical storage in a shared tenant namespace", async () => {
   const fixture = driverForVersion("v1.35.0");
-  const { core } = await fixture.driver.apiClients;
+  const { core } = fixture;
   core.listNamespace = async () => ({
     items: [
       {
@@ -144,7 +191,7 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
 
     const error = await driver.preflight().then(
       () => assert.fail("preflight must fail when the Kubernetes API is unreachable"),
-      (failure) => failure,
+      (failure: unknown) => failure,
     );
 
     assert.ok(error instanceof KubernetesApiUnavailableError, String(error));
@@ -157,20 +204,19 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
     });
     assert.equal(startupDependencyFailure(new Error("fetch failed")), undefined);
 
-    const lines = [];
+    const lines: unknown[] = [];
     const logger = createOccLogger({
       component: "occ-worker",
       destination: jsonChunkDestination(lines),
     });
     emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
     assert.deepEqual(
-      lines.map(({ severity, event, code, host, port: loggedPort }) => ({
-        severity,
-        event,
-        code,
-        host,
-        port: loggedPort,
-      })),
+      lines.map((line) => {
+        const record = asRecord(line);
+        assert.ok(record);
+        const { severity, event, code, host, port: loggedPort } = record;
+        return { severity, event, code, host, port: loggedPort };
+      }),
       [
         {
           severity: "ERROR",
@@ -195,7 +241,7 @@ test("Kubernetes preflight keeps TLS and HTTP failures distinct from an unreacha
   const forbidden = Object.assign(new Error("Forbidden"), { code: 403 });
   for (const failure of [trust, forbidden]) {
     const driver = createTestKubernetesComputeDriver("compute-kubernetes-reachable");
-    driver.apiClients = Promise.resolve({
+    setClients(driver, "apiClients", {
       server: "https://10.43.0.1:443",
       version: {
         async getCode() {
@@ -203,7 +249,7 @@ test("Kubernetes preflight keeps TLS and HTTP failures distinct from an unreacha
         },
       },
     });
-    await assert.rejects(driver.preflight(), (error) => error === failure);
+    await assert.rejects(driver.preflight(), (error: unknown) => error === failure);
   }
 });
 
@@ -214,7 +260,7 @@ test("Kubernetes preflight reports a refused connection with the in-cluster endp
     }),
   });
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-refused");
-  driver.apiClients = Promise.resolve({
+  setClients(driver, "apiClients", {
     server: "https://10.43.0.1",
     version: {
       async getCode() {
@@ -222,7 +268,7 @@ test("Kubernetes preflight reports a refused connection with the in-cluster endp
       },
     },
   });
-  await assert.rejects(driver.preflight(), (error) => {
+  await assert.rejects(driver.preflight(), (error: unknown) => {
     assert.ok(error instanceof KubernetesApiUnavailableError);
     assert.deepEqual(startupDependencyFailure(error), {
       code: "KUBERNETES_API_UNAVAILABLE",
@@ -237,32 +283,44 @@ test("Kubernetes preflight reports a refused connection with the in-cluster endp
 test("Kubernetes preflight without a recorded endpoint keeps the original failure", async () => {
   const refused = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-no-endpoint");
-  driver.apiClients = Promise.resolve({
+  setClients(driver, "apiClients", {
     version: {
       async getCode() {
         throw refused;
       },
     },
   });
-  await assert.rejects(driver.preflight(), (error) => error === refused);
+  await assert.rejects(driver.preflight(), (error: unknown) => error === refused);
 });
 
 // Two-cluster options; `network` overrides entries of the execution cluster's network.
-function executionOptions(network = {}) {
-  const configured = conformanceKubernetesOptions({
+function executionOptions(
+  network: Partial<NonNullable<KubernetesComputeDriverOptions["executionCluster"]>["network"]> = {},
+) {
+  const fixture = {
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-  });
-  delete configured.network.gatewayClients;
-  configured.gatewayRouting = {
+  };
+  const configured = conformanceKubernetesOptions(fixture);
+  assert.equal(configured.authentication.mode, "kubeconfig");
+  assert.equal(configured.servicePrincipalCredentials.mode, "disabled");
+  const authentication: Mutable<
+    Extract<KubernetesComputeDriverOptions["authentication"], { mode: "kubeconfig" }>
+  > = { ...configured.authentication, mode: configured.authentication.mode };
+  const { gatewayClients: _gatewayClients, ...networkWithoutGatewayClients } = configured.network;
+  const controlNetwork: Mutable<KubernetesComputeDriverOptions["network"]> = {
+    ...networkWithoutGatewayClients,
+    gatewayTrustedProxyCidrs: fixture.gatewayTrustedProxyCidrs,
+  };
+  const gatewayRouting = {
     hostname: "gateway.example.test",
     gatewayName: "gateway",
     gatewayNamespace: "system",
     envoyNamespace: "envoy",
   };
-  configured.executionCluster = {
-    authentication: { ...configured.authentication, context: "execution" },
-    harnessRouting: { ...configured.gatewayRouting, hostname: "harness.example.test" },
+  const executionCluster: MutableExecutionCluster = {
+    authentication: { ...authentication, context: "execution" },
+    harnessRouting: { ...gatewayRouting, hostname: "harness.example.test" },
     network: {
       dns: configured.network.dns,
       harnessEndpointCidrs: ["192.0.2.2/32"],
@@ -271,25 +329,43 @@ function executionOptions(network = {}) {
       ...network,
     },
   };
-  return configured;
+  return {
+    ...configured,
+    authentication,
+    runtime: fixture.runtime,
+    servicePrincipalCredentials: {
+      ...configured.servicePrincipalCredentials,
+      mode: configured.servicePrincipalCredentials.mode,
+    },
+    network: controlNetwork,
+    gatewayRouting,
+    executionCluster,
+  } satisfies KubernetesComputeDriverOptions;
 }
 
 test("startup reports Kubernetes configuration errors at their original paths", async (t) => {
   const config = createInstallationDriverConfiguration();
-  const { compute } = config.drivers;
   const start = () => loadInstallationFile(t, config);
   // Keep the startup settings production requires that the driver-level options don't carry.
-  const { images, servicePrincipalCredentials } = compute.configuration;
+  const { images, servicePrincipalCredentials } = config.drivers.compute.configuration;
   const twoClusters = { ...executionOptions(), images, servicePrincipalCredentials };
+  const compute: {
+    id: string;
+    configuration: typeof config.drivers.compute.configuration | typeof twoClusters;
+  } = config.drivers.compute;
 
-  assert.equal((await start()).computeDriver.id, compute.id);
+  const initial = await start();
+  assert.ok(initial);
+  assert.equal(initial.computeDriver.id, compute.id);
   compute.configuration = twoClusters;
-  assert.equal((await start()).computeDriver.id, compute.id);
+  const configured = await start();
+  assert.ok(configured);
+  assert.equal(configured.computeDriver.id, compute.id);
 
-  for (const [change, path, message, code = "INVALID_FORMAT"] of [
+  const changes: [(configuration: typeof twoClusters) => void, string, string, string?][] = [
     [
       (c) => {
-        delete c.executionCluster.authentication.context;
+        assert.ok(Reflect.deleteProperty(c.executionCluster.authentication, "context"));
       },
       "/executionCluster/authentication/context",
       "Explicit Kubernetes context must be explicitly configured.",
@@ -318,6 +394,7 @@ test("startup reports Kubernetes configuration errors at their original paths", 
     ],
     [
       (c) => {
+        assert.equal(c.executionCluster.authentication.mode, "kubeconfig");
         c.executionCluster.authentication.kubeconfigPath = "relative";
       },
       "/executionCluster/authentication/kubeconfigPath",
@@ -361,10 +438,12 @@ test("startup reports Kubernetes configuration errors at their original paths", 
       "/network/gatewayClients",
       "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
     ],
-  ]) {
-    compute.configuration = structuredClone(twoClusters);
-    change(compute.configuration);
-    await assert.rejects(start, (error) => {
+  ];
+  for (const [change, path, message, code = "INVALID_FORMAT"] of changes) {
+    const configuration = structuredClone(twoClusters);
+    compute.configuration = configuration;
+    change(configuration);
+    await assert.rejects(start, (error: unknown) => {
       assert.ok(error instanceof ConfigurationValidationError);
       assert.deepEqual(error.error.details, [{ path, code, message }]);
       assert.doesNotMatch(
@@ -378,7 +457,7 @@ test("startup reports Kubernetes configuration errors at their original paths", 
 
 // Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
 test("two-cluster CIDR lists refuse ranges that cover every address", () => {
-  const diagnostic = (path, code, message) => (error) => {
+  const diagnostic = (path: string, code: string, message: string) => (error: unknown) => {
     assert.ok(error instanceof ConfigurationValidationError);
     assert.deepEqual(error.error.details, [{ path, code, message }]);
     return true;
@@ -387,7 +466,7 @@ test("two-cluster CIDR lists refuse ranges that cover every address", () => {
     ["harnessEndpointCidrs", "Harness endpoint CIDR"],
     ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
     ["pluginStatusProxySourceCidrs", "Execution status proxy CIDR"],
-  ]) {
+  ] as const) {
     for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
       assert.throws(
         () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
@@ -446,9 +525,9 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
       },
     },
   };
-  driver.apiClients = Promise.resolve(clients);
-  driver.executionApiClients = Promise.resolve(clients);
-  const warning = (cidr) => ({
+  setClients(driver, "apiClients", clients);
+  setClients(driver, "executionApiClients", clients);
+  const warning = (cidr: string) => ({
     code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
     message:
       `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
@@ -459,7 +538,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
     warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
   });
   // The worker logs each warning; the log keeps only plain text, so the message must survive.
-  const lines = [];
+  const lines: unknown[] = [];
   const logger = createOccLogger({
     component: "occ-worker",
     destination: jsonChunkDestination(lines),
@@ -468,13 +547,18 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
     emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });
   }
   assert.deepEqual(
-    lines.map(({ code, message }) => ({ code, message })),
+    lines.map((line) => {
+      const record = asRecord(line);
+      assert.ok(record);
+      const { code, message } = record;
+      return { code, message };
+    }),
     result.warnings,
   );
 
   const exact = createKubernetesComputeDriver(executionOptions());
-  exact.apiClients = Promise.resolve(clients);
-  exact.executionApiClients = Promise.resolve(clients);
+  setClients(exact, "apiClients", clients);
+  setClients(exact, "executionApiClients", clients);
   assert.deepEqual(await exact.preflight(), { warnings: [] });
 });
 
@@ -482,8 +566,8 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
 // `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
 // Pods call verifyExecutionTenantGrants with each component's own identity.
 function executionDriver(
-  review,
-  listNamespace = async ({ labelSelector }) => {
+  review: (attributes: ResourceAttributes) => ReviewStatus,
+  listNamespace: ListNamespace = async ({ labelSelector }) => {
     assert.equal(labelSelector, "openclaw.dev/namespace");
     return {
       items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
@@ -491,12 +575,13 @@ function executionDriver(
   },
 ) {
   const driver = createKubernetesComputeDriver(executionOptions());
-  const reviews = [];
-  driver.executionApiClients = Promise.resolve({
+  const reviews: ResourceAttributes[] = [];
+  setClients(driver, "executionApiClients", {
     core: { listNamespace },
     authorization: {
       async createSelfSubjectAccessReview({ body }) {
         const attributes = body.spec.resourceAttributes;
+        assert.ok(attributes);
         reviews.push(attributes);
         return { status: review(attributes) };
       },
@@ -505,7 +590,7 @@ function executionDriver(
   return { driver, reviews };
 }
 
-const ruleName = ({ verb, resource, subresource }) =>
+const ruleName = ({ verb, resource, subresource }: ResourceAttributes) =>
   `${verb} ${resource}${subresource ? `/${subresource}` : ""}`;
 
 test("execution tenant grant check names the API's missing Pod reads without runtime logs", async () => {
@@ -515,7 +600,8 @@ test("execution tenant grant check names the API's missing Pod reads without run
   }));
   await assert.rejects(
     driver.verifyExecutionTenantGrants("api", { runtimeLogs: false }),
-    (error) =>
+    (error: unknown) =>
+      error instanceof Error &&
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
         "The execution cluster's tenant api grant in Namespace oce-tenant lacks get pods, " +
@@ -537,7 +623,8 @@ test("execution tenant grant check reports an unevaluated review as incomplete",
   }));
   await assert.rejects(
     driver.verifyExecutionTenantGrants("worker", { runtimeLogs: true }),
-    (error) =>
+    (error: unknown) =>
+      error instanceof Error &&
       error.constructor.name !== "ConfigurationFailure" &&
       error.message ===
         "The execution cluster tenant grant review failed: could not evaluate get pods in " +
@@ -546,8 +633,8 @@ test("execution tenant grant check reports an unevaluated review as incomplete",
 });
 
 test("execution tenant grant check reads every Namespace page before any review", async () => {
-  const events = [];
-  const pages = {
+  const events: string[] = [];
+  const pages: Record<string, NamespaceList> = {
     first: {
       items: [
         { metadata: { name: "oce-first", labels: { "openclaw.dev/namespace": "ns_a" } } },
@@ -575,12 +662,15 @@ test("execution tenant grant check reads every Namespace page before any review"
       if (events.filter((event) => event.startsWith("list")).length > 2) {
         throw new Error("the Namespace list did not advance");
       }
-      return pages[request._continue ?? "first"];
+      const page = pages[request._continue ?? "first"];
+      assert.ok(page);
+      return page;
     },
   );
   await assert.rejects(
     driver.verifyExecutionTenantGrants("worker", { runtimeLogs: true }),
-    (error) =>
+    (error: unknown) =>
+      error instanceof Error &&
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
         "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods, get jobs, create jobs, delete jobs. " +
@@ -609,7 +699,8 @@ test("execution tenant grant check treats a review without a decision as missing
   );
   await assert.rejects(
     driver.verifyExecutionTenantGrants("worker", { runtimeLogs: false }),
-    (error) =>
+    (error: unknown) =>
+      error instanceof Error &&
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
         "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods, get jobs, create jobs, delete jobs. " +
@@ -634,9 +725,11 @@ test("execution tenant grant check reports an invalid Namespace list as incomple
   );
   await assert.rejects(
     driver.verifyExecutionTenantGrants("api", { runtimeLogs: true }),
-    (error) =>
+    (error: unknown) =>
+      error instanceof Error &&
       error.constructor === Error &&
-      error.cause?.message === "the Namespace list returned invalid data." &&
+      error.cause instanceof Error &&
+      error.cause.message === "the Namespace list returned invalid data." &&
       error.message ===
         "The execution cluster tenant grant review failed: the Namespace list returned invalid data.",
   );

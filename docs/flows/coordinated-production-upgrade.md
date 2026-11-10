@@ -323,7 +323,7 @@ Verify routing, models, channels, credentials, workspaces and restores. Check co
 ### Read-only export after a split-layout refusal
 
 [Split-layout export](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
-uses `scripts/split-layout-tenants.mjs:createOccApi.expect` to reject malformed JSON,
+uses `scripts/split-layout-tenants.ts:createOccApi.expect` to reject malformed JSON,
 empty bodies and missing envelopes. Empty collections, 204 deletes and explicitly
 accepted 404s remain valid.
 
