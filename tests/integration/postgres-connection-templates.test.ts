@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
+import { ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
@@ -27,7 +28,7 @@ const clientInput = (connectionTemplateId: string, connectionTemplateVersion = 1
   connectionTemplateVersion,
   displayName: "Example OAuth application",
   clientId: randomUUID(),
-  tokenEndpointAuthMethod: "client_secret_basic",
+  tokenEndpointAuthMethod: "client_secret_basic" as const,
   clientSecret: randomUUID(),
 });
 const manual = {
@@ -194,13 +195,14 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: controller.installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: options.authSecret,
       pool,
     });
     const reader = await auth.createAccount({ ...member, name: "Template reader" });
     await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
-    const session = await signedInHeaders(app, "http://127.0.0.1", member);
+    const session = await signedInHeaders(app, "https://console.oce.localhost", member);
     const denied = await app.inject({
       method: "POST",
       url: "/oauth-clients",
@@ -341,6 +343,99 @@ test(
       [globalId, scoped.json().data.id].sort(),
     );
     assert.equal(core.secrets.size, 2);
+  },
+);
+
+test(
+  "OAuth client secret mutations refuse an enclosing controller transaction",
+  requiresPostgres,
+  async (t) => {
+    for (const operation of ["create", "rotate"] as const) {
+      await t.test(operation, async (t) => {
+        const { controller, inject, pool, principal, state } = await createPostgresAgentApp(
+          t,
+          options,
+        );
+        const { core } = useInstallationSecretDriver(controller);
+        const templateId = await createManualDraft(inject);
+        const input = clientInput(templateId);
+        const original = await inject("POST", "/oauth-clients", input);
+        assert.equal(original.statusCode, 201, original.body);
+        const client = original.json().data;
+        const installation = await state.loadInstallation();
+        assert.ok(installation);
+        const probe = randomUUID();
+        const next = {
+          ...input,
+          connectionTemplateVersion: 2,
+          clientId: randomUUID(),
+          clientSecret: randomUUID(),
+        };
+        const privateNames = [...core.secrets.keys()];
+        const audit = (id: string) => ({
+          id: randomUUID(),
+          installationId: installation.id,
+          occurredAt: new Date().toISOString(),
+          kind: "mutation" as const,
+          actorId: principal.id,
+          action:
+            operation === "create"
+              ? "openclaw.oauth_clients.create"
+              : "openclaw.oauth_clients.rotate_secret",
+          resource: { kind: "installation" as const, id: installation.id },
+          outcome: "success" as const,
+          details: { oauthClientId: id, transactionProbe: probe },
+        });
+
+        // The public composition API must refuse before a private write. Otherwise an
+        // outer failure can discard the cleanup reservation or the rotation request audit.
+        const failure = await controller
+          .transact(async () => {
+            if (operation === "create") {
+              await controller.createOAuthClient(principal.id, next, audit);
+            } else {
+              await controller.rotateOAuthClientSecret(
+                principal.id,
+                client.id,
+                next.clientSecret,
+                audit(client.id),
+              );
+            }
+            throw new Error("The surrounding resource mutation failed.");
+          })
+          .catch((error: unknown) => error);
+
+        assert.deepEqual(
+          [...core.secrets.keys()],
+          privateNames,
+          "rollback must not leave an untracked private secret",
+        );
+        assert.equal(
+          await controller.withOAuthClientSecret(
+            client,
+            async (value) => value === input.clientSecret,
+          ),
+          true,
+          "rollback must not leave a rotated value without its request audit",
+        );
+        assert.equal(
+          (await pool.query("SELECT id FROM occ.oauth_clients WHERE client_id=$1", [next.clientId]))
+            .rowCount,
+          0,
+        );
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT id FROM occ.audit_events WHERE details->>'transactionProbe'=$1",
+              [probe],
+            )
+          ).rowCount,
+          0,
+        );
+        assert.ok(failure instanceof ResourceConflictError);
+        assert.match(failure.message, /cannot run in a controller transaction/);
+      });
+    }
   },
 );
 

@@ -1,15 +1,15 @@
 # Upgrade production images
 
-Run `scripts/upgrade-production-images` with the matching [OCC CLI](../cli.md#connect-to-your-installation)
-from the release checkout to upgrade Kubernetes Compute Helm installations.
+Upgrade Kubernetes Compute Helm installations using the release checkout's
+`scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
 See [production installation](production-installation.md) and
-[production Agents](production-agents.md). Plan traffic handoff.
+[production Agents](production-agents.md).
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
-   baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
+   baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
 2. [Preflight the target](#rehearse-before-the-maintenance-window).
    [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
-3. Freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
+3. Plan traffic handoff and freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
    [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify the release](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
@@ -41,13 +41,12 @@ Prepare:
 
 - images pinned by lowercase `@sha256:` digest, with passing checks and a full
   reviewed commit. Use [published digests](../../release/containers.md#prepare-and-publish)
-  or build your own;
+  or build them;
 - a clean release checkout at `RELEASE_SOURCE_SHA`. Run the helper from its
   root to check the chart and live Collector configuration;
 - the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
   [release binary](../cli.md#connect-to-your-installation) or build it with
-  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The helper
-  uses the CLI to read deployment inventory and deploy Agents;
+  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The CLI reads deployment inventory and deploys Agents;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
@@ -68,21 +67,28 @@ Prepare:
 
 Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
-images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
+images on a Linux host running as UID 1000. Docker Engine must support platform-specific inspection/export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
 preflight checks protocol compatibility. Check Kubernetes image availability
 and admission, image trust, database durability and session disposal separately.
 
-The OCC identity needs Installation `read`. Runtime upgrades also require
-Installation `administer`, exact `read` on every Namespace, Agent, Agent
-Configuration, and selected and replacement Agent revision, and exact `deploy`
-on each running Agent.
+Inventory requires Installation `read`/`administer` and Namespace/Agent `read`.
+Active, desired-running Agents with a selected revision and no pending deployment
+also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
+require Configuration and replacement-revision `read`.
 
-Review saved Agent and Configuration drafts before a runtime upgrade. Each
-deployment takes a new snapshot of the current draft.
+Review runtime drafts; deployments snapshot them.
+
+Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
+also need exact revision reads for retained running Agents.
+
+Controller-only upgrades read each active revision with `occ agent revision`,
+refusing missing or unreadable Harness settings before stopping OCC. Plan an
+authorized replacement, or stop and settle the Agent before upgrading, then deploy
+reviewed drafts. Git session continuity still requires the
+[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
 For OpenShell, a controller change to the generated Harness command requires a
 fresh Agent revision. Existing Sandboxes require the same launch specification;
@@ -100,13 +106,12 @@ During maintenance, freeze other Helm changes and disable automation, including
 autoscalers, that restarts or scales OCC Deployments. Stop other OCC database writers, including
 independent API, worker or maintenance processes. Confirm nodes are reachable.
 Do not force-delete OCC Pods. A missing Pod cannot prove a partitioned process
-stopped. The helper stops only the selected Helm release's API and worker. For runtime
-upgrades, freeze Agent deployments and draft edits. Resolve queued or running
-deployments first. Keep restrictions through recovery.
+stopped. The helper stops only the selected Helm release's API and worker. Freeze
+Agent deployments for every upgrade, and draft edits for runtime upgrades. Settle
+queued or running deployments first. Keep restrictions through recovery.
 
-Start in the root of the clean checkout at the reviewed commit. In a dedicated
-Bash shell, set the connection and release inputs. Set `OCC_CA_BUNDLE` only
-if OCC uses a private certificate authority.
+In the reviewed checkout, use a dedicated Bash shell. Set `OCC_CA_BUNDLE` only
+for a private certificate authority.
 
 ```bash
 umask 077
@@ -119,9 +124,8 @@ git rev-parse HEAD
 git status --short --untracked-files=all
 ```
 
-Continue only if `git rev-parse HEAD` reports the reviewed commit and the status
-command succeeds with no output. The evidence directory must not exist. The
-helper creates it with mode `0700`. Set the target once in the same shell:
+Continue only if HEAD matches the reviewed commit and status succeeds without
+output. The evidence directory must not exist; it is created with mode `0700`. Set the target once in the same shell:
 
 ```bash
 target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
@@ -132,7 +136,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
+Keep `--values` and `--installation` as the live baseline. Review owner-only copies:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -140,20 +144,20 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidate values may also select a [staged immutable Installation Secret](immutable-installation-upgrade.md).
+Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
-The helper does not convert the baseline automatically. Other configuration
-changes are not supported by this upgrade command.
+Remove obsolete `agentNativeAdmin.sharedCookieDomain` only if empty; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
+The helper does not convert the baseline automatically. Other configuration changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
-The command does not change IAM, authentication, Installation identity, database,
+Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings through these candidate files. Repository settings include the GitHub
-Backend and registry path, Repo Driver, and Compute credential-service peer.
+settings, including the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
 Select controller and runtime images with their image flags; do not edit those
 image fields or the managed Installation checksum in the copies.
 
@@ -240,14 +244,13 @@ Shared-namespace releases refuse this single-cluster layout.
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before startup Jobs or writer changes, the selected case and cleanup must pass
-for the recorded incumbent release image and selected candidate image digests.
-Index, platform-manifest and configuration digests are not interchangeable.
+Before shutdown, both the database-write and configured IAM activation cases must
+pass, including cleanup, for the exact image digests. Index, manifest and config
+digests are distinct.
 
-The receipt stays [frozen through recovery](production-upgrade-recovery.md).
-Operators must establish authenticity. `sourceSha` identifies the runner checkout,
-not image revisions or worktree cleanliness. This proves neither IAM startup
-compatibility nor online or rollback safety; writers still stop.
+[Recovery retains the receipt](production-upgrade-recovery.md). Verify its provenance:
+`sourceSha` identifies the test checkout, not image revisions or worktree cleanliness.
+These checks do not qualify online migration or rollback; writers still stop.
 
 Omit `--runtime-image`:
 
@@ -282,7 +285,7 @@ or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
-Helm migrates, bootstraps and restores Deployments. The helper verifies rollout and OCC access.
+Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.
 
 ```text
 Upgraded controller image; no Agent deployments were requested.

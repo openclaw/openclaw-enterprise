@@ -129,7 +129,7 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/credentials/prepared-repository-git.ts";
+import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   captureNamespaceEnsureHint,
@@ -1408,7 +1408,10 @@ export class ControllerWorker {
     const bound = this.repositoryAdmission?.policy;
     if (
       this.repositoryAdmission !== undefined &&
-      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+      ((this.repositoryAdmission.policyMode === "built-in"
+        ? this.repositoryPolicy !== undefined
+        : bound !== this.repositoryPolicy) ||
+        typeof bound?.resolveBindings !== "function")
     ) {
       throw new Error("The bound repository admission owner is not selected or unavailable.");
     }

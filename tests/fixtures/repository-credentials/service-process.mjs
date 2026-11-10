@@ -143,9 +143,9 @@ export async function startServiceProcessFixture(
   });
   const [{ callControl }, { loadGitHubRepositoryRegistry }, { resolveGitHubRepositoryBinding }] =
     await Promise.all([
-      appModule("drivers/repo/github/credentials/client/operator"),
+      appModule("drivers/repo/github/access/client/operator"),
       appModule("composition/repository-credentials/registry"),
-      appModule("drivers/repo/github/credentials/registry"),
+      appModule("drivers/repo/github/access/registry"),
     ]);
   const registry = await loadGitHubRepositoryRegistry(
     registryMaterial.registryFile,

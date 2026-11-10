@@ -8,6 +8,16 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
+The static-checks job in `.github/workflows/ci.yml` also restores the pnpm store
+using `scripts/docs-site/pnpm-lock.yaml`. It alone saves that documentation key,
+after `docs:build` successfully runs Pagefind; installation can succeed even when
+Pagefind's optional native package is missing. `run-ci-lane` restores the same key
+before installing documentation dependencies for baseline part 1 and browser part 1.
+The shared setup action keys each store by OS, architecture, Node.js, pnpm version,
+and lockfile hash. Its existing prefix fallbacks can restore another lockfile's
+store; frozen installation still acquires any missing packages. Root workspace
+cache saves are unchanged.
+
 First Agent Smoke and `run-ci-lane` both use `setup-ci-tools` to restore only yq and k3d downloads outside `PATH`. On Linux,
 `scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
 execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
@@ -17,6 +27,19 @@ use the existing pinned downloader; unavailable cache storage or service does no
 fail setup; verified cache hits do not rewrite the cache. PostgreSQL, image and
 Kubernetes profiles share the cache. Keys include OS, architecture and installer
 source. Direct callers can reuse verified installed bytes without a cache.
+
+`scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
+whether to retry, including the final attempt. It reports elapsed time, whether
+the command timed out, and up to eight layer states from the captured output tails.
+Only known Docker phases and hexadecimal layer IDs enter this progress summary;
+unmatched output and a leading partial line at the tail cutoff are omitted.
+The First Agent smoke adapter forwards both captured streams to this parser.
+Diagnostic emission is best effort and cannot replace the terminal pull error.
+Docker suppresses numeric progress on non-terminal
+output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
+summary says so. These diagnostics retain reported download and extraction
+activity without changing timeouts, backoff, concurrency, or digest verification.
+They do not establish registry health or explain why an attempt stalled.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
@@ -87,6 +110,26 @@ the runner accepted a shared-store commit.
 
 For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
 
+`scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
+fixture-build stages. The engine probe uses the existing image-command
+limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
+expected durations. Both commands also respect the remaining lane deadline less
+the test reserve, recalculated before each command. Without a valid lane deadline,
+the finite command limits still apply. Unsupported timer values are rejected.
+An exhausted budget reports the stage that could not start. On POSIX, timeouts
+terminate the command's owned process group, including local descendants. The
+shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
+its last signal, including when preparation receives SIGINT cancellation; after
+it exits, preparation sends no further group signals. Windows retains direct-child
+termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
+and their reported completion states from the last 32,768 characters of each captured stream.
+The step summary omits arguments, container output and arbitrary error text. This partial
+summary identifies steps in the fixture Dockerfile; it does not establish the
+current build phase or cause of a stall. The timeout keeps its concise stage error
+and original cause. The owned image tag is recorded before
+building and becomes ready only after success, so failed preparation remains
+available to cleanup.
+
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
 publishing test inputs. Per-file cleanup repeats the health check while preserving
@@ -96,7 +139,16 @@ not include tenant workloads or complete Pod specifications.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. A successful image build alone establishes none of those live outcomes.
 
-Image lanes first ask BuildKit whether the restored cache resolves to an image the engine already holds, and build the image otherwise (`scripts/ci/prepare.mjs:reuseEngineImage`). In a CI lane, preparation receives the lane deadline (`CI_RUNNER_DEADLINE_MS`). The reuse probe, which builds on a cache miss, and the build after it may use the time before that deadline less a three-minute reserve for the rest of preparation and the tests. When that budget runs out, preparation fails with an `Image build out of lane time` error and starts no further build. The job's cleanup step then removes the owned image tags. Local runs and main's cache warm job have no lane deadline and keep their own limits.
+`scripts/ci/prepare.mjs:reuseEngineImage` asks BuildKit whether the restored cache
+resolves to an image already in the engine; a cache miss builds it. In CI, the
+probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
+reserving three minutes for preparation and tests. Exhaustion reports `Image
+build out of lane time`, starts no further build, and leaves owned-tag removal to
+job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
+gives the OpenClaw build and final runtime assembly one shared 180-minute budget;
+controller builds retain 20 minutes. Each export has a separate 20-minute limit
+within the 210-minute job. These are cancellation limits, not expected durations;
+cold Node compilation exceeded the former 20-minute build limit.
 
 For dedicated Codex preparation (and installed repository-credential preparation, once that lane is available again), each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.
 

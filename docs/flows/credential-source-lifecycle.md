@@ -215,7 +215,8 @@ The worker rechecks the deploying actor's and Agent's
 snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
 For a Proxy-owned `openai/api_key` Harness snapshot, Worker and Compute require
 the ready source's inference binding to match current Backend and provider
-generations. Before its first cluster read, Compute checks the saved model
+generations. Bundled Kubernetes Compute supports this path for dedicated Codex
+with an admitted egress plan. Before its first cluster read, Compute checks the saved model
 endpoint against source consent and the bound route's origin and path.
 Both refuse mismatches without Gateway fallback. Public deploys still record the Gateway.
 Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or

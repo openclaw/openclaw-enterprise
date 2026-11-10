@@ -606,7 +606,15 @@
       "idx": 76,
       "version": "7",
       "when": 1787000000076,
-      "tag": "0076_proxy_harness_snapshot",
+      "tag": "0076_native_browser_access",
+      "breakpoints": true,
+      "sha256": "5ba98d253eb755b61548a60471475a45d704622059db76fe5b769461ab628aec"
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1787000000077,
+      "tag": "0077_proxy_harness_snapshot",
       "breakpoints": true,
       "sha256": "a80a81c7c5980eeeff4d5129960ad09d9799aea3e08f7a3a4342264944206404"
     }
@@ -696,19 +704,26 @@
       "a26adb245177854014f7a6a8a20820910e781305e0ffd31481be828c13fdfbe6",
       "cb091d1434a85f484fe9c0ea40e215c51b9b80f04c1544376a9991c0d5d28078"
     ],
-    "debf6d2c1042ad2ae2659871996227113a26d0d9a8ce173d87560c98158188bc": [
-      "4f6cd7325bd188b0443447d15f61c8ad4ee7add09ca477a1b7f5054074bbe0b5",
-      "4b04a6d7ed917674dd87a94a98c1851700303bd5f34f9bbe7c9bc8b3c5ce01ff",
-      "d121d0f51f365afb9d237d0a86d90ebc0dd519611a1844773426b9ebe23237d4"
+    "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed": [
+      "aa1c2ef6ac155ac55c5e3ecea6e14c69489d545893dcb05453df17ed9cb49d1a",
+      "35e58241d2983bd4fc147d33258696016190972b54fd75d58e2821f031facd06",
+      "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
+      "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5"
+    ],
+    "70c7259b03b75248ba80ba9aa5c567926a183fe262a925d0e6eae291f0b7e03a": [
+      "7fb7e8b3d59289dab6ce4252adb6d8c9410b0d9b3cdc444ceee89fd2c6629a4e",
+      "e426d0d12c9c5bb78d9905f42d606cd30fa07bd5fc23829ce8135a27f1841809",
+      "a879f3794a6ea1e2115b65b40cb8a7aa0b8e9c0e4cf786da063a8ba642ce749e",
+      "af48e25394b689780385384cfbffddd9c5f3a1865a20155e0457170ca2c86c4d"
     ]
   },
   "catalogs": {
+    "completed": "70c7259b03b75248ba80ba9aa5c567926a183fe262a925d0e6eae291f0b7e03a",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "debf6d2c1042ad2ae2659871996227113a26d0d9a8ce173d87560c98158188bc",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -750,11 +765,12 @@
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
     "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
+    "preNativeBrowserAccess": "d2bd6eeba2ea3063bd043a75e52699dbd79dd35187fa3ff1f2f111dfa71946f5",
     "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
     "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
     "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
-    "preProxyHarnessSnapshot": "d2bd6eeba2ea3063bd043a75e52699dbd79dd35187fa3ff1f2f111dfa71946f5"
+    "preProxyHarnessSnapshot": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -763,7 +779,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The completed catalog was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for completed canonical and Provider histories and upgraded canonical restores from prefixes 51 and 74."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0077 and its canonical archive restore were measured on PostgreSQL 18.6 with the unchanged reader SQL following native browser access."
   },
   "compatibleLineages": {
     "providerCompleted": {

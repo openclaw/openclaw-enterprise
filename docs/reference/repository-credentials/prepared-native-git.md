@@ -41,9 +41,9 @@ fetches in groups no larger than the configured
 [service limits](../repository-credentials.md#client-routing-and-limits).
 
 A separately selected protected Credential Proxy can authorize a bounded
-`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/access/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
-[transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
+[transport](../../../apps/controller/src/drivers/repo/access/transport/upstream.ts)
 rejects actual trailers (a declaration alone is not one), enforces byte limits before and
 after rewriting, then releases the configured `{ id, full_name }` as fixed JSON with
 no-store headers. Streamed responses cannot make that guarantee.

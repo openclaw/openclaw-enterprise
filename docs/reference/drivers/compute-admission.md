@@ -30,8 +30,8 @@ message when `auth.credentialGatewayId === undefined`. Check the owner before
 calling the provider or starting workload setup. A type assertion or a fallback
 ID skips the owner check. The Proxy form supports only static
 `openai/api_key`. The public Agent binding still takes only the method and source
-ID. Deploy readers that handle both owner shapes before enabling writers that
-save Proxy-owned snapshots.
+ID. Apply migration `0077_proxy_harness_snapshot` and deploy readers that handle
+both owner shapes before enabling writers that save Proxy-owned snapshots.
 
 ## Agent save
 

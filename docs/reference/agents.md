@@ -234,10 +234,10 @@ See [live file access](agents/workspace-files.md#live-file-access).
 
 ## Native admin UI
 
-Trusted operators can open the selected Agent gateway's stock native admin UI
+Authorized users can open the selected Agent gateway's native browser UI
 when the Installation enables [Agent native admin UI access](agent-native-admin.md).
-The availability route requires exact Agent `administer`; `read` and `operate`
-are insufficient. The Agent must be desired running, have a selected version,
+The availability route requires exact Agent `operate` for chat or `administer`
+for administration. `read` alone is insufficient. The Agent must be desired running, have a selected version,
 and expose a private gateway endpoint through the selected Compute Driver.
 
 A derived per-Agent browser host proxies to the private gateway route using the

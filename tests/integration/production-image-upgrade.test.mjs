@@ -10,9 +10,15 @@ import { promisify } from "node:util";
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { withoutShellStartup } from "../helpers/environment.ts";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
-const execute = promisify(execFile);
+const executeFile = promisify(execFile);
+const execute = (command, args, options = {}) =>
+  executeFile(command, args, {
+    ...options,
+    env: withoutShellStartup(options.env ?? process.env),
+  });
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
   await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
@@ -26,7 +32,9 @@ const upgradeScript = fileURLToPath(
 test("quickstart Installation updates preserve the bound Secret and stop on unsafe outcomes", async (t) => {
   let kubectl;
   try {
-    kubectl = (await execute("bash", ["-c", "command -v kubectl"])).stdout.trim();
+    kubectl = (
+      await execute("bash", ["--noprofile", "--norc", "-c", "command -v kubectl"])
+    ).stdout.trim();
   } catch {
     t.skip("kubectl is required for real local Secret merge-patch semantics");
     return;
@@ -186,7 +194,12 @@ esac
       );
       const result = await execute(
         "bash",
-        ["-c", 'set -euo pipefail; source "$SNIPPET"; upgrade_installation'],
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          'set -euo pipefail; source "$SNIPPET"; upgrade_installation',
+        ],
         {
           cwd: repository,
           env: {
@@ -296,7 +309,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -771,6 +784,7 @@ esac
     `printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
+  *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
   *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
@@ -819,7 +833,7 @@ esac
   }
 
   // A controller release changes only the Helm-owned image. It must not replace
-  // the Installation Secret, request fleet inventory, or create Agent revisions.
+  // the Installation Secret or create Agent revisions; it checks active snapshots.
   const controllerEvidence = join(directory, "controller-evidence");
   const controllerOptions = {
     cwd: repository,
@@ -836,7 +850,7 @@ esac
   );
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
   const controllerCommands = await readFile(commandLog, "utf8");
-  assert.doesNotMatch(controllerCommands, /deployment-inventory|agent deploy|apply --filename/u);
+  assert.doesNotMatch(controllerCommands, /agent deploy|apply --filename/u);
   assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
   await assertCompletedRunCannotResume(controllerEvidence, ["controller"], controllerOptions);
   await rm(commandLog);
@@ -1253,16 +1267,20 @@ fi
   ]) {
     await writeFile(protectedFile, left);
     await writeFile(observedFile, right);
-    const result = await execute(compareScript, [protectedFile, observedFile], {
-      cwd: repository,
-      env: {
-        PATH: `${bin}:${process.env.PATH}`,
-        protected: "",
-        observed: "",
-        SHELLOPTS: "allexport",
-        PARTIAL_FAILURE: partial ?? "",
+    // Exercise deliberate allexport without importing ambient shell startup options.
+    const result = await execute(
+      "bash",
+      ["--noprofile", "--norc", "-a", compareScript, protectedFile, observedFile],
+      {
+        cwd: repository,
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          protected: "",
+          observed: "",
+          PARTIAL_FAILURE: partial ?? "",
+        },
       },
-    }).then(
+    ).then(
       (result) => ({ ...result, code: 0 }),
       (error) => error,
     );
@@ -1270,4 +1288,46 @@ fi
     assert.equal(result.stdout, status === 0 ? "Configurations match.\n" : "");
     assert.doesNotMatch(result.stderr, /synthetic-private/);
   }
+});
+
+test("upgrade fixture subprocesses ignore ambient shell startup hooks", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-upgrade-shell-environment-");
+  const marker = join(directory, "startup-ran");
+  const hook = join(directory, "startup.sh");
+  await writeFile(hook, 'printf "hook\\n" >> "$STARTUP_MARKER"\nexport KUBECONFIG=overridden\n');
+  const command = await writeCommand(
+    directory,
+    "fixture-command",
+    `
+[[ -z "\${ENV+x}" ]] || { echo 'ENV reached the fixture' >&2; exit 48; }
+if shopt -q extglob; then
+  echo 'extglob reached the fixture' >&2
+  exit 49
+fi
+printf '%s\\n' "$KUBECONFIG"
+`,
+    {
+      interpreter: "bash",
+    },
+  );
+  const launcher = await writeCommand(directory, "launcher", '"$FIXTURE_COMMAND"', {
+    interpreter: "bash",
+  });
+  // Both the launcher and nested fake command are real Bash processes. Startup
+  // hooks must not run before their bodies or override the fixture's selected input.
+  const env = {
+    PATH: "/usr/bin:/bin",
+    BASH_ENV: hook,
+    ENV: hook,
+    SHELLOPTS: "xtrace",
+    BASHOPTS: "extglob",
+    STARTUP_MARKER: marker,
+    FIXTURE_COMMAND: command,
+    KUBECONFIG: "selected-fixture-config",
+  };
+  const result = await execute(launcher, [], { env });
+  assert.equal(result.stdout, "selected-fixture-config\n");
+  assert.equal(result.stderr, "");
+  await assert.rejects(stat(marker), { code: "ENOENT" });
+  assert.equal(env.BASH_ENV, hook, "child isolation must not mutate the caller's environment");
 });

@@ -167,6 +167,31 @@ jobs:
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
 
+  oidc-agent-chat:
+    name: QA advisory (OIDC Agent chat)
+    needs: eligibility
+    if: needs.eligibility.outputs.openshell-file == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: gateway-routing
+          test-file: tests/integration/oidc-agent-chat-k3d-real.test.ts
+          profile: full
+          node-version: "24.22.1"
+          artifact-prefix: qa-advisory-oidc-agent-chat
+          job-timeout-minutes: 120
+
   openshell:
     name: QA advisory (OpenShell / ${{ matrix.shard }})
     needs: eligibility

@@ -16,6 +16,7 @@ const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)))
 export const keycloakRealmFile = join(repositoryRoot, "tests/fixtures/keycloak/realm-oce.json");
 export const keycloakImageFile = join(repositoryRoot, "tests/fixtures/keycloak/image.json");
 export const keycloakHost = "keycloak.oce.localhost";
+export const keycloakConsoleHost = "console.oce.localhost";
 export const keycloakIssuer = `https://${keycloakHost}/realms/oce`;
 // The OpenShell gateway refuses `localhost` token hosts (it would reach itself), so connection
 // tests post to the token endpoint through this reserved `.test` name (RFC 2606) instead.
@@ -70,7 +71,7 @@ async function writePrivate(path, data) {
 }
 
 // A two-day private CA and its server leaves: one for Keycloak's DNS name, one for the
-// test's HTTPS Console origin on 127.0.0.1. Same openssl recipe as routing.mjs.
+// test's HTTPS Console DNS origin on loopback. Same openssl recipe as routing.mjs.
 async function createCertificates(directory, execFile) {
   const ca = { certPath: join(directory, "ca.crt"), keyPath: join(directory, "ca.key") };
   await execFile("openssl", [
@@ -96,7 +97,7 @@ async function createCertificates(directory, execFile) {
   const leaves = {};
   for (const [name, commonName, subjectAltName] of [
     ["keycloak", keycloakHost, keycloakHosts.map((host) => `DNS:${host}`).join(",")],
-    ["console", "127.0.0.1", "IP:127.0.0.1"],
+    ["console", keycloakConsoleHost, `DNS:${keycloakConsoleHost}`],
   ]) {
     const certPath = join(directory, `${name}.crt`);
     const keyPath = join(directory, `${name}.key`);
@@ -155,12 +156,15 @@ async function createCertificates(directory, execFile) {
   return { ca, leaves };
 }
 
-/** The resolver's answer for the first Keycloak name not exactly 127.0.0.1, for the log. */
+/** Require reachable IPv4 loopback; macOS may also return its IPv6 loopback alias. */
 async function resolverAnswer(lookupAll) {
   for (const host of keycloakHosts) {
     try {
       const addresses = (await lookupAll(host)).map(({ address }) => address);
-      if (addresses.length !== 1 || addresses[0] !== "127.0.0.1") {
+      if (
+        !addresses.includes("127.0.0.1") ||
+        addresses.some((address) => address !== "127.0.0.1" && address !== "::1")
+      ) {
         return { loopbackOnly: false, host, addresses };
       }
     } catch (error) {
@@ -194,7 +198,7 @@ function loopbackPortAccepts(port) {
 // Real DNS, real TLS: the request trusts only the lane CA (plus the system store).
 function httpsJSON(url, { ca, method = "GET", headers = {}, body } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const req = request(url, { method, headers, ca, timeout: 10_000 }, (response) => {
+    const req = request(url, { method, headers, ca, family: 4, timeout: 10_000 }, (response) => {
       let text = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
@@ -344,7 +348,7 @@ export async function prepareKeycloak({
 
   const values = {
     OCE_KEYCLOAK_CLIENT_SECRET: secret(),
-    OCE_KEYCLOAK_REDIRECT_URI: `https://127.0.0.1:${port}/api/auth/providers/oidc/callback`,
+    OCE_KEYCLOAK_REDIRECT_URI: `https://${keycloakConsoleHost}:${port}/api/auth/providers/oidc/callback`,
     OCE_KEYCLOAK_ALICE_PASSWORD: secret(),
     OCE_KEYCLOAK_CAROL_PASSWORD: secret(),
   };
@@ -376,8 +380,8 @@ export async function prepareKeycloak({
   const { ca, leaves } = await step("certificates", () => createCertificates(directory, execFile));
 
   await step("hosts", async () => {
-    // A `::1`-first answer against a loopback-only publication would flake. The log records
-    // each runner image's resolver behaviour (docs/testing/kubernetes.md#keycloak-oidc-tests).
+    // Readiness uses IPv4, matching the container publication. An additional ::1
+    // alias is normal on macOS; nonloopback answers remain forbidden.
     const answer = await resolverAnswer(lookupAll);
     if (answer.loopbackOnly) {
       log(
@@ -399,7 +403,7 @@ export async function prepareKeycloak({
     const added = await resolverAnswer(lookupAll);
     if (!added.loopbackOnly) {
       throw new Error(
-        `${describeAnswer(added)}, not exactly 127.0.0.1; /etc/hosts is not consulted first.`,
+        `${describeAnswer(added)}, not restricted to loopback with 127.0.0.1 present; /etc/hosts is not consulted first.`,
       );
     }
   });

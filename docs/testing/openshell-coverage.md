@@ -111,6 +111,16 @@ application, removal, and isolation from a second Agent. The allowed default
 control remains reachable after revocation. Denial logs and native
 recommendations are checked separately.
 
+If the selected Python command fails its execution guards, the test attempts to
+record an `openshell-policy-probe` measurement. It identifies the control or policy port,
+hashes the expected URI, and records command counts, the selected index, and
+later literal-URI matches across all completed commands. At most eight commands
+have hashes and match flags, starting with the selected command (or the first
+command if none was selected); raw commands and output are omitted. Separate checkpoints identify
+the second Agent's control and denial requests. These diagnostics preserve the
+original assertion and do not establish network enforcement on their own. If
+diagnostic recording fails, the guard still fails without a measurement.
+
 It revokes each required permission after work is queued and checks failure
 before `UpdateConfig`, unchanged loaded provider state, and attributable audit
 evidence. A test barrier also interrupts the worker after the real native write

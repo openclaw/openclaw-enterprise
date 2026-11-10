@@ -213,30 +213,31 @@ material; update again with corrected Secrets. Running Agents lose the source's
 token within about 10 seconds of an update, even a failed one, and receive none
 until you redeploy them.
 
-The issuer can replace an `oauth2-refresh-token` source's refresh token each
-time the gateway uses it, so the recorded Secret may hold an already-used
-token. Re-sending it can fail or make the issuer revoke the sign-in, so an
-update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
-Complete a new sign-in, store its refresh token in a new Secret, and reference
-that Secret.
+An issuer may rotate a refresh token on use. Reusing the recorded Secret can
+fail or revoke the sign-in. An `oauth2-refresh-token` update that retains the
+`refresh_token` Secret, including `{}`, returns `409`. Sign in again, save the
+new token in a new Secret, and reference it.
 
 ## Rotate a refresh source
 
-The gateway re-mints a `refresh`-type source's token before it expires, and
-running Agents use the new token with the same placeholder. To replace a token
-immediately, for example after a suspected leak, send
+For sources with `rotation: refresh`, the Gateway renews the access token before
+it expires. Running Agents keep the same placeholder. To rotate immediately, call
 `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate`
-or run `occ credential-source rotate ID`. The caller needs exact
-`credential_source:update`; rotation reads no Secret. The request returns `200`
-with the source and its `status.refresh`, `409` for a static source, and `503`
-when the gateway is unavailable or minting fails; a failed mint is audited.
-Rotation does not revoke the previous token at the issuer, and Agents need no
-redeploy.
+or run `occ credential-source rotate ID`. Rotation requires exact
+`credential_source:update`, reads no Secret, and needs no redeploy. It does
+not revoke the previous token at the issuer.
 
-When `status.refresh.recoveryAction` is `reauthorize`, the issuer revoked the
-refresh token. For a Secret-backed source, store new authorization material in a
-new Secret and update the source. For device authorization, sign in again and
-replace the Agent binding.
+Success returns `200` with the source and `status.refresh`. Static sources
+return `409`; an unavailable gateway or failed mint returns `503`. Failed
+mints are audited.
+
+`status.refresh.recoveryAction: reauthorize` means the issuer revoked the refresh
+token. Update a Secret-backed source with a new authorization Secret. For device
+authorization, sign in again and replace the Agent binding.
+
+Prepared issuers cannot rotate on demand. If their provider advertises
+`rotation: refresh`, enrollment returns `501` before reading Secret material,
+configuring the issuer, or calling Credential Refresh.
 
 ## Withdraw a source from an Agent
 

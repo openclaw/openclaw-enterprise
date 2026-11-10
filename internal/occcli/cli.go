@@ -920,6 +920,27 @@ func (app *application) agentCommand() *cobra.Command {
 		}
 		return cmd
 	}
+	revision := &cobra.Command{
+		Use:   "revision AGENT_ID REVISION_ID",
+		Short: "Read one exact Agent revision and its saved settings",
+		Args:  idArgs(agentIDArg, revisionIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			value, err := client.GetAgentRevision(namespace, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return app.printBrowsingItems(value, false, []column{
+				{title: "ID", key: "id"},
+				{title: "REVISION", key: "revision"},
+				{title: "CONFIGURATION", key: "configurationId"},
+				{title: "GENERATION", key: "configurationGeneration"},
+			})
+		},
+	}
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -949,14 +970,13 @@ func (app *application) agentCommand() *cobra.Command {
 				flags := command.Flags()
 				if flags.Changed("url") || flags.Changed("service-key-file") || flags.Changed("ca-bundle") ||
 					flags.Changed("timeout-seconds") || flags.Changed("output") {
-					noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
-					return nil
+					return noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
 				}
 				limit := ""
 				if flags.Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
-				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
+				return noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
 			}
 			return nil
 		},
@@ -1064,6 +1084,7 @@ func (app *application) agentCommand() *cobra.Command {
 		deploy,
 		firstDeploymentCommand(false),
 		firstDeploymentCommand(true),
+		revision,
 		revisions,
 		deploymentStatus,
 		stop,
