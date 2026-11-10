@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import type {
+  ControllerAuth,
+  ControllerAuthOptions,
+} from "../../apps/controller/src/auth/index.ts";
+import type { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
 import { keyedAdmission } from "../../apps/controller/src/auth/admission.ts";
 import {
   KNOWN_DEVICE_LIFETIME_SECONDS,
@@ -10,31 +16,55 @@ import {
   knownDeviceFromCookieHeader,
   knownDeviceSetCookie,
   verifyKnownDevice,
+  type KnownDeviceAccountState,
 } from "../../apps/controller/src/auth/known-device.ts";
-import { injectJson } from "../helpers/inject-json.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { injectJson as injectFixtureJson } from "../helpers/inject-json.mjs";
+import { within as fixtureWithin } from "../helpers/wait-for.mjs";
+
+type App = ReturnType<typeof createFastifyApp>;
+type InjectResponse = Awaited<ReturnType<App["inject"]>>;
+type RequestResult =
+  { kind: "response"; response: InjectResponse } | { kind: "request-error"; error: unknown };
+const within: <T>(promise: Promise<T>, message: string, timeoutMs: number) => Promise<T> =
+  fixtureWithin;
+const createControllerAuth: (options: ControllerAuthOptions) => ControllerAuth = createFixtureAuth;
+const injectJson: (
+  app: App,
+  method: "POST",
+  url: string,
+  options: Parameters<typeof injectFixtureJson>[3],
+) => ReturnType<App["inject"]> = injectFixtureJson;
+const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+const fastifyModule: unknown = require("fastify");
+assert.equal(typeof fastifyModule, "function");
+const Fastify = fastifyModule as () => App;
 
 const secret = "known-device-test-secret-at-least-32-bytes";
 const email = "member@example.test";
 const now = Date.UTC(2026, 8, 30, 12);
 // Opaque to the cookie; shaped like the password-only profile's state.
-const stateOf = (userId, methodVersion) =>
+const stateOf = (userId: string, methodVersion: number) =>
   ["password", userId, "method-1", methodVersion].join("\0");
 const accountState = stateOf("user-1", 1);
 
 // Account state by email, recording every read so tests can prove when it is consulted.
-function accounts(states = {}) {
-  const reads = [];
-  const lookup = async (address) => {
+function accounts(states: Record<string, string | undefined> = {}) {
+  const reads: string[] = [];
+  const lookup: KnownDeviceAccountState = async (address) => {
     reads.push(address);
     return Object.hasOwn(states, address) ? states[address] : accountState;
   };
   return { lookup, reads };
 }
 const current = accounts().lookup;
-const verify = (value, at = now, target = email, lookup = current, key = secret) =>
-  verifyKnownDevice(key, target, value, at, lookup);
-const issue = (target, at, existing, state = accountState, key = secret) =>
+const verify = (
+  value: string | undefined,
+  at = now,
+  target = email,
+  lookup = current,
+  key = secret,
+) => verifyKnownDevice(key, target, value, at, lookup);
+const issue = (target: string, at: number, existing?: string, state = accountState, key = secret) =>
   issueKnownDevice(key, target, state, at, existing);
 
 test("an issued entry verifies only for its own email and secret", async () => {
@@ -81,7 +111,8 @@ test("a password change, disable, or recreated account revokes the entry", async
 test("the account is read only for an entry issued for the attempted email", async () => {
   const value = issue(email, now);
   const [version, keyId, issuedAt, nonce, mac, binding] = value.split(".");
-  const flipped = (part) => `${part.slice(0, -1)}${part.endsWith("A") ? "B" : "A"}`;
+  assert.ok(mac && binding);
+  const flipped = (part: string) => `${part.slice(0, -1)}${part.endsWith("A") ? "B" : "A"}`;
   const { lookup, reads } = accounts();
   for (const candidate of [
     `${version}.${keyId}.${issuedAt}.${nonce}.${flipped(mac)}.${binding}`,
@@ -116,6 +147,7 @@ test("a failed account read fails safe to the shared lane", async () => {
 test("tampered, malformed, expired and future entries do not verify", async () => {
   const value = issue(email, now);
   const [version, keyId, issuedAt, nonce, mac, binding] = value.split(".");
+  assert.ok(mac && nonce);
   const flipped = `${mac.slice(0, -1)}${mac.endsWith("A") ? "B" : "A"}`;
   const otherNonce = `${nonce.slice(0, -1)}${nonce.endsWith("A") ? "B" : "A"}`;
   for (const candidate of [
@@ -158,7 +190,15 @@ test("a cookie holding several entries for one email selects one lane per reques
   // Each captured entry is its own bounded lane, never a session.
   const snapshots = [0, 1, 2].map((index) => issue(email, now + index * 1000));
   const lanes = await Promise.all(snapshots.map((value) => verify(value, now + 5000)));
-  assert.equal(new Set(lanes.map((lane) => lane.deviceKey)).size, 3);
+  assert.equal(
+    new Set(
+      lanes.map((lane) => {
+        assert.ok(lane);
+        return lane.deviceKey;
+      }),
+    ).size,
+    3,
+  );
   assert.deepEqual(await verify(snapshots.join("~"), now + 5000), lanes[0]);
   assert.deepEqual(await verify([...snapshots].reverse().join("~"), now + 5000), lanes[2]);
   // Issuing from such a cookie collapses it back to the one fresh entry for this email.
@@ -167,11 +207,12 @@ test("a cookie holding several entries for one email selects one lane per reques
 });
 
 test("a browser keeps entries for its three most recent accounts", async () => {
-  let value;
+  let value: string | undefined;
   const accountEmails = ["a@example.test", "b@example.test", "c@example.test", "d@example.test"];
   for (const [index, account] of accountEmails.entries()) {
     value = issue(account, now + index * 1000, value);
   }
+  assert.ok(value);
   assert.equal(value.split("~").length, 3);
   assert.equal(await verify(value, now + 5000, "a@example.test"), undefined);
   for (const account of accountEmails.slice(1)) {
@@ -183,6 +224,7 @@ test("a browser keeps entries for its three most recent accounts", async () => {
   const again = issue("c@example.test", now + 10_000, value);
   assert.equal(again.split("~").length, 3);
   const after = await verify(again, now + 10_000, "c@example.test");
+  assert.ok(after && before);
   assert.notEqual(after.deviceKey, before.deviceKey);
   assert.ok(await verify(again, now + 10_000, "b@example.test"));
   // A sign-in after secret rotation drops the entries the old secret signed.
@@ -193,10 +235,11 @@ test("a browser keeps entries for its three most recent accounts", async () => {
 });
 
 test("three entries fit the cookie", async () => {
-  let value;
+  let value: string | undefined;
   for (const [index, account] of ["a@example.test", "b@example.test", "c@example.test"].entries()) {
     value = issue(account, now + index * 1000, value, "x".repeat(200));
   }
+  assert.ok(value);
   assert.ok(value.length <= 512, `length ${value.length}`);
   assert.equal(knownDeviceFromCookieHeader(`__Host-occ_known_device=${value}`, true), value);
 });
@@ -234,7 +277,7 @@ function limitedVerifier() {
     { perMinute: 30, concurrent: 2 },
     { perMinute: 600, concurrent: 16 },
   );
-  return (value, lookup = current, target = email) =>
+  return (value: string | undefined, lookup = current, target = email) =>
     verifyKnownDevice(secret, target, value, now, lookup, (keys, read) => budget.admit(keys, read));
 }
 
@@ -276,7 +319,7 @@ test("signed-cookie churn cannot exceed the total pre-lookup rate", async () => 
 test("known-device proof read concurrency is bounded and failures release slots", async () => {
   const bounded = limitedVerifier();
   const entry = issue(email, now);
-  const release = Promise.withResolvers();
+  const release = Promise.withResolvers<void>();
   let reads = 0;
   const lookup = async () => {
     reads += 1;
@@ -310,7 +353,7 @@ test("known-device proof read concurrency is bounded and failures release slots"
 
 test("distinct signed entries share a finite active-read bound", async () => {
   const bounded = limitedVerifier();
-  const release = Promise.withResolvers();
+  const release = Promise.withResolvers<void>();
   let reads = 0;
   const lookup = async () => {
     reads += 1;
@@ -330,29 +373,20 @@ test(
   "a saturated device lookup enters the shared admission lane before blocked reads finish",
   { timeout: 15_000 },
   async (t) => {
-    const require = createRequire(
-      new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
-    );
-    const Fastify = require("fastify");
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const origin = "https://console.oce.localhost";
     const authSecret = `test-secret-${randomUUID()}-${randomUUID()}`;
     const address = `route-${randomUUID()}@example.test`;
     const password = `password-${randomUUID()}`;
     const state = "synthetic-account-state";
-    let release;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    let signal;
-    const observed = new Promise((resolve) => {
-      signal = resolve;
-    });
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: observed, resolve: signal } = Promise.withResolvers<
+      "third-read" | "admission"
+    >();
     let released = false;
     let reads = 0;
-    const admissions = [];
+    const admissions: { beforeRelease: boolean; device: boolean }[] = [];
     const actualAdmission = passwordFailureAdmission({
       perAddress: 20,
       perEmail: 10,
@@ -408,8 +442,8 @@ test(
       await Promise.allSettled(requests);
       await app.close();
     });
-    let first;
-    let before;
+    let first: "third-read" | "admission";
+    let before: { reads: number; admissions: typeof admissions };
     try {
       first = await within(observed, "route did not reach either boundary", 8_000);
       before = { reads, admissions: admissions.filter((entry) => entry.beforeRelease) };
@@ -432,10 +466,6 @@ test(
   "the sign-in handler bounds sequential state reads after device admission is exhausted",
   { timeout: 15_000 },
   async (t) => {
-    const require = createRequire(
-      new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
-    );
-    const Fastify = require("fastify");
     const origin = "https://console.oce.localhost";
     const secret = `synthetic-secret-${randomUUID()}-${randomUUID()}`;
     const email = `synthetic-${randomUUID()}@example.test`;
@@ -444,7 +474,6 @@ test(
     let reads = 0;
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const admission = passwordFailureAdmission({
       perAddress: 1,
       perEmail: 1,
@@ -500,12 +529,7 @@ test(
 // signed entries still require an account read but cannot select a device exemption.
 // Spending the shared lane first isolates proof reads from issuance-state reads and
 // password hashing; the downstream admission is real, with only its pacing shortened.
-async function globalProofHandler(lookup) {
-  const require = createRequire(
-    new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
-  );
-  const Fastify = require("fastify");
-  const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
+async function globalProofHandler(lookup: KnownDeviceAccountState) {
   const { passwordFailureAdmission } = await import("../../apps/controller/src/auth/admission.ts");
   const origin = "https://console.oce.localhost";
   const address = `global-proof-${randomUUID()}@example.test`;
@@ -536,9 +560,9 @@ async function globalProofHandler(lookup) {
   });
   const app = Fastify();
   app.post("/api/auth/sign-in/email", auth.signInEmail);
-  const pending = [];
-  const request = (cookie) => {
-    const result = Promise.resolve(
+  const pending: Promise<RequestResult>[] = [];
+  const request = (cookie?: string): Promise<RequestResult> => {
+    const result: Promise<RequestResult> = Promise.resolve(
       injectJson(app, "POST", "/api/auth/sign-in/email", {
         headers: {
           origin,
@@ -548,7 +572,7 @@ async function globalProofHandler(lookup) {
       }),
     ).then(
       (response) => ({ kind: "response", response }),
-      (error) => ({ kind: "request-error", error }),
+      (error: unknown) => ({ kind: "request-error", error }),
     );
     pending.push(result);
     return result;
@@ -584,7 +608,7 @@ async function globalProofHandler(lookup) {
   }
 }
 
-function assertProofRefusal(result) {
+function assertProofRefusal(result: RequestResult) {
   if (result.kind === "request-error") {
     throw result.error;
   }
@@ -601,7 +625,7 @@ test(
     // minute while 601 distinct entries are checked. Timers remain real and bounded.
     const fixedNow = performance.now();
     const clock = t.mock.method(performance, "now", () => fixedNow);
-    let fixture;
+    let fixture: Awaited<ReturnType<typeof globalProofHandler>> | undefined;
     let reads = 0;
     try {
       fixture = await globalProofHandler(async () => {
@@ -609,7 +633,8 @@ test(
         return "current-password-state";
       });
       reads = 0; // Exclude the seeded request's separate issuance-state read.
-      const cookies = Array.from({ length: 601 }, () => fixture.cookie());
+      const activeFixture = fixture;
+      const cookies = Array.from({ length: 601 }, () => activeFixture.cookie());
       assert.equal(new Set(cookies).size, 601, "per-entry caps cannot mask the global rate cap");
       for (let index = 0; index < 600; index += 1) {
         assertProofRefusal(await fixture.request(cookies[index]));
@@ -631,14 +656,14 @@ test(
   "the sign-in handler enforces 16 active reads across distinct signed entries",
   { timeout: 15_000 },
   async () => {
-    const release = Promise.withResolvers();
-    const sixteenReads = Promise.withResolvers();
-    const seventeenthRead = Promise.withResolvers();
+    const release = Promise.withResolvers<void>();
+    const sixteenReads = Promise.withResolvers<{ kind: "sixteen-reads" }>();
+    const seventeenthRead = Promise.withResolvers<{ kind: "seventeenth-read" }>();
     let holding = false;
     let reads = 0;
-    let fixture;
-    let timer;
-    const requests = [];
+    let fixture: Awaited<ReturnType<typeof globalProofHandler>> | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const requests: Promise<RequestResult>[] = [];
     try {
       fixture = await globalProofHandler(async () => {
         if (holding) {
@@ -652,13 +677,14 @@ test(
         }
         return "current-password-state";
       });
-      const cookies = Array.from({ length: 17 }, () => fixture.cookie());
+      const activeFixture = fixture;
+      const cookies = Array.from({ length: 17 }, () => activeFixture.cookie());
       assert.equal(new Set(cookies).size, 17, "each held request uses a different signed entry");
-      const deadline = new Promise((resolve) => {
+      const deadline = new Promise<{ kind: "deadline" }>((resolve) => {
         timer = setTimeout(() => resolve({ kind: "deadline" }), 8_000);
       });
       holding = true;
-      requests.push(...cookies.slice(0, 16).map((cookie) => fixture.request(cookie)));
+      requests.push(...cookies.slice(0, 16).map((cookie) => activeFixture.request(cookie)));
       const started = await Promise.race([sixteenReads.promise, ...requests, deadline]);
       if (started.kind === "request-error") {
         throw started.error;
