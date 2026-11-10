@@ -201,8 +201,8 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error(error.message);
+  main().catch((error: unknown) => {
+    console.error((error as { message: unknown }).message);
     process.exitCode = 1;
   });
 }
