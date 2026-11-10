@@ -260,6 +260,9 @@ export function createWorkerRevisionFixtures(
     context,
     {
       database,
+      existingNamespace = /** @type {import("../../packages/contracts/src/index.ts").Namespace | undefined} */ (
+        undefined
+      ),
       leaseDurationMs = 30_000,
       maxAttempts = 5,
       onHealthy,
@@ -310,7 +313,7 @@ export function createWorkerRevisionFixtures(
       "persisted IAM must contain a Principal authorized for Agent lifecycle and Secret cleanup",
     );
 
-    const namespace = {
+    const namespace = existingNamespace ?? {
       id: `ns_${randomUUID()}`,
       name: `revision-worker-${randomUUID()}`,
       status: "ready",
@@ -329,7 +332,9 @@ export function createWorkerRevisionFixtures(
         ),
       ),
     );
-    await state.transact((unit) => unit.namespaces.createNamespace(namespace));
+    if (!existingNamespace) {
+      await state.transact((unit) => unit.namespaces.createNamespace(namespace));
+    }
     const compute = {
       ...createDevelopmentComputeDriver(),
       ...(repoDriver === undefined
@@ -932,6 +937,7 @@ export function createWorkerRevisionFixtures(
       work,
       start,
       stop,
+      stopWorkerLoop: () => worker?.stopLoop(),
       createWorkerPool,
       workerPool,
     };

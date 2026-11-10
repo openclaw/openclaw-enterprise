@@ -215,11 +215,11 @@ export async function preparedStandingGitPeer(
     transport.mock.restore();
     syncBuiltinESMExports();
   });
-  const startOwner = (selectedRegistry = registry) =>
+  const startOwner = (selectedRegistry = registry, ownerPool = pool) =>
     startPreparedGitHubGitOwner(
       {
         registry: selectedRegistry,
-        pool,
+        pool: ownerPool,
         driverId: backendId,
         implementation: "github",
         backendId,

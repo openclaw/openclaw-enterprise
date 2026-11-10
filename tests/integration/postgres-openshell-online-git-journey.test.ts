@@ -6,6 +6,8 @@ import test, { type TestContext } from "node:test";
 import {
   narrowOnlineGitJourney,
   selectedReadGitJourney,
+  selectedReadGitTwoWorkerJourney,
+  type SelectedReadJourney,
 } from "../helpers/postgres-repository-set-journey.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
@@ -28,6 +30,83 @@ type DraftClaim = Pick<
   GitUseReceipt,
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
+
+function signedGrantClient(
+  {
+    sandboxId,
+    revision,
+    grant: authority,
+  }: Pick<SelectedReadJourney, "sandboxId" | "revision" | "grant">,
+  providerId: string,
+) {
+  const bindingId = revision.egressPlan!.execution.executionId;
+  const credentialKey = "installation_token";
+  const assertion = (recipient = sandboxId, provider = providerId, key = credentialKey) => {
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(
+      JSON.stringify({
+        alg: "EdDSA",
+        kid: "git-grant",
+        typ: "openshell-provider-assertion+jwt",
+      }),
+    ).toString("base64url");
+    const claims = Buffer.from(
+      JSON.stringify({
+        iss: authority.issuer,
+        aud: authority.endpoint,
+        sub: `openshell-sandbox:${recipient}`,
+        sandbox_id: recipient,
+        caller_kind: "supervisor",
+        provider_id: provider,
+        credential_key: key,
+        iat: now,
+        exp: now + 60,
+        jti: randomUUID(),
+      }),
+    ).toString("base64url");
+    const input = `${header}.${claims}`;
+    return `${input}.${sign(null, Buffer.from(input), authority.keys.privateKey).toString("base64url")}`;
+  };
+  const grant = (requestId: string, clientAssertion: string, resource = bindingId) =>
+    new Promise<{ status: number; value: string | undefined }>((resolve, reject) => {
+      const form = new URLSearchParams({
+        grant_type: "client_credentials",
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: clientAssertion,
+        audience: resource,
+      }).toString();
+      const req = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          servername: "localhost",
+          port: authority.port,
+          path: "/token",
+          method: "POST",
+          ca: authority.ca,
+          agent: false,
+          signal: AbortSignal.timeout(5000),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "content-length": Buffer.byteLength(form),
+            "x-openshell-request-id": requestId,
+          },
+        },
+        async (response) => {
+          try {
+            const result = JSON.parse((await buffer(response)).toString()) as {
+              access_token?: string;
+            };
+            resolve({ status: response.statusCode!, value: result.access_token });
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+      req.on("error", reject);
+      req.end(form);
+    });
+  return { assertion, grant, bindingId };
+}
 
 function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
   return async (t: TestContext) => {
@@ -64,75 +143,10 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
           [{ state: "active", preparation_attempt_id: null, material_version: null }],
         );
         const observed = original.installed.route.observed as { providerId: string };
-        const credentialKey = "installation_token";
-        const assertion = (
-          recipient = sandboxId,
-          provider = observed.providerId,
-          key = credentialKey,
-        ) => {
-          const now = Math.floor(Date.now() / 1000);
-          const header = Buffer.from(
-            JSON.stringify({
-              alg: "EdDSA",
-              kid: "git-grant",
-              typ: "openshell-provider-assertion+jwt",
-            }),
-          ).toString("base64url");
-          const claims = Buffer.from(
-            JSON.stringify({
-              iss: authority.issuer,
-              aud: authority.endpoint,
-              sub: `openshell-sandbox:${recipient}`,
-              sandbox_id: recipient,
-              caller_kind: "supervisor",
-              provider_id: provider,
-              credential_key: key,
-              iat: now,
-              exp: now + 60,
-              jti: randomUUID(),
-            }),
-          ).toString("base64url");
-          const input = `${header}.${claims}`;
-          return `${input}.${sign(null, Buffer.from(input), authority.keys.privateKey).toString("base64url")}`;
-        };
-        const grant = (requestId: string, clientAssertion: string, resource = bindingId) =>
-          new Promise<{ status: number; value: string | undefined }>((resolve, reject) => {
-            const form = new URLSearchParams({
-              grant_type: "client_credentials",
-              client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-              client_assertion: clientAssertion,
-              audience: resource,
-            }).toString();
-            const req = httpsRequest(
-              {
-                hostname: "127.0.0.1",
-                servername: "localhost",
-                port: authority.port,
-                path: "/token",
-                method: "POST",
-                ca: authority.ca,
-                agent: false,
-                signal: AbortSignal.timeout(5000),
-                headers: {
-                  "content-type": "application/x-www-form-urlencoded",
-                  "content-length": Buffer.byteLength(form),
-                  "x-openshell-request-id": requestId,
-                },
-              },
-              async (response) => {
-                try {
-                  const result = JSON.parse((await buffer(response)).toString()) as {
-                    access_token?: string;
-                  };
-                  resolve({ status: response.statusCode!, value: result.access_token });
-                } catch (error) {
-                  reject(error);
-                }
-              },
-            );
-            req.on("error", reject);
-            req.end(form);
-          });
+        const { assertion, grant } = signedGrantClient(
+          { sandboxId, revision, grant: authority },
+          observed.providerId,
+        );
         const approve = async (upload: boolean, requestedRepository = fixtureRepository) => {
           const request = peer.input(bindingId, sandboxId, upload, workspace);
           request.target.path = request.target.path.replace(fixtureRepository, requestedRepository);
@@ -304,6 +318,137 @@ function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
     );
   };
 }
+test(
+  "two independently bound Git Workers share one mint without sharing request authority",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await selectedReadGitTwoWorkerJourney(t, import.meta.url, async (first, second) => {
+      async function client(journey: SelectedReadJourney) {
+        const { pool, peer, revision, runtime, sandboxId, workspace } = journey;
+        const bindingId = revision.egressPlan!.execution.executionId;
+        const route = await runtime.lookup(
+          { sandboxId, bindingId, requestId: randomUUID(), workspace },
+          t.signal,
+        );
+        assert.ok(route?.installed.route);
+        const { providerId } = route.installed.route.observed as { providerId: string };
+        const approval = async (upload = false) => {
+          const input = peer.input(bindingId, sandboxId, upload, workspace);
+          const decision = await journey.evaluateRequest(input);
+          assert.equal(decision.decision, 1, decision.reason_code);
+          return input.context.request_id;
+        };
+        const delivery = async () => {
+          const { rows } = await pool.query<{ worker_instance: string; fence: number }>(
+            "SELECT worker_instance, fence FROM occ.credential_deliveries WHERE revision_id=$1",
+            [revision.id],
+          );
+          assert.equal(rows.length, 1);
+          return rows[0]!;
+        };
+        return { ...signedGrantClient(journey, providerId), approval, providerId, delivery };
+      }
+
+      const a = await client(first);
+      const b = await client(second);
+      const originalA = await a.delivery();
+      const originalB = await b.delivery();
+      assert.notEqual(originalA.worker_instance, originalB.worker_instance);
+      assert.notEqual(first.revision.agentId, second.revision.agentId);
+      assert.notEqual(first.sandboxId, second.sandboxId);
+      assert.notEqual(first.grant.endpoint, second.grant.endpoint);
+      assert.notEqual(first.pool, second.pool);
+      assert.equal(first.revision.namespaceId, second.revision.namespaceId);
+      assert.equal(first.peer.gh.issuesOfTokens.length, 0);
+
+      const requestA = await a.approval();
+      const contended = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      const quotaOwner = await first.pool.connect();
+      try {
+        await quotaOwner.query("BEGIN");
+        await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+        const decision = await second.evaluateRequest(contended);
+        assert.equal(decision.decision, 2);
+        assert.equal(decision.reason_code, "route_not_ready");
+      } finally {
+        quotaOwner.release(true);
+      }
+      assert.deepEqual(await b.grant(contended.context.request_id, b.assertion()), {
+        status: 403,
+        value: undefined,
+      });
+      // Quota contention ends the inspected request. A fresh signed request can proceed.
+      const requestB = await b.approval();
+      // Use the trusted fixture signer's JWT for B's exact endpoint. A's recipient,
+      // binding and request ID are otherwise correct. B cannot redeem A's approval.
+      const wrongOwner = b.assertion(first.sandboxId, a.providerId);
+      assert.deepEqual(await b.grant(requestA, wrongOwner, a.bindingId), {
+        status: 403,
+        value: undefined,
+      });
+      const {
+        rows: [approvalA],
+      } = await first.pool.query<{ consumed: boolean }>(
+        "SELECT consumed FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+        [first.sandboxId, requestA],
+      );
+      assert.equal(approvalA?.consumed, false);
+      assert.equal(first.peer.gh.issuesOfTokens.length, 0);
+
+      const [tokenA, tokenB] = await Promise.all([
+        a.grant(requestA, a.assertion()),
+        b.grant(requestB, b.assertion()),
+        first.waitForIssuance().finally(first.finishIssuance),
+      ]);
+      assert.equal(tokenA.status, 200);
+      assert.equal(tokenB.status, 200);
+      assert.ok(tokenA.value && tokenA.value === tokenB.value, "both recipients use one token");
+      assert.equal(first.peer.gh.issuesOfTokens.length, 1);
+      assert.equal((await first.peer.send(tokenA.value, false)).status, 200);
+      assert.equal((await second.peer.send(tokenB.value, false)).status, 200);
+
+      const { rows: receipts } = await first.pool.query<{
+        revision_id: string;
+        admission_id: string;
+        material_version: string;
+        family_id: string;
+      }>(
+        `SELECT s.revision_id, s.admission_id, u.material_version, m.family_id
+         FROM occ.prepared_repository_git_uses u
+         JOIN occ.repository_session_attempts s USING (admission_id)
+         JOIN occ.prepared_github_shared_members m USING (admission_id)
+         WHERE s.revision_id = ANY($1::text[])`,
+        [[first.revision.id, second.revision.id]],
+      );
+      assert.deepEqual(
+        new Set(receipts.map((row) => row.revision_id)),
+        new Set([first.revision.id, second.revision.id]),
+      );
+      assert.equal(receipts.length, 2);
+      assert.equal(new Set(receipts.map((row) => row.admission_id)).size, 2);
+      assert.equal(new Set(receipts.map((row) => row.family_id)).size, 1);
+      assert.equal(new Set(receipts.map((row) => row.material_version)).size, 1);
+
+      assert.deepEqual(await a.delivery(), originalA);
+      const withdrawnRequest = await a.approval();
+      await first.removeBinding();
+      assert.deepEqual(await a.grant(withdrawnRequest, a.assertion()), {
+        status: 403,
+        value: undefined,
+      });
+      await first.peer.prepared.maintain();
+      const retained = await b.grant(await b.approval(true), b.assertion());
+      assert.equal(retained.status, 200);
+      assert.ok(retained.value && retained.value === tokenB.value, "B keeps the eligible token");
+      const fetch = await second.peer.send(retained.value, true);
+      assert.equal(fetch.status, 200);
+      assert.ok(fetch.bytes.includes("PACK"));
+      assert.equal(first.peer.gh.issuesOfTokens.length, 1);
+      assert.deepEqual(await b.delivery(), originalB);
+    });
+  },
+);
+
 test(
   "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
   { ...requiresPostgres, timeout: 90_000 },
