@@ -232,11 +232,11 @@ start with discovery. [Request selection](../../../apps/controller/src/drivers/r
 
 Expiry or committed removal closes both paths to new approvals in OCC. The
 original issuer settles each custody record independently and quarantines an
-unconfirmed issuance. The cold grant route has no stored material version, so
-current expiry and removal cleanup can retire the execution before any provider
-detach. Keeping the required model running needs a durable OCC withdrawal that
-checks both original GitHub attachments and the original execution fence,
-then confirms current model authorization.
+unconfirmed issuance. For the selected mixed v9 profile, the Worker keeps the
+original execution only after it observes both GitHub attachments and the model
+launch, checks the original delivery fence, and rechecks required authority.
+Stale evidence leaves cleanup pending. A missing or replaced attachment can
+require retirement. The same policy and attachments stay installed.
 
 ## Debugging and Verification
 

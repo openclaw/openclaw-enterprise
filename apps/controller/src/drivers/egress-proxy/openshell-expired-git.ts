@@ -192,6 +192,7 @@ function evidence(
   options?: {
     old?: boolean;
     staleExpiryPending?: boolean;
+    requireFreshObservation?: boolean;
     receiptId?: string;
     resourceVersion?: string;
     observe?: boolean;
@@ -206,7 +207,9 @@ function evidence(
     old &&
     state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
-  const allowStaleExpiry = expired && options?.staleExpiryPending === true;
+  const requiresFreshObservation = expired || options?.requireFreshObservation === true;
+  const staleIsPending =
+    (expired && options?.staleExpiryPending === true) || options?.requireFreshObservation === true;
   const at = timestampNanos(status.observedTime);
   const evaluated = timestampNanos(status.evaluatedTime);
   const now = BigInt(Date.now()) * 1_000_000n;
@@ -261,22 +264,22 @@ function evidence(
       at <= evaluated,
   );
   const evaluationAge = Date.now() - Date.parse(status.evaluatedTime ?? "");
-  if (allowStaleExpiry && evaluationAge >= 30_000) {
+  if (staleIsPending && evaluationAge >= 30_000) {
     return undefined;
   }
   requireIdentity(Math.abs(evaluationAge) < 30_000);
   // Stock reports expiry before checking its 15-second supervisor observation lease.
-  const freshExpiry =
-    !expired ||
+  const freshObservation =
+    !requiresFreshObservation ||
     (evaluated - at < 15_000_000_000n && now - at < 30_000_000_000n && at - now < 30_000_000_000n);
-  if (!freshExpiry && allowStaleExpiry) {
+  if (!freshObservation && staleIsPending) {
     return undefined;
   }
-  requireIdentity(freshExpiry);
+  requireIdentity(freshObservation);
   // Request time includes transport before evaluation. If that conservative budget
   // is exhausted, obtain a fresh witness without treating the matching identity as unsafe.
   if (
-    expired &&
+    requiresFreshObservation &&
     (options?.readStartedAt === undefined ||
       evaluated - at + (process.hrtime.bigint() - options.readStartedAt) >= 15_000_000_000n)
   ) {
@@ -327,7 +330,11 @@ async function modelProvider(
 ) {
   const p = await client.getProvider(git.workspace, model, signal);
   requireIdentity(
-    p?.id && p.name === model && p.workspace === git.workspace && p.id !== git.providerId,
+    p?.id &&
+      p.name === model &&
+      p.workspace === git.workspace &&
+      p.id !== git.providerId &&
+      p.id !== git.pullApi?.providerId,
   );
   return p.id;
 }
@@ -407,10 +414,47 @@ export async function witnessOpenShellGitLaunch(
   return value.hash;
 }
 
+/** Observe an original GitHub attachment after OCC has already closed its authority. */
+async function observeWithdrawnGitAttachment(
+  client: ObservationClient & Pick<OpenShellGatewayClient, "getProviderProfile">,
+  git: Git,
+  attachment: NonNullable<Git["pullApi"]>,
+  signal: AbortSignal,
+): Promise<bigint | undefined> {
+  const { workspace, sandbox, attachmentEpoch } = git;
+  const { provider, providerId, providerResourceVersion, profileVersion } = attachment;
+  const current = await client.getProvider(workspace, provider, signal);
+  requireIdentity(
+    current?.id === providerId &&
+      current.name === provider &&
+      current.workspace === workspace &&
+      current.profileWorkspace === workspace &&
+      current.resourceVersion === providerResourceVersion,
+  );
+  const profile = await client.getProviderProfile(workspace, current.type, signal);
+  requireIdentity(profile?.id === current.type && profile.resourceVersion === profileVersion);
+  const readStartedAt = process.hrtime.bigint();
+  const status = await client.getSandboxProviderStatus(workspace, sandbox, provider, signal);
+  if (
+    !evidence(status, git, attachmentEpoch, provider, providerId, {
+      old: true,
+      resourceVersion: providerResourceVersion,
+      requireFreshObservation: true,
+      readStartedAt,
+    })
+  ) {
+    return;
+  }
+  const observedAt = timestampNanos(status.observedTime);
+  const evaluatedAt = timestampNanos(status.evaluatedTime);
+  requireIdentity(observedAt !== undefined && evaluatedAt !== undefined);
+  return readStartedAt + (15_000_000_000n - (evaluatedAt - observedAt));
+}
+
 /** Observe the original mixed online execution after OCC closed Git authority. */
 export async function observeOnlineGitWithdrawal(
   saved: OpenShellGitExpiry,
-  client: ObservationClient,
+  client: ObservationClient & Pick<OpenShellGatewayClient, "getProviderProfile">,
   owner: OpenShellGitContinuity,
   signal: AbortSignal,
 ): Promise<OpenShellGitExpiryResult> {
@@ -423,6 +467,33 @@ export async function observeOnlineGitWithdrawal(
         box.id === observed.sandboxId &&
         box.mainProcessInstanceId === observed.networkInstanceId,
     );
+    let attachmentDeadline: bigint | undefined;
+    if (observed.pullApi) {
+      const attached = box.spec?.providers;
+      requireIdentity(
+        Array.isArray(attached) &&
+          attached.includes(observed.provider) &&
+          attached.includes(observed.pullApi.provider) &&
+          observed.pullApi.provider !== observed.provider &&
+          observed.pullApi.providerId !== observed.providerId,
+      );
+      const nativeDeadline = await observeWithdrawnGitAttachment(
+        client,
+        observed,
+        observed,
+        signal,
+      );
+      const apiDeadline = await observeWithdrawnGitAttachment(
+        client,
+        observed,
+        observed.pullApi,
+        signal,
+      );
+      if (nativeDeadline === undefined || apiDeadline === undefined) {
+        return "pending";
+      }
+      attachmentDeadline = nativeDeadline < apiDeadline ? nativeDeadline : apiDeadline;
+    }
     // The supervisor can report aggregate Git expiry for the model attachment. This
     // observes the original launch. Current model authority is checked separately.
     const hash = await witnessOpenShellGitLaunch(client, owner, box, observed, signal, {
@@ -439,7 +510,10 @@ export async function observeOnlineGitWithdrawal(
         current.mainProcessInstanceId === box.mainProcessInstanceId,
     );
     signal.throwIfAborted();
-    return current.resourceVersion === box.resourceVersion ? "withdrawn" : "pending";
+    return current.resourceVersion === box.resourceVersion &&
+      (attachmentDeadline === undefined || process.hrtime.bigint() < attachmentDeadline)
+      ? "withdrawn"
+      : "pending";
   } catch (error) {
     return cannotRetain(error) ? "retire-runtime" : "pending";
   }

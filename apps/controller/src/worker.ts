@@ -2536,32 +2536,42 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
-      // These facts are independent. A failed read cannot erase a definite authority loss
-      // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
-      const [authorization, modelWithdrawn] = await Promise.allSettled([
-        this.authorizeRevision(claim, agent, revision),
-        this.requiredModelCredentialWithdrawn(revision),
-      ]);
-      signal.throwIfAborted();
-      if (
-        (authorization.status === "fulfilled" &&
-          authorization.value !== undefined &&
-          ["AUTHORIZATION_DENIED", "ACTOR_REVOKED", "INVALID_AGENT_PRINCIPAL"].includes(
-            authorization.value.code,
-          )) ||
-        (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
-        (revision.egressPlan?.policyReductionVersion !== 2 &&
-          compute.retireExpiredRepositoryAccess === undefined)
-      ) {
-        // The caller matched Compute to this revision. Missing withdrawal capability is
-        // definitive too, even when an independent dependency cannot report its state.
-        return {
-          withdrawal: "retire-runtime",
-          ...(authorization.status === "fulfilled" &&
-          authorization.value?.authorization !== undefined
-            ? { denial: authorization.value }
-            : {}),
-        };
+      const checkRequiredAuthority = async () => {
+        // A failed read cannot erase the other read's definite authority loss.
+        const [authorization, modelWithdrawn] = await Promise.allSettled([
+          this.authorizeRevision(claim, agent, revision),
+          this.requiredModelCredentialWithdrawn(revision),
+        ]);
+        signal.throwIfAborted();
+        if (
+          (authorization.status === "fulfilled" &&
+            authorization.value !== undefined &&
+            ["AUTHORIZATION_DENIED", "ACTOR_REVOKED", "INVALID_AGENT_PRINCIPAL"].includes(
+              authorization.value.code,
+            )) ||
+          (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
+          (revision.egressPlan?.policyReductionVersion !== 2 &&
+            compute.retireExpiredRepositoryAccess === undefined)
+        ) {
+          return {
+            withdrawal: "retire-runtime" as const,
+            ...(authorization.status === "fulfilled" &&
+            authorization.value?.authorization !== undefined
+              ? { denial: authorization.value }
+              : {}),
+          };
+        }
+        if (
+          authorization.status === "rejected" ||
+          authorization.value !== undefined ||
+          modelWithdrawn.status === "rejected"
+        ) {
+          return { withdrawal: "pending" as const };
+        }
+      };
+      const authority = await checkRequiredAuthority();
+      if (authority?.withdrawal === "retire-runtime") {
+        return authority;
       }
       if (agent.desiredRuntimeState !== "running" && expiry !== "removal") {
         return { withdrawal: "pending" };
@@ -2571,12 +2581,8 @@ export class ControllerWorker {
       if (agent.desiredRuntimeState === "running") {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
-      if (
-        authorization.status === "rejected" ||
-        authorization.value !== undefined ||
-        modelWithdrawn.status === "rejected"
-      ) {
-        return { withdrawal: "pending" };
+      if (authority !== undefined) {
+        return authority;
       }
       const secrets = await this.resolveRevisionSecretContext(revision);
       if ("result" in secrets) {
@@ -2601,6 +2607,10 @@ export class ControllerWorker {
                 undefined,
               )
             : await compute.retireExpiredRepositoryAccess!(revision, signal);
+        if (result === "withdrawn" && revision.executionAdmission?.version === 9) {
+          // Live authority can change while the original installation is being observed.
+          return (await checkRequiredAuthority()) ?? { withdrawal: result };
+        }
         return {
           withdrawal: result === "withdrawn" || result === "retire-runtime" ? result : "pending",
         };

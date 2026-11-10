@@ -1359,6 +1359,12 @@ export class OpenShellGitRuntime {
       entry.installed = undefined;
     }
     if (saved.onlineWithdrawalFence !== undefined) {
+      if (
+        this.configuration.grantRedemptionProfile === "selected-repository-pull-preview" &&
+        !saved.observed.pullApi
+      ) {
+        return "retire-runtime";
+      }
       const result = await observeOnlineGitWithdrawal(saved, client, owner, signal);
       if (result !== "withdrawn") {
         return result;
