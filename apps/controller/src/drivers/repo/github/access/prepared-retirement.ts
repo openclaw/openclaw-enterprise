@@ -1,3 +1,4 @@
+import { prepareProviderScope } from "./provider-transport/request-options.ts";
 import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import type { Clock } from "../../access/backend-contracts.ts";
 import type { PreparedGitHubPostgres } from "./prepared-postgres.ts";
@@ -21,10 +22,11 @@ export async function retirePreparedGitHubToken(
       assertAdmitted,
       observeDispatch: assertAdmitted,
     };
-    const response = await createProviderTransport(apiOrigin, ca, clock, a.grant).revoke(
-      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
-      attempt,
-    );
+    const response = await createProviderTransport(
+      ca,
+      clock,
+      prepareProviderScope(apiOrigin, a.grant),
+    ).revoke(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(), attempt);
     response.body.fill(0);
     return response.status === 204;
   });
