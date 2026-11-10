@@ -110,8 +110,8 @@
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.ts",
-    "tests/conformance/split-layout-tenants.test.mjs",
-    "tests/conformance/split-layout-adopt.test.mjs",
+    "tests/conformance/split-layout-tenants.test.ts",
+    "tests/conformance/split-layout-adopt.test.ts",
     "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
@@ -533,10 +533,10 @@
       ]
     },
     {
-      "path": "tests/conformance/split-layout-tenants.test.mjs"
+      "path": "tests/conformance/split-layout-tenants.test.ts"
     },
     {
-      "path": "tests/conformance/split-layout-adopt.test.mjs"
+      "path": "tests/conformance/split-layout-adopt.test.ts"
     },
     {
       "path": "tests/conformance/url-authority.test.ts"
