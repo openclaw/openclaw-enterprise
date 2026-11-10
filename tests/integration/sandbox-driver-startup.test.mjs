@@ -218,6 +218,11 @@ function workspaceGatewayClient(seed = [], events = []) {
       }
       workspaces.delete(name);
     },
+    async getPolicyStatus() {
+      // This controlled Gateway starts with stock restricted egress. Readiness
+      // scenarios override its observations to model convergence and refusals.
+      return { state: "POLICY_STATUS_LOADED", version: 1, activeVersion: 1, policy: {} };
+    },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
@@ -2688,6 +2693,10 @@ test("OpenShell requires matching applied network egress evidence before accepti
       } else {
         admission = { ...accepted, applied_allow_unconfigured_public_tcp: true };
         await assert.rejects(provision(), /public network egress for a restricted Agent revision/);
+        // Replay of a saved pre-mode revision must also refuse a public supervisor.
+        delete revision.networkEgressMode;
+        await assert.rejects(provision(), /public network egress for a restricted Agent revision/);
+        revision.networkEgressMode = mode;
         admission = accepted;
       }
       const loaded = status;
@@ -2851,7 +2860,7 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   const name = first.resourceName;
   assert.deepEqual(
     calls.map(([call]) => call),
-    ["getSandbox", "createSandbox"],
+    ["getSandbox", "createSandbox", "getSandbox"],
   );
   // A later pass with a different spec rejects the stale Sandbox and never creates.
   calls.length = 0;
@@ -2869,7 +2878,7 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   assert.deepEqual(await provision(), first);
   assert.deepEqual(
     calls.map(([call]) => call),
-    ["getSandbox", "createSandbox", "getSandbox", "getService"],
+    ["getSandbox", "createSandbox", "getSandbox", "getService", "getSandbox"],
   );
   createError = undefined;
 
@@ -3085,13 +3094,14 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     `createSandbox:${id2}`,
     "getSandbox",
     recreated[7],
+    "getSandbox",
   ]);
   assert.equal(sandboxes.size, 1);
   assert.equal(new Set(recreated.filter((call) => call.startsWith("createSandbox"))).size, 4);
 
   // The live Sandbox is adopted without any create.
   assert.deepEqual(await provision(), first);
-  assert.deepEqual(trace(), ["getSandbox", "getService"]);
+  assert.deepEqual(trace(), ["getSandbox", "getService", "getSandbox"]);
 
   // A refused request_id whose earlier call creates the Sandbox meanwhile is adopted;
   // no further request_id is tried.
@@ -3100,7 +3110,13 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     sandboxes.set(request.name, storedSandbox(request, { id: "sandbox-late" }));
   };
   assert.deepEqual(await provision(), first);
-  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`, "getSandbox", "getService"]);
+  assert.deepEqual(trace(), [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    "getService",
+    "getSandbox",
+  ]);
 
   // Two concurrent passes: the later one is refused the held request_id, advances, and
   // creates; the held create then loses the name and adopts the same Sandbox.

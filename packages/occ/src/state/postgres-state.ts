@@ -801,7 +801,9 @@ function revisionFromRow(
     harness: admitted.harness,
     compute: admitted.compute,
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
-    networkEgressMode: admitted.network_egress_mode ?? "restricted",
+    ...(admitted.network_egress_mode === undefined
+      ? {}
+      : { networkEgressMode: admitted.network_egress_mode }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
       : { sandboxDriverId: admitted.sandbox_driver_id }),

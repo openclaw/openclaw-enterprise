@@ -137,8 +137,8 @@ execution and rejects public embedded Secret bindings. Dedicated channel binding
 remain in the separate Gateway.
 
 Admission freezes `networkEgressMode` separately from `sandboxPolicy`. PostgreSQL
-constrains the value in `admitted_spec`. For older snapshots, `revisionFromRow`
-supplies `restricted` so replay checks the loaded OpenShell policy.
+constrains the value in `admitted_spec`. OpenShell checks older snapshots with no mode
+against the same restricted policy on provisioning and live observation.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`

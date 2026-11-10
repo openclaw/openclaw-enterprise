@@ -268,14 +268,11 @@ function networkEgressModeApplied(
   sandbox: OpenShellSandboxResponse | undefined,
   config: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
-  if (mode === undefined) {
-    return true;
-  }
   if ((status.policy.allow_unconfigured_public_tcp ?? false) !== (mode === "public")) {
     return false;
   }
   const admission = sandbox?.configurationAdmission;
-  if (mode === "restricted") {
+  if (mode !== "public") {
     return admission?.applied_allow_unconfigured_public_tcp !== true;
   }
   // Requested policy equality cannot attest an unknown field survived in the active engine.
@@ -3363,14 +3360,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const checkEffectivePolicy = async () => {
-      const mode = context.revision.networkEgressMode;
-      const status =
-        mode === undefined
-          ? undefined
-          : await client.getPolicyStatus?.(
-              { workspace, sandbox: sandbox.resourceName },
-              context.signal,
-            );
+      const mode = context.revision.networkEgressMode ?? "restricted";
+      const status = await client.getPolicyStatus?.(
+        { workspace, sandbox: sandbox.resourceName },
+        context.signal,
+      );
       if (
         status !== undefined &&
         status.state !== "POLICY_STATUS_FAILED" &&
@@ -3383,9 +3377,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
       if (
-        mode !== undefined &&
-        (status?.state !== "POLICY_STATUS_LOADED" ||
-          (status.policy.allow_unconfigured_public_tcp ?? false) !== (mode === "public"))
+        status?.state !== "POLICY_STATUS_LOADED" ||
+        (status.policy.allow_unconfigured_public_tcp ?? false) !== (mode === "public")
       ) {
         throw new OpenShellSandboxConfigurationFailure(
           "OpenShell did not load the revision's network egress mode. Public mode requires a Gateway and supervisor supporting mediated public TCP access; otherwise select restricted mode.",
@@ -3395,38 +3388,36 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         plugin || mcpPolicies.length || mode === "public"
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
-      if (status !== undefined) {
-        const current = await client.getSandbox(
-          { workspace, name: sandbox.resourceName },
-          context.signal,
-        );
-        if (!networkEgressModeApplied(mode, status, current, config)) {
-          const admission = current?.configurationAdmission;
-          // Acceptance precedes networking startup. Keep the same workload while the
-          // supervisor publishes its applied bit or a newer policy generation converges.
-          if (
-            mode === "public" &&
-            !admission?.error &&
-            admission?.state !== 3 &&
-            admission?.applied_allow_unconfigured_public_tcp !== false &&
-            (admission?.applied_allow_unconfigured_public_tcp === undefined ||
-              admission.state === 1 ||
-              admission.policy_version !== status.version ||
-              config?.version !== admission.policy_version ||
-              config.configuration_admitted !== true)
-          ) {
-            throw new TransientDependencyError(
-              "sandbox_gateway",
-              "unavailable",
-              "OpenShell has not confirmed active public network egress yet. Waiting for the supervisor's applied policy observation.",
-            );
-          }
-          throw new OpenShellSandboxConfigurationFailure(
-            mode === "public"
-              ? "OpenShell has not confirmed active public network egress. Use a Gateway and supervisor that report the applied public TCP mode, or select restricted mode."
-              : "OpenShell reports public network egress for a restricted Agent revision.",
+      const current = await client.getSandbox(
+        { workspace, name: sandbox.resourceName },
+        context.signal,
+      );
+      if (!networkEgressModeApplied(mode, status, current, config)) {
+        const admission = current?.configurationAdmission;
+        // Acceptance precedes networking startup. Keep the same workload while the
+        // supervisor publishes its applied bit or a newer policy generation converges.
+        if (
+          mode === "public" &&
+          !admission?.error &&
+          admission?.state !== 3 &&
+          admission?.applied_allow_unconfigured_public_tcp !== false &&
+          (admission?.applied_allow_unconfigured_public_tcp === undefined ||
+            admission.state === 1 ||
+            admission.policy_version !== status.version ||
+            config?.version !== admission.policy_version ||
+            config.configuration_admitted !== true)
+        ) {
+          throw new TransientDependencyError(
+            "sandbox_gateway",
+            "unavailable",
+            "OpenShell has not confirmed active public network egress yet. Waiting for the supervisor's applied policy observation.",
           );
         }
+        throw new OpenShellSandboxConfigurationFailure(
+          mode === "public"
+            ? "OpenShell has not confirmed active public network egress. Use a Gateway and supervisor that report the applied public TCP mode, or select restricted mode."
+            : "OpenShell reports public network egress for a restricted Agent revision.",
+        );
       }
       if (plugin) {
         verifyPluginRequestGuard(config, plugin, workspace);

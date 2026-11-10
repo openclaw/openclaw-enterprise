@@ -183,7 +183,7 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
   );
   assert.ok(summaries.revisions.every((revision) => !Object.hasOwn(revision, "networkEgressMode")));
 
-  // A pre-mode snapshot must replay with the same restricted checks as a new one.
+  // Omission is still a valid restricted snapshot, without inventing a persisted value.
   const { networkEgressMode: _mode, ...omitted } = revisions.at(-1);
   const omittedRevision = await state.transact((unit) =>
     unit.revisions.createRevision({ ...omitted, id: `rev_${randomUUID()}`, revision: 100 }),
@@ -191,7 +191,7 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
   const reloaded = await state.read((view) =>
     view.revisions.findRevision(namespace.id, agent.id, omittedRevision.id),
   );
-  assert.equal(reloaded.networkEgressMode, "restricted");
+  assert.equal(Object.hasOwn(reloaded, "networkEgressMode"), false);
   const omittedRow = await pool.query(
     "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
     [omittedRevision.id],
