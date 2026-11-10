@@ -30,6 +30,13 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.selectDockerComputeEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
 			return err
 		}
+		browserEnvironment, err := DockerBrowserEnvironment(opts.Repository, false)
+		if err != nil {
+			return err
+		}
+		for key, value := range browserEnvironment {
+			r.env[key] = value
+		}
 		args := append([]string{"compose"}, opts.ComposeArgs...)
 		if r.engine == "podman" {
 			data, err := r.output(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}")
@@ -49,6 +56,7 @@ func Down(ctx context.Context, opts Options) error {
 			}
 			args = append([]string{"compose"}, composeArgs...)
 		}
+		args = append([]string{"compose"}, dockerBrowserComposeArgs(args[1:], opts.Repository, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])...)
 		args = append(args, "down")
 		if opts.Volumes {
 			args = append(args, "--volumes")

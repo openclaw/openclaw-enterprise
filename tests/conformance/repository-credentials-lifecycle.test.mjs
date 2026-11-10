@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProviderQueue } from "../../apps/controller/src/drivers/repo/credentials/provider-queue.ts";
-import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
-import { createLifecycle } from "../../apps/controller/src/drivers/repo/credentials/lifecycle.ts";
+import { createProviderQueue } from "../../apps/controller/src/drivers/repo/access/provider-queue.ts";
+import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
+import { createLifecycle } from "../../apps/controller/src/drivers/repo/access/lifecycle.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { custodyLimits } from "../fixtures/repository-credentials/builders.mjs";
 

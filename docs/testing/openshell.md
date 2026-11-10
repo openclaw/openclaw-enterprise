@@ -8,9 +8,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Run these OpenShell setup and real Agent execution tests from the repository
-root. Setup selects official OpenShell `v0.1.6`; [images and trust](openshell-oauth.md#prepare-images-and-trust)
-lists exact versions and qualification limits.
+Run setup and real Agent execution tests from the repository root. Setup selects
+official OpenShell `v0.1.6`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
+for versions and qualification limits.
 
 ## Start a reusable development environment
 
@@ -27,20 +27,19 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-Keep the state directory and environment variables for later commands, with a
-separate directory per checkout. The launcher prints its API URL, kubeconfig,
-context, and service-key file without changing the default kubeconfig or context.
+Keep the state directory and environment variables for later commands. Use one
+directory per checkout. The launcher prints its API URL, kubeconfig, context,
+and service-key file. The default kubeconfig and context stay unchanged.
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=docker` or `podman` if selection is ambiguous.
 
-To stop the environment, including after a partial startup, run:
+To stop even a partially started environment, run:
 
 ```sh
 ./scripts/dev-down
 ```
 
-This deletes the owned cluster and its database. It does not delete unrelated
-clusters. For the Compose control-plane variant, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+This deletes only the owned cluster and its database. For a Compose control
+plane, set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
 ## Finite repository removal
 
@@ -81,11 +80,10 @@ continue its conversation on the same runtime. This case does not qualify B's
 grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
 retain the selected image digests, case results and cleanup evidence.
 
-Conversation failures in the finite-removal and two-Agent cases identify the
-failed check: `execution identity`, `target discovery`, `gateway identity`,
-`model turn`, or `persisted reply`. These fixed labels identify where verification
-stopped, not its root cause. Raw command arguments, output, and error causes
-remain withheld.
+Finite-removal and two-Agent failures identify the failed conversation check:
+`execution identity`, `target discovery`, `gateway identity`, `model turn`, or
+`persisted reply`. These labels do not diagnose the cause. Raw command
+arguments, output, and error causes remain withheld.
 
 ## Codex plugin installation
 
@@ -104,13 +102,12 @@ with `OCC_TEST_QA_SANDBOX_ENV` and `OCC_TEST_QA_CODEX_TOKEN_FILE` as described i
 [QA setup](openshell-coverage.md#qa-matrix-selector). The OpenShell advisory lane
 registers this case separately from model-tool qualification.
 
-This scenario uses ordinary Sandbox policy configuration to admit six observed
-regional package hosts on port 443, with TLS inspection, read-only REST access,
-and the pinned native Codex binary paths. The test reads the emitted policy and
-checks that artifact hosts are absent from the PAT profile. The explicit list
-is in the scenario's Installation configuration; it is not an exhaustive CDN
-inventory. New destinations remain denied until reviewed. These defaults do not
-extend a protected egress plan.
+The scenario's ordinary Sandbox policy admits six observed regional package
+hosts on port 443 with TLS inspection, read-only REST access, and pinned native
+Codex binary paths. The test verifies that the emitted PAT profile excludes
+artifact hosts. The Installation lists allowed hosts, not an exhaustive CDN
+inventory. Other destinations stay denied pending review. These defaults
+do not extend a protected egress plan.
 
 `codex-plugin-stdio-real.test.ts` also runs the production stdio helper against
 the pinned native image with networking disabled. It checks local installation,
@@ -119,27 +116,26 @@ proof does not establish remote account access or OpenShell enforcement.
 
 ## Linear tool-use qualification
 
-The opt-in `openshell-linear-read` QA scenario boots the shipped Kubernetes and
-OpenShell stack, creates the credential source, and provisions a dedicated
-Linear Agent with the shipped Codex configuration through OCE APIs. A normal
-turn through the configured OCE Gateway route must produce a native Linear tool
-call and a successful result matching known data. Kubernetes access runs the API
-client in the existing controller and reads evidence; it does not replace Drivers,
-read Gateway passwords from Secrets, or patch workloads.
+The opt-in `openshell-linear-read` scenario boots the shipped Kubernetes and
+OpenShell stack. Through OCE APIs it creates the credential source and a dedicated
+Linear Agent with the shipped Codex configuration. A normal turn through the
+configured OCE Gateway route must call a native Linear tool and return known
+data successfully. Kubernetes access runs the API client in the existing
+controller and reads evidence without replacing Drivers, reading Gateway
+passwords from Secrets, or patching workloads.
 
-Provide an existing connected account through `OCC_TEST_QA_CODEX_TOKEN_FILE`, an
-authorized model ID through `OCC_TEST_QA_CODEX_MODEL`, and the harmless read fixture:
-`OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TEST_CODEX_LINEAR_TOOL_NAME`, and
-`OCC_TEST_CODEX_LINEAR_RESULT_EXPECT`. The account must already have its Linear
-connection authorized; the test does not automate an OAuth consent decision.
+Set `OCC_TEST_QA_CODEX_TOKEN_FILE` to an existing connected account's token file
+and `OCC_TEST_QA_CODEX_MODEL` to an authorized model ID. Supply the harmless read
+fixture through `OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TEST_CODEX_LINEAR_TOOL_NAME`,
+and `OCC_TEST_CODEX_LINEAR_RESULT_EXPECT`. Authorize the account's Linear
+connection beforehand. The test does not automate OAuth consent.
 
 Select `OCC_TEST_QA_SCENARIOS=openshell-linear-read` in the QA matrix, or set
 `OCC_TEST_OPENSHELL_LINEAR_REAL=1` and run
 `tests/integration/openshell-linear-read-real.test.ts`. The default matrix `all`
-selection excludes this dedicated OpenShell scenario. The standalone file belongs
-to the manual `openshell-linear` lane, which selects it explicitly. Selected cases fail when
-inputs are missing. Installation-only evidence
-does not establish a successful Linear tool call.
+excludes this scenario. The manual `openshell-linear` lane explicitly selects
+the standalone file. Missing inputs fail selected cases. Installation alone
+cannot prove a Linear tool call.
 
 ## Test setup and cleanup
 
@@ -161,10 +157,19 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. These tests verify setup,
-Workspace reconciliation, and cleanup. They use a synthetic credential and
-do not create an Agent or make a model call. They default to Docker; set
-`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` to use Podman.
+Each command selects one case and skips the other. Both check setup, Workspace
+reconciliation, and cleanup. Kubernetes also checks browser access and a model
+reply from a real Agent, using an OIDC protocol fixture. Compose uses a
+synthetic credential without calling a model. Both default to Docker. Set
+`OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
+
+Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
+retain the successful check's source, image identities, and assertion results.
+The test refuses overwrites and prints a temporary receipt path by default.
+OpenShell CI uploads only this JSON as `native-browser-receipt-*` for seven days,
+including successful runs. It excludes cookies, OAuth exchanges, model text, and
+browser media. [Console visual review](../contributing/console-storybook.md#appearance-review)
+separately requires screenshots and video. This check records no video.
 
 ## OpenShell Sandbox
 
@@ -183,8 +188,8 @@ is **uncorrelated** with the request, can contain earlier or queued events, and
 does not identify the curl failure's cause. The assertion still fails; neither
 curl nor diagnostic reads are retried. Passing routes collect no tail.
 
-Preparation requires the Codex credential and model; running the complete lane
-also requires the separate native OpenAI key. For direct Codex file runs, also provide the
+Prepare with the Codex credential and model. The full lane also requires the
+native OpenAI key. Direct Codex file runs require the
 [policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).
 
 The suite delivers initial workspace files through real `ExecSandbox` and reads
@@ -210,12 +215,11 @@ a disposable cluster, installs OpenShell and Agent Sandbox prerequisites, import
 immutable images, and prepares PostgreSQL; a standard k3d cluster is insufficient.
 See the [CI lane guide](ci/full-integration.md#scenarios) for hosted runs.
 
-To run the same lane locally, export both credentials and the model through your
-approved credential workflow. Preparation builds the controller unless
-`OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` selects an approved, immutable prebuilt
-controller. For a local build, choose an approved digest-pinned Node 24 build
-image for `NODE_BASE_IMAGE`. Hosted CI uses its configured
-`CONTAINER_NODE_BASE_IMAGE`; local commands do not inherit that variable. Then run:
+Locally, export both credentials and the model through your approved credential
+workflow. Preparation builds the controller unless `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`
+selects an approved immutable prebuilt controller. Local builds require an
+approved digest-pinned Node 24 `NODE_BASE_IMAGE`. Hosted CI uses
+`CONTAINER_NODE_BASE_IMAGE`; local commands do not inherit it.
 
 ```sh
 if [ -n "${OCC_TEST_PRODUCTION_CONTROLLER_IMAGE:-}" ]; then
@@ -236,9 +240,9 @@ The Codex account must permit `:danger-full-access`; OpenShell supplies the oute
 sandbox. The live probe checks the effective profile before starting inference
 and fails immediately if managed policy selects a restricted sandbox.
 
-The lane includes both setup tests, the Sandbox test, and first-Agent tests for
-both control-plane variants. It fails when selected prerequisites are missing.
-Run cleanup even if preparation or a test fails:
+The lane runs both setup tests, the Sandbox test, and first-Agent tests for both
+control planes. Missing selected prerequisites fail the lane. Clean up even
+after preparation or test failures:
 
 ```sh
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
@@ -247,11 +251,10 @@ node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
 checks finite-grant expiry and worker restart after installation.
 
-The Codex Sandbox case and guided native OpenClaw first-Agent case use production
-Drivers, but neither qualifies a production installation. The separate native
-Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
-run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
-describes the remaining limits.
+Codex Sandbox and guided native OpenClaw first-Agent tests use production
+Drivers. Neither qualifies a production installation. Run the separate native
+Sandbox test with the k3d helper below. It uses a test-only compatibility
+bridge. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
 
 Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
 across a worker restart, isolation from another Agent, and disabling edits while
@@ -295,21 +298,20 @@ demo and `down` removes both environments.
 
 ## First-Agent proof
 
-For a manual Compose-plus-k3d proof, start the development environment above
-with `OCC_DEVELOPMENT_CONTROL_PLANE=compose`. Supply an existing authorized
-`CODEX_ACCESS_TOKEN` or set `CODEX_ACCESS_TOKEN_FILE` to an absolute private file; set
-only one. Then run:
+For manual Compose-plus-k3d proof, start the environment above with
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose`. Supply an authorized `CODEX_ACCESS_TOKEN`
+or point `CODEX_ACCESS_TOKEN_FILE` to an absolute private file. Set only one.
 
 ```sh
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful turn prints `Model response verified:`; a selected version or ready
-Sandbox is insufficient. Rerun with `--replace-key` for an invalid key. The
-starter disables tools. With OpenShell and either local control plane,
-`--control-ui` prints OCE console and OpenClaw Control UI URLs. Trust startup's
-browser CA before opening them. Finish with `./scripts/dev-down` using the same
-state directory.
+`Model response verified:` proves a model turn; a selected version or ready
+Sandbox does not. Failures include [bounded runtime evidence](../flows/secret-storage-and-delivery.md#4-grant-the-first-local-agent-access-to-its-model-credential).
+Replace an invalid key with `--replace-key`. The starter disables tools.
+With either OpenShell control plane, `--control-ui` prints OCE console and
+OpenClaw Control UI URLs. Trust startup's browser CA first. Finish with
+`./scripts/dev-down` using the same state directory.
 
 ### Guided native OpenClaw redeployment
 
@@ -318,17 +320,16 @@ and Kubernetes-only first-Agent stacks. Each stack is created by the public Loca
 Setup installer, including OpenShell installation. Hosted focused jobs prepare
 current-source images through the [CI image path](ci.md); local runs retain source
 builds in the installer.
-The initial invocation checks a fresh nonce and custom prompt. Reuse checks a
-new nonce without that prompt or helper-environment credentials, retaining the
-exact Agent, revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
+The first run checks a fresh nonce and custom prompt. Reuse checks a new nonce
+without that prompt or helper-environment credentials, retaining the exact Agent,
+revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret-timing-and-proof)
 retain stage timings.
 
-After verifying the ready default Namespace created by Local Setup, the test
-runs distinct Codex and native Agents concurrently. Codex uses its `codex-pat`
-source; native OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`.
-The test drains both operations before shared denial checks and stack teardown.
-The native case uses the pinned runtime and production Drivers without the k3d
-helper's compatibility bridge.
+After checking Local Setup's ready default Namespace, the test runs distinct
+Codex and native Agents concurrently. Codex uses its `codex-pat` source. Native
+OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`, the pinned runtime,
+and production Drivers without the k3d helper's compatibility bridge. Both
+operations drain before shared denial checks and teardown.
 
 To exercise an OpenAI-compatible service, set
 `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing

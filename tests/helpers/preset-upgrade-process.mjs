@@ -31,7 +31,7 @@ const { authenticatedHeaders, signInWithEmailPassword } = await load(
 const requireDependency = createRequire(join(repository, "apps/controller/package.json"));
 const pg = requireDependency("pg");
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const authBaseURL = "http://127.0.0.1:0";
+const authBaseURL = "https://console.oce.localhost";
 const configuration = JSON.parse(await readFile(join(directory, "startup.json"), "utf8"));
 const runtime = await loadInstallationConfiguration({
   mode: "production",
@@ -66,17 +66,30 @@ try {
     databaseUrl,
     authSecret: process.env.OCC_AUTH_SECRET,
     authBaseURL,
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers,
   });
   const endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
   const localFetch = (input, options) => {
     const request = new Request(input, options);
-    assert.equal(new URL(request.url).origin, endpoint);
-    return fetch(request, { redirect: "error" });
+    const url = new URL(request.url);
+    assert.ok([endpoint, authBaseURL].includes(url.origin));
+    // Advertise the production HTTPS origin while dispatching only to our owned loopback server.
+    // This saved-state scenario does not qualify TLS or browser cookie transport.
+    const headers = new Headers(request.headers);
+    headers.set("host", new URL(authBaseURL).host);
+    return fetch(
+      new Request(`${endpoint}${url.pathname}${url.search}`, {
+        method: request.method,
+        headers,
+        ...(request.body === null ? {} : { body: request.body, duplex: "half" }),
+      }),
+      { redirect: "error" },
+    );
   };
   const session = await signInWithEmailPassword({
     fetch: localFetch,
-    origin: endpoint,
+    origin: authBaseURL,
     email: "preset-upgrade@example.test",
     password: (await readFile(join(directory, "initial-admin-password"), "utf8")).trim(),
   });

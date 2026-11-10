@@ -53,7 +53,8 @@ import { signInScenarios } from "./scenario-groups/sign-in.mts";
 type FixtureRule = Parameters<typeof createFixtureFetch>[0][number];
 type AgentPermissions = NonNullable<Parameters<typeof agentSaveGap>[0]>;
 // These historical four-flag responses intentionally omit the newer permission fields.
-type PermissionSnapshot = Pick<AgentPermissions, "update" | "deploy" | "operate" | "delete">;
+type PermissionSnapshot = Pick<AgentPermissions, "update" | "deploy" | "operate" | "delete"> &
+  Partial<AgentPermissions>;
 type AuthoredRule = Omit<FixtureRule, "data"> &
   (
     | { data?: never }
@@ -85,6 +86,8 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     };
     nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
     nativeAdminUrl?: string;
+    nativeAdminSessionMode?: "host-only-exchange";
+    nativeAdminMode?: "admin" | "chat";
     observabilityUrl?: string;
     observabilityDenied?: boolean;
     readOnlyPermissionSummary?: boolean;
@@ -1273,6 +1276,36 @@ const authoredScenarios = {
   ...credentialsScenarios({ draft, reservedConfigurationWrite }),
   ...agentDetailScenarios.saveAccess,
   ...credentialsRecoveryScenarios({ draft }),
+  nativeOperatorChat: {
+    group: "Components/Native admin",
+    name: "Operator chat",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAdminMode: "chat",
+    observabilityDenied: true,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    agentPermissionSummary: {
+      update: false,
+      deploy: false,
+      operate: true,
+      delete: false,
+      administer: false,
+      configurationRead: true,
+      configurationUpdate: false,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+    description:
+      "An operator opens chat through the Agent’s restricted browser route. The card explains the shared conversations without promising administrative access. API responses are simulated.",
+    steps: [
+      "Open chat and confirm the simulated native page opens in another tab.",
+      "Return to the Agent and refresh access.",
+    ],
+  } satisfies LocalScenario,
   nativeAdmin: {
     group: "Components/Native admin",
     name: "Available",
@@ -1284,6 +1317,22 @@ const authoredScenarios = {
     steps: [
       "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
       "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
+    ],
+  } satisfies LocalScenario,
+  nativeHostOnlyUnavailable: {
+    group: "Components/Native admin",
+    name: "Host-only launch unavailable",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAdminSessionMode: "host-only-exchange",
+    description:
+      "A simulated launch failure closes the pending Agent window and lets the operator try again.",
+    gap: "This fixture does not perform the browser exchange or prove backend authorization. The PostgreSQL browser integration owns that proof.",
+    steps: [
+      "Use Open Agent UI in the header. Confirm the pending window closes and the panel reports the launch error.",
+      "Block popups for the Console and open again. Confirm the panel asks to allow popups, without sending a launch request.",
+      "Refresh access and confirm the Agent remains available; a failed launch does not alter the Agent or its Configuration.",
     ],
   } satisfies LocalScenario,
   nativeStopped: {

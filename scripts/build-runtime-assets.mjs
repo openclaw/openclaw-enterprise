@@ -16,7 +16,7 @@ import {
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
 import { readOpenclawSource } from "./lib/openclaw-source.mjs";
 
-// Every patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
+// Every OpenClaw patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
 // `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
 // `field` keeps the per-patch provenance names that existed before `patches`.
 const appliedPatches = [
@@ -27,7 +27,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe",
+    sha256: "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
@@ -51,7 +51,7 @@ const appliedPatches = [
     sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
   },
 ];
-const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
+const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
@@ -249,10 +249,10 @@ if (command === "inputs") {
     }
   }
 } else if (command === "package") {
-  if (!sourceManifest) {
+  if (!manifestPath) {
     throw new Error("Runtime packaging requires the OpenClaw source manifest path");
   }
-  const source = await readOpenclawSource(sourceManifest);
+  const source = await readOpenclawSource(manifestPath);
   if (process.env.GIT_COMMIT !== source.commit) {
     throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
   }
@@ -367,11 +367,21 @@ if (command === "inputs") {
     )}\n`,
   );
 } else if (command === "inventory") {
+  // Final-image inventory requires the actual installed Node identity. Package-only
+  // assembly has no executable and deliberately does not invent this provenance.
+  const node = JSON.parse(await readFile(manifestPath, "utf8"));
+  if (
+    node.version !== process.versions.node ||
+    node.sha256 !== hash(await readFile(process.execPath))
+  ) {
+    throw new Error("Node provenance must identify the executable inventorying the final image.");
+  }
   const contents = await writeRuntimeInventory(root, output);
   const provenancePath = join(output, "provenance.json");
   const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
   provenance.runtimeContentsSha256 = hash(contents);
   provenance.codex = await readCodexRuntimeIdentity(root);
+  provenance.node = node;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 } else {
   throw new Error("Expected inputs, package, or inventory with source root and output directory.");

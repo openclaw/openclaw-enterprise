@@ -1,3 +1,4 @@
+import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -19,7 +20,7 @@ import {
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { attachPostgresToK3d } from "./k3d-postgres-network.mjs";
+import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 import {
@@ -101,7 +102,7 @@ const requiresLiveSlack = {
 };
 const installationName = "OpenClaw Kubernetes harness topology integration";
 const authSecret = "kubernetes-harness-topology-auth-secret-32-bytes";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.test";
 const modelPrefix = "openclaw-agent-model";
 const secretRotationProbe = "SECRET_ROTATION_PROBE";
 const peerSecretRotationProbe = "SECRET_ROTATION_PEER_PROBE";
@@ -210,16 +211,20 @@ async function validatePrerequisites() {
 }
 
 async function createAuthenticatedControllerUrlRequest(origin, credentials, requestOrigin) {
+  const transport = createConsoleFixtureTransport(requestOrigin, origin);
   const session = await signInWithEmailPassword({
-    origin,
+    origin: requestOrigin,
+    fetch: transport.fetchThroughLoopback,
     email: credentials.email,
     password: credentials.password,
+    headers: { host: new URL(requestOrigin).host, origin: requestOrigin },
   });
   return async (method, pathname, payload) => {
-    const response = await fetch(new URL(pathname, origin), {
+    const response = await fetchLoopback(new URL(pathname, origin).href, {
       method,
       headers: {
         ...authenticatedHeaders(session),
+        host: new URL(requestOrigin).host,
         origin: requestOrigin,
         ...(payload === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -356,6 +361,22 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=get,create,update,patch,delete",
     "--resource=secrets",
   );
+  // Match Helm's tenant-api role: credential creation verifies that this exact
+  // Agent has no existing Deployment before creating its runtime Secrets.
+  await kubectl(
+    "patch",
+    "clusterrole",
+    apiSecretRole,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
+      },
+    ]),
+  );
   await kubectl(
     "create",
     "clusterrole",
@@ -382,6 +403,87 @@ async function createScopedController(context, identifier, platformNamespace, ku
   };
 }
 
+// Keep the provider's public issuer unchanged. A namespace-local Service maps
+// its standard HTTPS port to the prepared container's private TLS listener.
+async function configureInClusterOidc({
+  oidc,
+  manifests,
+  apiPodSpec,
+  apiContainer,
+  platformNamespace,
+  workspaceGateway,
+}) {
+  const serviceName = "occ-test-keycloak";
+  await applyManifest(
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name: serviceName, namespace: platformNamespace },
+          spec: { ports: [{ name: "https", port: 443, targetPort: 8443 }] },
+        },
+        {
+          apiVersion: "v1",
+          kind: "Endpoints",
+          metadata: { name: serviceName, namespace: platformNamespace },
+          subsets: [{ addresses: [{ ip: oidc.address }], ports: [{ name: "https", port: 8443 }] }],
+        },
+      ],
+    }),
+  );
+  const service = await resource("service", serviceName, platformNamespace);
+  assert.equal(isIP(service.spec.clusterIP), 4, "OIDC Service must have an IPv4 address");
+  apiPodSpec.hostAliases = [
+    { ip: service.spec.clusterIP, hostnames: [new URL(oidc.issuer).hostname] },
+  ];
+  const secretName = "occ-test-oidc";
+  const gatewayCa = await resource("secret", workspaceGateway.caSecretName, platformNamespace);
+  const trustedCertificates = `${Buffer.from(gatewayCa.data["tls.crt"], "base64").toString("utf8")}\n${oidc.caCert}`;
+  manifests.items.push({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: secretName, namespace: platformNamespace },
+    stringData: { "client-secret": oidc.clientSecret, "ca.crt": trustedCertificates },
+  });
+  const values = {
+    OCC_AUTH_OIDC_ISSUER: oidc.issuer,
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: `${oidc.issuer}/protocol/openid-connect/auth`,
+    OCC_AUTH_OIDC_TOKEN_URL: `${oidc.issuer}/protocol/openid-connect/token`,
+    OCC_AUTH_OIDC_JWKS_URL: `${oidc.issuer}/protocol/openid-connect/certs`,
+    OCC_AUTH_OIDC_CLIENT_ID: oidc.clientId,
+    OCC_AUTH_OIDC_DISPLAY_NAME: "Keycloak",
+    ...(oidc.enrollment === undefined
+      ? {}
+      : { OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(oidc.enrollment) }),
+    OCC_AUTH_RECOVERY_USER_ID: oidc.recoveryUserId,
+  };
+  apiContainer.env.push(...Object.entries(values).map(([name, value]) => ({ name, value })), {
+    name: "OCC_AUTH_OIDC_CLIENT_SECRET",
+    valueFrom: { secretKeyRef: { name: secretName, key: "client-secret" } },
+  });
+  apiContainer.env = apiContainer.env.map((entry) =>
+    entry.name === "NODE_EXTRA_CA_CERTS" ? { ...entry, value: "/etc/openclaw/oidc/ca.crt" } : entry,
+  );
+  apiContainer.volumeMounts.push({
+    name: "oidc-ca",
+    mountPath: "/etc/openclaw/oidc",
+    readOnly: true,
+  });
+  apiPodSpec.volumes.push({
+    name: "oidc-ca",
+    secret: { secretName, items: [{ key: "ca.crt", path: "ca.crt" }] },
+  });
+  manifests.items
+    .find(({ kind }) => kind === "NetworkPolicy")
+    .spec.egress.push({
+      to: [{ ipBlock: { cidr: `${oidc.address}/32` } }],
+      ports: [{ protocol: "TCP", port: 8443 }],
+    });
+}
+
 async function startInClusterControllers(
   context,
   {
@@ -392,7 +494,8 @@ async function startInClusterControllers(
     databaseAddress,
     events,
     nativeAdminDomain,
-    nativeAdminSharedCookieDomain,
+    nativeAdminEnabled,
+    oidc,
     platformNamespace,
     workerOptions,
     workspaceGateway,
@@ -513,21 +616,9 @@ async function startInClusterControllers(
                     { name: "OCC_AUTH_BASE_URL", value: authBaseURL },
                     {
                       name: "OCC_AGENT_NATIVE_ADMIN_ENABLED",
-                      value: nativeAdminDomain === undefined ? "false" : "true",
+                      value: nativeAdminEnabled ? "true" : "false",
                     },
-                    ...(nativeAdminDomain === undefined
-                      ? []
-                      : [
-                          { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain },
-                          ...(nativeAdminSharedCookieDomain === undefined
-                            ? []
-                            : [
-                                {
-                                  name: "OCC_AUTH_COOKIE_DOMAIN",
-                                  value: nativeAdminSharedCookieDomain,
-                                },
-                              ]),
-                        ]),
+                    { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain },
                     {
                       name: "OCC_HOST",
                       valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
@@ -739,8 +830,23 @@ async function startInClusterControllers(
       { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
     );
   }
+  if (oidc !== undefined) {
+    await configureInClusterOidc({
+      oidc,
+      manifests,
+      apiPodSpec,
+      apiContainer,
+      platformNamespace,
+      workspaceGateway,
+    });
+  }
   await applyManifest(JSON.stringify(manifests), {
-    redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
+    redactions: [
+      databaseUrl,
+      authSecret,
+      workspaceGateway.apiKey,
+      ...(oidc ? [oidc.clientSecret] : []),
+    ],
   });
   await waitForDeploymentAvailable(
     context,
@@ -1290,8 +1396,8 @@ async function createSecretAssignmentCallerRequest({
     installationId: installation.id,
     secret: authSecret,
     baseURL,
+    agentDomain: `agents.${new URL(baseURL).hostname}`,
     pool,
-    secureCookies: false,
   });
   const account = await auth.createAccount({
     email: credentials.email,
@@ -1357,8 +1463,8 @@ async function ensureHarnessAdminPrincipal(
     installationId: installation.id,
     secret: authSecret,
     baseURL,
+    agentDomain: `agents.${new URL(baseURL).hostname}`,
     pool,
-    secureCookies: false,
   });
   const existing = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [
     credentials.email.trim().toLowerCase(),
@@ -1555,11 +1661,18 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       email: `admin-kubernetes-${hash(identifier)}@example.test`,
       password: `kubernetes-harness-${identifier}`,
     });
-  const bootstrapAuthBaseURL =
-    options.controllerPort === undefined
-      ? authBaseURL
-      : `http://127.0.0.1:${options.controllerPort}`;
-  const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
+  const controllerDefaultOrigin =
+    options.controllerPort === undefined ? authBaseURL : `${authBaseURL}:${options.controllerPort}`;
+  // Development bootstrap accepts only loopback DNS. The production API below
+  // keeps the browser ingress origin chosen by the scenario.
+  const bootstrapOrigin = new URL(controllerDefaultOrigin);
+  bootstrapOrigin.hostname = "console.oce.localhost";
+  const bootstrapAuthBaseURL = bootstrapOrigin.origin;
+  const controllerAuthBaseURL = options.publicOrigin ?? controllerDefaultOrigin;
+  const nativeAdmin = {
+    enabled: options.nativeAdmin?.enabled ?? false,
+    domain: options.nativeAdmin?.domain ?? `agents.${new URL(controllerAuthBaseURL).hostname}`,
+  };
   let gatewayPassword =
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
@@ -1726,6 +1839,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const platformState = new PostgresPlatformState(observerPool);
   let detachPostgres;
+  let detachKeycloak;
+  let oidc;
   let databaseAddress;
   let workerPool;
   let worker;
@@ -1792,7 +1907,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     },
     productionApp: () => productionApp?.close(),
     observerPool: () => observerPool.end(),
-    postgresNetwork: () => detachPostgres?.(),
+    postgresNetwork: async () => {
+      try {
+        await detachPostgres?.();
+      } finally {
+        await detachKeycloak?.();
+      }
+    },
     gatewayRuntimeNamespace: async () => {
       if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
@@ -1821,6 +1942,16 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       detachPostgres = cleanup;
     });
   }
+  if (options.oidc !== undefined) {
+    assert.ok(
+      workspaceGateway,
+      "real OIDC browser proof requires the in-cluster routed controller",
+    );
+    const address = await attachKeycloakToK3d((cleanup) => {
+      detachKeycloak = cleanup;
+    }, options.oidc);
+    oidc = { ...options.oidc, address };
+  }
   let activeInstallation = await platformState.loadInstallation();
 
   let createdFreshInstallation = false;
@@ -1841,6 +1972,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       password: credentials.password,
       authSecret,
       authBaseURL: bootstrapAuthBaseURL,
+      agentDomain: `agents.${new URL(bootstrapAuthBaseURL).hostname}`,
       installationName,
     });
     activeInstallation = await platformState.loadInstallation();
@@ -1855,6 +1987,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     createdFreshInstallation = true;
   }
 
+  if (oidc !== undefined) {
+    // External sign-in activates the guarded profile with a real, existing recovery
+    // account. Its account ID is distinct from the IAM principal used for grants.
+    const recovery = await observerPool.query('SELECT id FROM occ."user" WHERE email = $1', [
+      credentials.email.trim().toLowerCase(),
+    ]);
+    assert.equal(recovery.rows.length, 1, "OIDC requires the exact bootstrap recovery account");
+    oidc = { ...oidc, recoveryUserId: recovery.rows[0].id };
+  }
   const events = [];
   let controllerUrl;
   let requestFactory;
@@ -1866,8 +2007,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseAddress,
       controllerPort: options.controllerPort,
       events,
-      nativeAdminDomain: options.nativeAdmin?.domain,
-      nativeAdminSharedCookieDomain: options.nativeAdmin?.sharedCookieDomain,
+      nativeAdminDomain: nativeAdmin.domain,
+      nativeAdminEnabled: nativeAdmin.enabled,
+      oidc,
       platformNamespace,
       workerOptions,
       workspaceGateway,
@@ -1889,10 +2031,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       authSecret,
       authBaseURL: controllerAuthBaseURL,
+      nativeAdmin,
       drivers,
     });
     requestFactory = (requestCredentials) =>
-      createAuthenticatedControllerRequest(productionApp, requestCredentials);
+      createAuthenticatedControllerRequest(
+        productionApp,
+        requestCredentials,
+        controllerAuthBaseURL,
+      );
   }
   if (workspaceGateway === undefined && options.controllerPort !== undefined) {
     await productionApp.listen({ host: "127.0.0.1", port: options.controllerPort ?? 0 });
@@ -2631,6 +2778,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       authSecret,
       authBaseURL: controllerAuthBaseURL,
+      nativeAdmin,
       drivers,
     });
     if (previousUrl !== undefined) {

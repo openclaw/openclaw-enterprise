@@ -8,6 +8,10 @@ inputs:
     description: Exact manifest file for focused proof. Empty runs the complete lane.
     required: false
     default: ""
+  suite-view:
+    description: Suite registry view used by selection, preparation, and execution.
+    required: false
+    default: default
   profile:
     description: Tool setup profile passed to scripts/ci/setup-tools.sh.
     required: true
@@ -62,7 +66,7 @@ runs:
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
         QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
-        OPENSHELL_TIMING: ${{ inputs.lane == 'openshell' }}
+        OPENSHELL_TIMING: ${{ (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
@@ -86,6 +90,7 @@ runs:
       shell: bash
       env:
         CI_SELECTED_LANE: ${{ inputs.lane }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
     - name: Select installer image preparation
@@ -93,16 +98,23 @@ runs:
       shell: bash
       env:
         CI_SELECTED_LANE: ${{ inputs.lane }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
         node --input-type=module <<'NODE'
         import { appendFileSync } from 'node:fs';
         import { loadTestSuites } from './scripts/ci/test-suites.mjs';
-        const lanes = loadTestSuites('scripts/ci/test-suites.json').lanes;
-        const lane = lanes[process.env.CI_SELECTED_LANE];
+        import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
+        const view = process.env.OCC_CI_SUITE_VIEW;
+        const name = process.env.CI_SELECTED_LANE;
+        const lanes = loadTestSuites('scripts/ci/test-suites.json', view).lanes;
+        if (!Object.hasOwn(lanes, name) || (view === 'full-integration' && !isOpenShellLane(name))) {
+          throw new Error('The selected lane does not belong to the action suite view.');
+        }
+        const lane = lanes[name];
         const file = process.env.CI_SELECTED_TEST_FILE;
         const sourceBuild = lane.prepare?.sourceBuildFiles?.includes(file);
-        const selected = process.env.CI_SELECTED_LANE === 'openshell' &&
+        const selected = isOpenShellLane(name) &&
           lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
         appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
         appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
@@ -172,7 +184,7 @@ runs:
         fi
     - name: Enable Kubernetes bridge packet filtering
       id: kubernetes-bridge
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -206,12 +218,12 @@ runs:
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
       id: install-browser
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
+      if: inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
       id: setup-go
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -242,6 +254,16 @@ runs:
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm openapi:check
+    - name: Restore documentation dependencies
+      id: docs-store
+      if: inputs.lane == 'checks-baseline-1' || inputs.lane == 'checks-browser'
+      uses: ./.github/actions/setup-pnpm-store-cache
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-file: scripts/docs-site/package.json
+        lockfile-path: scripts/docs-site/pnpm-lock.yaml
+        # Static Checks saves this key after its documentation build succeeds.
+        cache-mode: restore
     - name: Run docs check
       id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
@@ -269,7 +291,7 @@ runs:
       run: pnpm typecheck
     - name: Build Go CLI for development installation proof
       id: build-go-cli
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
+      if: inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Precompile controller route schemas
@@ -283,14 +305,14 @@ runs:
       run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
       id: prepare-disk
-      if: (startsWith(inputs.lane, 'k3d-observability') || inputs.lane == 'openshell') && runner.environment == 'github-hosted'
+      if: (startsWith(inputs.lane, 'k3d-observability') || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && runner.environment == 'github-hosted'
       shell: bash
       env:
-        OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
+        OPENCLAW_CI_HEADROOM_LANE: ${{ inputs['suite-view'] == 'full-integration' && 'openshell' || inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -312,7 +334,7 @@ runs:
         merge-multiple: true
     - name: Mark OpenShell preparation start
       id: openshell-prepare-start
-      if: inputs.lane == 'openshell'
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -322,11 +344,12 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'openshell' || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ ((inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
         OCC_CI_FIRST_AGENT_BUILDER: ${{ steps.image-mode.outputs.first-agent == 'true' && steps.builder.outputs.name || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
         OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ inputs.runtime-artifact-id != '' && format('{0}/runtime-artifact', runner.temp) || '' }}
         OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ inputs.runtime-artifact-sha256 }}
@@ -341,7 +364,7 @@ runs:
         node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
     - name: Mark OpenShell preparation end
       id: openshell-prepare-end
-      if: always() && inputs.lane == 'openshell' && steps.openshell-prepare-start.outputs.uptime != ''
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') && steps.openshell-prepare-start.outputs.uptime != ''
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -354,7 +377,7 @@ runs:
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
       id: install-browser-certificates
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       shell: bash
       run: |
         if ! command -v certutil >/dev/null 2>&1; then
@@ -371,7 +394,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell run start
       id: openshell-run-start
-      if: inputs.lane == 'openshell'
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -382,11 +405,12 @@ runs:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
         # is left before the lane deadline.
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+        OCC_TEST_NATIVE_BROWSER_RECEIPT: ${{ inputs.lane == 'openshell' && format('{0}/native-browser-receipt.json', runner.temp) || '' }}
         # One V8 code cache per job, shared by the lane's host Node processes
         # (test files and the controllers and helpers they start with the job
         # env). Node keeps entries under a directory tagged with its version,
@@ -394,6 +418,7 @@ runs:
         # atomically, so concurrent files share it. No test forwards it into a
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
         launch=()
@@ -426,7 +451,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell cleanup start
       id: openshell-cleanup-start
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -454,7 +479,7 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Mark OpenShell cleanup end
       id: openshell-cleanup-end
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
@@ -481,6 +506,15 @@ runs:
         name: runtime-image-fixture-receipt-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/state/runtime-image-fixture-receipt.json
         if-no-files-found: error
+        retention-days: 7
+    - name: Retain native browser receipt
+      id: retain-native-browser-receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always() && inputs.lane == 'openshell' && (inputs.test-file == '' || inputs.test-file == 'tests/integration/dev-up-openshell-k3d-real.test.mjs')
+      with:
+        name: native-browser-receipt-${{ inputs.artifact-prefix }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/native-browser-receipt.json
+        if-no-files-found: ${{ steps.run-lane.outcome == 'success' && 'error' || 'ignore' }}
         retention-days: 7
     - name: Upload cluster diagnostics
       id: upload-cluster-diagnostics
@@ -552,10 +586,11 @@ runs:
       run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
     - name: Summarize OpenShell phase timing
       id: openshell-phase-timing
-      if: always() && inputs.lane == 'openshell'
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
       continue-on-error: true
       shell: bash
       env:
+        OPENSHELL_LANE: ${{ inputs.lane }}
         OPENSHELL_ENTRY: ${{ steps.deadline.outputs.openshell-uptime }}
         OPENSHELL_PREPARE_START: ${{ steps.openshell-prepare-start.outputs.uptime }}
         OPENSHELL_PREPARE_END: ${{ steps.openshell-prepare-end.outputs.uptime }}
@@ -568,7 +603,7 @@ runs:
         OPENSHELL_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
       run: node scripts/ci/openshell-phase-timing.ts summarize "$RUNNER_TEMP/openshell-phase-timing.json" 2>/dev/null
     - name: Retain OpenShell phase timing
-      if: ${{ !cancelled() && inputs.lane == 'openshell' && steps.openshell-phase-timing.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.openshell-phase-timing.outcome == 'success' }}
       continue-on-error: true
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
@@ -602,6 +637,7 @@ runs:
           setup-formatter=${{ steps.setup-formatter.conclusion }}
           format-check=${{ steps.format-check.conclusion }}
           openapi-check=${{ steps.openapi-check.conclusion }}
+          docs-store=${{ steps.docs-store.conclusion }}
           docs-check=${{ steps.docs-check.conclusion }}
           install-docs-browser=${{ steps.install-docs-browser.conclusion }}
           check-go-cli=${{ steps.check-go-cli.conclusion }}
@@ -618,6 +654,7 @@ runs:
           image_reconciliation=${{ steps.image_reconciliation.conclusion }}
           retain-image-reconciliation=${{ steps.retain-image-reconciliation.conclusion }}
           retain-runtime-fixture=${{ steps.retain-runtime-fixture.conclusion }}
+          retain-native-browser-receipt=${{ steps.retain-native-browser-receipt.conclusion }}
           upload-cluster-diagnostics=${{ steps.upload-cluster-diagnostics.conclusion }}
           upload-browser-diagnostics=${{ steps.upload-browser-diagnostics.conclusion }}
           aggregate-results=${{ steps.aggregate-results.conclusion }}

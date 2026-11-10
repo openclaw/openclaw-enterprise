@@ -175,6 +175,16 @@ Its authorized run proves the packaged sender in a real cluster; it is separate 
 The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
 cover stock Codex and generated client material. These checks do not replace the installed lane.
 
+On a native-command chat completion mismatch, the lane attempts to report matching
+synthetic model request/result counts and whether any result contained the completion
+marker, or state that model observations are unavailable. A separate message confirms
+binding withdrawal and discovery release when that checkpoint was recorded. Without
+that message, the stage is unknown. These diagnostics do not expose chat or command
+output and do not replace the Git assertions or qualify the release.
+The failure summary prefers the runner's failed-case or file-failure record over
+generic lane issues. It publishes only known source coordinates and fixed error
+categories; absent or malformed records retain the bounded fallback summary.
+
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
 and `images.controller`, `images.runtime`, and `images.repository` (the broker), each

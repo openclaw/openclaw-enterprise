@@ -98,7 +98,6 @@ test(
         email: "limit-admin@example.test",
         password: "limit-account-password",
         secrets: { "occ-auth/secret": "password-limit-auth-test-secret-at-least-32-bytes" },
-        github: false,
       },
     );
     const {

@@ -98,7 +98,8 @@ Check `Full Integration Aggregate`, the selected job conclusions, and their
 `full-results` artifacts for the dispatch commit. Apply the shared
 [result and cleanup requirements](run-lanes.md#results-and-cleanup) to each selected lane.
 
-The OpenShell lane runs its manifest serially. QA Advisory instead uses
+The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
+its assigned files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).
 Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local runs.
 

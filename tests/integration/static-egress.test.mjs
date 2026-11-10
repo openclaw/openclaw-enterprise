@@ -5,6 +5,7 @@ import {
   encodeSyntheticEvents,
   outputWithIndependentCitation,
 } from "../fixtures/synthetic-egress-provider.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -1190,24 +1191,57 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   const inline = JSON.parse(
     readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
   );
-  const captured = f.capture(inline.request);
-  captured.request.headers.push(
-    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
-  );
-  const { ready } = await f.resolve(captured);
-  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
-  const protectedReply = await f.protect(captured, await f.send(captured, ready));
-  assert.equal(protectedReply.response_complete, true);
-  assert.equal(protectedReply.body.toString(), body);
-  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
+  const metadataKey = "x-codex-turn-metadata";
+  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
+  const repositoryRoot = "/workspace/repository";
+  const origin = "https://example.invalid/owner/repository.git";
+  // Extend the sanitized request with the metadata Codex sends from a Git checkout.
+  const workspace = {
+    latest_git_commit_hash: "a".repeat(40),
+    has_changes: false,
+    associated_remote_urls: {
+      origin,
+      mirror: "git@example.invalid:owner/repository.git",
+    },
+  };
+  const captureInline = (request) => {
+    const captured = f.capture(request);
+    captured.request.headers.push(
+      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+    );
+    return captured;
+  };
+  for (const metadata of [
+    turnMetadata,
+    { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+  ]) {
+    inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    const captured = captureInline(inline.request);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready, "native metadata and inline tools resolve through the installed provider");
+    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+    const protectedReply = await f.protect(captured, await f.send(captured, ready));
+    assert.equal(protectedReply.response_complete, true);
+    assert.equal(protectedReply.body.toString(), body);
+    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  }
 
   // Inline declarations cannot expand the admitted local-tool grant or let
   // client metadata select authority. Refuse before another Secret read/send.
   const inlineReads = f.secretReads;
   const inlineSends = f.providerRequests.length;
   const mutations = [
+    ...[
+      { status: "none" },
+      " ".repeat(8192) + '{"status":"none"}',
+      '{"status":"none","status":"none"}',
+      '{"status":"active"}',
+      '{"status":"none","server":"https://remote.example.test"}',
+    ].map((attribution) => (request) => {
+      request.client_metadata.mcp_attribution = attribution;
+    }),
     ...["system", "user", "assistant"].map((role) => (request) => {
       request.input[0].role = role;
     }),
@@ -1227,12 +1261,54 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
     },
     (request) => {
-      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      const metadata = JSON.parse(request.client_metadata[metadataKey]);
       metadata.reasoning_effort = "unrecognized";
-      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+      request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    },
+    ...[
+      { relative: workspace },
+      { ["/".repeat(4097)]: workspace },
+      { ["/workspace/line\nbreak"]: workspace },
+      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
+      { [repositoryRoot]: {} },
+      { [repositoryRoot]: { namespace_id: f.namespace.id } },
+      { [repositoryRoot]: { latest_git_commit_hash: "1234" } },
+      { [repositoryRoot]: { has_changes: "false" } },
+      ...[
+        {},
+        { "up\u017ftream": origin },
+        { origin: "https://\u212A.example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
+        {
+          origin: syntheticCredentialUrl({
+            username: "fixture-user",
+            password: "fixture-password",
+            host: "example.invalid",
+            pathname: "/owner/repository.git",
+          }),
+        },
+        { origin: origin + "?query=value" },
+        { origin: origin + "#fragment" },
+        { origin: "ssh://git@example.invalid/owner/repository.git" },
+        { origin: "fixture-user@example.invalid:owner/repository.git" },
+        { origin: "helper::git@example.invalid:owner/repository.git" },
+        { origin: "https://example.invalid/" + "a".repeat(2048) },
+        Object.fromEntries(Array.from({ length: 17 }, (_, index) => [index, origin])),
+      ].map((associated_remote_urls) => ({
+        [repositoryRoot]: { associated_remote_urls },
+      })),
+    ].map((workspaces) => (request) => {
+      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
+    }),
+    (request) => {
+      request.client_metadata[metadataKey] =
+        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
     },
     (request) => {
       request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.model = "model-outside-the-inference-grant";
     },
     (request) => {
       request.text.format = {
@@ -1248,7 +1324,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   for (const mutate of mutations) {
     const request = structuredClone(inline.request);
     mutate(request);
-    assert.ok((await f.resolve(f.capture(request))).refused);
+    assert.ok((await f.resolve(captureInline(request))).refused);
   }
   assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
   assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");

@@ -240,6 +240,8 @@ const permissionScopeQualifiers: Record<string, string> = {
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
   bound_credential_source: " (when bound)",
+  native_chat: " (chat access)",
+  native_admin_alternative: " (full native administration, instead of `operate`)",
   read_logs_alternative: " (instead of `read_logs`)",
   provisioning_work: " (once created)",
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
