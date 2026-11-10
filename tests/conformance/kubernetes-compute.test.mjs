@@ -10740,10 +10740,9 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   for (const configuration of [
     withEnv(withSearchHeader("${RELAY_TOKEN}"), { vars: { RELAY_TOKEN: "literal" } }),
     withEnv(withSearchHeader(" ${RELAY_TOKEN} "), { " RELAY_TOKEN ": "literal" }),
-    withEnv(
-      withCodex({ config: { appServer: { headers: { "X-Relay": "${RELAY_TOKEN}" } } } }),
-      { vars: { RELAY_TOKEN: "$${ESCAPED}" } },
-    ),
+    withEnv(withCodex({ config: { appServer: { headers: { "X-Relay": "${RELAY_TOKEN}" } } } }), {
+      vars: { RELAY_TOKEN: "$${ESCAPED}" },
+    }),
     withEnv({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["OTHER"]) }, { RELAY_TOKEN: "x" }),
     withEnv(withSearchHeader("${ZAI_API_KEY}"), { vars: { Z_AI_API_KEY: "literal" } }),
   ]) {

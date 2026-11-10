@@ -303,11 +303,7 @@ const BLOCKED_OVERRIDE_ONLY_KEYS: readonly string[] = [
   "WINDIR",
 ];
 
-const BLOCKED_PREFIXES: readonly string[] = [
-  "DYLD_",
-  "LD_",
-  "BASH_FUNC_",
-];
+const BLOCKED_PREFIXES: readonly string[] = ["DYLD_", "LD_", "BASH_FUNC_"];
 
 const BLOCKED_OVERRIDE_PREFIXES: readonly string[] = [
   "GIT_CONFIG_",
@@ -353,7 +349,11 @@ export function openClawConfigEnvironmentNames(configuration: unknown): Readonly
     ...Object.entries(env).filter(([key]) => key !== "shellEnv" && key !== "vars"),
   ]) {
     const name = rawName.trim();
-    if (typeof value === "string" && PORTABLE_NAME.test(name) && appliesConfigVariable(name, value)) {
+    if (
+      typeof value === "string" &&
+      PORTABLE_NAME.test(name) &&
+      appliesConfigVariable(name, value)
+    ) {
       names.add(name);
     }
   }
