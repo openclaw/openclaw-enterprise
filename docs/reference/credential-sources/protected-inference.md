@@ -25,9 +25,9 @@ shared exchange but does not establish static inference or Git transport support
 
 The bundled OpenShell Credential Proxy Driver refuses new protected static
 OpenAI sources, live adoption or re-admission of a saved source, and new
-protected revisions using one. OCC returns `409 RESOURCE_CONFLICT` before
-preparing credentials for new use. Ask an Installation administrator to
-configure a supported model access path.
+protected revisions using one. OCC returns `409 RESOURCE_CONFLICT`. Source
+admission is refused before reading its Secret material. Ask an Installation
+administrator to configure a supported model access path.
 
 Existing revisions keep the recorded provider for recovery and request
 authorization. Withdrawal and cleanup still go to their original owners.
