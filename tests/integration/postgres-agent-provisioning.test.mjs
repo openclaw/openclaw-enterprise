@@ -18,6 +18,12 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import {
+  createRuntimeComputeDriver,
+  failingTransportDriver,
+  heldTransportDriver,
+  provisioningEffectState,
+} from "./postgres-agent-provisioning-transport-fixture.ts";
+import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -35,7 +41,6 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -192,56 +197,12 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
   };
 }
 
-async function requestAcceptedProvisioning(fixture, namespaceId, secrets) {
+async function requestAcceptedProvisioning(fixture, namespaceId, secrets, overrides = {}) {
   const admitted = await fixture.request("POST", `/namespaces/${namespaceId}/agents/provision`, {
-    body: provisioningBody(namespaceId, secrets),
+    body: provisioningBody(namespaceId, secrets, overrides),
   });
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   return admitted;
-}
-
-function createRuntimeComputeDriver(options = {}) {
-  const base = createDevelopmentComputeDriver();
-  const calls = [];
-  const runtimeStatus = new Map();
-  const keyOf = ({ namespace, agent }) => `${namespace.id}:${agent.id}`;
-  return {
-    ...base,
-    agentProvisioning: { executionModes: ["dedicated"] },
-    requiresAgentRuntimeCredentials: true,
-    calls,
-    validateAgentProvisioning(input) {
-      if (input.executionMode !== "dedicated") {
-        throw new Error("Test provisioning supports only dedicated Agents.");
-      }
-    },
-    async prepareRevision(revision, context) {
-      calls.push({
-        operation: "prepareRevision",
-        revisionId: revision.id,
-        agentId: revision.agentId,
-      });
-      return base.prepareRevision(revision, context);
-    },
-    async provisionAgentRuntimeCredentials(binding, input) {
-      calls.push({
-        operation: "provisionAgentRuntimeCredentials",
-        agentId: binding.agent.id,
-        input,
-      });
-      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
-      return { transportConfigured: true };
-    },
-    async deleteAgentRuntimeCredentials(binding) {
-      calls.push({ operation: "deleteAgentRuntimeCredentials", agentId: binding.agent.id });
-      runtimeStatus.delete(keyOf(binding));
-    },
-    async getAgentRuntimeCredentialStatus(binding) {
-      calls.push({ operation: "getAgentRuntimeCredentialStatus", agentId: binding.agent.id });
-      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
-    },
-    ...(options.prepareRevision === undefined ? {} : { prepareRevision: options.prepareRevision }),
-  };
 }
 
 function createProvisioningConfigurationDriver(options) {
@@ -4762,11 +4723,7 @@ test(
 async function createFailedPreHandoffAgent(fixture, overrides = {}) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const body = provisioningBody(namespace.id, secrets, overrides);
-  const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-    body,
-  });
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets, overrides);
 
   await fixture.startWorker();
   const failed = await waitFor("Agent provisioning to fail before handoff", async () => {
@@ -4785,21 +4742,6 @@ async function createFailedPreHandoffAgent(fixture, overrides = {}) {
   assert.deepEqual(pending.rows[0].pending_effect?.kind, "transport");
   assert.deepEqual(pending.rows[0].pending_effect?.targetId, failed.agentId);
   return { namespace, admitted, failed, pendingEffect: pending.rows[0].pending_effect };
-}
-
-function failingTransportDriver(reportStoredCredentials = () => false) {
-  const computeDriver = createRuntimeComputeDriver();
-  const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
-  const getRuntimeCredentialStatus = computeDriver.getAgentRuntimeCredentialStatus;
-  computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
-    await provisionRuntimeCredentials(...args);
-    throw new Error("synthetic pre-handoff transport failure");
-  };
-  computeDriver.getAgentRuntimeCredentialStatus = async (...args) =>
-    reportStoredCredentials()
-      ? getRuntimeCredentialStatus(...args)
-      : { transportConfigured: false };
-  return computeDriver;
 }
 
 async function settleLateTransport(fixture, target) {
@@ -4966,32 +4908,12 @@ test(
   },
 );
 
-// Holds the worker inside its first runtime-credential write until `hold` returns (the write then
-// stores the credentials) or throws (it ends without storing them). Later calls, such as deploy
-// admission creating missing credentials, run at once.
-function heldTransportDriver(hold) {
-  const computeDriver = createRuntimeComputeDriver();
-  const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
-  let first = true;
-  computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
-    if (first) {
-      first = false;
-      await hold();
-    }
-    return provisionRuntimeCredentials(...args);
-  };
-  return computeDriver;
-}
-
 // Admits provisioning and starts the worker, then waits until it is inside its first runtime
 // credential write, so a worker holds the job's claim with a pending transport effect.
 async function provisionUntilTransportWrite(fixture, isWriting) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-    body: provisioningBody(namespace.id, secrets),
-  });
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
   await fixture.startWorker();
   await waitFor("the worker to begin the runtime-credential write", async () =>
     isWriting() ? true : undefined,
@@ -5011,16 +4933,6 @@ async function provisionUntilTransportWrite(fixture, isWriting) {
     agentId: pending.rows[0].agent_id,
     pendingEffect: pending.rows[0].pending_effect,
   };
-}
-
-async function provisioningEffectState(pool, workId) {
-  const result = await pool.query(
-    `SELECT status, revision_id, completed_phase, progress -> 'effectReceipt' AS receipt
-     FROM occ.agent_provisioning_work WHERE work_id = $1`,
-    [workId],
-  );
-  assert.equal(result.rowCount, 1);
-  return result.rows[0];
 }
 
 const cancelledWriteMessage =
@@ -5330,10 +5242,7 @@ test(
 async function admitProvisioning(fixture) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
-  const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-    body: provisioningBody(namespace.id, secrets),
-  });
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
   return {
     namespace,
     workId: admitted.data.provisioning.workId,
