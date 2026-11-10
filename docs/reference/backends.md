@@ -160,26 +160,32 @@ backend:
 Its closed `configuration` accepts:
 
 - `endpoint`: `host:port` (bracket IPv6 literals, such as `[2001:db8::1]:8080`),
-  or an `http` or `https` origin (scheme letters are case-insensitive) without credentials,
-  path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
-  `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
-  Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`), which URL parsing
-  cannot carry. An IPv4 host must be four decimal octets from 0 to 255 with no
-  leading zeros; shorthand, a single integer, hex, and leading zeros dial a
-  different address and are refused. The port, explicit or the scheme default, must be 1 to 65535,
-  and a bare value must also parse as `http://<value>`, as both gateway clients
-  read it.
+  or an `http`/`https` origin (case-insensitive scheme) without credentials,
+  path, query, or fragment. HTTP uses port 80 when omitted; an explicit `:80`
+  also remains 80 in the gRPC target. HTTPS retains its default 443.
+  Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`). An IPv4 host must
+  be four decimal octets from 0 to 255 without leading zeros; shorthand,
+  hex, and leading zeros dial a different address and are refused. The port
+  must be 1 to 65535, and a bare value must also parse as
+  `http://<value>`, as both gateway clients read it.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
-  defaults to `8080`, and `scheme` defaults to `https` only when
-  `rootCertificatePath` is set. OAuth2 credential sources refuse `token_url`
-  hosts in the gateway's namespace only when OCE knows it: from a bare or
-  `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
+  defaults to `8080`, and `scheme` to `https` only when `rootCertificatePath`
+  is set. OAuth2 credential sources refuse `token_url` hosts in the gateway's
+  namespace when OCE knows it from a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
-- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
-  `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
+- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`,
+  `{ mode: mtls, certificatePath, privateKeyPath }`, or
+  `{ mode: oidcClientCredentials, ... }`. File paths must be absolute.
   mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
   Service HTTP/WebSocket requests retain their separate scoped bearer identity.
+  OIDC client-credentials takes `tokenUrl` (absolute `https`; `http` only to
+  a numeric loopback), `clientId`, `clientSecretPath` (absolute), optional
+  `tokenAuth` and `audience`/`scope`. The client exchanges credentials,
+  caches until a refresh margin before expiry, re-reads the secret each
+  refresh, and presents it as the gRPC `authorization` bearer;
+  `rootCertificatePath` verifies the token request too. `audience` names
+  the gateway's audience.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the

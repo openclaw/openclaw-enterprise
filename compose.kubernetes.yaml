@@ -5,6 +5,7 @@ services:
     volumes:
       - ${OCC_DEVELOPMENT_INSTALLATION_CONFIG:?Installation configuration path is required}:/run/openclaw-development/installation.yaml:ro,z
       - ${OCC_DEVELOPMENT_KUBECONFIG:?Kubeconfig path is required}:/run/openclaw-development/kubeconfig:ro,z
+      - ${OCC_DEVELOPMENT_OPENSHELL_CLIENT_SECRET:?OpenShell client secret path is required}:/run/openclaw-development/openshell-client-secret:ro,z
 
   worker-kubernetes:
     build:
@@ -21,6 +22,7 @@ services:
     volumes:
       - ${OCC_DEVELOPMENT_INSTALLATION_CONFIG:?Installation configuration path is required}:/run/openclaw-development/installation.yaml:ro,z
       - ${OCC_DEVELOPMENT_KUBECONFIG:?Kubeconfig path is required}:/run/openclaw-development/kubeconfig:ro,z
+      - ${OCC_DEVELOPMENT_OPENSHELL_CLIENT_SECRET:?OpenShell client secret path is required}:/run/openclaw-development/openshell-client-secret:ro,z
     depends_on:
       controller:
         condition: service_healthy

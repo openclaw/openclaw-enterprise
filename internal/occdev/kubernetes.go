@@ -462,14 +462,26 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		if s.DeploymentMode == "k3d" {
 			gatewayNamespace = s.PlatformNamespace
 		}
+		// The compute driver requires an in-cluster providerHarness route for
+		// SandboxDriver harness endpoints: the gateway Service ClusterIP for the
+		// owned profiles, or a selectorless bridge Service for an external gateway.
+		harnessPort := 8080
+		harnessLabels := map[string]string{
+			"app.kubernetes.io/name":     "openshell",
+			"app.kubernetes.io/instance": openShellGatewayService,
+		}
+		if s.openShellExternal != nil {
+			harnessPort = s.openShellExternal.port
+			harnessLabels = map[string]string{
+				"app.kubernetes.io/name":     "openshell",
+				"app.kubernetes.io/instance": "openshell-external-bridge",
+			}
+		}
 		compute["network"].(map[string]any)["providerHarness"] = map[string]any{
 			"namespace": gatewayNamespace,
-			"podLabels": map[string]string{
-				"app.kubernetes.io/name":     "openshell",
-				"app.kubernetes.io/instance": openShellGatewayService,
-			},
-			"address": openShellGatewayAddress,
-			"port":    8080,
+			"podLabels": harnessLabels,
+			"address":   openShellGatewayAddress,
+			"port":      harnessPort,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
@@ -503,6 +515,33 @@ func openShellCodexBinaries() []string {
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
+	// An operator's external gateway replaces the in-cluster one entirely, including
+	// its authenticated Service connection, so it is selected before that branch.
+	if s.openShellExternal != nil {
+		// The optional CA bundle trusts the gateway's TLS for gRPC; the same mounted
+		// bundle is exported through NODE_EXTRA_CA_CERTS so the client-credentials
+		// token request to the issuer verifies too.
+		configuration := map[string]any{
+			"endpoint":         s.openShellExternal.endpoint,
+			"auth":             openShellOidcAuthConfiguration(s.openShellExternal),
+			"requestTimeoutMs": 30000,
+		}
+		if s.openShellExternal.caPath != "" {
+			// The k3s chart mounts the CA Secret as its own directory; the Compose
+			// control plane binds the file beside the client secret.
+			caContainerPath := openShellExternalCAContainerPath
+			if s.DeploymentMode == "k3d" {
+				caContainerPath = openShellExternalCAKubernetesPath
+			}
+			configuration["rootCertificatePath"] = caContainerPath
+		}
+		return map[string]any{
+			"id":            "openshell",
+			"type":          "openshell",
+			"configuration": configuration,
+			"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		}
+	}
 	if s.authenticatedOpenShell() {
 		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
 		return map[string]any{
@@ -533,15 +572,19 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 	}
 }
 
+func openShellOidcAuthConfiguration(external *externalOpenShell) map[string]any {
+	return map[string]any{
+		"mode":             "oidcClientCredentials",
+		"tokenUrl":         external.oidcTokenURL,
+		"clientId":         external.oidcClientID,
+		"clientSecretPath": openShellClientSecretContainerPath,
+		// Keycloak and similar issuers reject client_secret_post for confidential
+		// clients; basic is the interoperable default for the client-credentials grant.
+		"tokenAuth": "client_secret_basic",
+	}
+}
+
 func openShellInstallationConfiguration(s *developmentState, workspaceResources []any, harnessResources map[string]any) map[string]any {
-	gatewayNamespace := openShellGatewayNamespace
-	if s.DeploymentMode == "k3d" {
-		gatewayNamespace = s.PlatformNamespace
-	}
-	gatewayLabels := map[string]string{
-		"app.kubernetes.io/name":     "openshell",
-		"app.kubernetes.io/instance": openShellGatewayService,
-	}
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
@@ -551,23 +594,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},
 				"operatorWorkspaceResources": workspaceResources,
-				"networkPolicyResources": []any{
-					map[string]any{
-						"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
-						"metadata": map[string]string{"name": "allow-openshell-sandbox-callback"},
-						"spec": map[string]any{
-							"podSelector": map[string]any{"matchLabels": map[string]string{
-								openShellManagedByLabel:    openShellManagedByValue,
-								openShellBoundaryRoleLabel: openShellSupervisorRole,
-							}},
-							"policyTypes": []string{"Egress"},
-							"egress": []any{map[string]any{"to": []any{map[string]any{
-								"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": gatewayNamespace}},
-								"podSelector":       map[string]any{"matchLabels": gatewayLabels},
-							}}, "ports": []any{map[string]any{"protocol": "TCP", "port": 8080}}}},
-						},
-					},
-				},
+				"networkPolicyResources":     openShellSandboxCallbackPolicies(s),
 			},
 			"kubernetes": map[string]any{
 				"runtimeClassName": openShellRuntimeClass,
@@ -589,6 +616,65 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			"sandboxNamePrefix": "os",
 		},
 	}
+}
+
+// openShellSandboxCallbackPolicies renders the supervisor callback NetworkPolicy:
+// supervisor Pods may call back to the selected gateway - the in-cluster gateway's
+// Pods for the owned profiles, or the external gateway's translated exact
+// addresses when an operator selected one.
+func openShellSandboxCallbackPolicies(s *developmentState) []any {
+	callback := map[string]any{
+		"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+		"metadata": map[string]string{"name": "allow-openshell-sandbox-callback"},
+		"spec": map[string]any{
+			"podSelector": map[string]any{"matchLabels": map[string]string{
+				openShellManagedByLabel:    openShellManagedByValue,
+				openShellBoundaryRoleLabel: openShellSupervisorRole,
+			}},
+			"policyTypes": []string{"Egress"},
+		},
+	}
+	spec := callback["spec"].(map[string]any)
+	if s.openShellExternal != nil {
+		targets := make([]any, 0, len(s.openShellExternal.addresses))
+		for _, cidr := range s.openShellExternal.addresses {
+			targets = append(targets, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
+		}
+		spec["egress"] = []any{map[string]any{"to": targets, "ports": []any{map[string]any{"protocol": "TCP", "port": s.openShellExternal.port}}}}
+		// The compute driver's harness egress policy uses a pod-selector peer from the
+		// providerHarness labels, but the external bridge Service is selectorless and has
+		// no pods, so that peer matches nothing and the workspace's default-deny blocks
+		// the agent gateway's harness connection. Admit the gateway pods' egress to the
+		// external gateway's translated endpoint addresses directly: most CNIs (including
+		// k3d's kube-router) evaluate NetworkPolicy after the Service ClusterIP is
+		// DNAT'd to the Endpoints, so the ipBlock must carry the endpoint addresses,
+		// not the bridge's ClusterIP.
+		harness := map[string]any{
+			"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+			"metadata": map[string]string{"name": "allow-openshell-harness-egress"},
+			"spec": map[string]any{
+				"podSelector": map[string]any{"matchLabels": map[string]string{
+					"openclaw.dev/workload-role": "gateway",
+				}},
+				"policyTypes": []string{"Egress"},
+				"egress":      []any{map[string]any{"to": targets, "ports": []any{map[string]any{"protocol": "TCP", "port": s.openShellExternal.port}}}},
+			},
+		}
+		return []any{callback, harness}
+	}
+	gatewayNamespace := openShellGatewayNamespace
+	if s.DeploymentMode == "k3d" {
+		gatewayNamespace = s.PlatformNamespace
+	}
+	gatewayLabels := map[string]string{
+		"app.kubernetes.io/name":     "openshell",
+		"app.kubernetes.io/instance": openShellGatewayService,
+	}
+	spec["egress"] = []any{map[string]any{"to": []any{map[string]any{
+		"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": gatewayNamespace}},
+		"podSelector":       map[string]any{"matchLabels": gatewayLabels},
+	}}, "ports": []any{map[string]any{"protocol": "TCP", "port": 8080}}}}
+	return []any{callback}
 }
 
 // prepareDevelopmentCodexSandbox verifies the owned node before either local

@@ -171,7 +171,10 @@ including successful runs. It excludes cookies, OAuth exchanges, model text, and
 browser media. [Console visual review](../contributing/console-storybook.md#appearance-review)
 separately requires screenshots and video. This check records no video.
 
-## OpenShell Sandbox
+## OpenShell
+
+For an OIDC-authenticated external gateway, see
+[Use an external OpenShell gateway](../guides/deploy/external-openshell-gateway.md).
 
 The real Sandbox suite checks a dedicated Codex Agent's authenticated Gateway
 access, model and tool turns, credential delivery, filesystem and network

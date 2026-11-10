@@ -87,6 +87,46 @@ func addComposeGatewayRouting(rendered any, state *developmentState) error {
 	return nil
 }
 
+// addComposeExternalOpenShell mounts the optional external gateway CA bundle into
+// the two trusted control-plane services. An external selection has no in-cluster
+// gateway, so its key and CA assets are not mounted; the bundle, when selected,
+// trusts both the gateway's TLS and the OIDC issuer's token endpoint.
+func addComposeExternalOpenShell(rendered any, state *developmentState) error {
+	if state.openShellExternal == nil || state.openShellExternal.caPath == "" {
+		return nil
+	}
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	for _, name := range []string{"controller", "worker-kubernetes"} {
+		service, _ := services[name].(map[string]any)
+		if service == nil {
+			return fmt.Errorf("Compose configuration does not define the %s service", name)
+		}
+		environment, _ := service["environment"].(map[string]any)
+		if environment == nil {
+			return fmt.Errorf("Compose %s service has no environment configuration", name)
+		}
+		if existing, found := environment["NODE_EXTRA_CA_CERTS"]; found && composeValue(existing) != openShellExternalCAContainerPath {
+			return fmt.Errorf("Compose %s must not override NODE_EXTRA_CA_CERTS", name)
+		}
+		environment["NODE_EXTRA_CA_CERTS"] = openShellExternalCAContainerPath
+		volumes, _ := service["volumes"].([]any)
+		source := filepath.Join(state.directory, "openshell-ca.crt")
+		for _, raw := range volumes {
+			existing, _ := raw.(map[string]any)
+			if composeValue(existing["target"]) == openShellExternalCAContainerPath {
+				return fmt.Errorf("Compose %s already mounts %s", name, openShellExternalCAContainerPath)
+			}
+		}
+		volumes = append(volumes, map[string]any{
+			"type": "bind", "source": source, "target": openShellExternalCAContainerPath,
+			"read_only": true, "bind": map[string]any{"selinux": "z"},
+		})
+		service["volumes"] = volumes
+	}
+	return nil
+}
+
 func validateComposeNativeAdmin(rendered any, state *developmentState) error {
 	config, _ := rendered.(map[string]any)
 	services, _ := config["services"].(map[string]any)
