@@ -18,7 +18,7 @@ function adminHost() {
 }
 
 type PostgresAdminOptions = {
-  port: string | number;
+  port: unknown;
   database?: string;
   statements: string[];
   timeoutMs?: number;
