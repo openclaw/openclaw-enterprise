@@ -190,15 +190,13 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects a readiness result for another revision. For a held startup
-failure, return validated `runtimeFailure` evidence for this revision:
+The worker rejects another revision's readiness result. For a held startup
+failure, return validated `runtimeFailure` evidence:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately and which wait until its deadline.
-A runtime container that its platform keeps restarting after unexplained exits is a
-held failure too; Kubernetes Compute reports it as check `crash-loop` (see its
-[troubleshooting](kubernetes-compute.md#troubleshooting)).
+explains which failures end deployment immediately, such as Kubernetes
+[`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
 The worker records the failed deployment and queues `stopRevision` for that
