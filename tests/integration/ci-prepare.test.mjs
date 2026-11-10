@@ -819,6 +819,32 @@ describe("CI preparation", { concurrency }, () => {
     assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
   });
 
+  test("full OpenShell source builds require their selected builder before stack setup", async (t) => {
+    for (const lane of ["openshell-policy", "openshell-installers"]) {
+      const commands = await fixtureImageCommands(t, "engine-holds-images", lane, {
+        ...imageCacheEnv,
+        OCC_CI_SUITE_VIEW: "full-integration",
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
+        // The hosted action must supply its builder for the full lane, even
+        // though no individual test file was selected. Fail before tool calls.
+        BUILDX_BUILDER: "",
+        OCC_HELM_BIN: "/missing-helm-must-not-run",
+      });
+      const prepared = await commands.prepare();
+      assert.equal(prepared.status, 1, lane);
+      assertStderrMatch(
+        prepared.stderr,
+        /Installer image preparation requires its selected job builder/,
+        lane,
+      );
+      const state = await commands.readState();
+      assert.deepEqual(state.resources, []);
+      await commands.cleanupSuccessfully();
+    }
+  });
+
   test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
     const commands = await fixtureImageCommands(t, "engine-holds-images", "images-packaging", {
       ...imageCacheEnv,
@@ -2051,7 +2077,7 @@ assert.equal(commands, 0);
     );
     const select = action.runs.steps.find((step) => step.id === "image-mode");
     const root = await fixture(t);
-    for (const [index, [lane, file, sourceBuild, firstAgent]] of [
+    for (const [index, [lane, file, sourceBuild, firstAgent, view = "default"]] of [
       ["dev-up-k3d", "", "false", "false"],
       ["qa-matrix", "", "false", "false"],
       ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
@@ -2059,6 +2085,15 @@ assert.equal(commands, 0);
       ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
       ["openshell", "tests/integration/local-first-agent-openshell-real.test.mjs", "false", "true"],
       ["openshell", "tests/integration/openshell-refresh-real.test.ts", "false", "false"],
+      ["openshell-policy", "", "true", "false", "full-integration"],
+      ["openshell-installers", "", "true", "false", "full-integration"],
+      [
+        "openshell-policy",
+        "tests/integration/openshell-refresh-real.test.ts",
+        "false",
+        "false",
+        "full-integration",
+      ],
     ].entries()) {
       const output = join(root, `image-mode-${index}`);
       // Run the action's actual selector: confusing these paths can replace source-build proof
@@ -2069,6 +2104,7 @@ assert.equal(commands, 0);
           ...process.env,
           CI_SELECTED_LANE: lane,
           CI_SELECTED_TEST_FILE: file,
+          OCC_CI_SUITE_VIEW: view,
           GITHUB_OUTPUT: output,
         },
         encoding: "utf8",
