@@ -1410,7 +1410,7 @@ function catalogProcessStopped(pid, env = process.env) {
       return true;
     }
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`could not observe catalog process ${pid}: ${detail}`);
+    throw new Error(`could not observe catalog process ${pid}: ${detail}`, { cause: error });
   }
 }
 
