@@ -100,7 +100,9 @@ Omission selects the verification runtime. Storage requirements are defined in
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
-against workload CPU and memory limits.
+against workload CPU and memory limits. See
+[workload capacity checks](../../../guides/topics/agent-troubleshoot.md#check-workload-capacity)
+before relying on totals reported inside the Sandbox.
 
 [Revision model settings](model-provider.md) own endpoint selection and
 validation. Credential Sources retain separate destination authorization.
