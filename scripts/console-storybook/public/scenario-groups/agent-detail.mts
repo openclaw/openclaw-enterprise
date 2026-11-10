@@ -147,6 +147,30 @@ export function createAgentDetailScenarios({
     deploymentErrorCode: null,
   };
 
+  const retainedHarnessRevision: AgentRevisionSummaryWire = {
+    ...newerDeployment,
+    id: "rev_00000000-0000-4000-8000-000000000101",
+    revision: 1,
+    configurationGeneration: 1,
+    harness: { id: "codex", version: "demo", mode: "dedicated" },
+    createdAt: "2026-08-31T12:00:00.000Z",
+    deploymentStatus: "succeeded",
+  };
+  function retainedHarnessDetail(id: string) {
+    return {
+      id,
+      namespaceId: retainedHarnessRevision.namespaceId,
+      agentId: retainedHarnessRevision.agentId,
+      revision: 1,
+      backendId: retainedHarnessRevision.backendId,
+      createdAt: retainedHarnessRevision.createdAt,
+      configurationReadError: {
+        code: "SAVED_CONFIGURATION_UNREADABLE",
+        field: "configuration",
+      },
+    };
+  }
+
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
     path: draft,
@@ -324,6 +348,72 @@ export function createAgentDetailScenarios({
           "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
         ],
         gap: "Simulated UI proof only; this preview does not run a deployment.",
+      },
+      retainedHarnessHistory: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness history",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        rules: [
+          {
+            suffix: "/revisions",
+            data: [
+              {
+                ...newerDeployment,
+                id: "rev_00000000-0000-4000-8000-000000000001",
+                revision: 2,
+                configurationGeneration: 1,
+                createdAt: "2026-09-01T12:00:00.000Z",
+                harness: {
+                  ...newerDeployment.harness,
+                  configuration: {
+                    modelProvider: {
+                      baseUrl: "https://api.openai.com/v1",
+                      protocol: "openai-responses",
+                      supportsStandaloneWebSearch: false,
+                    },
+                  },
+                },
+                deploymentStatus: "succeeded",
+              },
+              retainedHarnessRevision,
+            ],
+          },
+          {
+            suffix: `/revisions/${retainedHarnessRevision.id}`,
+            data: retainedHarnessDetail(retainedHarnessRevision.id),
+          },
+        ],
+        description:
+          "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
+        steps: [
+          "Select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+        ],
+        gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
+      },
+      retainedHarnessWithoutOverrides: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness without overrides",
+        path: revision,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/revisions",
+            data: [{ ...retainedHarnessRevision, id: "rev_00000000-0000-4000-8000-000000000001" }],
+          },
+          {
+            suffix: "/revisions/rev_00000000-0000-4000-8000-000000000001",
+            data: retainedHarnessDetail("rev_00000000-0000-4000-8000-000000000001"),
+          },
+        ],
+        description:
+          "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
+        steps: [
+          "Open draft, then Harness destination. Confirm Use Installation default is selected and Override model provider is the only other choice; no Retain option is offered.",
+          "Choose Override model provider, then return to Use Installation default without deploying. The destination summary follows the selected choice.",
+        ],
+        gap: "Simulated UI proof only; the draft is readable independently of the retained snapshot. No deployment is submitted.",
       },
       newVersion: {
         group: "Pages/Agent detail",

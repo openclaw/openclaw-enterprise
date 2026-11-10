@@ -2028,29 +2028,32 @@ test(
       [current, settings, revision],
     );
 
-    const controller = await startController(context, { databaseUrl: db.applicationUrl });
-    const path = `/namespaces/${namespace}/agents/${agent}/revisions`;
-    const list = await request(controller, "GET", path);
-    const oldDetail = await request(controller, "GET", `${path}/${revision}`);
-    const newDetail = await request(controller, "GET", `${path}/${current}`);
-    assert.deepEqual([list.status, oldDetail.status, newDetail.status], [200, 200, 200]);
-    const historicalHarness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-    assert.deepEqual(
-      list.data.map(({ id, harness }) => [id, harness]),
-      [
-        [current, { ...historicalHarness, ...settings }],
-        [revision, historicalHarness],
-      ],
-    );
-    assert.equal(oldDetail.data.id, revision);
-    assert.deepEqual(oldDetail.data.configurationReadError, {
-      code: "SAVED_CONFIGURATION_UNREADABLE",
-      field: "configuration",
+    // The controller must stop before its parent context drops the database.
+    await context.test("Signed-in revision reads", async (httpContext) => {
+      const controller = await startController(httpContext, { databaseUrl: db.applicationUrl });
+      const path = `/namespaces/${namespace}/agents/${agent}/revisions`;
+      const list = await request(controller, "GET", path);
+      const oldDetail = await request(controller, "GET", `${path}/${revision}`);
+      const newDetail = await request(controller, "GET", `${path}/${current}`);
+      assert.deepEqual([list.status, oldDetail.status, newDetail.status], [200, 200, 200]);
+      const historicalHarness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+      assert.deepEqual(
+        list.data.map(({ id, harness }) => [id, harness]),
+        [
+          [current, { ...historicalHarness, ...settings }],
+          [revision, historicalHarness],
+        ],
+      );
+      assert.equal(oldDetail.data.id, revision);
+      assert.deepEqual(oldDetail.data.configurationReadError, {
+        code: "SAVED_CONFIGURATION_UNREADABLE",
+        field: "configuration",
+      });
+      assert.equal("configuration" in oldDetail.data, false);
+      assert.equal("harness" in oldDetail.data, false);
+      assert.equal(newDetail.data.id, current);
+      assert.deepEqual(newDetail.data.harness, { ...historicalHarness, ...settings });
     });
-    assert.equal("configuration" in oldDetail.data, false);
-    assert.equal("harness" in oldDetail.data, false);
-    assert.equal(newDetail.data.id, current);
-    assert.deepEqual(newDetail.data.harness, { ...historicalHarness, ...settings });
   },
 );
 
