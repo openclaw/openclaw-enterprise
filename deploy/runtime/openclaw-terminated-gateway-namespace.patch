@@ -380,7 +380,7 @@ index 688683ff422fd0e77c3470ab27895b427f3497c6..a8831ba0338edf5cc6e9ded30b74bf6c
      ...(typeof opts.port === "number" &&
      Number.isInteger(opts.port) &&
 diff --git a/src/infra/gateway-owner-lease.ts b/src/infra/gateway-owner-lease.ts
-index 514fd5abfa9679b70fcb42e62077311ea1074842..aac1dc378e543b5ce2bb56a5e4ee2d2bce661a35 100644
+index 5f2939165456bdb57ad2f32aae2cfec8b4c8c61b..9c367619fefb83a95a9d5865ee9fec4376afdf4a 100644
 --- a/src/infra/gateway-owner-lease.ts
 +++ b/src/infra/gateway-owner-lease.ts
 @@ -3,7 +3,7 @@ import { hostname } from "node:os";
@@ -389,10 +389,10 @@ index 514fd5abfa9679b70fcb42e62077311ea1074842..aac1dc378e543b5ce2bb56a5e4ee2d2b
  import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 -import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 +import { getFileLockProcessStartTime, getProcessStartTime } from "../shared/pid-alive.js";
+ import { isLiveStateRead } from "../state/artifact-preserving-state-reads.js";
  import { readAgentDatabaseLeaseProvenance } from "../state/openclaw-agent-db-lease-provenance.js";
  import type { OpenClawStateSchemaReadAdmission } from "../state/openclaw-state-db-contract.js";
- import { isStatePostgres } from "../state/openclaw-state-db-engine.js";
-@@ -239,6 +239,7 @@ export function acquireGatewayOwnerLease(params: {
+@@ -313,6 +313,7 @@ export function acquireGatewayOwnerLease(params: {
    };
    const payload = {
      owner: processOwner,

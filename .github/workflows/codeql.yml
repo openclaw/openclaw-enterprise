@@ -3,18 +3,16 @@ name: CodeQL
 on:
   public:
   pull_request:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: "43 3 * * 1"
+    - cron: "29 * * * *"
   workflow_dispatch:
 
 permissions: {}
 
+# Keep scheduled scans running; only superseded PR scans should be cancelled.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'schedule' && github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Public repositories run analysis automatically. Private analysis requires
 # explicitly approved, licensed GitHub Code Security with advanced setup and

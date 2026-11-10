@@ -5,6 +5,10 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:net";
+import { startApi } from "../../apps/controller/src/api-startup.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";
@@ -15,21 +19,29 @@ import { setTimeout as delay } from "node:timers/promises";
 import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
+import {
+  authenticatedHeaders,
+  signInWithEmailPassword as signInThroughTransport,
+} from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
+  InstalledDriver,
+  OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -39,7 +51,17 @@ const requireControllerDependency = createRequire(
 );
 const adminEmail = "admin@example.test";
 const authSecret = "production-wireup-auth-secret-at-least-32-bytes";
-const authBaseURL = "http://127.0.0.1:0";
+const authBaseURL = "https://console.oce.localhost";
+const nativeAdmin = { enabled: false, domain: "agents.oce.localhost" };
+
+function signInWithEmailPassword({ origin: transportOrigin, ...options }) {
+  const transport = createConsoleFixtureTransport(authBaseURL, transportOrigin);
+  return signInThroughTransport({
+    ...options,
+    origin: authBaseURL,
+    fetch: transport.fetchThroughLoopback,
+  });
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -142,6 +164,7 @@ test(
       OCC_DATABASE_URL: databaseUrl,
       OCC_AUTH_SECRET: authSecret,
       OCC_AUTH_BASE_URL: authBaseURL,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: nativeAdmin.domain,
       OCC_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
       OCC_BOOTSTRAP_PASSWORD_FILE: join(
         await temporaryDirectory(t, "openclaw-enterprise-bootstrap-password-"),
@@ -375,6 +398,208 @@ test(
       );
       assert.equal(privileges.rows[0].can_create_schema, false);
 
+      // Exercise both API builders against PostgreSQL while failures at owned Driver seams
+      // verify that shutdown and failed startup still release later owners.
+      for (const [mode, failure] of [
+        ["production", "shutdown"],
+        ["development", "shutdown"],
+        ["production", "bind"],
+        ["development", "bind"],
+        ["production", "routes"],
+      ]) {
+        await t.test(`${mode} cleanup after ${failure} failure`, async () => {
+          const events = [];
+          const first = mode === "production" ? 0 : new Error("first cleanup failure");
+          const startup = new Error("original startup failure");
+          const runtime = await productionDrivers();
+          const registration = createProtectedFixture({
+            id: "cleanup-fixture",
+            implementation: "cleanup-fixture",
+            configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
+          });
+          delete registration.computeLifecycleHooks;
+          registration.capabilities.credential_proxy.bindExchange = async (connect) => {
+            events.push("bind");
+            if (failure === "bind") {
+              throw startup;
+            }
+            connect({ verify: async () => undefined, capture: () => undefined, owns: () => false });
+            return {
+              async close() {
+                events.push("exchange");
+                throw first;
+              },
+            };
+          };
+          registration.close = async () => {
+            events.push("driver");
+            throw new Error("later cleanup failure");
+          };
+          runtime.protectedDriver = new InstalledDriver(
+            { id: "cleanup-fixture", implementation: "cleanup-fixture", configuration: {} },
+            registration,
+          );
+          let endPool;
+          let poolClosed = false;
+          runtime.preparedGitHub = {
+            async connect(pool) {
+              endPool = pool.end.bind(pool);
+              pool.end = async () => {
+                events.push("pool");
+                await endPool();
+                poolClosed = true;
+              };
+            },
+            async close() {
+              events.push("prepared");
+            },
+          };
+          const config = {
+            mode,
+            host: "127.0.0.1",
+            databaseUrl,
+            authSecret,
+            authBaseURL,
+            nativeAdmin,
+          };
+          const build = () =>
+            mode === "production"
+              ? composeProduction({
+                  ...config,
+                  drivers: runtime,
+                  onStartupPhase(phase) {
+                    if (failure === "routes" && phase === "routes") {
+                      throw startup;
+                    }
+                  },
+                })
+              : composePostgresDevelopment(config, runtime);
+          try {
+            if (failure === "shutdown") {
+              const instance = await build();
+              await assert.rejects(
+                () => instance.close(),
+                (error) =>
+                  first === 0
+                    ? error instanceof Error &&
+                      error.message === "Resource cleanup failed." &&
+                      error.cause === first
+                    : error === first,
+              );
+            } else {
+              await assert.rejects(build, (error) => error === startup);
+            }
+            assert.deepEqual(
+              events,
+              failure === "bind"
+                ? ["bind", "driver", "prepared", "pool"]
+                : ["bind", "exchange", "driver", "prepared", "pool"],
+            );
+            assert.equal(poolClosed, true);
+          } finally {
+            // Release only this case's pool if a regression strands it.
+            if (endPool && !poolClosed) {
+              await endPool();
+            }
+          }
+        });
+      }
+
+      // The worker owns the same protected Driver and its own pool. A Driver that fails to close
+      // must not strand the worker's PostgreSQL connections at shutdown.
+      await t.test(
+        "worker stop closes its pool after a protected Driver close failure",
+        async () => {
+          const driverFailure = new Error("protected Driver cleanup failure");
+          const runtime = await productionDrivers();
+          const registration = createProtectedFixture({
+            id: "worker-cleanup-fixture",
+            implementation: "worker-cleanup-fixture",
+            configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
+          });
+          delete registration.computeLifecycleHooks;
+          registration.close = async () => {
+            throw driverFailure;
+          };
+          runtime.protectedDriver = new InstalledDriver(
+            {
+              id: "worker-cleanup-fixture",
+              implementation: "worker-cleanup-fixture",
+              configuration: {},
+            },
+            registration,
+          );
+          const workerPool = new pg.Pool({ connectionString: databaseUrl });
+          const worker = createControllerWorker({
+            pool: workerPool,
+            mode: "production",
+            drivers: runtime,
+            pollIntervalMs: 20,
+            emit: () => {},
+          });
+          try {
+            await worker.start();
+            await assert.rejects(worker.stop(), (error) => error === driverFailure);
+            assert.equal(
+              workerPool.ended,
+              true,
+              "the worker pool must close after the Driver fails",
+            );
+          } finally {
+            if (!workerPool.ended) {
+              await workerPool.end();
+            }
+          }
+        },
+      );
+
+      await t.test("API listen failure survives completed PostgreSQL cleanup", async (t) => {
+        const port = await listen(t, createServer());
+        // These constructors need settings; no Docker operation runs during this startup.
+        setEnvironment(t, {
+          OCC_DOCKER_RUNTIME_IMAGE: "unused-startup-fixture",
+          OCC_DEVELOPMENT_CONFIGURATION_ROOT: passwordDirectory,
+        });
+        const signals = ["SIGINT", "SIGTERM"];
+        const previous = new Set(signals.flatMap((signal) => process.listeners(signal)));
+        t.after(() => {
+          for (const signal of signals) {
+            for (const listener of process.listeners(signal)) {
+              if (!previous.has(listener)) {
+                process.removeListener(signal, listener);
+              }
+            }
+          }
+        });
+        const close = PostgresPlatformState.prototype.close;
+        const cleanupError = new Error("unrelated PostgreSQL cleanup error");
+        let completed = false;
+        const mockedClose = t.mock.method(
+          PostgresPlatformState.prototype,
+          "close",
+          async function () {
+            await delay(0);
+            await close.call(this);
+            completed = true;
+            throw cleanupError;
+          },
+        );
+        await assert.rejects(
+          startApi({
+            NODE_ENV: "development",
+            OCC_DATABASE_URL: databaseUrl,
+            OCC_HOST: "127.0.0.1",
+            OCC_PORT: String(port),
+            OCC_AUTH_SECRET: authSecret,
+            OCC_AUTH_BASE_URL: authBaseURL,
+            OCC_AGENT_NATIVE_ADMIN_DOMAIN: nativeAdmin.domain,
+          }),
+          (error) => error !== cleanupError && error.code === "EADDRINUSE",
+        );
+        assert.equal(mockedClose.mock.callCount(), 1);
+        assert.equal(completed, true, "startup must await the real pool close");
+      });
+
       const apiLog = memoryLog();
       const startupPhases = [];
       app = await composeProduction({
@@ -383,13 +608,8 @@ test(
         databaseUrl,
         authSecret,
         authBaseURL,
+        nativeAdmin,
         onStartupPhase: (phase, durationMs) => startupPhases.push({ phase, durationMs }),
-        // Leftover pilot settings must not change authentication when the feature is disabled.
-        nativeAdmin: {
-          enabled: false,
-          domain: "agents.example.test",
-          sharedCookieDomain: "example.test",
-        },
         drivers: await productionDrivers({
           includeDefaults: true,
           configurationRoot: join(passwordDirectory, "configurations"),
@@ -440,9 +660,8 @@ test(
         email: adminEmail,
         password,
       });
-      assert.match(session.cookie, /(?:^|; )openclaw_occ\.session_token=/);
-      assert.doesNotMatch(session.cookie, /openclaw_occ_shared/);
-      assert.doesNotMatch(session.setCookie.join("\n"), /Domain=/i);
+      assert.match(session.cookie, /(?:^|; )__Secure-openclaw_occ_shared\.session_token=/);
+      assert.match(session.setCookie.join("\n"), /Domain=oce\.localhost/i);
 
       const anonymousSession = await fetch(`${endpoint}/api/auth/session`);
       assert.equal(anonymousSession.status, 200);
@@ -478,7 +697,7 @@ test(
         const response = await fetch(`${endpoint}${path}`, {
           method,
           headers: authenticatedHeaders(caller, {
-            // This fixture configures port 0 before listening on an ephemeral port.
+            // Browser mutations use the configured HTTPS origin over private loopback transport.
             origin: authBaseURL,
             ...(payload === undefined ? {} : { "content-type": "application/json" }),
           }),
@@ -580,6 +799,7 @@ test(
           databaseUrl,
           authSecret,
           authBaseURL,
+          nativeAdmin,
           drivers: await productionDrivers({
             ...drivers,
             configurationRoot: join(passwordDirectory, "configurations"),
@@ -652,21 +872,47 @@ test(
       assert.deepEqual(skippedRefreshes(frozenLog), frozenWarning);
       // Development PostgreSQL startup passes the same warning to its logger.
       const developmentLog = memoryLog();
-      const development = await composePostgresDevelopment(
-        {
-          mode: "development",
-          host: "127.0.0.1",
-          databaseUrl,
-          authSecret,
-          authBaseURL,
-          logger: developmentLog.logger,
-        },
-        await productionDrivers({
+      const { gateway } = createDeviceCredentialDrivers();
+      const withSourceToken = t.mock.fn(() => {
+        assert.fail("PostgreSQL development startup must not read a plugin credential");
+      });
+      const pluginSourceReader = { gateway, withSourceToken };
+      const developmentRuntime = {
+        ...(await productionDrivers({
           includeDefaults: true,
           configurationRoot: join(passwordDirectory, "configurations"),
-        }),
-      );
-      await development.close();
+        })),
+        pluginSourceReader,
+      };
+      const factory = t.mock.method(OpenClawController, "forInstallation");
+      let development;
+      try {
+        development = await composePostgresDevelopment(
+          {
+            mode: "development",
+            host: "127.0.0.1",
+            databaseUrl,
+            authSecret,
+            authBaseURL,
+            nativeAdmin,
+            logger: developmentLog.logger,
+          },
+          developmentRuntime,
+        );
+        assert.equal(factory.mock.callCount(), 1);
+        const [persistedInstallation, controllerOptions] = factory.mock.calls[0].arguments;
+        assert.equal(persistedInstallation.id, installation.rows[0].id);
+        assert.ok(controllerOptions.state instanceof PostgresPlatformState);
+        assert.strictEqual(
+          controllerOptions.pluginSourceReader,
+          pluginSourceReader,
+          "PostgreSQL development must forward the identical plugin source reader",
+        );
+        assert.equal(withSourceToken.mock.callCount(), 0);
+      } finally {
+        factory.mock.restore();
+        await development?.close();
+      }
       assert.deepEqual(await readOpenClaw(), refrozen.data);
       assert.deepEqual(skippedRefreshes(developmentLog), frozenWarning);
       // An operator file named like a bundled default (default-codex was bundled after
@@ -956,6 +1202,7 @@ test(
             databaseUrl,
             authSecret,
             authBaseURL,
+            nativeAdmin,
             drivers: await productionDrivers(),
             logger: apiLog.logger,
           });
@@ -1158,6 +1405,7 @@ test(
                 databaseUrl,
                 authSecret,
                 authBaseURL,
+                nativeAdmin,
                 drivers: await productionDrivers(),
                 logger: apiLog.logger,
               });
@@ -1262,6 +1510,7 @@ test(
                   databaseUrl: proxy.url,
                   authSecret,
                   authBaseURL,
+                  nativeAdmin,
                   drivers: await productionDrivers(),
                   logger: apiLog.logger,
                 });

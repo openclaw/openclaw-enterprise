@@ -6,6 +6,7 @@ import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createNativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 
 function createApp() {
   const installationId = `ins_${randomUUID()}`;
@@ -14,7 +15,8 @@ function createApp() {
     auth: createControllerAuth({
       mode: "development",
       installationId,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: randomBytes(48).toString("base64url"),
     }),
     iamDriver: createNativeIAMDriver({
@@ -104,8 +106,7 @@ test("lowercase header constraints preserve header values and query names", asyn
   // Both wire spellings reach the validator as the same lowercase header name.
   for (const name of ["X-Blocked", "x-blocked"]) {
     const denied = await app.inject({ url, headers: { "X-Mode": "READ", [name]: "1" } });
-    assert.equal(denied.statusCode, 400);
-    assert.equal(denied.json().error.code, "INVALID_REQUEST");
+    assertApiError(denied, 400, "INVALID_REQUEST");
   }
   for (const headers of [
     { "x-trigger": "1", "x-companion": "1" },
@@ -118,17 +119,14 @@ test("lowercase header constraints preserve header values and query names", asyn
   }
   for (const name of ["x-trigger", "X-Trigger"]) {
     const missing = await app.inject({ url, headers: { "X-Mode": "READ", [name]: "1" } });
-    assert.equal(missing.statusCode, 400);
-    assert.equal(missing.json().error.code, "INVALID_REQUEST");
+    assertApiError(missing, 400, "INVALID_REQUEST");
   }
   // The pattern property matches the lowercased name and checks the value as sent.
   const counted = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "AB" } });
   assert.equal(counted.statusCode, 200);
   const badCount = await app.inject({ url, headers: { "X-Mode": "READ", "X-Count-1": "ab" } });
-  assert.equal(badCount.statusCode, 400);
-  assert.equal(badCount.json().error.code, "INVALID_REQUEST");
+  assertApiError(badCount, 400, "INVALID_REQUEST");
   const wrongValue = await app.inject({ url, headers: { "X-Mode": "read" } });
-  assert.equal(wrongValue.statusCode, 400);
-  assert.equal(wrongValue.json().error.code, "INVALID_REQUEST");
+  assertApiError(wrongValue, 400, "INVALID_REQUEST");
   assert.equal(hits, 5);
 });

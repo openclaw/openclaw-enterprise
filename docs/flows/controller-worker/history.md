@@ -8,7 +8,11 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-29 20:37: Document the tenant access log hint. (authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264 - 03372ea89128)
+
 - 2026-10-23 14:00: Unreadable rows end a refused-stop wait at the attempt limit. (fix-1801)
+
+- 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 
 - 2026-10-11 10:30: Draining stops skip yielded stops. (fix-1093-1095)
 

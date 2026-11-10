@@ -8,6 +8,10 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 ## Changelog
 
+- 2026-10-30 02:30: A shared `/readyz` check that does not end within 5 seconds answers not ready and frees the slot, so one hung check cannot hold every later probe. (fix-2941)
+
+- 2026-10-30 00:40: Concurrent `/readyz` requests share the running readiness check, so callers cannot start one identity process or app-server WebSocket per request. (fix-1789)
+
 - 2026-10-23 13:33: Trace protected Codex connection failure behavior and condense the activation flow. (authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7 - 162c9131f3dacb48979fba68bec7e88af317e6b3)
 
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)

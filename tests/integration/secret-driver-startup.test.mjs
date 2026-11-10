@@ -16,6 +16,7 @@ test("secret-driver-startup constructs the bundled KubernetesSecretDriver from I
     id: "secret-kubernetes",
     implementation: "occ/kubernetes-secret",
     configuration: { authentication: { mode: "inCluster" } },
+    startupConfiguration: { authentication: { mode: "inCluster" } },
   });
   assert.ok(drivers.secretDriver instanceof KubernetesSecretDriver);
   assert.equal(drivers.secretDriver.capability, "secret");

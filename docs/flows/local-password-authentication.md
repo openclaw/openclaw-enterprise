@@ -1,19 +1,17 @@
 ---
 created: 2026-08-24
-updated: "2026-10-15 18:55"
-last_updated_session: "authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6"
+updated: "2026-11-06 19:16"
+last_updated_session: "authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1"
 ---
 
 # Bootstrap and human authentication flow
 
 ## Overview
 
-Native-IAM bootstrap creates human and service administrators with one Role
-and commits them with the Installation. It writes
-the initial service key and a generated production human password to
-protected storage; development uses its configured password. Human sign-in
-reaches exact IAM authorization. The
-[service API key flow](service-api-keys.md) covers key verification, rotation, and revocation.
+Native-IAM bootstrap commits administrators with the Installation and protects
+their credentials. Human sign-in reaches exact IAM authorization;
+the [service API key flow](service-api-keys.md) covers key verification,
+rotation and revocation.
 
 ## Entry Points
 
@@ -44,7 +42,9 @@ graph TD
   B --> G
   Bootstrap -->|Any error| H["Exit unsuccessfully; preserve tracked artifacts for manual repair"]
   subgraph Request["Human controller request"]
-    G --> P["Verify password or enrolled GitHub identity"]
+    G --> P["Verify password or GitHub identity"]
+    P -->|Configured team enrollment| T["Verify team; enroll identity into selected Group"]
+    T --> Q
     P -->|GitHub profile enabled| Q["State rechecks account and method; commits session and audit"]
     Q --> J["Release session cookie"]
     P -->|Password-only profile| J
@@ -64,14 +64,13 @@ graph TD
 ### 1. Load state and create the fresh administrator identities
 
 [`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs)
-loads the singleton Installation. Existing Installations only verify the
-configured administrator's immutable account/IAM identity: no key issuance,
-output changes, or identity/grant repair, including Installations predating service-administrator bootstrap.
-`verifiedWithoutAuth` first runs the same check before loading Better Auth: plain
-SQL for the administrator's `occ."user"` row, then the same IAM state and
-administrator Principal check. Success logs `installation.already-bootstrapped`
-with `step: "fast-path"`. Any miss or error runs the full Better Auth check, which
-succeeds or fails exactly as before. The base URL is checked first on both paths.
+loads the singleton Installation. Existing Installations verify the administrator's
+immutable account/IAM identity without issuing keys, changing output, or repairing
+grants, including Installations predating service-administrator bootstrap.
+`verifiedWithoutAuth` checks the administrator's `occ."user"` row and IAM Principal
+before loading Better Auth. Success logs `installation.already-bootstrapped` with
+`step: "fast-path"`; a miss or error runs the full Better Auth check. Both paths
+check the base URL first.
 
 For fresh setup, production creates a Better Auth account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
@@ -92,37 +91,26 @@ startup does not expose the application until bootstrap succeeds.
 creates owner-only output exclusively and syncs it before OCC commit. The JSON
 contains the key response and attempt Installation ID; production also writes its
 password file on the same protected PVC, and development writes to its
-bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, HTTP
-bootstrap responses, or the worker.
+bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, bootstrap HTTP responses or the worker.
 
-Both modes commit Installation/IAM/audit through the same controller
-transaction. The initializer owns one attempt scope for account creation, key
-issuance, output, and commit. The API then loads committed state without
-signing into itself or calling `POST /installation/bootstrap`, which stays
-human-session-only and issues no bootstrap credentials.
-Singleton database constraints select at most one committed seed; a losing
-initializer fails like any other error.
+Each initializer creates accounts, issues keys, writes output and atomically commits
+Installation/IAM/audit once. The API loads committed state without
+calling the human-session-only `POST /installation/bootstrap`. Singleton
+constraints reject competing initializers.
 
-Any error ends the single attempt with `installation.bootstrap-failed`,
-available non-secret IDs and paths, and a nonzero exit; the Helm initialization
-Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
-including partial output, remain for inspection. One pre-return Better
-Auth failure is narrower: if password `linkAccount` fails inside
-`createAccount`, the helper attempts to delete the just-created user before
-rethrowing. That is not a general artifact-recovery path; the initializer never
-automatically revokes, retries, repairs, or resets committed or uncertain state.
+Errors record `installation.bootstrap-failed` with available non-secret IDs and
+paths, then exit nonzero. Helm sets `backoffLimit: 0`. Tracked accounts, keys and
+partial files remain for inspection. If password `linkAccount` fails before
+`createAccount` returns, the helper attempts to delete the new user and rethrows.
+The initializer never automatically revokes, retries, repairs or resets uncertain
+or committed state.
 
-An uncertain commit can already have persisted the seed. Before manual repair,
-the operator confirms the original transaction has finished and compares exact
-attempt IDs; file existence or another Installation is insufficient. A
-deliberate reset must identify the disposable Installation and its dedicated
-storage. The
-[recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-owns those operator actions.
-
-After confirmed success, the operator imports the file and retains its
-non-secret IDs. Lost output is never regenerated;
-[service-key management](service-api-keys.md) owns replacement and revocation.
+[Recovery](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
+requires confirming transaction completion and exact attempt IDs. Files alone
+cannot establish whether the seed committed. Identify the disposable Installation
+and storage before reset. Import successful output and retain its IDs.
+Lost output is never regenerated; [service-key management](service-api-keys.md)
+covers replacement and revocation.
 
 ### 3. Construct session authentication
 
@@ -136,7 +124,10 @@ password authentication, protected cookies, and PostgreSQL storage. Sign-in retu
 `safeSessionResponse` returns public identity and `sessionKey`, an auth-secret HMAC
 of the session ID (`apps/controller/src/auth/session-binding.ts`). A changed key makes
 the [Console](platform-console.md#2-resolve-the-session-before-private-reads) clear
-retained views and drafts. Sign-out revokes the session.
+retained views and drafts. Password-only sign-out uses
+`apps/controller/src/auth/password-sign-out.ts:passwordSignOut` to delete the session
+through the selected database adapter before clearing its cookie. Storage failure
+returns `503` without cookie changes; the caller can retry after recovery.
 `auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
 the selected identity, not the address. `onLimited` reports
 `authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
@@ -156,9 +147,9 @@ a wrong password writes no unstructured console warning.
 
 `requireSessionKey` checks optional `x-occ-session-key` after cookie resolution in
 `ControllerAdmissionVerifier.verify`, `session`, `resolveSession`, and `signOut`.
-An absent header changes nothing; a malformed, duplicated, or foreign key returns
-`401` without revoking or clearing the session. The header narrows but never selects
-a session; the native admin proxy strips it upstream.
+Malformed, duplicated or foreign keys return `401` without revoking or clearing
+sessions. This optional header narrows but never selects a session; the native
+admin proxy strips it upstream.
 
 When GitHub is configured, `apps/controller/src/auth/github.ts:createHumanLogin`
 provides password, GitHub, and logout endpoints through a guarded Better Auth adapter.
@@ -167,34 +158,35 @@ account and method checks and the State transaction. Password verification captu
 credential and account versions for the session transaction to recheck. Both methods
 pass a private proof to guarded session creation; session and audit commit before
 Better Auth releases the cookie. Session reads check the current account, method,
-version, and Principal; sessions expire after eight hours without refresh. HTTPS uses
-a `__Host-` cookie that sibling hosts cannot plant; session reads and logout reject
-duplicate active-session cookies.
+version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
+session reads and logout reject duplicates.
 
 For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
 `POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
 secret digests, provider instance, callback, and PKCE verifier. A host-only
-HttpOnly cookie binds the browser; this profile rejects shared-domain sessions.
+HttpOnly attempt cookie binds the browser. The eventual session cookie uses
+the shared Console and Agent domain.
 Callback consumption commits before exchange; a losing, expired, or invalid
 attempt does not exchange a code.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
-with the GitHub App client ID and secret, uses the user access token only for
-`/user`, and returns the numeric subject, which selects an exact existing
-enrollment. A valid provider-returned login accompanies the subject into the audit;
-it never selects an account or grants authority. Email and tokens are discarded. The
+with the GitHub App client ID and secret and verifies the numeric subject through
+`/user`. Configured membership and first-time enrollment use that same token for
+GitHub's membership and email endpoints. The subject selects the external identity;
+a valid provider-returned login accompanies it into the audit but never selects an
+account or grants authority. Only a new enrollment retains the verified email;
+tokens are not persisted. The
 [GitHub reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns OAuth scopes, token disposal, App private-key custody, and fixed
 redirects.
 
-`attemptId` authenticates the attempt-state digest with HMAC. Success sets a signed, two-minute
-`SameSite=Strict` v2 receipt binding provider instance, session and attempt. The
-same-origin result handler verifies signature, expiry and configured provider
-before State lookup; unfinished legacy sign-ins must restart. Wrong-provider refusals
-neither consume nor clear the receipt. Matching attempt and current cookie session
-permit one exchange per process-local ledger: record consumption until expiry,
-clear the receipt; return the session key without issuing or extending sessions. Password sign-in returns
-it. A malformed, unbound, replayed, or expired callback is refused by
-`refuseUnmatched`, which writes no audit event and increments
+`attemptId` authenticates the attempt-state digest with HMAC. State records the
+result and its two-minute deadline with the session. The signed `SameSite=Strict`
+v3 receipt binds provider, session and attempt. With matching origin, attempt
+and session cookie, any compatible instance can consume the result through State.
+After commit, the handler clears the receipt and returns the current session’s
+key without extending it. Incompatible receipts require fresh sign-in. Password sign-in returns that key directly.
+`refuseUnmatched` rejects malformed, unbound, replayed or expired callbacks without
+audit, incrementing
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
 The callback audit records the HMAC-derived attempt ID. A verified
 GitHub profile also adds its subject and valid login to refusal or successful session
@@ -207,7 +199,7 @@ Denials after `consumeAttempt` matches are audited as
 lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
 the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
 `authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
-State dependency failure or uncertain session completion is not a denial. Neither path retries.
+State dependency failures and uncertain session completion are not denials; neither retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
@@ -244,14 +236,13 @@ properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
 and exit codes.
 
-Activation is a stopped-maintenance contract: admission stopped, requests
-drained or terminated, and every old controller stopped; startup does not fence
-an old live reader. Both PostgreSQL compositions reject
-GitHub with enabled native administration, even when its cookie domain is missing.
-`apps/controller/src/auth/index.ts:createPostgresControllerAuth` constructs and
-initializes authentication before activation, checking the secret, canonical HTTP
-origin, and supported profile. Invalid static configuration leaves legacy sessions,
-account enrollment, and the recovery designation unchanged.
+Activation requires stopped admission, drained or terminated requests, and stopped
+old controllers; startup does not fence live readers. Both PostgreSQL compositions
+require host-only exchange for GitHub native access, reject Google native access,
+and permit OIDC native access with shared cookies.
+`apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
+canonical origin and profile before activation. Invalid configuration leaves
+sessions, enrollment and recovery designation unchanged.
 `PostgresHumanAuthentication.activateRecovery` then validates and enrolls the complete existing password-user/Principal population,
 fixes the usable recovery administrator, and removes unbound historical sessions
 in one State transaction before serving resumes. Unsupported or incomplete
@@ -260,13 +251,17 @@ populations fail activation. See the
 
 Account routes enforce the
 [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls):
-State locks actor and target, rechecks the actor session, and applies the
-caller's `expectedVersion`. Attachment, disablement, and account-wide revocation advance
-that version and invalidate target sessions and proofs without changing IAM.
-A guarded read returns current account and method state, not a prior operation
-receipt. Unknown completion returns an explicit dependency failure without
-replay or compensation; operators must resolve uncertainty before a new action.
-Without GitHub or Google, the composition supplies no account operations; the routes
+State locks actor and target and checks `expectedVersion`. After method/recovery locks,
+`human-authentication.ts:guardAuthority` holds all six IAM tables through commit
+using `0073_account_administration_policy.sql`, awaits the selected IAM Driver through
+the route's actor callback, then rechecks the session. `READ COMMITTED` sees grants changed
+during lock waits; `NOWAIT` contention returns retryable `503`. Denials roll back
+before HTTP audit.
+Attachment, disablement and account-wide revocation advance the version and invalidate
+target sessions and proofs without changing IAM.
+Guarded reads return current account and method state, not operation receipts.
+Unknown completion returns a dependency failure without replay or compensation. Resolve uncertainty before proceeding.
+Without an external sign-in provider, composition omits account operations; routes
 still authorize the caller, then return `409 RESOURCE_CONFLICT`.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns configuration, recovery limits, and operator-visible behavior.
@@ -279,50 +274,65 @@ unsafe session requests before admission, including sign-out before revocation
 and the GitHub result exchange, which shares the GitHub admission lane, before
 reading. Explicit service API keys skip this check and never fall back to a cookie.
 
-`apps/controller/src/index.ts:createFastifyApp` validates the session, resolves
-its installation-owned issuer and user ID through the selected IAM Driver, and
-authorizes the exact resource through that same Driver. The Driver loads current
-policy separately for identity lookup and authorization, so account and
-permission changes are visible across controller instances. Missing or invalid
+`apps/controller/src/index.ts:createFastifyApp` validates the session and uses the
+selected IAM Driver to resolve its Installation-owned issuer/user ID and authorize
+the exact resource. Separate current-policy reads for lookup and authorization
+expose account and permission changes across controller instances. Missing or invalid
 sessions return `401`; denied permissions return `403`; dependency failures fail
 closed. Bearer credentials and caller-supplied identity headers are rejected.
 
 ### 5. Provision additional accounts
 
-`apps/controller/src/index.ts:createFastifyApp` permits an authorized human
-Installation administrator to create another account, with or without GitHub
-sign-in. `prepareAccount` validates and hashes the password without writing; the
-PostgreSQL composition then calls `provisionPasswordAccount`, which writes the
-user, password method, Principal, explicit existing-role binding, enrollment,
-and audit in one State transaction, so a failure leaves no partial account.
-Nothing is compensated afterward. A lost COMMIT reply returns `503` with an
-unknown outcome; the account is complete or absent, so a deliberate retry with
-the same email creates it only if the first attempt did not commit, and
-otherwise returns `409`.
-Account creation issues no session and infers no grants.
+`apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
+administrator create accounts with or without GitHub. `prepareAccount` validates
+and hashes the password without writes. `provisionPasswordAccount` writes the user,
+password method, Principal, optional existing-role binding, configured
+[default Group memberships](../reference/authorization/default-users.md#group-membership),
+enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`
+with unknown outcome: retrying the same email creates an account only if the first
+attempt did not commit; otherwise it returns `409`. Creation issues no session.
+
+### 6. Enroll a verified team member
+
+With `autoEnrollGroupId`, `auth/github.ts:exchangeGithubSubject` verifies the
+team-only allowlist and rechecks the same token's numeric ID and login. For a
+missing identity, `githubEnrollmentProfile` reads a
+verified primary email within the remaining provider deadline; the callback
+hashes a random password and obtains a no-grant Principal from native IAM.
+Attached identities skip email retrieval. No provider credential enters State.
+
+`PostgresHumanAuthentication.enrollExternal` serializes the provider/subject,
+checks the existing Installation Group and resolves the identity again inside
+one State transaction. Existing identities retain their attempt-currentness and
+disabled-account checks. New identities reuse `insertPasswordAccount`; only the
+transaction that inserted them can snapshot those new methods without an older
+attempt timestamp. Account, external method, membership and their audits commit
+together. The session transaction rechecks the proof before issuing its cookie. Group bindings supply permission; this path creates none.
 
 ## Debugging and Verification
 
+Run `tests/integration/` files with `node --test`.
+
+- `node --test tests/integration/postgres-github-team-enrollment.test.ts` uses
+  production authentication, PostgreSQL and IAM through the ordinary Agent API.
+  Upstream GitHub responses and Compute are fixtures; it does not verify live
+  GitHub registration or deployment.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
-- `node --test tests/integration/postgres-production-wireup.test.mjs` with
-  `OCC_PRODUCTION_WIREUP_DATABASE_URL` proves actual bootstrap, protected random
-  password/key delivery, human sign-in, service-key access, and no reissue on rerun.
-- `node --test tests/integration/postgres-auth-accounts.test.mjs` with
-  `OCC_TEST_DATABASE_URL` covers account provisioning, transactional rollback, and
-  a lost provisioning COMMIT reply.
-  Its fresh development bootstrap case also verifies the service identity,
-  protected output, and key access, skipping when an Installation exists.
+- `postgres-production-wireup.test.mjs` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
+  proves bootstrap, protected password/key delivery, human/service access and no reissue.
+- `postgres-auth-accounts.test.mjs` with `OCC_TEST_DATABASE_URL` covers provisioning,
+  rollback, lost COMMIT replies and password-only logout under contention. Its
+  fresh-bootstrap case verifies service identity, output and access, skipping
+  existing Installations.
 - `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
   output and rejected unsafe paths. Failed writes retain any created file.
   Database cases require the [disposable PostgreSQL setup](../testing/postgresql.md#postgresql-test-environment);
   an unconfigured/skipped suite is not runtime proof.
-- `node --test tests/integration/postgres-bootstrap-failures.test.mjs` with
-  `OCC_BOOTSTRAP_FAILURE_DATABASE_URL` exercises concurrent production attempts
-  and preserves both environment modes' credentials when a test fault discards the
-  acknowledgement after a real COMMIT. It also proves that a complete Installation
-  takes the fast path and that each missing invariant takes the full path. The
-  suite resets a dedicated loopback database.
+- `postgres-bootstrap-failures.test.mjs` with `OCC_BOOTSTRAP_FAILURE_DATABASE_URL`
+  uses a dedicated loopback database to verify concurrent production bootstrap,
+  credential preservation after lost COMMIT acknowledgement in both modes, and
+  fast/full-path selection.
 - Verify copied output is `0600` without printing it; use a key-authenticated
   `GET /installation` and Namespace create/read to check current authority.
   A `401` indicates credential rejection; `403` indicates identity/scope/policy
@@ -349,8 +359,16 @@ Account creation issues no session and infers no grants.
 
 ## Changelog
 
+- 2026-11-06 19:16: Preserve team enrollment and host-only browser access; trace configured account memberships. (authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1 - 491908448534fbcee539aac386180fbf9268d59b)
+
+- 2026-11-06 08:56: Document host-only GitHub native administration. (authoring-run/2205da1f-3410-4bcb-9697-f2bbb5ebc49a - 4d7abb4a7f48c9dddf19afe87bbedfa1807a5749)
+
+- 2026-11-06 02:07: Trace opt-in GitHub team enrollment and transactional identity creation. (authoring-run/8d231212-5a96-46b9-8dee-2eac79700e32 - 201eed939abe18e2d522f2b2ead5047626ade755)
+
+- 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
+
 - 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
 
-[Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.
+[Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves older entries.

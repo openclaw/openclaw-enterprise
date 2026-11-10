@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 import {
@@ -41,11 +42,37 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
 
+test("verifier-only Codex refuses enabled plugins with API-key login before app-server spawn", (t) => {
+  // Login/probe output is scripted here; the generated wrapper owns this refusal.
+  // No fake plugin response is used to establish installation behavior.
+  const runtime = createCodexStartup(t, {
+    transportToken: "verifier",
+    native: [
+      login(),
+      probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      ]),
+    ],
+    environment: pluginRuntimeEnvironment({
+      kind: "codex",
+      selections: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+    }),
+  });
+  assert.throws(() => runtime.start(), /API-key authentication cannot install them/);
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.marker(), undefined);
+  runtime.assertNativeScriptConsumed();
+});
+
 // Component conformance: scripted native output, real generated entrypoint and status handler.
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
+  const missingModelMessage =
+    "unexpected status 404 Not Found: The model `gpt-4.1` does not exist or you do not have access to it.";
   const advisory = {
     type: "item.completed",
     item: errorEvent("Model catalog metadata unavailable"),
@@ -438,10 +465,52 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
       result: { status: 1 },
       expect: probeFailure(
-        { kind: "PROBE_STATUS", detail: "turn-failed" },
+        { kind: "PROBE_STATUS", detail: "model_not_found" },
         { status: 404, code: "model_not_found" },
       ),
     },
+    // Stock Codex renders the provider's 404 message without its structured code.
+    ...[
+      ["the pinned CLI error names the requested model", missingModelMessage, 404, true],
+      [
+        "a reconnect repeats that refusal",
+        `Reconnecting... 1/5 (${missingModelMessage}, request id: example)`,
+        404,
+        true,
+      ],
+      [
+        "a missing endpoint is not a missing model",
+        "unexpected status 404 Not Found: Unknown endpoint.",
+        404,
+        false,
+      ],
+      [
+        "the provider names a different model",
+        missingModelMessage.replace("gpt-4.1", "gpt-4.10"),
+        404,
+        false,
+      ],
+      [
+        "a different status keeps its own cause",
+        missingModelMessage.replace("404 Not Found", "400 Bad Request"),
+        400,
+        false,
+      ],
+      [
+        "quoted status text is not a provider response",
+        `example: ${missingModelMessage}`,
+        404,
+        false,
+      ],
+    ].map(([name, message, status, unavailable]) => ({
+      name,
+      events: [started, errorEvent(message)],
+      result: { status: 1 },
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: unavailable ? "model_not_found" : "error-event" },
+        unavailable ? { status, code: "model_not_found" } : { status },
+      ),
+    })),
     {
       name: "a server error naming the credential is not retried",
       events: [started, failedTurn("unexpected status 500: invalid api key for this server")],

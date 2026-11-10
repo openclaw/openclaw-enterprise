@@ -1,5 +1,8 @@
 import type { FastifyError, FastifyReply } from "fastify";
-import { PresetValidationError } from "@openclaw-enterprise/contracts";
+import {
+  ConnectionTemplateValidationError,
+  PresetValidationError,
+} from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -22,6 +25,7 @@ import {
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  BrowserAuthorizationError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -449,8 +453,8 @@ export function unstorableTextFailure(
 }
 
 /**
- * Names each remaining kind and as many of its resource IDs as fit the 256-character
- * message contract; a kind whose IDs do not all fit says how many are left.
+ * Names each remaining kind and as many of its readable resource IDs as fit the 256-character
+ * message contract; a kind with more resources than it names says how many are left.
  */
 function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const prefix = "The requested Namespace is not empty.";
@@ -461,14 +465,15 @@ function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const render = (): string => {
     const parts = error.contents.map((kind) => {
       const ids = error.ids[kind] ?? [];
+      const total = error.counts[kind] ?? 0;
       const count = shown.get(kind) ?? 0;
-      if (ids.length === 0) {
+      if (total === 0) {
         return kind;
       }
       if (count === 0) {
-        return `${kind} (${ids.length})`;
+        return `${kind} (${total})`;
       }
-      const more = ids.length - count;
+      const more = total - count;
       return `${kind} (${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`})`;
     });
     return `${prefix} It still contains: ${parts.join(", ")}.`;
@@ -780,6 +785,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       pointerDetail(`/${error.group}`, error.field),
     );
   }
+  if (error instanceof ConnectionTemplateValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/${error.field}`, code: "INVALID_VALUE" },
+    ]);
+  }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
@@ -863,13 +873,22 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     const result = failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
     result.remainingResources = error.contents.slice(0, 7).map((kind) => ({
       kind,
-      count: error.ids[kind]?.length ?? 0,
+      count: error.counts[kind] ?? 0,
       ids: (error.ids[kind] ?? []).slice(0, 20),
     }));
     return result;
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
+  }
+  if (error instanceof BrowserAuthorizationError) {
+    return failure(
+      409,
+      "RESOURCE_CONFLICT",
+      error.recoveryAction === "fix_configuration"
+        ? "An administrator must correct the connection template before connecting this account."
+        : "The connection did not complete. Connect again.",
+    );
   }
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);

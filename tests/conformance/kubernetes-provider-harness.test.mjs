@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
@@ -11,7 +12,8 @@ import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { listen } from "../helpers/listen.mjs";
+import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -82,8 +84,17 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   return fixture;
 }
 
+const openAiStaticProvider = createOpenAiStaticProvider();
+
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture();
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
   const {
     driver,
     revision,
@@ -106,6 +117,17 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.equal(endpoints.length, 0);
   const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
   assert.ok(bootstrapGateway);
+  // This Gateway must issue the setup needed to create the Harness. Waiting for
+  // the Harness's ordinary peer status here would deadlock first deployment.
+  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+  assert.equal(
+    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
   assert.notEqual(
     bootstrapGateway.spec.template.spec.containers[0].env.find(
       ({ name }) => name === "APP_SERVER_URL",
@@ -124,11 +146,18 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(setupRequests, [
     {
       url: driver.getGatewayEndpoint(revision),
-      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
     },
   ]);
   assert.equal(provisions.length, 1);
   assert.equal(endpoints.length, 1);
+  assert.equal(
+    provisions[0].requirements.environment.some(
+      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+    ),
+    false,
+  );
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -281,6 +310,7 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
   assert.deepEqual(JSON.parse(requirements.files[0].content), {
     kind: "codex",
     selections: {},
+    modelEndpoint: { baseUrl: "https://api.openai.com/v1", modelProvider: "openai-compatible" },
   });
   await fixture.activate(undefined, context);
   assert.equal(renderedHookDirectory(), providerHookDirectory);
@@ -732,15 +762,14 @@ test("provider Harness verified endpoint trust is projected before rollout and i
       client.terminate();
     }
     sockets.close();
-    return new Promise((resolve) => server.close(resolve));
   });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, "Bearer test-transport");
     socket.send("trust-ok");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const providerPort = server.address().port;
+  // listen() registers the server close after the WebSocket teardown above, so the
+  // clients and the WebSocket server still close first.
+  const providerPort = await listen(t, server);
   let providerCaBundle = tls.caBundle;
 
   const providerUrl = `wss://localhost:${providerPort}/`;
@@ -906,6 +935,7 @@ test("provider Harness protected execution is released only on current signed in
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     cleanup: assert.fail,
     enrollHarness: assert.fail,
@@ -958,14 +988,18 @@ test("provider Harness protected execution is released only on current signed in
     driver: protectedDriver.ref,
     sandboxDriverId: sandbox.id,
     egressDriverId: proxy.id,
-    routes: openAiStaticProvider.routes(source, {
-      binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
-      execution,
-      source: sourceKey,
-      grant,
-      grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
-      isolationId: revision.agentId,
-    }),
+    routes: openAiStaticProvider.routes(
+      source,
+      {
+        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
+        execution,
+        source: sourceKey,
+        grant,
+        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+        isolationId: revision.agentId,
+      },
+      revision.harness.configuration,
+    ),
   };
   const protectedAuth = {
     method: "credential_source",
@@ -1266,6 +1300,8 @@ test("provider Harness protected execution is released only on current signed in
         id,
         revision: protectedRevision.revision + 1,
         harnessAuth: { method: "runtime" },
+        harness: { ...protectedRevision.harness, configuration: {} },
+        compute: { id: driver.id, implementation: driver.implementation },
         egressPlan: zeroPlan,
         credentialSources: [],
       };
@@ -1353,6 +1389,8 @@ test("provider Harness protected execution is released only on current signed in
         id,
         revision: protectedRevision.revision + 2,
         harnessAuth: { method: "runtime" },
+        harness: { ...protectedRevision.harness, configuration: {} },
+        compute: { id: driver.id, implementation: driver.implementation },
         egressPlan: metadataPlan,
       };
       seedNode(metadata);
@@ -1441,7 +1479,10 @@ test("provider Harness protected execution is released only on current signed in
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
       // the same Harness without it for the endpoint and status reads.
       const admission = driver.admitRevision(protectedRevision);
-      assert.equal(admission, "protected-codex-no-connection-retry:v1");
+      assert.match(
+        admission,
+        /^model-provider:v1:[a-f0-9]{64}:protected-codex-no-connection-retry:v1$/,
+      );
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
@@ -1496,12 +1537,16 @@ test("provider Harness protected execution is released only on current signed in
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            assert.equal(
-              codex,
-              withoutLineComments(
-                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-              ),
-            );
+            // Standalone commands retain their full source. The nested child
+            // omits unused native helpers; both must preserve the admission below.
+            if (!node) {
+              assert.equal(
+                codex,
+                withoutLineComments(
+                  disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+                ),
+              );
+            }
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
               codex.match(/unbounded_connection_retries/g)?.length ?? 0,
@@ -1510,7 +1555,7 @@ test("provider Harness protected execution is released only on current signed in
             if (disabled) {
               assert.match(
                 codex,
-                /spawnSync\(codexExecutable\(\), \[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
+                /spawnSync\(codexExecutable\(\), \[\s+\.\.\.nativeTelemetryArguments,\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
               );
               assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
             }

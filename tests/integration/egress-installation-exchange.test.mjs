@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { staticEgressFixture, unary } from "../helpers/static-egress.mjs";
 
@@ -36,7 +36,7 @@ test("the TLS exchange refuses missing, invalid, expired and gateway identity be
   admitted.stream.cancel();
 });
 
-test("pending openings are bounded per authority and slots follow stream lifecycle", async (t) => {
+test("pending openings are bounded per Sandbox and per authority, and slots follow stream lifecycle", async (t) => {
   const f = await staticEgressFixture(t);
   // A genuine signed exchange supplies the signing helper. The remainder exercises
   // the actual registered handler without opening 1,024 network connections.
@@ -47,11 +47,10 @@ test("pending openings are bounded per authority and slots follow stream lifecyc
   const handler = f.authority.handlers.get(
     "/openshell.middleware.v1.HttpInstallationExchange/Exchange",
   ).func;
-  const peer = f.metadata();
   class Call extends EventEmitter {
-    constructor() {
+    constructor(metadata) {
       super();
-      this.metadata = peer;
+      this.metadata = metadata;
       this.replies = [];
       this.on("error", (error) => {
         this.failure = error;
@@ -64,22 +63,68 @@ test("pending openings are bounded per authority and slots follow stream lifecyc
       this.ended = true;
     }
   }
-  const open = () => {
-    const call = new Call();
+  // Every opening presents a fresh bearer (new jti), as a supervisor that renews its
+  // token does. All Sandboxes share the fixture's instance ID, so only the Sandbox ID
+  // tells them apart. `a` is the fixture's own Sandbox, whose openings `signer` can sign.
+  const sandbox =
+    (sandboxId, claims = {}) =>
+    () =>
+      f.metadata(
+        sandboxId === undefined
+          ? claims
+          : { sandbox_id: sandboxId, sub: `spiffe://openshell/sandbox/${sandboxId}`, ...claims },
+      );
+  const [a, b, c, d, e] = [undefined, "sandbox-b", "sandbox-c", "sandbox-d", "sandbox-e"].map(
+    (id) => sandbox(id),
+  );
+  const open = (peer) => {
+    const call = new Call(peer());
     handler(call);
     return call;
   };
+  const admitted = (call) => call.replies[0]?.challenge?.length === 32;
+  const assertRefused = (call, message) => {
+    // Same refusal as an exhausted pool: RESOURCE_EXHAUSTED and no challenge.
+    assert.equal(call.failure?.code, 8, message);
+    assert.equal(call.failure?.message, "Installation exchange unavailable.", message);
+    assert.deepEqual(call.replies, [], message);
+  };
+  const pool = 1024;
+  // A quarter of the pool, like the Credential Proxy's per-Sandbox shares.
+  const share = pool / 4;
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const pending = Array.from({ length: 1024 }, open);
-  assert.ok(pending.every((call) => call.replies[0]?.challenge?.length === 32));
+
+  // Tenant isolation: one Sandbox opening as many exchanges as it can must leave
+  // pending openings for every other Sandbox on this authority.
+  const flood = Array.from({ length: pool }, () => open(a));
+  const firstOfB = open(b);
+  assert.ok(admitted(firstOfB), "one Sandbox's pending openings must not refuse another Sandbox");
+  const pending = flood.filter(admitted);
+  assert.equal(pending.length, share);
+  for (const call of flood.filter((call) => !admitted(call))) {
+    assertRefused(call, "openings beyond the Sandbox share");
+  }
+  // The share follows the Sandbox, not one instance or token of it.
+  assertRefused(open(sandbox(undefined, { instance_id: randomUUID() })), "another instance");
+  pending.push(firstOfB);
+  for (const [peer, count] of [
+    [b, share - 1],
+    [c, share],
+    [d, share],
+  ]) {
+    const calls = Array.from({ length: count }, () => open(peer));
+    assert.ok(calls.every(admitted));
+    pending.push(...calls);
+  }
+  // Four full shares fill the pool; a Sandbox with no openings is refused too.
   const assertFull = () => {
-    const overflow = open();
-    assert.equal(overflow.failure?.code, 8);
-    assert.deepEqual(overflow.replies, []);
+    assertRefused(open(a), "Sandbox share");
+    assertRefused(open(e), "authority pool");
   };
   assertFull();
   for (const event of ["cancelled", "error", "end", "invalid", "accepted"]) {
-    const call = pending.pop();
+    // Each exit path must return both the Sandbox's slot and the pool's slot.
+    const call = pending.shift();
     if (event === "invalid") {
       call.emit("data", {
         open: { resolve_request: Buffer.alloc(0), signature: Buffer.alloc(64) },
@@ -98,18 +143,35 @@ test("pending openings are bounded per authority and slots follow stream lifecyc
     } else {
       call.emit(event, ...(event === "error" ? [new Error("transport closed")] : []));
     }
-    const replacement = open();
-    assert.equal(replacement.replies[0]?.challenge?.length, 32, `${event} must release a slot`);
-    pending.push(replacement);
+    const replacement = open(a);
+    assert.ok(admitted(replacement), `${event} must release a slot`);
+    pending.unshift(replacement);
     // Duplicate terminal events must not release a second stream's slot.
     call.emit("cancelled");
     assertFull();
   }
   t.mock.timers.tick(30_000);
   assert.ok(pending.every((call) => call.failure?.code === 7));
-  const afterTimeout = open();
-  assert.equal(afterTimeout.replies[0]?.challenge?.length, 32);
-  afterTimeout.emit("cancelled");
+  // The timeout returns every slot: the Sandbox can again hold its whole share.
+  const afterTimeout = Array.from({ length: share }, () => open(a));
+  assert.ok(afterTimeout.every(admitted), "the timeout must release the Sandbox's slots");
+  assertRefused(open(a), "Sandbox share after timeout");
+  const other = open(e);
+  assert.ok(admitted(other));
+  for (const call of [...afterTimeout, other]) {
+    call.emit("cancelled");
+  }
+  // Duplicate terminal events must not return a second Sandbox slot while the pool has room.
+  const again = Array.from({ length: share }, () => open(a));
+  const closed = again.pop();
+  closed.emit("cancelled");
+  closed.emit("cancelled");
+  again.push(open(a));
+  assert.ok(admitted(again.at(-1)));
+  assertRefused(open(a), "duplicate terminal events");
+  for (const call of again) {
+    call.emit("cancelled");
+  }
   t.mock.timers.reset();
 });
 

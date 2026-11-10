@@ -539,6 +539,11 @@ export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) 
 // the field that holds the Configuration.
 const CHANNEL_REFERENCE_REFUSAL =
   / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
+// Where the console binds a Secret that a channel refusal asks for: Slack's standard names on the
+// Credentials tab or in the Channels tab's Slack editor, other names only through the API. The
+// Agent page's Configuration JSON editor and the Credentials tab both say it (findings 2494, 2542).
+export const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&
@@ -600,14 +605,14 @@ export const UNBROKEN_ALTERNATIVES = [
   // No character may match two of these, nor a combining mark start one: each overlap doubles the
   // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
   // 1999). One ideograph is a combining mark (U+16FE4), and letter emoji have their own line, so
-  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs checks it.
+  // the last line skips both. tests/conformance/console-agent-name-runs.test.ts checks it.
   String.raw`(?![\p{M}${LETTER_EMOJI}])[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ];
 const UNBROKEN_CHARACTER = UNBROKEN_ALTERNATIVES.join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
 // The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
-// Exported for tests/conformance/console-agent-name-runs.test.mjs, which checks its shape.
+// Exported for tests/conformance/console-agent-name-runs.test.ts, which checks its shape.
 export const UNBROKEN_RUN = new RegExp(
   String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
   "u",

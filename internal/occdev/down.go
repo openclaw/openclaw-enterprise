@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -25,8 +24,18 @@ func Down(ctx context.Context, opts Options) error {
 		if sandbox != "none" {
 			return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
 		}
-		if err := r.selectEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
+		// Docker Compute stacks are started by scripts/dev-up with standalone
+		// podman-compose; stop them with the same provider or compose down
+		// removes nothing.
+		if err := r.selectDockerComputeEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
 			return err
+		}
+		browserEnvironment, err := DockerBrowserEnvironment(opts.Repository, false)
+		if err != nil {
+			return err
+		}
+		for key, value := range browserEnvironment {
+			r.env[key] = value
 		}
 		args := append([]string{"compose"}, opts.ComposeArgs...)
 		if r.engine == "podman" {
@@ -47,6 +56,7 @@ func Down(ctx context.Context, opts Options) error {
 			}
 			args = append([]string{"compose"}, composeArgs...)
 		}
+		args = append([]string{"compose"}, dockerBrowserComposeArgs(args[1:], opts.Repository, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])...)
 		args = append(args, "down")
 		if opts.Volumes {
 			args = append(args, "--volumes")
@@ -79,7 +89,9 @@ func Down(ctx context.Context, opts Options) error {
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
 		if r.engine == "podman" && state.DeploymentMode == "" {
-			provider, err := exec.LookPath("podman-compose")
+			// The same provider preference as startup, so every host that can
+			// start the Compose control plane can also stop it.
+			provider, err := composeProvider()
 			if err != nil {
 				return err
 			}
@@ -119,13 +131,14 @@ func Down(ctx context.Context, opts Options) error {
 }
 func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {
 	var failures []error
+	// A recorded import attachment must not keep either profile's owned network alive.
+	if clusterAttempted {
+		if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
+			return err
+		}
+	}
 	if s.DeploymentMode == "k3d" {
 		if clusterAttempted {
-			// Before the delete, which keeps a network the registry still uses
-			// and would leave it behind; a retry detaches, then deletes.
-			if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
-				return err
-			}
 			exists, err := r.clusterExists(ctx, s.Cluster)
 			if err != nil {
 				failures = append(failures, err)

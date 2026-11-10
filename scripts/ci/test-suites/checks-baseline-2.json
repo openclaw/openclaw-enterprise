@@ -4,6 +4,9 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/prepared-refresh-enrollment.test.ts",
+    "tests/integration/staging-upgrade-return.test.ts",
+    "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
@@ -29,10 +32,13 @@
     "tests/integration/ci-impact-gate.test.mjs",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
+    "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
+    "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
@@ -40,6 +46,7 @@
     "tests/conformance/bounded-response-reads.test.mjs",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.mjs",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
     "tests/integration/repository-credentials-package.test.ts",
@@ -79,6 +86,7 @@
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.mjs",
     "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
@@ -90,6 +98,7 @@
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
@@ -103,6 +112,7 @@
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
     "tests/integration/runtime-assets.test.mjs",
+    "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-client-environment.test.mjs",
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
@@ -113,13 +123,43 @@
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
-    "tests/helpers/socket-relay.test.mjs"
+    "tests/helpers/socket-relay.test.mjs",
+    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/shared-session-cookie.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/prepared-refresh-enrollment.test.ts",
+      "expectedTests": [
+        "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
+        "prepared refresh enrollment refuses before effects (legacy Refresh missing)",
+        "non-refresh prepared enrollment uses only its issuer with legacy Refresh installed"
+      ]
+    },
+    {
+      "path": "tests/integration/staging-upgrade-return.test.ts",
+      "expectedTests": [
+        "return rehearsal rejects different manifest references that contain the same controller",
+        "return rehearsal refuses image selection in the credentialed TUI lane",
+        "return readback rejects a stale restore and a recreated Agent with the same name",
+        "return readback requires both serving Pods to use the restored database",
+        "release checkout admission rejects hidden edits and ignored execution inputs before Docker",
+        "rehearsal TLS requests reject malformed and interrupted responses without exposing bytes",
+        "upgrade availability observations retain failures and gaps without overlapping TLS requests",
+        "upgrade availability retains incomplete observations when its process is killed",
+        "upgrade availability preserves action and evidence-write failures",
+        "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
+        "interrupted rehearsal runners stop concurrent command groups before exiting",
+        "interrupted commands close local pipes without killing a separate-session holder"
+      ]
+    },
+    {
+      "path": "tests/integration/controlled-tls-origin.test.ts"
+    },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
     },
@@ -144,8 +184,8 @@
         "first-Agent starts without installed workspace dependencies",
         "first-Agent accepts current Compose-backed Kubernetes development state",
         "first-Agent requires dedicated Codex for OpenShell before external calls",
-        "first-Agent admits dedicated Codex with OpenShell development state",
-        "first-Agent control UI requires the launcher-owned native admin endpoint",
+        "first-Agent admits dedicated Codex Control UI with OpenShell development state",
+        "first-Agent validates launcher-owned HTTPS endpoints before external calls",
         "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
       ]
     },
@@ -166,7 +206,8 @@
         "invalid bounds fail before any observation",
         "an observation that returns after its explicit deadline cannot report success",
         "failed diagnostic reads return a fixed marker without exposing or throwing the error",
-        "diagnostics project only fixed lifecycle fields"
+        "diagnostics project only fixed lifecycle fields",
+        "the PostgreSQL copy retains stdout progress from its signalled pull command"
       ]
     },
     {
@@ -175,6 +216,12 @@
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
       ]
+    },
+    {
+      "path": "tests/integration/worker-shutdown.test.ts"
+    },
+    {
+      "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
@@ -218,6 +265,9 @@
     },
     {
       "path": "tests/integration/ci-image-config-digest.test.mjs"
+    },
+    {
+      "path": "tests/integration/skipper-release.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
@@ -322,8 +372,8 @@
     {
       "path": "tests/integration/native-admin-access.test.mjs",
       "expectedTests": [
-        "native admin status requires exact Agent administer and reports lifecycle availability",
-        "native admin disabled status still requires exact Agent administer",
+        "native browser status selects exact Agent authority and reports lifecycle availability",
+        "native browser disabled status still requires exact Agent authority",
         "native admin shared session configuration validates cookie scope and rejects keys",
         "native admin proxy strips browser credentials and preserves the Agent gateway base path"
       ]
@@ -335,10 +385,16 @@
       "path": "tests/integration/console-theme.test.ts"
     },
     {
+      "path": "tests/integration/console-storybook-workflow.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
       "path": "tests/integration/agent-create-validate-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/model-provider.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
@@ -360,6 +416,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-admission.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-custody.test.ts"
@@ -396,11 +455,11 @@
     {
       "path": "tests/integration/repository-original-lease.test.ts",
       "expectedTests": [
-        "an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write",
-        "standing denial prevents eager Expect headers",
+        "an owned exchange keeps its original lease through replacement",
         "authentication rejection closes a pending dispatch",
         "a confirmed TLS close before the first write is not dispatched",
-        "authentication rejection after the first write remains uncertain"
+        "authentication rejection after the first write remains uncertain",
+        "observed owned-session expiry fences the first write after clock rollback"
       ]
     },
     {
@@ -472,6 +531,9 @@
       "path": "tests/integration/repository-credentials-driver.test.mjs"
     },
     {
+      "path": "tests/integration/repository-credentials-sender-recovery.test.ts"
+    },
+    {
       "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"
     },
     {
@@ -497,6 +559,12 @@
     },
     {
       "path": "tests/integration/runtime-assets.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-ai-package-relocation.test.ts",
+      "expectedTests": [
+        "the runtime Dockerfile preserves AI dependency resolution when copying the workspace package"
+      ]
     },
     {
       "path": "tests/integration/openclaw-source.test.ts"
@@ -575,6 +643,18 @@
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
+    },
+    {
+      "path": "tests/integration/staging-qualification.test.ts"
+    },
+    {
+      "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+    },
+    {
+      "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/shared-session-cookie.test.ts"
     }
   ]
 }

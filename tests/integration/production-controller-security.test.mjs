@@ -10,6 +10,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
@@ -27,7 +28,7 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
     email: "production-security-admin@example.test",
     password: "production-security-generated-password",
   });
@@ -154,7 +155,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
   });
   let restrictions = [];
   const native = new NativeIAMDriver({
@@ -215,8 +216,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       };
       const before = protectedReads;
       const response = await read();
-      assert.equal(response.statusCode, 503);
-      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
       assert.equal(
         protectedReads,
         before,
@@ -242,8 +242,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       transform = invalid;
       const before = protectedReads;
       const response = await read();
-      assert.equal(response.statusCode, 503);
-      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
       assert.equal(protectedReads, before);
     }
   });
@@ -254,8 +253,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     ];
     const before = protectedReads;
     const response = await read();
-    assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "FORBIDDEN");
+    assertApiError(response, 403, "FORBIDDEN");
     assert.equal(protectedReads, before);
   });
 });

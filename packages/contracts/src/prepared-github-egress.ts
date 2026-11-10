@@ -1,5 +1,5 @@
 import type { PreparedTokenSource } from "./prepared-token.ts";
-import type { CredentialSourceControl, EgressRoute } from "./credential-proxy.ts";
+import type { CredentialSourceControl, EgressRoute } from "./drivers/credential-proxy/index.ts";
 
 export const preparedGitHubType = "github-app-metadata";
 export const preparedGitHubProviderRef = { id: preparedGitHubType, generation: 1 } as const;
@@ -109,6 +109,14 @@ export interface PreparedGitHubInstallationUseRequest extends Pick<
     | Exclude<PreparedGitHubUseRequest["operation"], "create-draft-pull">
     | "github-rest"
     | "github-graphql";
+}
+
+export interface PreparedGitHubRepositoryUseRequest extends Omit<
+  PreparedGitHubInstallationUseRequest,
+  "scope"
+> {
+  readonly scope: "github-repository";
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
 }
 
 /** A possible disclosure, not evidence that GitHub received or performed the operation. */

@@ -17,6 +17,27 @@ const workflow = JSON.parse(
 
 // These checks protect the release configuration contract, not GitHub's scheduler.
 test("publication workflow requires explicit chart opt-in and a successful image job", () => {
+  // Publication must require source verification for the same native build inputs.
+  const check = JSON.parse(
+    execFileSync(
+      process.env.OCC_YQ_BIN ?? "yq",
+      ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
+      { encoding: "utf8" },
+    ),
+  );
+  const steps = check.jobs.prepare.steps;
+  const verification = steps.find((step) => step.with?.target === "openclaw-bridge-tests");
+  const assembly = steps.find((step) => step.id === "build");
+  assert.ok(verification);
+  assert.ok(steps.indexOf(verification) < steps.indexOf(assembly));
+  assert.equal(verification.if, "${{ matrix.image == 'runtime' }}");
+  assert.equal(verification["continue-on-error"], undefined);
+  assert.equal(assembly.if, undefined);
+  assert.equal(verification.with.outputs, "type=cacheonly");
+  for (const field of ["context", "file", "platforms", "build-args", "labels"]) {
+    assert.deepEqual(verification.with[field], assembly.with[field], field);
+  }
+  assert.equal(workflow.jobs.prepare.uses, "./.github/workflows/container-check.yml");
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.equal(inputs.publish.type, "boolean");
   assert.equal(inputs.publish.default, false);

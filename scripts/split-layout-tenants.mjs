@@ -101,7 +101,15 @@ export function createOccApi({ baseUrl, headers = {}, fetchImpl = fetch }) {
 }
 
 const ns = (id) => `/namespaces/${encodeURIComponent(id)}`;
-const list = async (api, path) => (await api.expect("GET", path)).data ?? [];
+const list = async (api, path) => {
+  const { data } = await api.expect("GET", path);
+  if (!Array.isArray(data)) {
+    throw new SplitLayoutError(
+      `GET ${path.slice(0, 240)}: invalid OCC collection response; expected an array in data. Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile any earlier writes before resuming the original operation.`,
+    );
+  }
+  return data;
+};
 
 /** Reads every Namespace's tenant resources into a bundle. Read-only. */
 export async function exportTenants(api, { log = () => {} } = {}) {
@@ -621,16 +629,18 @@ export async function importTenants(
       if (ids.has(binding.id)) {
         continue;
       }
+      if (binding.resourceKind === "agent_revision") {
+        log(`skipped access binding ${binding.id}: Agent revisions are not carried over`);
+        continue;
+      }
       const skip =
-        binding.resourceKind === "agent_revision"
-          ? "Agent revisions are not carried over"
-          : binding.subjectKind !== "identity"
-            ? `subject kind ${binding.subjectKind} is not accepted here; re-create it by hand`
-            : !BINDING_RESOURCE_KINDS.includes(binding.resourceKind)
-              ? `resource kind ${binding.resourceKind ?? "(none)"} is not accepted here; re-create it by hand`
-              : undefined;
+        binding.subjectKind !== "identity"
+          ? `subject kind ${binding.subjectKind} is not accepted here; re-create it by hand`
+          : !BINDING_RESOURCE_KINDS.includes(binding.resourceKind)
+            ? `resource kind ${binding.resourceKind ?? "(none)"} is not accepted here; re-create it by hand`
+            : undefined;
       if (skip !== undefined) {
-        log(`skipped access binding ${binding.id}: ${skip}`);
+        skippedBindings.push(`${namespace.name}/${binding.id}: ${skip}`);
         continue;
       }
       const body = remap(

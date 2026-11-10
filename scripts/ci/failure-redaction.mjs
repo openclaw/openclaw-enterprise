@@ -220,12 +220,21 @@ export function failureSecrets(environments) {
   return [...values].sort(([a], [b]) => b.length - a.length);
 }
 
+function withoutStructuredLogLines(text) {
+  return text
+    .split("\n")
+    .filter((line) => !line.includes("OCSF-JSON"))
+    .join("\n");
+}
+
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
 // shortened it since).
-function redactText(text, limit, secrets, root, cut = text?.length >= failureInputLimit) {
+function redactText(text, limit, secrets, root, cut) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
   }
+  cut ??= text.length >= failureInputLimit;
+  text = withoutStructuredLogLines(text);
   let result = stripVTControlCharacters(text.slice(0, failureInputLimit));
   if (root.length > 1) {
     result = result.replaceAll(`file://${root}/`, "").replaceAll(`${root}/`, "");
@@ -252,6 +261,9 @@ function redactText(text, limit, secrets, root, cut = text?.length >= failureInp
 
 // Redacts one captured container log line the same way, bounded to `limit`.
 export function redactLogLine(line, secrets, limit) {
+  if (typeof line === "string" && line.includes("OCSF-JSON")) {
+    return "";
+  }
   return redactText(line, limit, secrets, "") ?? "";
 }
 
@@ -306,12 +318,12 @@ function redactDetailText(text, secrets, root) {
   if (typeof text !== "string") {
     return undefined;
   }
+  const cut = text.length >= failureInputLimit;
+  text = withoutStructuredLogLines(text);
   const raw = dropCredentialLines(
     stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
-  return dropCredentialLines(
-    redactText(raw, failureInputLimit, secrets, root, text.length >= failureInputLimit),
-  );
+  return dropCredentialLines(redactText(raw, failureInputLimit, secrets, root, cut));
 }
 
 export function redactFailureDetail(error, secrets, root) {
@@ -335,8 +347,10 @@ const orphanKeyLines = 1_024;
 // runs to the end, and an END line with no BEGIN before it (a tail that starts
 // inside a key) takes the lines above it.
 export function maskPrivateKeyLines(lines) {
-  const { text, lineAt } = joinedLines(lines);
-  const masked = [...lines];
+  const { text, lineAt, clean } = joinedLines(lines);
+  // Preserve array positions for key masking, but discard structured supervisor events
+  // before any consumer selects, clips, or publishes these raw diagnostic lines.
+  const masked = lines.map((line, index) => (clean[index].includes("OCSF-JSON") ? "" : line));
   const mask = (from, to) => {
     for (let index = Math.max(0, from); index <= to && index < masked.length; index += 1) {
       masked[index] = maskedLine;
@@ -378,7 +392,7 @@ function joinedLines(lines) {
     }
     return low;
   };
-  return { text: clean.join("\n"), lineAt };
+  return { text: clean.join("\n"), lineAt, clean };
 }
 
 // Output that is cut to its last lines, or redacted a line at a time, loses a secret value's
@@ -422,7 +436,8 @@ export function newestMatchingLogLines(logs, secrets, { pattern, exclude, budget
   const kept = [];
   let length = 0;
   for (const line of maskPrivateKeyLines(logs.split("\n")).reverse()) {
-    if (!pattern.test(line) || exclude?.test(line)) {
+    // Full structured supervisor events can contain fields beyond the diagnostic allowlist.
+    if (line.includes("OCSF-JSON") || !pattern.test(line) || exclude?.test(line)) {
       continue;
     }
     const shown = redactLogLine(line, secrets, lineChars);
@@ -443,6 +458,9 @@ export function redactOutputLines(lines, secrets, root, limit) {
 
 // One line of a failed file's output for the diagnostics report.
 export function redactOutputLine(line, secrets, root, limit) {
+  if (typeof line === "string" && line.includes("OCSF-JSON")) {
+    return "";
+  }
   // Test the raw line first, as for container logs: redaction can consume the keyword.
   if (isCredentialLine(line)) {
     return "[redacted credential-bearing line]";

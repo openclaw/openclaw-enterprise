@@ -1,3 +1,4 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -9,13 +10,12 @@ import {
   repositoryApprovalFingerprint,
 } from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import {
   startGitHubFixture,
   fixtureAppId,
@@ -30,6 +30,7 @@ import {
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
+import { authorizedPrincipal } from "../helpers/postgres-backend-state.mjs";
 
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.
@@ -37,6 +38,7 @@ export async function fixture(
   t,
   {
     openBroker,
+    recordDeploymentOperation = false,
     draftPull = false,
     draftPullLimit = /** @type {"none" | undefined} */ (undefined),
     draftResponse,
@@ -46,7 +48,7 @@ export async function fixture(
     installationAccess = false,
     tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
     /** The first owner's clock argument; undefined starts it as the worker does. */
-    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts").Clock | undefined} */ (
+    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/access/backend-contracts.ts").Clock | undefined} */ (
       undefined
     ),
   } = {},
@@ -193,7 +195,24 @@ export async function fixture(
     repository: fixtureRepository,
   });
   const sessionId = broker?.opened.session.sessionId ?? `session-${randomUUID()}`;
+  const deployer = recordDeploymentOperation
+    ? authorizedPrincipal(await state.loadNativeIAMState())
+    : undefined;
   await state.transact(async (unit) => {
+    if (recordDeploymentOperation) {
+      // Record original deployment ownership before publishing the active pointer.
+      // This component fixture does not prove Worker or Compute activation.
+      assert.ok(deployer);
+      await unit.namespaces.lockNamespace(namespaceId);
+      await unit.agents.lockAgent(namespaceId, agent.id);
+      await unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId,
+        resourceId: revision.id,
+        actorId: deployer.id,
+      });
+    }
     assert.ok(
       await unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
     );
@@ -232,6 +251,7 @@ export async function fixture(
     });
   await admit(sessionId, attempt.admissionId);
   const ownerOptions = {
+    repositoryGitCustody: { kind: "native-broker" },
     pool,
     controlSocket: join(directory, "control.sock"),
     driverId,
@@ -247,7 +267,13 @@ export async function fixture(
   owner = await startPreparedGitHubGitOwner(ownerOptions, ownerClock);
   return {
     /** Another worker owner on the same database, such as one after an issuer change. */
-    async startOwner(overrides) {
+    async startOwner(overrides = {}) {
+      assert.ok(
+        !Object.hasOwn(overrides, "controlSocket") ||
+          overrides.controlSocket !== undefined ||
+          Object.hasOwn(overrides, "repositoryGitCustody"),
+        "A socketless fixture owner requires an explicit custody selection",
+      );
       // Each owner serves its use socket beside its control socket: give it its own directory.
       const sockets = await socketDirectory(t, "pgit-", { longest: "prepared-git-use.sock" });
       const other = await startPreparedGitHubGitOwner({
@@ -339,18 +365,22 @@ export const controlledProtectedDriver = Object.freeze({
 export function startProtectedOwner(f, overrides = {}) {
   return f.startOwner({
     controlSocket: undefined,
-    protectedGitDriver: controlledProtectedDriver,
-    protectedGitEvidence: openShellGitRecipientEvidence,
+    repositoryGitCustody: selectBundledRepositoryGitCustody(controlledProtectedDriver),
     ...overrides,
   });
 }
 
 /**
  * Deploy a protected version after `previous`, with one open repository session and the
- * released OpenShell Git recipient of its Sandbox. The installation and the delivery receipt
- * are controlled evidence; the standing transfer test exercises the real release.
+ * released Git recipient of its Sandbox. Bundled delivery uses the online profile;
+ * registered delivery leaves observation and independent confirmation to its caller.
+ * The installation is controlled evidence; the standing transfer test exercises release.
  */
-export async function admitProtectedVersion(f, previous = f.revision) {
+export async function admitProtectedVersion(
+  f,
+  previous = f.revision,
+  { custody = /** @type {"bundled" | "registered"} */ ("bundled") } = {},
+) {
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
   const driver = controlledProtectedDriver;
   const revisionId = "rev_" + randomUUID();
@@ -373,6 +403,7 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     egressDriverId: "controlled",
     routes: [],
     repositoryGit: repositoryCredentials,
+    ...(custody === "bundled" && { repositoryGitAuthorization: "online-request" }),
   };
   const attempt = {
     namespaceId,
@@ -389,7 +420,7 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     ...previous,
     id: revisionId,
     revision: previous.revision + 1,
-    executionAdmission: { version: 4, mode: "protected" },
+    executionAdmission: { version: custody === "bundled" ? 5 : 4, mode: "protected" },
     egressPlan: plan,
   };
   await f.state.transact(async (u) => {
@@ -418,7 +449,7 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     providerId,
     providerResourceVersion: "1",
     profileVersion: "1",
-    credentialState: "active",
+    credentialState: "bootstrap",
     attachmentEpoch: "e",
     providerEnvRevision: "1",
     configRevision: "1",
@@ -427,44 +458,47 @@ export async function admitProtectedVersion(f, previous = f.revision) {
     processInstanceId: "p",
     networkInstanceId: "n",
   };
-  await f.state.transact((u) =>
-    u.credentialSources.recordEgressInstallation({
-      plan,
-      sandboxId,
-      sender: { id: "sender", generation: 1 },
-      installedAt: attempt.createdAt,
-      enforcement: {
-        policyHash,
-        instanceId: "released-supervisor-A",
-        repositoryGitRecipient: {
-          providerId,
-          attachmentEpoch: observed.attachmentEpoch,
-          processInstanceId: observed.processInstanceId,
-          networkInstanceId: observed.networkInstanceId,
-        },
-        configurationId: "c",
-        authorityScope: "execution",
-        peerKeyId: "fixture",
+  const installation = {
+    plan,
+    sandboxId,
+    sender: { id: "sender", generation: 1 },
+    installedAt: attempt.createdAt,
+    enforcement: {
+      policyHash,
+      instanceId: "released-supervisor-A",
+      repositoryGitRecipient: {
+        providerId,
+        attachmentEpoch: observed.attachmentEpoch,
+        processInstanceId: observed.processInstanceId,
+        networkInstanceId: observed.networkInstanceId,
+        ...(custody === "bundled" && { authorization: "online-request" }),
       },
-    }),
-  );
-  // Match the OpenShell delivery owner's snapshot receipt, tied to this live revision.
-  await f.pool.query(
-    `insert into occ.credential_deliveries
+      configurationId: "c",
+      authorityScope: "execution",
+      ...(custody === "registered" && { peerKeyId: "fixture" }),
+    },
+  };
+  await f.state.transact((u) => u.credentialSources.recordEgressInstallation(installation));
+  if (custody === "bundled") {
+    // Match the OpenShell delivery owner's snapshot receipt, tied to this live revision.
+    await f.pool.query(
+      `insert into occ.credential_deliveries
     (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
     values($1,$1,'snapshot',$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
       jsonb_build_object('credentialState','bootstrap','providerId',$6::text,'profileVersion','1','resourceVersion','1','expiresAt',''),$7)`,
-    [
-      revisionId,
-      namespaceId,
-      agentId,
-      executionId,
-      randomUUID(),
-      providerId,
-      JSON.stringify(observed),
-    ],
-  );
+      [
+        revisionId,
+        namespaceId,
+        agentId,
+        executionId,
+        randomUUID(),
+        providerId,
+        JSON.stringify(observed),
+      ],
+    );
+  }
   return {
+    installation,
     revision,
     revisionId,
     sessionId,

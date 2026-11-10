@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +20,7 @@ import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+import { withoutShellStartup } from "./environment.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -76,6 +86,12 @@ const forwardedEnv = [
   "DOCKER_HOST",
   "OCC_CONTAINER_ENGINE_SOCKET",
   "OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR",
+  "OCC_DEVELOPMENT_BROWSER_ORIGIN",
+  "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN",
+  "OCC_DEVELOPMENT_BROWSER_PORT",
+  "OCC_DEVELOPMENT_BROWSER_TLS_CERT",
+  "OCC_DEVELOPMENT_BROWSER_TLS_KEY",
+  "OCC_AGENT_NATIVE_ADMIN_ENABLED",
   "OCC_DOCKER_AGENT_IMAGE",
   "OCC_DOCKER_GATEWAY_IMAGE",
   "OCC_DOCKER_RUNTIME_IMAGE",
@@ -575,15 +591,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
+              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
+              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
             ],
           ]
             .map(
@@ -802,7 +818,7 @@ async function writeFakeCommand(fake, path, command) {
 }
 
 async function createFixture(t, options = {}) {
-  const directory = await temporaryDirectory(t, "openclaw-dev-up-");
+  const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
@@ -818,7 +834,13 @@ async function createFixture(t, options = {}) {
     await chmod(destination, 0o755);
   }
   // Real dev commands discover the disposable source root before selecting its CLI.
-  for (const source of ["go.mod", "compose.yaml", "compose.podman.yaml"]) {
+  for (const source of [
+    "go.mod",
+    "compose.yaml",
+    "compose.podman.yaml",
+    "compose.native-admin.yaml",
+    "compose.postgres.yaml",
+  ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }
 
@@ -891,8 +913,9 @@ exit 86
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
   );
-  const env = {
+  const env = withoutShellStartup({
     ...inherited,
+    TMPDIR: directory,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
@@ -912,12 +935,7 @@ exit 86
     DEV_UP_REAL_PATH: process.env.PATH ?? "",
     DEV_UP_REPOSITORY: repository,
     DEV_UP_FIXTURE_REPOSITORY: fixtureRepository,
-  };
-
-  // Shell startup configuration is outside this disposable command environment.
-  delete env.BASH_ENV;
-  delete env.ENV;
-  delete env.SHELLOPTS;
+  });
 
   const fixture = {
     directory,

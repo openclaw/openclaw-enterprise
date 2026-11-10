@@ -8,6 +8,14 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 ## Changelog
 
+- 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
+
+- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
+
+- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
+
+- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+
 - 2026-10-27 17:55: Trace the Google account binding and the worker’s guarded request. (01a169f0-a851-7b81-8e83-ff597893aa21)
 
 - 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)

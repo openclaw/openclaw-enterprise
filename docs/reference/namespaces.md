@@ -53,6 +53,12 @@ Creation requires Namespace `create` in the Installation. Reads and deletion
 require the corresponding permission on the exact Namespace. Namespace lists
 authorize each result separately; permission to access one Namespace does not
 reveal another. [Authorization](authorization.md) defines scope and grants.
+When the Installation configuration sets an `ownerRole`, OCC binds the creator
+of a Namespace to that
+[Owner Role](authorization/default-users.md#creators-own-what-they-create)
+across it. Creating a Namespace also writes the
+[configured Group bindings](authorization/default-users.md#how-occ-applies-the-configuration)
+that name it, such as Agent creation in `default`.
 
 `POST /namespaces` accepts a name and returns `201` with a Namespace in
 `provisioning` status. `GET /namespaces` lists authorized Namespaces;
@@ -82,11 +88,19 @@ Configuration in an explicitly selected external Namespace returns
 OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
 selecting that namespace again ends `failed` until an operator clears them; see
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
-A `failed` Namespace does not say why in the API. The worker's
-`worker.completed` line for `namespace.ensure` carries the Kubernetes Compute
-Driver's `reason`, such as `Existing Kubernetes namespace customer-support
-belongs to another tenant: its openclaw.dev/namespace label names a different
-Namespace.` It names the blocking marker's key, never another tenant's value.
+
+The API reports `failed` without a cause. Check the worker's `worker.completed`
+line for `namespace.ensure`. It includes a `reason` when the Kubernetes Compute
+Driver supplies one. For example, `Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.`
+The message identifies the blocking marker's key and keeps the other tenant's value private.
+
+A provisioning timeout alone does not identify the cause. See
+[Kubernetes troubleshooting](drivers/kubernetes-compute.md#failure-conditions).
+If the worker service account lacks its tenant runtime RoleBinding, restore it in
+the backing Kubernetes namespace while the Namespace is still `provisioning`.
+A later pass can then check readiness. Once the Namespace reaches `failed`,
+there is no supported way to retry provisioning for that Namespace. Rechecking
+in the Console reads its current status.
 
 ## Lifecycle
 
@@ -147,7 +161,9 @@ the IDs of their resources, as far as the 256-character message
 allows; a kind with more says how many are left. The error also includes
 `remainingResources`: up to seven entries with `kind`, `count`, and up to 20
 `ids` each. Pending Agent provisioning has no resource IDs. Configurations have
-no list route, so the deletion conflict provides their IDs. Delete
+no list route, so the deletion conflict provides their IDs. Namespace `delete`
+does not grant reads: of the first 20 resources of each kind, the conflict
+names only those that you can read, and it counts the others without IDs. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.
@@ -186,8 +202,8 @@ workload is ready.
   operation.
 - `404`: The Namespace does not exist, belongs outside the requested scope, or
   has already been tombstoned.
-- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with resource
-  IDs. Delete the named resources and retry to see any others. Remove the
+- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with the IDs
+  that you can read. Delete the named resources and retry to see any others. Remove the
   Namespace's unreferenced Agents, Configurations, edited or custom Presets,
   service accounts, Secrets, and credential sources before deletion. An Agent
   whose teardown is still in progress, or a credential source in `deleting`,
@@ -225,6 +241,7 @@ workload is ready.
 
 ## Changelog
 
+- 2026-11-04 12:00: With a configured `ownerRole`, the creator of a Namespace owns it; creating a Namespace writes the configured Group bindings that name it. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-18 21:10: The console names a Namespace's status where Agent creation starts and disables creation only where the API refuses new Agents. (ux-a5)
 - 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)

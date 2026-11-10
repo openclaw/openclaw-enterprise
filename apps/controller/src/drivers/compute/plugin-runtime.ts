@@ -55,6 +55,7 @@ export interface CodexRepositoryBrokerNetworkPolicy {
 export interface CodexModelEndpoint {
   readonly baseUrl: string;
   readonly modelProvider: "openai-compatible";
+  readonly supportsStandaloneWebSearch?: true;
 }
 
 export type PluginRuntimeSpec =
@@ -241,7 +242,7 @@ function codexToml(
   }
   return endpoint === undefined
     ? configuration
-    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n${runtime.providerTools === "none" ? "request_max_retries = 0\nstream_max_retries = 0\n" : ""}`;
+    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n${endpoint.supportsStandaloneWebSearch === true && runtime.providerTools !== "none" ? "supports_standalone_web_search = true\n" : ""}${runtime.providerTools === "none" ? "request_max_retries = 0\nstream_max_retries = 0\n" : ""}`;
 }
 
 /**

@@ -35,6 +35,7 @@ async function scenario(
     beforeCreate,
     beforeBuild,
     extraEnvironment = {},
+    builder,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
@@ -49,6 +50,7 @@ async function scenario(
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     DOCKER_HOST: "unix:///owned.sock",
     ...extraEnvironment,
+    ...(builder === undefined ? {} : { BUILDX_BUILDER: builder }),
   };
   const events = [{ event: "listening", at: 1 }];
   const faults = { inspectError: undefined };
@@ -240,6 +242,19 @@ test("provider prepares a scoped immutable image pair and requires a completed t
       .filter(({ args }) => args[0] === "image" && args[1] === "rm")
       .every(({ args }) => !args.includes("--force")),
   );
+});
+
+test("provider builds checkout images with the selected installer builder", async (t) => {
+  const { fixture, calls } = await scenario(t, { builder: "owned-installer-builder" });
+  await fixture.prepare();
+  const builds = calls.filter(({ args }) => args[0] === "buildx");
+  assert.equal(builds.length, 3);
+  for (const { args } of builds.slice(0, 2)) {
+    assert.equal(args[args.indexOf("--builder") + 1], "owned-installer-builder");
+  }
+  // The trust layer intentionally consumes the just-loaded base image in the host engine.
+  assert.equal(builds[2].args[builds[2].args.indexOf("--builder") + 1], "default");
+  await fixture.cleanup();
 });
 
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {

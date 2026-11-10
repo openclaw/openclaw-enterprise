@@ -7,11 +7,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
 import {
-  managedGoogleInstall,
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import {
@@ -34,7 +34,7 @@ test("the standalone guard refuses startup without supervisor trust settings", (
 });
 
 test("the signed OpenShell request guard intersects the source envelope with the pinned gog operations", async (t) => {
-  const { directory, caBundle } = await harnessTlsFixture(t);
+  const { directory, caBundle, certPath, keyPath } = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(directory, "issuer.pub");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
@@ -48,8 +48,8 @@ test("the signed OpenShell request guard intersects the source envelope with the
       OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-key",
     },
     {
-      certificatePath: join(directory, "server.pem"),
-      privateKeyPath: join(directory, "server.key"),
+      certificatePath: certPath,
+      privateKeyPath: keyPath,
       issuerPublicKeyPath,
     },
   );
@@ -61,10 +61,10 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
   const gmail = "https://www.googleapis.com/auth/gmail.readonly";
-  const scopeConfig = (host: string, path: string, scope: string) => ({
+  const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: JSON.stringify({ host, port: 443, path, scopes: [scope] }) },
+      request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
     },
   });
   const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
@@ -114,6 +114,15 @@ test("the signed OpenShell request guard intersects the source envelope with the
   };
   assert.equal((await invoke(client, "ValidateConfig", stale, gateway)).valid, false);
   assert.equal(await evaluate(stale), 2);
+  // A source envelope outside Google's HTTPS shape fails binding validation at the Gateway,
+  // and a request under it is denied.
+  const plaintext = { ...request, config: scopeConfig(target.host, target.path, gmail, 80) };
+  assert.equal(
+    (await invoke(client, "ValidateConfig", plaintext, gateway)).valid,
+    false,
+    "port 80 source",
+  );
+  assert.equal(await evaluate(plaintext), 2, "port 80 source");
   assert.equal(
     await evaluate(
       request,
@@ -193,6 +202,95 @@ test("the signed OpenShell request guard intersects the source envelope with the
     body: Buffer.from(JSON.stringify(value)),
     headers: [{ name: "content-type", value: "application/json" }],
   });
+  const calendarRead = "https://www.googleapis.com/auth/calendar.readonly";
+  const calendar = {
+    ...request,
+    config: scopeConfig("www.googleapis.com", "/calendar/v3/**", calendarRead),
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events",
+      query: "",
+    },
+  };
+  for (const calendarId of ["primary", "reader%40example.test"]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      1,
+      calendarId,
+    );
+  }
+  assert.equal(await evaluate(calendar), 1, "encoded hash is Calendar ID data");
+  for (const path of [
+    "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events/event-1",
+    "/calendar/v3/users/me/calendarList/en.usa%23holiday%40group.v.calendar.google.com",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 1, path);
+  }
+  for (const calendarId of [
+    "id#fragment",
+    "id?query",
+    "id%2Fother",
+    "id%5Cother",
+    "id%3Bother",
+    "id%3Fquery",
+    "id%00",
+    "id%1F",
+    "id%7F",
+    "id%25",
+    "id%2523hash",
+    "%2e",
+    "%2e%2e",
+    "id%",
+  ]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      2,
+      calendarId,
+    );
+  }
+  for (const path of [
+    "/calendar/v3/calendars/primary/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events%23hash",
+    "/calendar/v3/calendars/id%23hash/unreleased",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 2, path);
+  }
+  // These methods are admitted by the wire contract but do not authorize this read.
+  for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  // Invalid wire methods are rejected before the Google policy runs.
+  for (const method of ["get", "OPTIONS", "INVALID"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  for (const denied of [
+    { ...calendar, target: { ...calendar.target, host: "calendar.googleapis.com" } },
+    { ...calendar, config: scopeConfig(calendar.target.host, "/calendar/v3/**", gmail) },
+    {
+      ...calendar,
+      config: scopeConfig(calendar.target.host, "/calendar/v3/calendars/primary/**", calendarRead),
+    },
+    { ...calendar, ...json({}) },
+    { ...calendar, target: { ...calendar.target, query: "unreviewed=true" } },
+  ]) {
+    assert.equal(await evaluate(denied), 2, "Calendar authority remains constrained");
+  }
   const freebusy = {
     ...request,
     config: scopeConfig(
@@ -278,6 +376,11 @@ test("the signed OpenShell request guard intersects the source envelope with the
     ),
   };
   assert.equal(await evaluate(drive), 1, "Drive metadata");
+  assert.equal(
+    await evaluate({ ...drive, target: { ...drive.target, path: "/drive/v3/files/file%23hash" } }),
+    2,
+    "encoded hash is not permitted in a non-Calendar identifier",
+  );
   const download = { ...drive, target: { ...drive.target, query: "alt=media" } };
   assert.equal(await evaluate(download), 2, "metadata grant cannot fetch file bytes");
   assert.equal(
@@ -335,6 +438,20 @@ test("the signed OpenShell request guard intersects the source envelope with the
     }),
     1,
   );
+  // The request host must be the source host, even when the source path and grant also fit
+  // another Google service: drive.readonly authorizes both Docs and Slides reads under /v1/**.
+  const driveRead = "https://www.googleapis.com/auth/drive.readonly";
+  const slides = {
+    ...request,
+    config: scopeConfig("slides.googleapis.com", "/v1/**", driveRead),
+    target: { ...target, host: "slides.googleapis.com", path: "/v1/presentations/deck", query: "" },
+  };
+  assert.equal(await evaluate(slides), 1, "Slides read under a Slides source");
+  assert.equal(
+    await evaluate({ ...slides, config: scopeConfig("docs.googleapis.com", "/v1/**", driveRead) }),
+    2,
+    "a Docs source cannot credential a Slides read",
+  );
   const sheetsRead = scopeConfig(
     "sheets.googleapis.com",
     "/v4/**",
@@ -344,6 +461,25 @@ test("the signed OpenShell request guard intersects the source envelope with the
     await evaluate({ ...cells, config: sheetsRead, ...json({ values: [["hello"]] }) }),
     2,
     "read-only scope refuses write",
+  );
+  // Dot segments may resolve upstream to another resource than the one routed here. A malformed
+  // escape makes the path decoder throw, and the guard denies a request whose check throws.
+  for (const segment of [".", "..", "%zz"]) {
+    assert.equal(
+      await evaluate({
+        ...request,
+        config: subtree,
+        target: { ...get, path: `${target.path}/${segment}` },
+      }),
+      2,
+      segment,
+    );
+  }
+  // Calendar's Discovery still declares Google's userIp system parameter; it stays refused.
+  assert.equal(
+    await evaluate({ ...freebusy, target: { ...freebusy.target, query: "userIp=192.0.2.1" } }),
+    2,
+    "userIp",
   );
   for (const denied of [
     { ...request, target: { ...target, method: "POST" } },

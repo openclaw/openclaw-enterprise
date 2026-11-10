@@ -327,11 +327,9 @@ export function renderWorkspaceFiles(
         ? { text: editor.value, baseline, outcomeUnknown: outcomeUnknown || writing }
         : undefined;
     });
-    const save = element(
-      "button",
-      { type: "submit", className: "button button--primary", disabled: true },
-      `Save ${name}`,
-    );
+    // A secondary button: the view's one primary action is the draft's Deploy new version or
+    // a deployment recovery, not each file's Save (finding 1968).
+    const save = element("button", { type: "submit", disabled: true }, `Save ${name}`);
     const reload = button(`Reload ${name}`, () => void load(true));
     const missingCreate = `${name} is missing. Save to create it.`;
     const missingText = () => (operateDenied ? `${name} is missing.` : missingCreate);

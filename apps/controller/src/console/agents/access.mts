@@ -10,6 +10,7 @@ import {
   element,
   revealStatus,
   setStatusTone,
+  setUnavailable,
   statusBlock,
   validateOnSubmit,
   withRequestId,
@@ -46,11 +47,21 @@ type PolicyRole = ReturnType<typeof policyRole>;
 
 // The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
 // the panel hides itself. `onWriting` runs with true when a share or removal starts and false
-// when it ends: the page holds version and page changes meanwhile (finding 2108).
+// when it ends: the page holds version and page changes meanwhile (finding 2108). `recheck` reads
+// the policy again for a reader who returns to the tab. `rereadAccess` runs before Refresh sharing
+// reads the policy: the page rereads the caller's permission answers, which audit nothing.
 export function renderAgentAccess(
   context: AgentAccessContext,
   agent: Pick<Agent, "id">,
-  { onDenied, onWriting }: { onDenied?(): void; onWriting?(writing: boolean): void } = {},
+  {
+    onDenied,
+    onWriting,
+    rereadAccess,
+  }: {
+    onDenied?(): void;
+    onWriting?(writing: boolean): void;
+    rereadAccess?(): Promise<unknown>;
+  } = {},
 ) {
   const { namespaceId } = context;
   const path = `${namespacePath(namespaceId)}/iam`;
@@ -71,7 +82,7 @@ export function renderAgentAccess(
   const acknowledge = element("input", { type: "checkbox", required: true });
   // The Agent page's one primary action is its next deployment step, not sharing.
   const share = element("button", { type: "submit" }, "Share Agent");
-  const refresh = button("Refresh sharing", () => void load(), { size: "sm" });
+  const refresh = button("Refresh sharing", () => void load({ reread: true }), { size: "sm" });
   const form = element(
     "form",
     { className: "agent-access-form" },
@@ -145,9 +156,6 @@ export function renderAgentAccess(
 
   function render() {
     const blocked = state.pending || !state.loaded || state.needsRefresh;
-    principal.disabled = blocked;
-    acknowledge.disabled = blocked;
-    share.disabled = blocked;
     refresh.disabled = state.pending;
     // The form shows disabled while the policy loads, instead of popping in above the grants
     // once it has (finding 1410); it hides only when the policy could not be read.
@@ -174,6 +182,16 @@ export function renderAgentAccess(
     const refusal = feedback.querySelector<HTMLElement>("[role=alert]");
     if (refusal) {
       setStatusTone(refusal, "danger");
+    }
+    // After a refused or failed change the form waits for Refresh sharing, and the refusal says
+    // so: each control stays in the Tab order, described by it (class of finding 2899). Without
+    // that refusal (pending or not loaded yet) they stay natively disabled, even with focus.
+    const reason = state.needsRefresh ? refusal : null;
+    for (const control of [principal, acknowledge, share]) {
+      setUnavailable(control, blocked && reason !== null, reason);
+      if (blocked && reason === null) {
+        control.disabled = true;
+      }
     }
     grants.replaceChildren();
     if (!state.loaded) {
@@ -232,11 +250,13 @@ export function renderAgentAccess(
     }
   }
 
+  // The two lists are read one at a time: a reader whose administration ended is refused, and
+  // audited, once. The page confirms administration when it loads and the tab can open much
+  // later, so a first open after a revoke was refused twice (finding D804), as a return was
+  // (finding D790).
   async function readPolicy() {
-    const [roles, bindings] = await Promise.all([
-      context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION),
-      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION),
-    ]);
+    const roles = await context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION);
+    const bindings = await context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION);
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
@@ -278,7 +298,7 @@ export function renderAgentAccess(
     }
   }
 
-  async function load() {
+  async function load({ recheck = false, reread = false } = {}) {
     if (state.pending || !context.isCurrent()) {
       return;
     }
@@ -288,11 +308,25 @@ export function renderAgentAccess(
     state.error = null;
     render();
     try {
+      // Refresh sharing first rereads the caller's permission answers. Administration granted
+      // again after a refused share left this read refused unsent, the tab hidden and the page
+      // read-only until Refresh (finding 2943); the page now follows the new answer, and the
+      // policy is read when it confirms administration. Still revoked, the read is refused as
+      // before, with no added audited refusal.
+      if (reread) {
+        await rereadAccess?.();
+        if (!context.isCurrent()) {
+          return;
+        }
+      }
       await readPolicy();
       section.hidden = false;
       state.needsRefresh = false;
-      // What the listed bindings cannot confirm is said once, in the page's disclosure.
-      state.progress = ["Current policy loaded."];
+      // What the listed bindings cannot confirm is said once, in the page's disclosure. A recheck
+      // keeps what the panel said, a share's outcome too.
+      if (!recheck) {
+        state.progress = ["Current policy loaded."];
+      }
     } catch (error) {
       if (context.isCurrent()) {
         state.loaded = false;
@@ -450,7 +484,18 @@ export function renderAgentAccess(
       acknowledge.checked = false;
     }, true);
   });
+  // The panel is built once per page, so a return to the tab shows what it read before, and
+  // access can change meanwhile. An administrator revoked with the page open kept the old grants,
+  // "Current policy loaded." and an enabled Remove binding (finding D790). A return to a panel
+  // that shows the policy reads it again, its controls disabled meanwhile: a refusal takes the
+  // member path a page load takes. A panel that shows an error already asks for Refresh sharing.
+  function recheck() {
+    if (state.loaded && !state.needsRefresh && !state.error) {
+      void load({ recheck: true });
+    }
+  }
+
   render();
   void load();
-  return section;
+  return { section, recheck };
 }

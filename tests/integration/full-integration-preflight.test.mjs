@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { join } from "node:path";
@@ -15,6 +15,202 @@ import {
 } from "../../scripts/ci/full-integration-preflight.mjs";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  admitProducer,
+  discoverProducer,
+  pollMilliseconds,
+  selectFreshLanes,
+  validateResults,
+  waitMilliseconds,
+} from "../../scripts/ci/full-integration-reuse.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+
+async function reuseFixture() {
+  const rows = (await selectFreshLanes([], "skipped")).matrix.filter(
+    (row) => !["k3d-observability-demo", "repository-credentials-container"].includes(row.lane),
+  );
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const run = {
+    id: 123,
+    run_attempt: 2,
+    head_sha: sha,
+    event: "push",
+    head_branch: "main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    head_repository: { full_name: "openclaw/openclaw-enterprise" },
+    workflow_id: 456,
+    path: ".github/workflows/ci.yml",
+    status: "completed",
+    conclusion: "success",
+  };
+  const jobs = [
+    "CI Required",
+    "Suite Audit and Static Checks",
+    ...rows.map((row) => row.title),
+  ].map((name) => ({ name, status: "completed", conclusion: "success" }));
+  const artifacts = rows.map((row, index) => ({
+    id: index + 1000,
+    name: `attempt-2-ci-results-${row.lane}`,
+    expired: false,
+    size_in_bytes: 1000,
+    workflow_run: { id: 123, head_sha: sha, head_branch: "main" },
+  }));
+  const get = async (path) => {
+    if (path === "/actions/workflows/ci.yml") {
+      return { id: 456, name: "CI", path: run.path };
+    }
+    if (path.includes("/runs?")) {
+      return { workflow_runs: [run] };
+    }
+    if (path.endsWith("/jobs?per_page=100")) {
+      return { total_count: jobs.length, jobs };
+    }
+    if (path.endsWith("/artifacts?per_page=100")) {
+      return { total_count: artifacts.length, artifacts };
+    }
+    if (path === "/actions/runs/123") {
+      return run;
+    }
+    throw new Error(`Unexpected API request ${path}`);
+  };
+  return { rows, sha, run, jobs, artifacts, get };
+}
+
+test("same-SHA reuse admits only successful canonical CI jobs and immutable current-attempt artifacts", async () => {
+  const fixture = await reuseFixture();
+  const { get, run, sha, rows, jobs, artifacts } = fixture;
+  assert.ok(await admitProducer(get, run, sha, 456, rows));
+  for (const patch of [
+    { head_sha: "0".repeat(40) },
+    { event: "pull_request" },
+    { head_branch: "other" },
+    { head_repository: { full_name: "someone/fork" } },
+    { workflow_id: 999 },
+    { path: ".github/workflows/other.yml" },
+    { conclusion: "failure" },
+    { run_attempt: 3 },
+  ]) {
+    assert.equal(await admitProducer(get, { ...run, ...patch }, sha, 456, rows), null);
+  }
+  for (const job of jobs) {
+    job.conclusion = "skipped";
+    assert.equal(await admitProducer(get, run, sha, 456, rows), null, job.name);
+    job.conclusion = "success";
+  }
+  for (const patch of [
+    { expired: true },
+    { name: "ci-results-checks-baseline-1" },
+    { workflow_run: { id: 999, head_sha: sha, head_branch: "main" } },
+  ]) {
+    const original = artifacts[0];
+    artifacts[0] = { ...original, ...patch };
+    assert.equal(await admitProducer(get, run, sha, 456, rows), null);
+    artifacts[0] = original;
+  }
+});
+
+test("same-SHA reuse waits at most twelve minutes and falls back without delaying credentialed lanes", async () => {
+  const { get, run, sha, rows } = await reuseFixture();
+  let elapsed = 0;
+  const sleeps = [];
+  run.status = "in_progress";
+  const sleep = async (ms) => {
+    sleeps.push(ms);
+    elapsed += ms;
+  };
+  assert.equal(await discoverProducer({ get, sha, rows, now: () => elapsed, sleep }), null);
+  assert.equal(elapsed, 720_000);
+  assert.equal(waitMilliseconds, 720_000);
+  assert.equal(pollMilliseconds, 30_000);
+  assert.ok(sleeps.every((ms) => ms === 30_000));
+  elapsed = 0;
+  const admitted = await discoverProducer({
+    get,
+    sha,
+    rows,
+    now: () => elapsed,
+    sleep: async (ms) => {
+      elapsed += ms;
+      if (elapsed === 60_000) {
+        run.status = "completed";
+      }
+    },
+  });
+  assert.equal(admitted.runId, 123);
+  assert.equal(elapsed, 60_000);
+  const fallback = await selectFreshLanes(
+    rows.map((row) => row.lane),
+    "failure",
+  );
+  assert.equal(fallback.matrix.length, 17);
+  assert.deepEqual(fallback.lanes, []);
+  const reused = await selectFreshLanes(
+    rows.map((row) => row.lane),
+    "success",
+  );
+  assert.deepEqual(
+    reused.matrix.map((row) => row.lane),
+    ["k3d-observability-demo", "repository-credentials-container"],
+  );
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
+    const job = workflow.split(`\n  ${lane}:`)[1].split(/\n {2}[a-z][a-z-]+:/)[0];
+    assert.match(job, /needs: preflight/);
+    assert.doesNotMatch(job, /needs:.*ci-reuse/);
+  }
+});
+
+test("same-SHA reuse runs the existing full-coverage validator and rejects damaged or rerun evidence", async (t) => {
+  const { get, run, sha, rows } = await reuseFixture();
+  const producer = await admitProducer(get, run, sha, 456, rows);
+  const directory = await temporaryDirectory(t, "ci-reuse-");
+  await mkdir(join(directory, "download"));
+  const manifest = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+  );
+  const lane = "postgres";
+  const summary = {
+    version: 1,
+    command: "run",
+    sourceSha: sha,
+    scope: "full",
+    lane,
+    status: "passed",
+    exitCode: 0,
+    files: manifest.lanes[lane].files.map((file) => ({
+      path: file.path,
+      status: "passed",
+      counts: { total: file.expectedTests.length },
+      tests: file.expectedTests.map((name) => ({ name, status: "passed" })),
+      cleanup: { status: "passed" },
+    })),
+  };
+  const path = join(directory, "download", `${lane}.json`);
+  await writeFile(path, JSON.stringify(summary));
+  assert.deepEqual(await validateResults({ directory, producer, sha, get }), [lane]);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "accepted", `${lane}.json`))),
+    summary,
+  );
+  for (const patch of [
+    { scope: "focused" },
+    { scope: undefined },
+    { sourceSha: "0".repeat(40) },
+    { files: [] },
+    { exitCode: 1 },
+    { files: summary.files.map((file) => ({ ...file, cleanup: { status: "failed" } })) },
+    { files: summary.files.map((file) => ({ ...file, tests: [] })) },
+  ]) {
+    await writeFile(path, JSON.stringify({ ...summary, ...patch }));
+    assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+  }
+  await writeFile(path, JSON.stringify(summary));
+  run.run_attempt = 3;
+  assert.deepEqual(await validateResults({ directory, producer, sha, get }), []);
+});
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
   const directory = await temporaryDirectory(t, "qa-aggregate-");
@@ -46,59 +242,164 @@ test("full integration workflow carries QA and installation outcomes into select
   }
 });
 
-test("qa-matrix repository fixture dispatch keeps default and isolated credentials separate", async () => {
+test("full integration plans fresh fallback and attributes only published reuse to successful needs", async (t) => {
+  const directory = await temporaryDirectory(t, "reuse-plan-");
+  const output = join(directory, "output");
+  const plan = spawnSync(process.execPath, ["scripts/ci/full-integration-reuse.mjs", "plan"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      RUNNER_TEMP: directory,
+      GITHUB_OUTPUT: output,
+      REUSED_LANES: '["postgres"]',
+      REUSE_UPLOADED: "success",
+    },
+  });
+  assert.equal(plan.status, 0, plan.stderr);
+  const values = Object.fromEntries(
+    (await readFile(output, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("=");
+        return [line.slice(0, at), JSON.parse(line.slice(at + 1))];
+      }),
+  );
+  assert.deepEqual(values.lanes, ["postgres"]);
+  assert.equal(values.matrix.length, 16);
+  assert.ok(!values.matrix.some((row) => row.lane === "postgres"));
   const workflow = await readFile(
     new URL("../../.github/workflows/full-integration.yml", import.meta.url),
     "utf8",
   );
-  assert.match(
-    workflow,
-    /qa_repository_fixture:[\s\S]*?default: default[\s\S]*?options:[\s\S]*?- default[\s\S]*?- isolated/,
+  const script = workflow
+    .split("- name: Write selected job state")[1]
+    .match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const jobs = loadYaml(workflow).jobs["full-aggregate"].needs;
+  const execute = async (result, reused = ["postgres"], parent = "failure") => {
+    const aggregated = spawnSync(process.execPath, ["--input-type=commonjs"], {
+      input: script,
+      encoding: "utf8",
+      env: {
+        RUNNER_TEMP: directory,
+        SELECTED_LANE: "all",
+        REUSED_LANES: JSON.stringify(reused),
+        NEEDS_JSON: JSON.stringify({
+          ...Object.fromEntries(jobs.map((name) => [name, { result: "success" }])),
+          "ci-reuse": { result },
+          "pr-safe-same-sha": { result: parent },
+        }),
+      },
+    });
+    assert.equal(aggregated.status, 0, aggregated.stderr);
+    return JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
+  };
+  for (const result of ["success", "failure", "skipped"]) {
+    const needs = await execute(result);
+    assert.deepEqual(needs.postgres, result === "success" ? { result: "success" } : undefined);
+    assert.equal(needs["pr-safe-same-sha"].result, "failure");
+    assert.equal(needs["pr-safe-same-sha"].lanes.includes("postgres"), result !== "success");
+    assert.ok(needs["pr-safe-same-sha"].lanes.includes("postgres-auth"));
+    assert.equal(needs["postgres-auth"], undefined);
+    assert.ok(needs["image-lanes-same-sha"].lanes.includes("images-packaging"));
+  }
+  // Even when every eligible lane is reused, the two fresh-only lanes retain
+  // the real parent outcome. Reused lanes must not also belong to that parent.
+  const { rows, sha } = await reuseFixture();
+  const allReused = await execute(
+    "success",
+    rows.map((row) => row.lane),
   );
+  assert.deepEqual(allReused["pr-safe-same-sha"], {
+    result: "failure",
+    lanes: ["k3d-observability-demo", "repository-credentials-container"],
+  });
+  for (const { lane } of rows) {
+    assert.deepEqual(allReused[lane], { result: "success" });
+  }
 
-  const defaultStep = workflow.match(
-    /- name: Materialize approved QA credentials\n([\s\S]*?)\n\s+- name: Materialize isolated QA repository credentials/,
-  )?.[1];
-  assert.ok(defaultStep, "default QA credential materialization step is missing");
-  assert.match(defaultStep, /if: inputs\.qa_repository_fixture == 'default'/);
-  assert.match(
-    defaultStep,
-    /REPOSITORY_OBSERVER_TOKEN: \$\{\{ secrets\.REPOSITORY_OBSERVER_TOKEN \}\}/,
+  // Feed the shipped workflow's output into the real aggregator with receipts
+  // made by its runner. This proves mixed direct/matrix ownership, not merely
+  // the shape of needs.json; these tiny cases do not exercise PostgreSQL.
+  const lanes = ["postgres", "postgres-auth"];
+  await mkdir(join(directory, "tests/integration"), { recursive: true });
+  await writeFile(
+    join(directory, "manifest.json"),
+    JSON.stringify({
+      version: 1,
+      lanes: Object.fromEntries(
+        lanes.map((lane) => [
+          lane,
+          {
+            files: [{ path: `tests/integration/${lane}.test.mjs`, expectedTests: [lane] }],
+          },
+        ]),
+      ),
+      groups: { ci: lanes },
+    }),
   );
-  assert.match(
-    defaultStep,
-    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.REPOSITORY_REGISTRY_JSON \}\}/,
+  const runner = (args) =>
+    spawnSync(
+      process.execPath,
+      ["scripts/ci/run-tests.mjs", ...args, "--root", directory, "--manifest", "manifest.json"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, GITHUB_SHA: sha, GIT_CEILING_DIRECTORIES: directory },
+      },
+    );
+  for (const lane of lanes) {
+    await writeFile(
+      join(directory, `tests/integration/${lane}.test.mjs`),
+      `import test from "node:test"; test(${JSON.stringify(lane)}, () => {});\n`,
+    );
+    const result = runner([
+      "run",
+      lane,
+      "--state",
+      `state/${lane}.json`,
+      "--results",
+      `results/${lane}.json`,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const aggregate = () =>
+    runner(["aggregate", "ci", "--results-dir", "results", "--needs", "needs.json"]);
+  await execute("success");
+  const failed = aggregate();
+  assert.equal(failed.status, 1, failed.stderr);
+  const summary = JSON.parse(failed.stdout);
+  assert.deepEqual(
+    summary.issues.map(({ code, need }) => ({ code, need })),
+    [{ code: "need-not-success", need: "pr-safe-same-sha" }],
   );
-  assert.match(defaultStep, /REPOSITORY_APP_KEY: \$\{\{ secrets\.REPOSITORY_APP_KEY \}\}/);
-
-  const isolatedStep = workflow.match(
-    /- name: Materialize isolated QA repository credentials\n([\s\S]*?)\n\s+- uses: \.\/\.github\/actions\/run-ci-lane/,
-  )?.[1];
-  assert.ok(isolatedStep, "isolated QA repository materialization step is missing");
-  assert.match(isolatedStep, /if: inputs\.qa_repository_fixture == 'isolated'/);
-  assert.match(isolatedStep, /QA_REPOSITORY_FIXTURE: isolated/);
-  assert.match(
-    isolatedStep,
-    /QA_ISOLATED_REPOSITORY_FULL_NAME: \$\{\{ vars\.QA_ISOLATED_REPOSITORY_FULL_NAME \}\}/,
+  assert.ok(summary.lanes.every((lane) => lane.status === "passed"));
+  await execute(
+    "success",
+    rows.map((row) => row.lane),
   );
-  assert.doesNotMatch(isolatedStep, /REPOSITORY_OBSERVER_TOKEN/);
-  assert.doesNotMatch(isolatedStep, /QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN/);
-  assert.match(
-    isolatedStep,
-    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_REGISTRY_JSON \}\}/,
+  assert.deepEqual(
+    JSON.parse(aggregate().stdout).issues.map((issue) => issue.code),
+    ["need-not-success"],
   );
-  assert.match(
-    isolatedStep,
-    /REPOSITORY_APP_KEY: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_APP_KEY \}\}/,
+  await execute(
+    "success",
+    rows.map((row) => row.lane),
+    "success",
   );
-  assert.doesNotMatch(isolatedStep, /secrets\.REPOSITORY_(?:OBSERVER_TOKEN|REGISTRY_JSON|APP_KEY)/);
-  assert.equal(
-    (defaultStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
-    1,
+  assert.equal(aggregate().status, 0);
+  // A success entry cannot replace the reused lane's missing or stale receipt.
+  const receipt = join(directory, "results/postgres.json");
+  const original = await readFile(receipt, "utf8");
+  await writeFile(receipt, JSON.stringify({ ...JSON.parse(original), sourceSha: "0".repeat(40) }));
+  assert.ok(
+    JSON.parse(aggregate().stdout).issues.some((issue) => issue.code === "source-sha-mismatch"),
   );
-  assert.equal(
-    (isolatedStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
-    1,
+  await rm(receipt);
+  assert.ok(
+    JSON.parse(aggregate().stdout).issues.some((issue) => issue.code === "missing-lane-output"),
   );
 });
 
@@ -121,9 +422,53 @@ function qaRegistry(repositories) {
   });
 }
 
-async function runQaCredentialMaterializer(t, overrides = {}) {
+test("hosted repository egress selects only public GitHub API and Git IPv4 networks", () => {
+  const meta = {
+    api: ["140.82.112.0/20", "2606:50c0::/32"],
+    git: ["140.82.112.0/20", "20.201.28.148/32"],
+    actions: ["4.0.0.0/8"],
+  };
+  function select(metadata) {
+    return spawnSync("python3", ["scripts/ci/github-repository-egress.py"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      input: JSON.stringify(metadata),
+    });
+  }
+  const result = select(meta);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    githubApiAndGit: ["140.82.112.0/20", "20.201.28.148/32"],
+  });
+  for (const git of [
+    undefined,
+    [],
+    ["2606:50c0::/32"],
+    ["0.0.0.0/0"],
+    ["172.0.0.0/8"],
+    ["140.82.112.3/20"],
+  ]) {
+    const invalid = select({ ...meta, git });
+    assert.notEqual(invalid.status, 0);
+    assert.equal(invalid.stdout, "");
+  }
+});
+
+async function runQaCredentialMaterializer(
+  t,
+  overrides = {},
+  registry = qaRegistry(["openclaw/openclaw-enterprise"]),
+) {
   const directory = await temporaryDirectory(t, "qa-credentials-");
   const githubEnv = join(directory, "github-env");
+  const registryFile = join(directory, "reviewed-registry.json");
+  await writeFile(registryFile, registry, { mode: 0o600 });
+  await writeFile(
+    join(directory, "github-repository-egress.json"),
+    JSON.stringify({
+      githubApiAndGit: ["140.82.112.0/20"],
+    }),
+  );
   const env = {
     RUNNER_TEMP: directory,
     GITHUB_ENV: githubEnv,
@@ -134,13 +479,9 @@ async function runQaCredentialMaterializer(t, overrides = {}) {
     SLACK_BOT_TOKEN: "synthetic-slack-bot-token",
     SLACK_SENDER_TOKEN: "synthetic-slack-sender-token",
     OCC_TEST_QA_SLACK_CHANNEL_ID: "C0123456789",
-    OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "calendar.list",
-    OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "Synthetic calendar result",
     OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
-    REPOSITORY_OBSERVER_TOKEN: "synthetic-observer-token",
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
     REPOSITORY_APP_KEY: "synthetic-private-key",
-    REPOSITORY_UPSTREAM_CIDRS_JSON: "[]",
     ...overrides,
   };
   const result = spawnSync(globalThis.process.execPath, ["scripts/ci/qa-matrix-credentials.mjs"], {
@@ -148,29 +489,87 @@ async function runQaCredentialMaterializer(t, overrides = {}) {
     encoding: "utf8",
     env,
   });
-  return { ...result, directory, githubEnv };
+  return { ...result, directory, githubEnv, registryFile };
 }
 
-test("QA credential materializer preserves the default repository fixture", async (t) => {
-  const result = await runQaCredentialMaterializer(t);
+test("QA credential materializer reads reviewed registry files only for repository scenarios", async (t) => {
+  const registryFile = "scripts/ci/qa-repositories/default.json";
+  const registry = await readFile(join(repositoryRoot, registryFile), "utf8");
+  const result = await runQaCredentialMaterializer(t, { REPOSITORY_REGISTRY_FILE: registryFile });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(await readFile(result.githubEnv, "utf8"), /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+  const exported = await readFile(result.githubEnv, "utf8");
+  assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+  assert.match(exported, /OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=/);
+  assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
+  const repository = join(result.directory, "qa-matrix-credentials", "repository");
+  assert.equal(await readFile(join(repository, "registry.json"), "utf8"), registry);
+  assert.deepEqual(JSON.parse(await readFile(join(repository, "upstream-cidrs.json"), "utf8")), {
+    githubApiAndGit: ["140.82.112.0/20"],
+  });
+  assert.equal(
+    await readFile(join(repository, "private-key.pem"), "utf8"),
+    "synthetic-private-key",
+  );
+  assert.equal((await stat(join(repository, "registry.json"))).mode & 0o777, 0o600);
+  assert.equal((await stat(join(repository, "private-key.pem"))).mode & 0o777, 0o600);
+  assert.doesNotMatch(exported, /synthetic-private-key|fixture-owner/);
+
+  // Invalid inputs stop materialization without copying their contents into errors.
+  for (const [overrides, contents, error] of [
+    [{ REPOSITORY_REGISTRY_FILE: undefined }, registry, /REPOSITORY_REGISTRY_FILE is required/],
+    [
+      { REPOSITORY_REGISTRY_FILE: join(result.directory, "missing.json") },
+      registry,
+      /REPOSITORY_REGISTRY_FILE must name a readable file/,
+    ],
+    [{}, "{synthetic-private-key", /REPOSITORY_REGISTRY_FILE must contain valid JSON/],
+    [{}, "[]", /REPOSITORY_REGISTRY_FILE must contain an object/],
+    [{}, "{}", /repository registry must contain repositories/],
+  ]) {
+    const failure = await runQaCredentialMaterializer(t, overrides, contents);
+    assert.notEqual(failure.status, 0);
+    assert.match(failure.stderr, error);
+    assert.doesNotMatch(failure.stderr, /synthetic-private-key/);
+  }
+
+  // Model-only advisory runs need no repository metadata or App key.
+  const noRepository = await runQaCredentialMaterializer(t, {
+    OCC_TEST_QA_PRESET: "OpenClaw",
+    OCC_TEST_QA_SCENARIOS: "model-ui",
+    REPOSITORY_REGISTRY_FILE: undefined,
+    REPOSITORY_APP_KEY: undefined,
+    QA_REPOSITORY_FIXTURE: "isolated",
+  });
+  assert.equal(noRepository.status, 0, noRepository.stderr);
+  assert.doesNotMatch(
+    await readFile(noRepository.githubEnv, "utf8"),
+    /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY/,
+  );
 });
 
 test("QA credential materializer validates isolated repository fixture target", async (t) => {
-  const target = "fixture-owner/fixture-repo";
+  const registryFile = "scripts/ci/qa-repositories/isolated.json";
+  const registry = await readFile(join(repositoryRoot, registryFile), "utf8");
+  const target = JSON.parse(registry).repositories[0].repository;
   const success = await runQaCredentialMaterializer(t, {
     QA_REPOSITORY_FIXTURE: "isolated",
     QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
+    REPOSITORY_APP_KEY: "synthetic-isolated-private-key",
   });
   assert.equal(success.status, 0, success.stderr);
+  const repository = join(success.directory, "qa-matrix-credentials", "repository");
+  assert.equal(await readFile(join(repository, "registry.json"), "utf8"), registry);
+  assert.equal(
+    await readFile(join(repository, "private-key.pem"), "utf8"),
+    "synthetic-isolated-private-key",
+  );
   const exported = await readFile(success.githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
   assert.match(exported, /OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=/);
   assert.match(exported, /QA_REPOSITORY_FIXTURE=isolated/);
   assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
-  assert.doesNotMatch(exported, /synthetic-observer-token/);
+  assert.doesNotMatch(exported, /synthetic-observer-token|synthetic-isolated-private-key/);
   const runnerEnv = Object.fromEntries(
     exported
       .trim()
@@ -195,369 +594,585 @@ test("QA credential materializer validates isolated repository fixture target", 
     }),
   );
 
-  const missingTarget = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
-  });
+  const missingTarget = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+    },
+    qaRegistry([target]),
+  );
   assert.notEqual(missingTarget.status, 0);
   assert.match(missingTarget.stderr, /QA_ISOLATED_REPOSITORY_FULL_NAME is required/);
 
-  const wrongTarget = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["fixture-owner/other-repo"]),
-  });
+  const wrongTarget = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+      QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    },
+    qaRegistry(["fixture-owner/other-repo"]),
+  );
   assert.notEqual(wrongTarget.status, 0);
   assert.match(wrongTarget.stderr, /must match QA_ISOLATED_REPOSITORY_FULL_NAME/);
 
-  const multipleRepositories = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target, "fixture-owner/other-repo"]),
-  });
+  const multipleRepositories = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+      QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    },
+    qaRegistry([target, "fixture-owner/other-repo"]),
+  );
   assert.notEqual(multipleRepositories.status, 0);
   assert.match(multipleRepositories.stderr, /exactly one repository/);
 
   const workflowRepository = await runQaCredentialMaterializer(t, {
     QA_REPOSITORY_FIXTURE: "isolated",
     QA_ISOLATED_REPOSITORY_FULL_NAME: "openclaw/openclaw-enterprise",
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
   });
   assert.notEqual(workflowRepository.status, 0);
   assert.match(workflowRepository.stderr, /must not target this workflow repository/);
 });
 
-function providerEnvironment(patch = {}) {
+function integrationEnvironment(patch = {}) {
   return {
-    name: "integration-provider-account",
+    name: "integration-main",
+    can_admins_bypass: false,
     protection_rules: [],
-    deployment_branch_policy: {
-      custom_branch_policies: true,
-      protected_branches: false,
-    },
+    deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
     ...patch,
   };
 }
 
-function protectedEnvironment(patch = {}) {
-  return {
-    name: "integration-model",
-    protection_rules: [],
-    deployment_branch_policy: {
-      custom_branch_policies: false,
-      protected_branches: true,
-    },
-    ...patch,
-  };
-}
-
-const mainOnlyPolicies = Object.freeze({
+const mainOnlyPolicies = {
   total_count: 1,
   branch_policies: [{ name: "main", type: "branch" }],
-});
-
-test("full integration preflight selects only manual workflow lanes", async () => {
-  assert.equal(selectLane({ eventName: "workflow_dispatch", inputLane: "all" }), "all");
-  assert.equal(
-    selectLane({ eventName: "workflow_dispatch", inputLane: "provider-account" }),
-    "provider-account",
-  );
-  assert.throws(
-    () => selectLane({ eventName: "push", inputLane: "all" }),
-    /^Error: Unsupported full integration event: push$/,
-  );
-  assert.throws(
-    () => selectLane({ eventName: "pull_request", inputLane: "provider-account" }),
-    /^Error: Unsupported full integration event: pull_request$/,
-  );
-  assert.doesNotThrow(() => assertSourceRef("refs/heads/main"));
-  assert.doesNotThrow(() => assertSourceRef("refs/heads/test-model-cutover", "k3d-model"));
-  assert.doesNotThrow(() => assertSourceRef("refs/heads/test-openshell", "openshell"));
-  assert.throws(
-    () => assertSourceRef("refs/heads/test-openshell", "docker-model"),
-    /must run from main/,
-  );
-  assert.throws(() => assertSourceRef("refs/pull/1/merge"), /must run from main/);
-  assert.deepEqual(requiredEnvironmentsForLane("provider-account"), [
-    "integration-provider-account",
-  ]);
-  assert.deepEqual(requiredEnvironmentsForLane("qa-matrix"), ["integration-qa"]);
-  assert.deepEqual(requiredEnvironmentsForLane("all"), [
-    "integration-qa",
-    "integration-model",
-    "integration-otel",
-    "integration-routing",
-    "integration-slack",
-    "integration-provider-account",
-    "integration-openshell",
-  ]);
-});
-
-test("provider-account environment policy is main-only without required reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy(
-      "integration-provider-account",
-      providerEnvironment(),
-      mainOnlyPolicies,
-    ),
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-provider-account",
-        providerEnvironment({
-          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
-        }),
-        mainOnlyPolicies,
-      ),
-    /must not require reviewers/,
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-provider-account",
-        providerEnvironment({
-          deployment_branch_policy: { custom_branch_policies: false, protected_branches: true },
-        }),
-        mainOnlyPolicies,
-      ),
-    /custom main-only policy/,
-  );
-  for (const policies of [
-    { total_count: 2, branch_policies: [{ name: "main", type: "branch" }] },
+};
+const credentialedLanes = [
+  "qa-matrix",
+  "docker-model",
+  "k3d-model",
+  "gateway-routing",
+  "production-tui",
+  "slack",
+  "openshell",
+  "k3d-otel",
+];
+const mainRun = {
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_REF_TYPE: "branch",
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_RUN_ATTEMPT: "1",
+  GITHUB_RUN_ID: "123",
+  GITHUB_ACTOR: "dispatcher",
+  GITHUB_ACTOR_ID: "42",
+  GITHUB_TRIGGERING_ACTOR: "dispatcher",
+  GITHUB_TOKEN: "synthetic-workflow-token",
+  INPUT_LANE: "all",
+};
+const approvalEnvironment = integrationEnvironment({
+  id: 26285522718,
+  name: "integration-main-approval",
+  protection_rules: [
     {
-      total_count: 2,
-      branch_policies: [
-        { name: "main", type: "branch" },
-        { name: "release", type: "branch" },
-      ],
+      type: "required_reviewers",
+      prevent_self_review: false,
+      reviewers: [{ type: "Team", reviewer: { id: 19674117 } }],
     },
-    { total_count: 1, branch_policies: [{ name: "main" }] },
-  ]) {
-    assert.throws(
-      () =>
-        validateEnvironmentPolicy("integration-provider-account", providerEnvironment(), policies),
-      /must allow only the main branch/,
-    );
-  }
+  ],
 });
+const approvalReview = {
+  state: "approved",
+  environments: [{ id: 26285522718, name: "integration-main-approval" }],
+  user: { id: 42, login: "dispatcher", type: "User" },
+};
 
-test("credentialed integration environments run without approval and retain branch restrictions", () => {
-  for (const name of requiredEnvironmentsForLane("all")
-    .filter((name) => name !== "integration-provider-account")
-    .concat("integration-qa")) {
-    assert.doesNotThrow(() => validateEnvironmentPolicy(name, protectedEnvironment(), undefined));
-    assert.throws(
-      () =>
-        validateEnvironmentPolicy(
-          name,
-          protectedEnvironment({
-            protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "Team" }] }],
-          }),
-          undefined,
-        ),
-      /must not require reviewers/,
-    );
-    assert.throws(
-      () =>
-        validateEnvironmentPolicy(
-          name,
-          protectedEnvironment({
-            deployment_branch_policy: null,
-          }),
-          undefined,
-        ),
-      /not restricted/,
-    );
-  }
-});
-
-test("preflight fetches only the provider environment for manual provider runs", async () => {
-  const fetched = [];
-  const result = await validateFullIntegrationPreflight({
-    env: {
-      GITHUB_REF: "refs/heads/main",
-      GITHUB_EVENT_NAME: "workflow_dispatch",
-      INPUT_LANE: "provider-account",
-      GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-      GITHUB_TOKEN: "token",
-    },
-    github: async ({ repository, path }) => {
-      fetched.push({ repository, path });
-      if (path === "/environments/integration-provider-account") {
-        return providerEnvironment();
-      }
-      if (path === "/environments/integration-provider-account/deployment-branch-policies") {
-        return mainOnlyPolicies;
-      }
-      throw new Error(`unexpected path ${path}`);
-    },
-  });
-
-  assert.deepEqual(result, { selectedLane: "provider-account", runAll: false });
-  assert.deepEqual(fetched, [
-    {
-      repository: "openclaw/openclaw-enterprise",
-      path: "/environments/integration-provider-account",
-    },
-    {
-      repository: "openclaw/openclaw-enterprise",
-      path: "/environments/integration-provider-account/deployment-branch-policies",
-    },
-  ]);
-});
-
-test("preflight rejects non-main sources before fetching environment metadata", async () => {
-  const fetched = [];
-  await assert.rejects(
-    () =>
-      validateFullIntegrationPreflight({
-        env: {
-          GITHUB_REF: "refs/tags/v1",
-          GITHUB_EVENT_NAME: "push",
-          INPUT_LANE: "provider-account",
-          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-          GITHUB_TOKEN: "token",
-        },
-        github: async ({ path }) => {
-          fetched.push(path);
-          throw new Error(`unexpected path ${path}`);
-        },
-      }),
-    /must run from main/,
-  );
-  assert.deepEqual(fetched, []);
-});
-
-test("manual protected branch runs require an exact environment grant without per-run approval", async () => {
-  for (const { lane, environmentName, branch } of [
-    {
-      lane: "k3d-model",
-      environmentName: "integration-model",
-      branch: "test-model-cutover",
-    },
-    {
-      lane: "openshell",
-      environmentName: "integration-openshell",
-      branch: "test-openshell",
-    },
-  ]) {
-    const env = {
-      GITHUB_REF: `refs/heads/${branch}`,
-      GITHUB_EVENT_NAME: "workflow_dispatch",
-      INPUT_LANE: lane,
-      GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-      GITHUB_TOKEN: "token",
-    };
-    const environment = protectedEnvironment({
-      deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
-    });
-    const policies = {
-      total_count: 2,
-      branch_policies: [...mainOnlyPolicies.branch_policies, { name: branch, type: "branch" }],
-    };
-    const run = (
-      selectedEnv = env,
-      selectedEnvironment = environment,
-      selectedPolicies = policies,
-    ) =>
-      validateFullIntegrationPreflight({
-        env: selectedEnv,
-        github: async ({ path }) => {
-          if (path === `/environments/${environmentName}`) {
-            return selectedEnvironment;
-          }
-          if (path === `/environments/${environmentName}/deployment-branch-policies`) {
-            return selectedPolicies;
-          }
-          throw new Error(`unexpected path ${path}`);
-        },
-      });
-
-    // A branch name alone never grants access to the protected model credential.
-    await assert.rejects(() => run(env, environment, mainOnlyPolicies), /exact branch/);
-    for (const grant of [
-      { name: "test-*", type: "branch" },
-      { name: branch, type: "tag" },
-    ]) {
-      await assert.rejects(
-        () =>
-          run(env, environment, {
-            ...policies,
-            branch_policies: [...mainOnlyPolicies.branch_policies, grant],
-          }),
-        /exact branch/,
-      );
-    }
-    await assert.rejects(() => run(env, protectedEnvironment()), /exact branch/);
-    // Reintroducing a reviewer gate would prevent a maintainer from starting this run directly.
-    await assert.rejects(
-      () =>
-        run(env, {
-          ...environment,
-          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
-        }),
-      /must not require reviewers/,
-    );
-    assert.deepEqual(await run(), { selectedLane: lane, runAll: false });
-  }
-
-  // Branch exceptions cannot select other credentialed lanes, tags, or automatic PR events.
-  const branchEnv = {
-    GITHUB_REF: "refs/heads/test-model-cutover",
-    GITHUB_EVENT_NAME: "workflow_dispatch",
-    INPUT_LANE: "docker-model",
+function approvalApi(overrides = {}, fetched = []) {
+  const responses = {
+    "/environments/integration-main-approval": approvalEnvironment,
+    "/environments/integration-main-approval/deployment-branch-policies": mainOnlyPolicies,
+    "/actions/runs/123/approvals": [approvalReview],
+    "/environments/integration-main": integrationEnvironment(),
+    "/environments/integration-main/deployment-branch-policies": mainOnlyPolicies,
+    ...overrides,
   };
-  for (const INPUT_LANE of ["all", "provider-account", "docker-model"]) {
-    assert.throws(() => assertSourceRef(branchEnv.GITHUB_REF, INPUT_LANE), /must run from main/);
-  }
-  await assert.rejects(
-    () =>
-      validateFullIntegrationPreflight({
-        env: { ...branchEnv, GITHUB_REF: "refs/tags/test-model-cutover" },
-      }),
-    /must run from main/,
-  );
-  assert.throws(
-    () => selectLane({ eventName: "pull_request", inputLane: "openshell" }),
-    /Unsupported full integration event/,
-  );
-});
-
-for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
-  test(`manual ${lane} lane accepts a reviewed branch without protected credentials`, async () => {
-    const env = {
-      GITHUB_REF: "refs/heads/reviewed-keycloak",
-      GITHUB_EVENT_NAME: "workflow_dispatch",
-      INPUT_LANE: lane,
-    };
-    const github = async () => {
-      throw new Error("credential-free lane requested a protected environment");
-    };
-    assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), {
-      selectedLane: lane,
-      runAll: false,
-    });
-    assert.deepEqual(requiredEnvironmentsForLane(lane), []);
-    for (const ref of ["refs/tags/reviewed-keycloak", "refs/pull/1138/merge"]) {
-      await assert.rejects(
-        validateFullIntegrationPreflight({ env: { ...env, GITHUB_REF: ref }, github }),
-        /must run from main/,
-      );
-    }
-    for (const event of ["push", "pull_request"]) {
-      await assert.rejects(
-        validateFullIntegrationPreflight({ env: { ...env, GITHUB_EVENT_NAME: event }, github }),
-        /Unsupported full integration event/,
-      );
-    }
-    for (const lane of ["all", "docker-model", "provider-account", "qa-matrix"]) {
-      assert.throws(() => assertSourceRef(env.GITHUB_REF, lane), /must run from main/);
-    }
-  });
+  return async ({ repository, path }) => {
+    assert.equal(repository, mainRun.GITHUB_REPOSITORY);
+    fetched.push(path);
+    assert.ok(Object.hasOwn(responses, path), `unexpected API path ${path}`);
+    return responses[path];
+  };
 }
 
-test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async () => {
+test("full integration preflight selects automatic main pushes and manual main lanes", () => {
+  assert.equal(selectLane({ eventName: "push", ref: "refs/heads/main" }), "all");
+  assert.equal(
+    selectLane({ eventName: "workflow_dispatch", inputLane: "docker-model" }),
+    "docker-model",
+  );
+  for (const eventName of ["pull_request", "pull_request_target", "schedule"]) {
+    assert.throws(() => selectLane({ eventName, ref: "refs/heads/main" }), /Unsupported/);
+  }
+  assert.throws(
+    () =>
+      selectLane({ eventName: "push", ref: "refs/heads/dev/kevinlin/integration-main-cutover" }),
+    /Unsupported/,
+  );
+  assert.throws(() => requiredEnvironmentsForLane("provider-account"), /Unknown lane/);
+  for (const lane of [...credentialedLanes, "all"]) {
+    assert.deepEqual(requiredEnvironmentsForLane(lane), ["integration-main"]);
+  }
+  for (const lane of [
+    "helper-timeout",
+    "logging-collector",
+    "dev-up-k3d",
+    "skipper-prepared-git-installed",
+  ]) {
+    assert.deepEqual(requiredEnvironmentsForLane(lane), []);
+  }
+});
+
+test("integration environment policy rejects broad, incomplete or bypassable rules", () => {
+  assert.doesNotThrow(() =>
+    validateEnvironmentPolicy("integration-main", integrationEnvironment(), mainOnlyPolicies),
+  );
+  for (const can_admins_bypass of [undefined, true]) {
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          "integration-main",
+          integrationEnvironment({ can_admins_bypass }),
+          mainOnlyPolicies,
+        ),
+      /disable administrator bypass/,
+    );
+  }
+  for (const deployment_branch_policy of [
+    null,
+    { custom_branch_policies: false, protected_branches: true },
+    { custom_branch_policies: true, protected_branches: true },
+  ]) {
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          "integration-main",
+          integrationEnvironment({ deployment_branch_policy }),
+          mainOnlyPolicies,
+        ),
+      /main-only policy/,
+    );
+  }
+  assert.throws(
+    () => validateEnvironmentPolicy("integration-main", approvalEnvironment, mainOnlyPolicies),
+    /must not require reviewers/,
+  );
+  for (const policies of [
+    undefined,
+    { total_count: 0, branch_policies: [] },
+    { total_count: 2, branch_policies: mainOnlyPolicies.branch_policies },
+    { branch_policies: mainOnlyPolicies.branch_policies },
+    { total_count: 1, branch_policies: [{ name: "main", type: "tag" }] },
+    { total_count: 1, branch_policies: [{ name: "main" }] },
+    ...["*", "release", "refs/pull/*/merge", "dev/kevinlin/integration-main-cutover", "main"].map(
+      (name) => ({
+        total_count: 2,
+        branch_policies: [...mainOnlyPolicies.branch_policies, { name, type: "branch" }],
+      }),
+    ),
+  ]) {
+    assert.throws(
+      () => validateEnvironmentPolicy("integration-main", integrationEnvironment(), policies),
+      /only the main branch/,
+    );
+  }
+});
+
+test("verified docs pushes omit runtime lanes while keeping environment policy checks", async () => {
+  const fetched = [];
+  assert.deepEqual(
+    await validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({}, fetched),
+      impactMode: "docs",
+    }),
+    { selectedLane: "docs", runAll: false },
+  );
+  assert.deepEqual(fetched, [
+    "/environments/integration-main",
+    "/environments/integration-main/deployment-branch-policies",
+  ]);
+  await assert.rejects(
+    validateFullIntegrationPreflight({
+      env: mainRun,
+      github: approvalApi({
+        "/environments/integration-main": { ...integrationEnvironment(), can_admins_bypass: true },
+      }),
+      impactMode: "docs",
+    }),
+    /disable administrator bypass/,
+  );
+  assert.equal(
+    selectLane({ eventName: "workflow_dispatch", inputLane: "all", impactMode: "docs" }),
+    "all",
+  );
+  assert.equal(
+    selectLane({ eventName: "push", ref: "refs/heads/main", impactMode: "tests" }),
+    "all",
+  );
+  const workflow = await readFile(
+    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+    "utf8",
+  );
+  const jobs = workflow
+    .slice(workflow.indexOf("\njobs:\n") + 7)
+    .split(/\n(?= {2}[a-z][a-z0-9-]+:)/);
+  for (const block of jobs) {
+    const name = /^ {2}([a-z][a-z0-9-]+):/.exec(block)?.[1];
+    const condition = /^ {4}if: (.+)$/m.exec(block)?.[1];
+    assert.ok(name && condition, "every Full Integration job has an explicit selection condition");
+    assert.equal(
+      workflowCondition(condition, {
+        github: {
+          repository: mainRun.GITHUB_REPOSITORY,
+          ref: mainRun.GITHUB_REF,
+          ref_type: "branch",
+          event_name: "push",
+          run_attempt: "1",
+        },
+        needs: {
+          preflight: { result: "success", outputs: { selected_lane: "docs", run_all: "false" } },
+          "manual-approval": { result: "skipped" },
+          "runtime-artifact": { result: "skipped" },
+          slack: { result: "skipped" },
+        },
+        inputs: {},
+        always: () => true,
+        cancelled: () => false,
+      }),
+      name === "preflight",
+      `docs push: ${name}`,
+    );
+  }
+});
+
+test("main pushes and retries require no manual approval or team credential", async () => {
+  for (const attempt of ["1", "2"]) {
+    const fetched = [];
+    assert.deepEqual(
+      await validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_RUN_ATTEMPT: attempt },
+        github: approvalApi({}, fetched),
+      }),
+      { selectedLane: "all", runAll: true },
+    );
+    assert.deepEqual(fetched, [
+      "/environments/integration-main",
+      "/environments/integration-main/deployment-branch-policies",
+    ]);
+  }
+});
+
+test("manual preflight checks native team approval before reading integration credentials policy", async () => {
+  for (const lane of [
+    ...credentialedLanes,
+    "all",
+    "dev-up-k3d",
+    "skipper-prepared-git-installed",
+  ]) {
+    const fetched = [];
+    assert.deepEqual(
+      await validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch", INPUT_LANE: lane },
+        github: approvalApi({}, fetched),
+      }),
+      { selectedLane: lane, runAll: lane === "all" },
+    );
+    assert.deepEqual(fetched.slice(0, 3), [
+      "/environments/integration-main-approval",
+      "/environments/integration-main-approval/deployment-branch-policies",
+      "/actions/runs/123/approvals",
+    ]);
+    assert.equal(
+      fetched.includes("/environments/integration-main"),
+      credentialedLanes.includes(lane) || lane === "all",
+    );
+  }
+});
+
+test("preflight denies foreign sources, old branch routes and manual reruns before metadata reads", async () => {
+  for (const eventName of ["push", "workflow_dispatch"]) {
+    for (const patch of [
+      { GITHUB_REPOSITORY: "other-owner/openclaw-enterprise" },
+      { GITHUB_REF: "refs/tags/main", GITHUB_REF_TYPE: "tag" },
+      { GITHUB_REF_TYPE: undefined },
+      { GITHUB_REF: "refs/pull/1/merge" },
+      { GITHUB_REF: "refs/heads/dev/kevinlin/integration-main-cutover" },
+      { GITHUB_REF: "refs/heads/reviewed-branch", INPUT_LANE: "dev-up-k3d" },
+      { GITHUB_REF: "refs/heads/reviewed-branch", INPUT_LANE: "skipper-prepared-git-installed" },
+      ...(eventName === "workflow_dispatch"
+        ? [{ GITHUB_RUN_ATTEMPT: "2" }, { GITHUB_RUN_ATTEMPT: undefined }]
+        : []),
+    ]) {
+      const fetched = [];
+      await assert.rejects(
+        validateFullIntegrationPreflight({
+          env: { ...mainRun, GITHUB_EVENT_NAME: eventName, ...patch },
+          github: approvalApi({}, fetched),
+        }),
+        /main|this repository|reruns/,
+      );
+      assert.deepEqual(fetched, []);
+    }
+  }
+  assert.throws(() => assertSourceRef("refs/heads/reviewed-branch"), /main/);
+});
+
+test("manual preflight binds review to original actor ID and actual triggering actor", async () => {
+  for (const patch of [
+    { GITHUB_TRIGGERING_ACTOR: "other-user" },
+    { GITHUB_TRIGGERING_ACTOR: undefined },
+    { GITHUB_ACTOR: undefined },
+    { GITHUB_ACTOR_ID: undefined },
+    { GITHUB_ACTOR_ID: "0" },
+    { GITHUB_ACTOR_ID: "9007199254740992" },
+    { GITHUB_RUN_ID: "123/approvals" },
+  ]) {
+    const fetched = [];
+    await assert.rejects(
+      validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch", ...patch },
+        github: approvalApi({}, fetched),
+      }),
+      /identified dispatcher/,
+    );
+    assert.deepEqual(fetched, []);
+  }
+});
+
+test("manual preflight refuses missing, rejected, duplicate and wrong-identity reviews", async () => {
+  for (const reviews of [
+    [],
+    null,
+    {},
+    [{ ...approvalReview, state: "pending" }],
+    [{ ...approvalReview, state: "rejected" }],
+    [approvalReview, approvalReview],
+    [approvalReview, { ...approvalReview, state: "rejected" }],
+    [{ ...approvalReview, user: { ...approvalReview.user, id: 43 } }],
+    [{ ...approvalReview, user: { ...approvalReview.user, login: "other-user" } }],
+    [{ ...approvalReview, user: undefined }],
+    [{ ...approvalReview, environments: [{ id: 1, name: "integration-main-approval" }] }],
+    [{ ...approvalReview, environments: [{ id: 26285522718, name: "other-environment" }] }],
+  ]) {
+    const fetched = [];
+    await assert.rejects(
+      validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch" },
+        github: approvalApi({ "/actions/runs/123/approvals": reviews }, fetched),
+      }),
+      /approval|approved environment review/,
+    );
+    assert.equal(fetched.includes("/environments/integration-main"), false);
+  }
+});
+
+test("manual preflight rejects altered approval environment protection before history reads", async () => {
+  for (const environment of [
+    { ...approvalEnvironment, id: 1 },
+    { ...approvalEnvironment, name: "other" },
+    { ...approvalEnvironment, can_admins_bypass: true },
+    { ...approvalEnvironment, protection_rules: [] },
+    {
+      ...approvalEnvironment,
+      protection_rules: [
+        {
+          type: "required_reviewers",
+          prevent_self_review: true,
+          reviewers: approvalEnvironment.protection_rules[0].reviewers,
+        },
+      ],
+    },
+    {
+      ...approvalEnvironment,
+      protection_rules: [
+        {
+          type: "required_reviewers",
+          prevent_self_review: false,
+          reviewers: [{ type: "Team", reviewer: { id: 1 } }],
+        },
+      ],
+    },
+    {
+      ...approvalEnvironment,
+      protection_rules: [
+        {
+          type: "required_reviewers",
+          prevent_self_review: false,
+          reviewers: [{ type: "User", reviewer: { id: 42 } }],
+        },
+      ],
+    },
+    {
+      ...approvalEnvironment,
+      protection_rules: [
+        {
+          type: "required_reviewers",
+          prevent_self_review: false,
+          reviewers: [
+            ...approvalEnvironment.protection_rules[0].reviewers,
+            { type: "User", reviewer: { id: 42 } },
+          ],
+        },
+      ],
+    },
+  ]) {
+    const fetched = [];
+    await assert.rejects(
+      validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch" },
+        github: approvalApi({ "/environments/integration-main-approval": environment }, fetched),
+      }),
+      /approval|administrator bypass|main-only policy|main branch/,
+    );
+    assert.equal(fetched.includes("/actions/runs/123/approvals"), false);
+    assert.equal(fetched.includes("/environments/integration-main"), false);
+  }
+});
+
+test("manual approval API failures stop before protected environment access", async () => {
+  for (const failurePath of [
+    "/environments/integration-main-approval",
+    "/environments/integration-main-approval/deployment-branch-policies",
+    "/actions/runs/123/approvals",
+  ]) {
+    const fetched = [];
+    const valid = approvalApi({}, fetched);
+    await assert.rejects(
+      validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch" },
+        github: async (request) => {
+          if (request.path === failurePath) {
+            throw new Error("GitHub API unavailable");
+          }
+          return valid(request);
+        },
+      }),
+      /API unavailable/,
+    );
+    assert.equal(fetched.includes("/environments/integration-main"), false);
+  }
+});
+
+function workflowCondition(expression, context) {
+  return runInNewContext(
+    expression
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replace(/needs\.([a-z][a-z0-9-]*)/g, 'needs["$1"]'),
+    { cancelled: () => false, ...context },
+  );
+}
+
+test("workflow permits main push retries and refuses approval reuse on manual retries", async () => {
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const workflow = loadYaml(
+    await readFile(
+      new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.equal(workflow.on.pull_request, undefined);
+  const jobs = Object.entries(workflow.jobs).filter(
+    ([name]) => !["manual-approval", "preflight", "full-aggregate"].includes(name),
+  );
+  assert.ok(jobs.length > 0);
+  for (const [name, job] of jobs) {
+    for (const event_name of ["push", "workflow_dispatch"]) {
+      const github = {
+        repository: mainRun.GITHUB_REPOSITORY,
+        ref: mainRun.GITHUB_REF,
+        ref_type: "branch",
+        run_attempt: "1",
+        event_name,
+      };
+      const needs = {
+        preflight: {
+          result: "success",
+          outputs: { selected_lane: name === "logging-collector" ? name : "all", run_all: "true" },
+        },
+        slack: { result: "success" },
+        "runtime-artifact": { result: "success" },
+      };
+      assert.equal(workflowCondition(job.if, { github, needs }), true, `${name}: first attempt`);
+      assert.equal(
+        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs }),
+        event_name === "push",
+        `${name}: only main pushes can retry`,
+      );
+      for (const patch of [
+        { ref: "refs/tags/main", ref_type: "tag" },
+        { repository: "other/repository" },
+        { event_name: "pull_request" },
+      ]) {
+        assert.equal(
+          workflowCondition(job.if, { github: { ...github, ...patch }, needs }),
+          false,
+          `${name}: ${JSON.stringify(patch)}`,
+        );
+      }
+      assert.equal(
+        workflowCondition(job.if, {
+          github,
+          needs: { ...needs, preflight: { result: "failure", outputs: { selected_lane: "all" } } },
+        }),
+        false,
+        `${name}: failed preflight`,
+      );
+    }
+  }
+  const manual = workflow.jobs["manual-approval"];
+  assert.equal(manual.environment, "integration-main-approval");
+  assert.deepEqual(manual.permissions, {});
+  assert.doesNotMatch(JSON.stringify(manual), /secrets\.|actions\/checkout/);
+  const github = {
+    repository: mainRun.GITHUB_REPOSITORY,
+    ref: mainRun.GITHUB_REF,
+    ref_type: "branch",
+    run_attempt: "1",
+    event_name: "push",
+  };
+  assert.equal(
+    workflowCondition(workflow.jobs.preflight.if, {
+      github,
+      needs: { "manual-approval": { result: "skipped" } },
+    }),
+    true,
+  );
+  for (const event_name of ["push", "workflow_dispatch"]) {
+    assert.equal(
+      workflowCondition(workflow.jobs.preflight.if, {
+        github: { ...github, event_name, run_attempt: "2" },
+        needs: { "manual-approval": { result: event_name === "push" ? "skipped" : "success" } },
+      }),
+      event_name === "push",
+    );
+  }
+  for (const result of ["skipped", "failure", "cancelled", "success"]) {
+    assert.equal(
+      workflowCondition(workflow.jobs.preflight.if, {
+        github: { ...github, event_name: "workflow_dispatch" },
+        needs: { "manual-approval": { result } },
+      }),
+      result === "success",
+    );
+  }
+});
+
+test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async (t) => {
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
@@ -566,29 +1181,82 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const action = loadYaml(await read(".github/actions/run-ci-lane/action.yml"));
   const suites = JSON.parse(await read("scripts/ci/test-suites.json"));
   assert.ok(workflow.on.workflow_dispatch.inputs.lane.options.includes("dev-up-k3d"));
-  const group = workflow.concurrency.group.startsWith("${{")
-    ? workflow.concurrency.group.replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-    : JSON.stringify(workflow.concurrency.group);
-  assert.equal(workflow.concurrency["cancel-in-progress"], false);
-  // Protected lanes keep their existing queue; launcher runs serialize by branch,
-  // even when a later dispatch selects a different commit on that branch.
-  for (const lane of workflow.on.workflow_dispatch.inputs.lane.options) {
-    for (const ref of ["refs/heads/main", "refs/heads/reviewed-keycloak"]) {
-      for (const sha of ["first-commit", "later-commit"]) {
-        assert.equal(
-          runInNewContext(group, {
-            inputs: { lane },
-            github: { ref, sha },
-            format: (template, value) => template.replace("{0}", value),
-          }),
-          ["dev-up-k3d", "skipper-prepared-git-installed"].includes(lane)
-            ? `full-integration-${lane}-${ref}`
-            : "full-integration",
-          `${lane}: ${ref} at ${sha}`,
-        );
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.equal(workflow.on.pull_request, undefined);
+  assert.equal(workflow.on.pull_request_target, undefined);
+  assert.equal(workflow.on.workflow_dispatch.inputs.source_ref, undefined);
+  for (const selected of Object.values(workflow.jobs)) {
+    for (const step of selected.steps ?? []) {
+      if (step.uses?.startsWith("actions/checkout@")) {
+        assert.equal(step.with.ref, "${{ github.sha }}");
+        assert.equal(step.with["persist-credentials"], false);
       }
     }
   }
+  // A pending manual approval cannot occupy the push queue or replace another
+  // pending approval, even if both dispatchers select the same lane.
+  const queue = (eventName, runId) =>
+    workflowCondition(workflow.concurrency.group, {
+      github: { event_name: eventName, run_id: runId },
+      format: (template, value) => template.replace("{0}", value),
+    });
+  assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  const pushQueue = queue("push", "100");
+  const manualQueue = queue("workflow_dispatch", "101");
+  assert.equal(pushQueue, queue("push", "102"));
+  assert.notEqual(pushQueue, manualQueue);
+  assert.notEqual(manualQueue, queue("workflow_dispatch", "103"));
+
+  // Both event types acquire the same resource lock only after authorization.
+  const queuedLanes = ["slack", "dev-up-k3d", "skipper-prepared-git-installed"];
+  assert.equal(workflow.concurrency.queue, undefined);
+  const jobsWithQueue = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.concurrency?.queue !== undefined)
+    .map(([lane]) => lane);
+  assert.deepEqual(jobsWithQueue.sort(), [...queuedLanes].sort());
+  const resourceQueues = new Set();
+  for (const lane of queuedLanes) {
+    const job = workflow.jobs[lane];
+    assert.equal(job.needs, "preflight");
+    assert.equal(job.concurrency["cancel-in-progress"], false);
+    assert.equal(job.concurrency.queue, "max");
+    const group = job.concurrency.group;
+    assert.ok(group.startsWith("full-integration-"));
+    if (lane === "slack") {
+      assert.doesNotMatch(group, /\$\{/);
+    } else {
+      assert.equal(group, ["full-integration", lane, "${{ github.ref }}"].join("-"));
+    }
+    assert.ok(!resourceQueues.has(group));
+    resourceQueues.add(group);
+  }
+  // Exercise the hosted workflow input through the same selector that determines
+  // which credentials to materialize and which real installation cells run.
+  const qaJob = workflow.jobs["qa-matrix"];
+  const qaManifest = JSON.parse(await read("scripts/ci/test-suites/qa-matrix.json"));
+  const qaRunnerEnv = Object.fromEntries(
+    Object.entries(qaJob.env).filter(([name]) => qaManifest.optionalEnv.includes(name)),
+  );
+  const qaSelection = selectQaMatrix(qaRunnerEnv);
+  assert.equal(qaSelection.scope, "partial:selected");
+  assert.deepEqual(qaSelection.installations, ["compose", "kubernetes"]);
+  for (const cell of qaSelection.cells) {
+    assert.deepEqual(
+      cell.scenarios,
+      cell.preset === "OpenClaw" ? ["model-ui", "console-secrets"] : ["console-secrets"],
+    );
+  }
+  assert.equal(qaSelection.exclusions.length, 2);
+  assert.deepEqual(qaSelection.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+  ]);
+  assert.deepEqual(
+    Object.keys(
+      qaJob.steps.find(({ name }) => name === "Materialize selected QA credentials").env,
+    ).sort(),
+    ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"],
+  );
   const job = workflow.jobs["dev-up-k3d"];
   assert.equal(job.environment, undefined);
   assert.equal(job.env, undefined);
@@ -596,7 +1264,16 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(job["runs-on"], "ubuntu-22.04");
   for (const lane of ["dev-up-k3d", "all", "k3d-model"]) {
     assert.equal(
-      runInNewContext(job.if, { inputs: { lane } }),
+      workflowCondition(job.if, {
+        github: {
+          repository: mainRun.GITHUB_REPOSITORY,
+          ref: mainRun.GITHUB_REF,
+          ref_type: "branch",
+          run_attempt: "1",
+          event_name: "workflow_dispatch",
+        },
+        needs: { preflight: { result: "success", outputs: { selected_lane: lane } } },
+      }),
       lane === "dev-up-k3d" || lane === "all",
     );
   }
@@ -621,7 +1298,16 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(gitJob["runs-on"], "ubuntu-22.04");
   for (const lane of [privateGit, "all", "dev-up-k3d"]) {
     assert.equal(
-      runInNewContext(gitJob.if, { inputs: { lane } }),
+      workflowCondition(gitJob.if, {
+        github: {
+          repository: mainRun.GITHUB_REPOSITORY,
+          ref: mainRun.GITHUB_REF,
+          ref_type: "branch",
+          run_attempt: "1",
+          event_name: "workflow_dispatch",
+        },
+        needs: { preflight: { result: "success", outputs: { selected_lane: lane } } },
+      }),
       [privateGit, "all"].includes(lane),
     );
   }
@@ -642,7 +1328,17 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
         for (const cancelled of [false, true]) {
           const selected = runInNewContext(qa.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
             inputs: { lane },
-            needs: { preflight: { result: preflight }, slack: { result: slack } },
+            github: {
+              repository: mainRun.GITHUB_REPOSITORY,
+              ref: mainRun.GITHUB_REF,
+              ref_type: "branch",
+              run_attempt: "1",
+              event_name: "workflow_dispatch",
+            },
+            needs: {
+              preflight: { result: preflight, outputs: { selected_lane: lane } },
+              slack: { result: slack },
+            },
             always: () => true,
             cancelled: () => cancelled,
           });
@@ -656,11 +1352,45 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     }
   }
   const inputs = { lane: "dev-up-k3d", profile: run.with.profile };
+  const directory = await temporaryDirectory(t, "manual-dev-up-image-mode-");
+  const output = join(directory, "outputs");
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const imageSelection = spawnSync("bash", ["-c", mode.run], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI_SELECTED_LANE: inputs.lane,
+      CI_SELECTED_TEST_FILE: "",
+      GITHUB_OUTPUT: output,
+    },
+  });
+  assert.equal(imageSelection.status, 0, imageSelection.stderr);
+  const firstAgent = /^first-agent=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(firstAgent, "the shipped image selection must publish its mode");
+  const sourceBuild = /^source-build=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(sourceBuild);
   const evaluate = (expression) =>
-    runInNewContext(expression.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-      inputs,
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+    runInNewContext(
+      expression
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        // GitHub property names may contain hyphens; JavaScript needs brackets.
+        .replaceAll(
+          "steps.image-mode.outputs.first-agent",
+          'steps["image-mode"].outputs["first-agent"]',
+        )
+        .replaceAll(
+          "steps.image-mode.outputs.source-build",
+          'steps["image-mode"].outputs["source-build"]',
+        ),
+      {
+        inputs,
+        steps: {
+          "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+        },
+        startsWith: (value, prefix) => value.startsWith(prefix),
+      },
+    );
   for (const name of [
     "Set up Go toolchain",
     "Build Go CLI for development installation proof",

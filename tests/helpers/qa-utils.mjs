@@ -23,10 +23,14 @@ export async function waitFor(
   { describe, interval = 1000, now = () => Date.now() } = {},
 ) {
   const deadline = now() + timeout;
-  while (now() < deadline) {
+  // The deadline is checked after each observation, so the last one happens at or past it.
+  for (;;) {
     const result = await observe();
     if (result) {
       return result;
+    }
+    if (now() >= deadline) {
+      break;
     }
     await delay(interval);
   }

@@ -21,7 +21,7 @@ Compose without Installation YAML selects no Secret Driver. See
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires four
+The [shared interface](../../../packages/contracts/src/drivers/secret/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
 | Method                                    | Contract                                                                                                                                                                        |
@@ -44,13 +44,15 @@ with the Credential Gateway. Other callers include
 Secret-backed plugin discovery, channel credential validation and directory
 lookup, and **experimental** Codex OAuth device login.
 
-For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/credential-proxy.ts)
+For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its
 `signal` and absolute `deadlineAt` across backend calls and retries. Return a
 `VersionedSecretValue` with `value`, `version`, `authoritativeObservedAt`, and
 optional `expiresAt`. Read each value from the authoritative store without
 caching it. Kubernetes verifies the stored UID and returns the object's
 `resourceVersion` as the version.
+
+The optional `installationSecrets` store supports confidential [OAuth client registrations](../connection-templates.md). OCC supplies the Installation ID and registration ID before the first write. The Driver creates, replaces, reads and deletes the private value at that identity. Deleting an absent value succeeds so the worker can finish an interrupted operation. Namespace Secret APIs and workload projections cannot resolve this private material.
 
 ## IAM
 

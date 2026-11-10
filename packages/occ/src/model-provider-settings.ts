@@ -12,6 +12,7 @@ import {
   ModelProviderSettingError,
   quotedSettingKey,
 } from "./errors.ts";
+import { providerKeyVariantProblem } from "./stored-configuration-rules.ts";
 
 /**
  * Model API adapter ids the pinned OpenClaw runtime accepts: `MODEL_DATA_APIS` in
@@ -380,6 +381,16 @@ function validateSettings(
     if (typeof api !== "string" || !RUNTIME_MODEL_APIS.includes(api)) {
       throw new ModelProviderSettingError(pointer(...path, "api"), "api");
     }
+  }
+}
+
+/** Refuses a models.providers key that providerKeyVariantProblem names. */
+export function refuseProviderKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+  const problem = providerKeyVariantProblem(values);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
   }
 }
 

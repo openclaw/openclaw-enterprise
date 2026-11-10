@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
+import { downloadPinnedArtifact } from "./routing.mjs";
 
-const openShellVersion = "0.1.5";
-const openShellRevision = "bdb956f2cd65a635f1294fccf1d138d263bf650f";
+const openShellVersion = "0.1.6";
+const openShellRevision = "ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
@@ -15,12 +17,12 @@ const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
 const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
 const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "b627a526427197854f8ee1d783996e666e0bfd6b7a785b70df7709304d9b6f62";
+const openShellSourceSha256 = "e7bce772f5837a4ffc29fb51a49381eec3d4771a9f015c75b06d4f66deb109d2";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6`;
-const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851`;
-const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161`;
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellVersion}@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellVersion}@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b`;
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
 
@@ -67,13 +69,6 @@ function assertCluster(cluster) {
     throw new Error("cluster.context must select the owned k3d context.");
   }
   return { ...cluster, directory, kubeconfig };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function assertPrivateDirectory(info, path) {
@@ -273,8 +268,16 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
 }
 
 async function installAgentSandbox(execFile, kubectl, cluster, directory) {
-  const manifestPath = join(directory, `agent-sandbox-${agentSandboxVersion}.yaml`);
-  await downloadVerified(agentSandboxManifestUrl(), manifestPath, agentSandboxManifestSha256);
+  const manifestPath = await downloadPinnedArtifact({
+    artifact: {
+      name: "Agent Sandbox",
+      version: agentSandboxVersion,
+      url: agentSandboxManifestUrl(),
+      path: `agent-sandbox-${agentSandboxVersion}.yaml`,
+      sha256: agentSandboxManifestSha256,
+    },
+    directory,
+  });
   await execFile(kubectl, kubectlArgs(cluster, ["apply", "-f", manifestPath]));
   await execFile(kubectl, kubectlArgs(cluster, ["get", "crd", "sandboxes.agents.x-k8s.io"]));
   await execFile(

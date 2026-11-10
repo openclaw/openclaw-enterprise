@@ -1,3 +1,8 @@
+import {
+  modelProviderBaseUrl,
+  savedModelProvider,
+  requireModelSourceDestination,
+} from "../compute/model-provider.ts";
 import type {
   CredentialProviderDefinition,
   EgressRequest,
@@ -8,7 +13,7 @@ import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -139,28 +144,36 @@ function protectedResponse(
 }
 
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
-export const openAiStaticProvider: CredentialProviderDefinition =
-  Object.freeze<CredentialProviderDefinition>({
-    // Generation 1 could grant only one executable. Exact provider-generation
-    // matching prevents an upgrade or rollback from reinterpreting that grant.
-    ref: { id: "openai-static-https", generation: 2 },
+export function createOpenAiStaticProvider(): CredentialProviderDefinition {
+  return Object.freeze<CredentialProviderDefinition>({
+    // Generation 3 separates destination authorization from routing. Existing
+    // grants must not be reinterpreted under the shared provider contract.
+    ref: { id: "openai-static-https", generation: 3 },
     schemaVersion: 1,
     sourceType: {
       type: "openai",
-      config: [{ name: "base_url", required: false }],
+      config: [
+        {
+          name: "authorized_base_url",
+          required: false,
+          description: "Immutable destination authorization; must match the revision destination.",
+        },
+      ],
       secrets: [{ name: "api_key", required: true }],
       rotation: "external",
       harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
     },
     normalizeConfig(config) {
-      if (Object.keys(config).some((field) => field !== "base_url")) {
+      if (Object.keys(config).some((field) => field !== "authorized_base_url")) {
         throw new Error("Unsupported inference source configuration.");
       }
-      const baseUrl = normalizeOpenAiBaseUrl(config.base_url ?? "https://api.openai.com/v1");
+      const baseUrl = normalizeOpenAiBaseUrl(
+        config.authorized_base_url ?? "https://api.openai.com/v1",
+      );
       if (!baseUrl) {
         throw new Error("Unsupported inference source endpoint.");
       }
-      return { base_url: baseUrl };
+      return { authorized_base_url: baseUrl };
     },
     normalizeGrant(models) {
       if (models.length !== 1 || !models[0] || models[0].length > 256) {
@@ -168,8 +181,11 @@ export const openAiStaticProvider: CredentialProviderDefinition =
       }
       return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
     },
-    routes(source, binding) {
-      const base = new URL(this.normalizeConfig(source.config).base_url!);
+    routes(source, binding, harnessConfiguration) {
+      this.normalizeConfig(source.config);
+      const modelProvider = savedModelProvider(harnessConfiguration);
+      requireModelSourceDestination(source.config, modelProvider);
+      const base = new URL(modelProviderBaseUrl(modelProvider));
       return ["responses", "chat/completions"].map((operation) =>
         immutableCopy({
           route: {
@@ -245,3 +261,4 @@ export const openAiStaticProvider: CredentialProviderDefinition =
     protectResponse: (response, value, request, operation) =>
       value === undefined ? undefined : protectedResponse(response, value, request, operation),
   });
+}

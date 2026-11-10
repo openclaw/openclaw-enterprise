@@ -1,7 +1,7 @@
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
-import type { CredentialService } from "../../drivers/repo/credentials/service-contracts.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
+import type { CredentialService } from "../../drivers/repo/access/service-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
-import type { BoundListeners } from "../../drivers/repo/credentials/server.ts";
+import type { BoundListeners } from "../../drivers/repo/access/server.ts";
 
 export interface RunningService {
   readonly service: CredentialService;
@@ -19,7 +19,7 @@ export async function startCredentialService(
   options: StartOptions = {},
 ): Promise<RunningService> {
   const [{ createSystemClock }, { loadConfiguration }] = await Promise.all([
-    import("../../drivers/repo/credentials/clock.ts"),
+    import("../../drivers/repo/access/clock.ts"),
     import("./config.ts"),
   ]);
   const clock = createSystemClock();
@@ -35,15 +35,29 @@ export async function runService(
   clock: Clock,
 ): Promise<RunningService> {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
-    import("../../drivers/repo/credentials/service.ts"),
-    import("../../drivers/repo/credentials/server.ts"),
+    import("../../drivers/repo/access/service.ts"),
+    import("../../drivers/repo/access/server.ts"),
   ]);
-  const service = createCredentialService({
-    config: loaded.config,
-    factory: loaded.factory,
-    clock,
-    ...(loaded.providerQueue === undefined ? {} : { providerQueue: loaded.providerQueue }),
-  });
+  const constructSession =
+    "createPrepared" in loaded.factory
+      ? (
+          await import("../../drivers/repo/access/session-construction.ts")
+        ).preparedSessionConstructor(loaded.factory)
+      : (
+          await import("../../drivers/repo/access/development-session.ts")
+        ).developmentSessionConstructor({
+          config: loaded.config,
+          factory: loaded.factory,
+          clock,
+        });
+  const service = createCredentialService(
+    {
+      config: loaded.config,
+      factory: loaded.factory,
+      clock,
+    },
+    constructSession,
+  );
   let listeners: BoundListeners;
   try {
     // One JSON line per refused request (finding 2411), next to this process's other events.

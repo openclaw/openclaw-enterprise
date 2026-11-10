@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: "2026-11-09"
+last_updated_session: "authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -101,6 +101,12 @@ its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
 
+Secret create, update and delete share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
+write is sent only with at least 2 seconds of it left; otherwise the request fails with
+`503` and the write is not sent. A create that was sent and failed is cleaned up after
+the budget; a create that was not sent stored nothing and gets no cleanup read.
+
 ### 3. Bind a source, then admit references
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
@@ -146,7 +152,10 @@ execution topology.
 The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up` installation.
 Before Kubernetes or OCC API calls, it requires the current v3 development marker
 and state from the same checkout.
-The state must select Kubernetes Compute. The default `sandboxDriver: "none"`
+The state must select Kubernetes Compute and record the canonical HTTPS Console
+origin, browser port, and Agent domain for its cluster. These browser settings
+are required with either Sandbox Driver; `--control-ui` still requires OpenShell.
+API requests use the recorded loopback HTTP endpoint. The default `sandboxDriver: "none"`
 path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
 `scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket and
 removes inherited Docker TLS settings for container-engine calls. Compose setup
@@ -170,10 +179,16 @@ CredentialSource and uses the public Namespace IAM API to grant the Agent princi
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
+`scripts/first-agent.mjs:withRecord` creates the PID lock and atomic record
+replacement with explicit owner read/write mode `0600`, independent of the
+process umask. It closes the temporary file before renaming and removes a
+failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
-OCC. The check requires the local OpenShell profile's Driver-owned
-workspace, `/sandbox/enterprise`, and frozen Codex policy:
+OCC. A rerun follows a newer revision from a later deploy, after the same
+drift check. If the Agent is stopped, it fails at once and prints the
+`occ agent deploy` command. The check requires the local OpenShell profile's
+Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
 `sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
 or PAT sources. It can recognize a prior PAT Agent revision frozen with
 `workspace-write`; a new deployment uses the current policy. Other workspace or
@@ -183,8 +198,21 @@ tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
 with the provider-owned Harness. The verifier requires the exact Agent labels,
 Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. Kubernetes Compute owns any experimental two-cluster placement; this
+prompt. It requires the OpenAI key in the Gateway container only for embedded
+OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
+After a model failure, the CLI prints the original error before a bounded
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
+revision-scoped runtime status and log API. The API resolves both Kubernetes and
+OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
+and restart count; changed identities suppress log attribution. It prints container
+state, admitted startup event fields, and fixed classifications of known Codex
+connection failures, fallback and retry messages. It never forwards free-form log
+text or provider bodies. Collection is limited to ten seconds, 64 KiB per response,
+and two container streams per role. Same-stream history gaps retain valid
+observations and mark the sample incomplete. Unavailable or incomplete evidence
+does not change the original failure; startup observations do not establish the
+failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -297,7 +325,7 @@ credential at its issuer.
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
 - [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
 
@@ -306,6 +334,15 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)
+- 2026-11-09 13:02: Require current Local Setup browser settings independently of the Sandbox Driver in the accompanying first-Agent fix. (authoring-run/4c855680-1f37-4507-8ded-fa8be08d1be2 - 8adaa729fa03df318246a2ba3318aae51c603f8d)
+
+- 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
+
+- 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
+
+- 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 
 - 2026-10-16 01:36: Combine the OpenShell workspace guard with credential-independent Codex permissions. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

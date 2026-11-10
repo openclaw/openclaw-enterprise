@@ -7,10 +7,11 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost as injectRequest } from "../helpers/inject-json.mjs";
 import {
   assertProviderAttached,
   authRowCounts,
@@ -28,13 +29,17 @@ test(
     const email = "commit-recovery@example.test";
     const password = "commit-recovery-long-password";
     const authSecret = "commit-cookie-test-secret-at-least-32-bytes";
-    const origin = "http://127.0.0.1";
+    const origin = "https://console.oce.localhost";
+    function injectLocalhost(target, method, path, options = {}) {
+      return injectRequest(target, method, path, { host: new URL(origin).host, ...options });
+    }
     await ensureDevelopmentBootstrap(t, {
       databaseUrl,
       email,
       password,
       authSecret,
       authBaseURL: origin,
+      agentDomain: "agents.oce.localhost",
       installationName: "Cookie commit proof",
     });
     const observer = new pg.Pool({ connectionString: databaseUrl });
@@ -59,6 +64,7 @@ test(
       host: "127.0.0.1",
       authSecret,
       authBaseURL: origin,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       github: { clientId: "commit-client", clientSecret: "commit-secret", recoveryUserId },
     };
     const drivers = () => ({
@@ -67,11 +73,9 @@ test(
     });
     // Headerless, as a command-line client signs in: the controller synthesizes the Origin.
     const signIn = (target) =>
-      target.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
-        payload: { email, password },
-      });
+      injectLocalhost(target, "POST", "/api/auth/sign-in/email", { body: { email, password } });
+    const signOut = (target, headers) =>
+      injectLocalhost(target, "POST", "/api/auth/sign-out", { headers });
     const auditCount = async (action) =>
       (
         await observer.query(
@@ -148,10 +152,9 @@ test(
     assert.equal(signedIn.statusCode, 200, signedIn.body);
     const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
     const cookieName = cookie.slice(0, cookie.indexOf("="));
-    const ambiguousLogout = await ordinary.inject({
-      method: "POST",
-      url: "/api/auth/sign-out",
-      headers: { cookie: `${cookieName}=malformed; ${cookie}`, origin },
+    const ambiguousLogout = await signOut(ordinary, {
+      cookie: `${cookieName}=malformed; ${cookie}`,
+      origin,
     });
     assert.equal(ambiguousLogout.statusCode, 401, ambiguousLogout.body);
     assert.equal(ambiguousLogout.headers["set-cookie"], undefined);
@@ -163,10 +166,10 @@ test(
     // A tab pinned to another session cannot end the one this cookie now carries.
     const otherTab = await signIn(ordinary);
     const otherTabKey = otherTab.json().data.sessionKey;
-    const mismatchedLogout = await ordinary.inject({
-      method: "POST",
-      url: "/api/auth/sign-out",
-      headers: { cookie, origin, "x-occ-session-key": otherTabKey },
+    const mismatchedLogout = await signOut(ordinary, {
+      cookie,
+      origin,
+      "x-occ-session-key": otherTabKey,
     });
     assert.equal(mismatchedLogout.statusCode, 401, mismatchedLogout.body);
     assert.equal(mismatchedLogout.headers["set-cookie"], undefined);
@@ -177,10 +180,10 @@ test(
     );
     // The pinned tab can still end its own session.
     const otherTabCookie = cookieHeaderFromSetCookie(otherTab.headers["set-cookie"]);
-    const ownLogout = await ordinary.inject({
-      method: "POST",
-      url: "/api/auth/sign-out",
-      headers: { cookie: otherTabCookie, origin, "x-occ-session-key": otherTabKey },
+    const ownLogout = await signOut(ordinary, {
+      cookie: otherTabCookie,
+      origin,
+      "x-occ-session-key": otherTabKey,
     });
     assert.equal(ownLogout.statusCode, 200, ownLogout.body);
     assert.equal(await currentSession(ordinary, otherTabCookie), null);
@@ -193,11 +196,7 @@ test(
     apps.push(logout);
     await logout.ready();
     logoutProxy.arm();
-    const unknownLogout = await logout.inject({
-      method: "POST",
-      url: "/api/auth/sign-out",
-      headers: { cookie, origin },
-    });
+    const unknownLogout = await signOut(logout, { cookie, origin });
     assert.equal(logoutProxy.observedCommit, true);
     assert.equal(unknownLogout.statusCode, 503, unknownLogout.body);
     assert.equal(
@@ -219,11 +218,7 @@ test(
     const headerlessLogin = await signIn(ordinary);
     assert.equal(headerlessLogin.statusCode, 200, headerlessLogin.body);
     const headerlessCookie = cookieHeaderFromSetCookie(headerlessLogin.headers["set-cookie"]);
-    const headerlessLogout = await ordinary.inject({
-      method: "POST",
-      url: "/api/auth/sign-out",
-      headers: { cookie: headerlessCookie },
-    });
+    const headerlessLogout = await signOut(ordinary, { cookie: headerlessCookie });
     assert.equal(headerlessLogout.statusCode, 403, headerlessLogout.body);
     assert.equal(
       headerlessLogout.headers["set-cookie"],
@@ -332,7 +327,7 @@ test(
         const started = await callbackApp.inject({
           method: "POST",
           url: "/api/auth/providers/github/start",
-          headers: { origin },
+          headers: { host: new URL(origin).host, origin },
         });
         assert.equal(started.statusCode, 200, started.body);
         const state = new URL(started.json().data.url).searchParams.get("state");

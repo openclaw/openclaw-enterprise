@@ -33,7 +33,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
@@ -74,7 +74,6 @@ function baseInput(overrides = {}) {
       gatewayClassName: "eg",
       gatewayApiKeySecretName: "occ-private-gateway-key",
       agentNativeAdminDomain: "agents.oce.example.internal",
-      sharedCookieDomain: "oce.example.internal",
       gatewayTrustedProxyCidrs: ["192.0.2.12/32"],
       pluginStatusProxySourceCidrs: ["192.0.2.13/32"],
       nodeSelector: { "oce-role": "control" },
@@ -364,8 +363,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
   assert.equal(openclaw.preflight.profile, "openclaw");
-  assert.match(openclaw.installation, /id: occ-plugin/);
-  assert.doesNotMatch(openclaw.installation, /id: codex-plugin/);
+  assert.deepEqual(loadYaml(openclaw.installation).drivers.plugin, [
+    { id: "occ-plugin", configuration: {} },
+  ]);
   assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
   assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
   assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
@@ -382,8 +382,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
   assert.equal(codex.preflight.profile, "codex");
-  assert.match(codex.installation, /id: codex-plugin/);
-  assert.match(codex.installation, /catalogSource: hosted/);
+  assert.deepEqual(loadYaml(codex.installation).drivers.plugin, [
+    { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
+  ]);
   assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
   assert.match(
@@ -416,8 +417,7 @@ test("preflight rejects noncanonical SHA-256 image digests", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
     input.repository = repositoryConfiguration();
-    const directory = mkdtempSync(join(tmpdir(), "oce-profile-digest-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, "oce-profile-digest-");
     for (const [section, key] of [
       ["controlPlane", "controllerImage"],
       ["runtime", "image"],
@@ -488,8 +488,7 @@ test("managed ChatGPT service-account wiring is optional and explicit", async ()
 test("profiles reject invalid Helm release names before emitting deployment files", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
-    const directory = mkdtempSync(join(tmpdir(), `oce-release-name-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, `oce-release-name-${profile}-`);
     for (const releaseName of ["r".repeat(54), "Oce", "oce-", "oce..example", "oce example"]) {
       // A failed rerender must also remove files from a previously valid release.
       await render(profile, input, directory);
@@ -682,8 +681,7 @@ test(
       // Provider ranges must survive rendering; individual DNS answers are not stable.
       const input = profile === "codex" ? codexInput() : baseInput();
       input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
-      const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
-      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const directory = temporaryDirectorySync(t, `oce-profile-egress-${profile}-`);
       const output = renderCli(profile, input, directory, repository, dns.server);
       const manifests = helmTemplate(output);
       assert.match(manifests, /repository-credentials/);
@@ -779,6 +777,8 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   const preflight = JSON.parse(readFileSync(join(dns.directory, "preflight.json"), "utf8"));
   assert.equal(preflight.ok, false);
   assert.ok(preflight.errors.join("\n").includes("IPv4 addresses for chatgpt.com."));
+  // One host must resolve so a broken DNS fixture cannot satisfy the refusal case.
+  assert.doesNotMatch(preflight.errors.join("\n"), /IPv4 addresses for auth\.openai\.com\./);
   assert.match(preflight.errors.join("\n"), /modelDiscoveryCidrs/);
   assert.match(preflight.errors.join("\n"), /retry|re-?render|supply|set|provide|configure/i);
   assert.equal(existsSync(join(dns.directory, "values.yaml")), false);
@@ -931,11 +931,7 @@ const repositorySecretKeys = [
 ];
 
 function withGitHubSignIn(input, github) {
-  const {
-    agentNativeAdminDomain: _domain,
-    sharedCookieDomain: _cookieDomain,
-    ...controlPlane
-  } = input.controlPlane;
+  const controlPlane = input.controlPlane;
   return {
     ...input,
     controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", github },
@@ -1572,15 +1568,15 @@ test("preflight rejects inputs that Helm would reject", async () => {
     "codex",
     codexInput(),
     "controlPlane.agentNativeAdminDomain",
-    ["agents.other.example.internal"],
-    "must be inside controlPlane.sharedCookieDomain",
+    ["agents.unrelated.com"],
+    "must share a non-public DNS suffix",
   );
   await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.authBaseUrl",
-    ["https://console.example.internal"],
-    "host must be inside controlPlane.sharedCookieDomain",
+    ["https://console.unrelated.com"],
+    "and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix",
   );
 
   // The API refuses a public-suffix cookie domain at startup (tldts, private registries
@@ -1591,14 +1587,13 @@ test("preflight rejects inputs that Helm would reject", async () => {
         ...baseInput().controlPlane,
         authBaseUrl: `https://console.${sharedCookieDomain}`,
         agentNativeAdminDomain: `agents.${sharedCookieDomain}`,
-        sharedCookieDomain,
       },
     });
-  for (const sharedCookieDomain of ["co.uk", "github.io", "CO.UK", "192.0.2.1"]) {
+  for (const sharedCookieDomain of ["co.uk", "github.io", "CO.UK"]) {
     await assertPreflightFailure(
       "codex",
       nativeAdminUnder(sharedCookieDomain),
-      /controlPlane.sharedCookieDomain must not be a public suffix/,
+      /must share a non-public DNS suffix/,
     );
   }
   for (const sharedCookieDomain of ["example.co.uk", "oce.github.io"]) {
@@ -1610,7 +1605,7 @@ test("preflight rejects inputs that Helm would reject", async () => {
     codexInput(),
     "controlPlane.authBaseUrl",
     ["http://console.oce.example.internal"],
-    "must use HTTPS with native admin",
+    "must use HTTPS for shared browser sessions",
   );
 
   // The API and the bootstrap Job accept only an absolute HTTP(S) origin.
@@ -1710,7 +1705,6 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
         ...baseInput().controlPlane,
         authBaseUrl,
         agentNativeAdminDomain: "agents.example.com",
-        sharedCookieDomain: "example.com",
       },
     });
   const asciiRefusal =
@@ -1757,11 +1751,11 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
     "openclaw",
     externalSignInInput({
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
-      authBaseUrl: "https://ex%C3%A4.com",
+      authBaseUrl: "https://ex%C3%A4.oce.example.internal",
     }),
   );
   assert.equal(nonAscii.summary.ok, true, nonAscii.preflight.errors.join("\n"));
-  assert.match(nonAscii.values, /baseUrl: "https:\/\/ex%C3%A4\.com"/);
+  assert.match(nonAscii.values, /baseUrl: "https:\/\/ex%C3%A4\.oce\.example\.internal"/);
   if (!helmSkip) {
     helmTemplate(nonAscii);
   }
@@ -1800,8 +1794,11 @@ test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible ch
     }
   }
   for (const authBaseUrl of ["https://[::192.0.2.1]", "https://[::ffff:1:2:3]:8443"]) {
-    const output = await render("openclaw", externalSignInInput({ authBaseUrl }));
-    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({ authBaseUrl }),
+      /must share a non-public DNS suffix/,
+    );
   }
 });
 
@@ -1841,14 +1838,13 @@ test("native admin domains render lowercase for the chart", async () => {
         ...baseInput().controlPlane,
         authBaseUrl: "https://Console.Example.co.uk",
         agentNativeAdminDomain: "Agents.Example.co.uk",
-        sharedCookieDomain: "Example.co.uk",
       },
     }),
   );
   assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
   assert.match(
     output.values,
-    /agentNativeAdmin:\n {2}enabled: true\n {2}domain: agents\.example\.co\.uk\n {2}sharedCookieDomain: example\.co\.uk\n/,
+    /agentNativeAdmin:\n {2}enabled: true\n {2}domain: agents\.example\.co\.uk\n/,
   );
   if (!helmSkip) {
     const manifests = helmTemplate(output);
@@ -1856,7 +1852,7 @@ test("native admin domains render lowercase for the chart", async () => {
       manifests,
       /name: OCC_AGENT_NATIVE_ADMIN_DOMAIN\n\s+value: "agents\.example\.co\.uk"/,
     );
-    assert.match(manifests, /name: OCC_AUTH_COOKIE_DOMAIN\n\s+value: "example\.co\.uk"/);
+    assert.doesNotMatch(manifests, /name: OCC_AUTH_COOKIE_DOMAIN/);
   }
 });
 
@@ -1983,8 +1979,7 @@ test("profiles pass an optional observability URL to Installation startup YAML",
 });
 
 function externalSignInInput(signIn = {}) {
-  const { agentNativeAdminDomain, sharedCookieDomain, ...controlPlane } = baseInput().controlPlane;
-  assert.ok(agentNativeAdminDomain && sharedCookieDomain);
+  const controlPlane = baseInput().controlPlane;
   return baseInput({
     controlPlane: {
       ...controlPlane,
@@ -2002,7 +1997,7 @@ test(
     const trustedProxy = { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] };
     const github = await render("openclaw", externalSignInInput({ trustedProxy }));
     assert.equal(github.summary.ok, true);
-    // GitHub and Google sign-in support host-only cookies only, so native admin stays off.
+    // GitHub and Google native browser access remains unsupported.
     assert.match(github.values, /agentNativeAdmin:\n {2}enabled: false\n/);
     assert.match(github.values, /recoveryUserId: recovery-admin_1/);
     assert.match(
@@ -2044,6 +2039,25 @@ test(
     assert.match(
       allowlistManifests,
       /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
+    );
+    const enrolling = await render(
+      "openclaw",
+      externalSignInInput({
+        trustedProxy,
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "team.platform" },
+      }),
+    );
+    assert.equal(enrolling.summary.ok, true, enrolling.preflight.errors.join("\n"));
+    assert.match(
+      helmTemplate(enrolling),
+      /name: OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID\n\s+value: "team.platform"/,
+    );
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "\uFEFF " },
+      }),
+      /autoEnrollGroupId must be a nonempty string/,
     );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
@@ -2098,6 +2112,7 @@ test(
     );
     assert.equal(oidc.summary.ok, true, oidc.preflight.errors.join("\n"));
     assert.match(oidc.values, /oidc:\n {4}enabled: true\n/);
+    assert.match(oidc.values, /agentNativeAdmin:\n {2}enabled: true\n/);
     assert.match(oidc.values, /issuer: https:\/\/sso\.example\.com\/realms\/acme\n/);
     assert.doesNotMatch(oidc.values, /github:/);
     const oidcManifests = helmTemplate(oidc);
@@ -2138,9 +2153,9 @@ test(
   },
 );
 
-// Operators render from a plain checkout: installation-profiles.md asks for `pnpm install`
-// only with native admin, whose public suffix check loads tldts. Copy the sources the renderer
-// can import, without any node_modules, into a directory outside the repository.
+// A plain checkout must emit preflight diagnostics when shared-session validation
+// dependencies are missing. Copy the renderer sources without node_modules outside
+// the repository.
 function checkoutWithoutDependencies() {
   const root = mkdtempSync(join(tmpdir(), "oce-profile-checkout-"));
   const sources = [
@@ -2164,36 +2179,20 @@ function checkoutWithoutDependencies() {
   return root;
 }
 
-test("profiles render without installed dependencies unless native admin is on", async (t) => {
+test("profiles require the public suffix list for shared browser sessions", async (t) => {
   const root = checkoutWithoutDependencies();
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const [profile, input] of [
-    ["openclaw", externalSignInInput()],
-    ["codex", codexInput({ controlPlane: externalSignInInput().controlPlane })],
-  ]) {
-    const directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
-    let output;
-    try {
-      output = renderCli(profile, input, directory, root);
-    } catch (error) {
-      assert.fail(`${profile} render failed without node_modules:\n${error.profileRendererOutput}`);
-    }
-    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
-    assert.match(output.values, /agentNativeAdmin:\n {2}enabled: false\n/);
+  for (const input of [baseInput(), externalSignInInput()]) {
+    const directory = temporaryDirectorySync(t, "oce-profile-shared-session-");
+    const error = await renderError(() => renderCli("openclaw", input, directory, root));
+    assert.match(
+      error.profileRendererOutput,
+      /Shared browser sessions need the public suffix list: run pnpm install first\./,
+    );
+    const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+    assert.equal(preflight.ok, false);
+    assert.equal(existsSync(join(directory, "values.yaml")), false);
   }
-
-  // Native admin needs the API's public suffix list, so it asks for the install, with a preflight.
-  const directory = mkdtempSync(join(tmpdir(), "oce-profile-native-admin-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const error = await renderError(() => renderCli("openclaw", baseInput(), directory, root));
-  assert.match(
-    error.profileRendererOutput,
-    /controlPlane\.sharedCookieDomain needs the public suffix list: run pnpm install first\./,
-  );
-  const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
-  assert.equal(preflight.ok, false);
-  assert.equal(existsSync(join(directory, "values.yaml")), false);
 });
 
 test("preflight warns, without failing, when no trusted proxy is set", async () => {
@@ -2248,6 +2247,20 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", async () => {
+  for (const github of [
+    { autoEnrollGroupId: "team.platform" },
+    {
+      autoEnrollGroupId: "team.platform",
+      allowedTeams: ["acme/platform"],
+      allowedOrgs: ["acme"],
+    },
+  ]) {
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({ github }),
+      /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
+    );
+  }
   await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: { allowedTeams: ["platform"] } }),
@@ -2282,8 +2295,8 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   );
   await assertPreflightFailure(
     "openclaw",
-    externalSignInInput({ agentNativeAdminDomain: "agents.oce.example.internal" }),
-    /controlPlane.agentNativeAdminDomain is not consumed with external sign-in/,
+    externalSignInInput({ sharedCookieDomain: "oce.example.internal" }),
+    /controlPlane.sharedCookieDomain is not supported/,
   );
   await assertPreflightFailure(
     "openclaw",
@@ -2854,34 +2867,57 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", async (
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
-test("the codex profile carries a Codex model endpoint under Compute startup's rule", async () => {
-  const field = "runtime.codexModelBaseUrl";
-  await assertFieldRefusals(
-    "openclaw",
-    baseInput(),
-    field,
-    ["https://models.example.com/v1"],
-    "is only consumed by the codex profile",
+test("both profiles carry the shared model endpoint under Compute startup's rule", async () => {
+  const field = "runtime.modelProvider.baseUrl";
+  const shared = { protocol: "openai-responses", baseUrl: "https://models.example.com/v1" };
+  const native = await render("openclaw", {
+    ...baseInput(),
+    runtime: { ...baseInput().runtime, modelProvider: shared },
+  });
+  assert.deepEqual(
+    loadYaml(native.installation).drivers.compute.configuration.runtime.modelProvider,
+    shared,
+  );
+  const capable = await render(
+    "codex",
+    codexInput({ runtime: { modelProvider: { ...shared, supportsStandaloneWebSearch: true } } }),
+  );
+  assert.equal(
+    loadYaml(capable.installation).drivers.compute.configuration.runtime.modelProvider
+      .supportsStandaloneWebSearch,
+    true,
   );
   const accepted = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+    codexInput({
+      runtime: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://Models.Example.com:443/v1/",
+        },
+      },
+    }),
   );
   const compute = loadYaml(accepted.installation).drivers.compute.configuration;
   // Written as Compute normalizes it, and accepted by Compute startup.
-  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  assert.equal(compute.runtime.modelProvider?.baseUrl, "https://models.example.com/v1");
   const backslashScheme = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
+    codexInput({
+      runtime: {
+        modelProvider: { protocol: "openai-responses", baseUrl: "https:\\\\192.0.2.1/v1" },
+      },
+    }),
   );
   assert.equal(
-    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
+    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.modelProvider
+      ?.baseUrl,
     "https://192.0.2.1/v1",
   );
   requireConfiguration(KubernetesComputeDriver, compute);
   assert.equal(
     loadYaml((await render("codex", codexInput())).installation).drivers.compute.configuration
-      .runtime.codexModelBaseUrl,
+      .runtime.modelProvider?.baseUrl,
     undefined,
   );
   // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
@@ -2928,12 +2964,21 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
   ]) {
-    await assertFieldRefusals("codex", codexInput(), field, [value], message);
+    await assertFieldRefusals(
+      "codex",
+      codexInput({ runtime: { modelProvider: shared } }),
+      field,
+      [value],
+      message,
+    );
     assert.throws(
       () =>
         requireConfiguration(KubernetesComputeDriver, {
           ...compute,
-          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+          runtime: {
+            ...compute.runtime,
+            modelProvider: { protocol: "openai-responses", baseUrl: value },
+          },
         }),
       // Compute startup has no separate nonempty-string refusal; its general rule covers it.
       SharedConfigurationValidationError,
@@ -2955,7 +3000,10 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ["https://[2001:db8::1]/v1", "is an IPv6 address but Harness model egress allows only IPv4"],
     ["https://10.0.0.1/v1", "has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes"],
   ]) {
-    const warned = await render("codex", codexInput({ runtime: { codexModelBaseUrl: value } }));
+    const warned = await render(
+      "codex",
+      codexInput({ runtime: { modelProvider: { protocol: "openai-responses", baseUrl: value } } }),
+    );
     assert.ok(
       warned.preflight.warnings.includes(
         `${field} ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`,
@@ -2963,7 +3011,7 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
       value,
     );
     const configured = loadYaml(warned.installation).drivers.compute.configuration;
-    assert.equal(configured.runtime.codexModelBaseUrl, value);
+    assert.equal(configured.runtime.modelProvider?.baseUrl, value);
     requireConfiguration(KubernetesComputeDriver, configured);
   }
 });
@@ -3007,3 +3055,59 @@ test("profile transport Secret prefixes agree with controller startup admission"
     }
   }
 });
+
+test(
+  "profiles explicitly opt guarded GitHub into host-only native admin",
+  { skip: helmSkip },
+  async () => {
+    const input = externalSignInInput({
+      authBaseUrl: "https://console.example.com",
+      agentNativeAdminDomain: "agents.example.com",
+      agentNativeAdminSessionMode: "host-only-exchange",
+    });
+    const output = await render("openclaw", input);
+    assert.equal(output.summary.ok, true);
+    assert.deepEqual(loadYaml(output.values).agentNativeAdmin, {
+      enabled: true,
+      domain: "agents.example.com",
+      sessionMode: "host-only-exchange",
+    });
+    const shared = await render("openclaw", {
+      ...input,
+      controlPlane: { ...input.controlPlane, agentNativeAdminSessionMode: "shared-cookie" },
+    });
+    // The chart owns the shared default; profiles must not revive a manual cookie domain.
+    assert.deepEqual(loadYaml(shared.values).agentNativeAdmin, {
+      enabled: false,
+      domain: "agents.example.com",
+    });
+    const manifests = helmTemplate(output);
+    assert.match(
+      manifests,
+      /name: OCC_AGENT_NATIVE_ADMIN_SESSION_MODE\n\s+value: "host-only-exchange"/,
+    );
+    assert.doesNotMatch(manifests, /OCC_AUTH_COOKIE_DOMAIN/);
+    assert.match(output.preflight.prerequisites.join("\n"), /External sign-in Secrets created/);
+    for (const changes of [
+      { sharedCookieDomain: "example.com" },
+      { agentNativeAdminDomain: "agents.other.com" },
+      { google: {} },
+      {
+        oidc: {
+          issuer: "https://sso.example.com/realms/acme",
+          authorizationUrl: "https://sso.example.com/authorize",
+          tokenUrl: "https://sso.example.com/token",
+          jwksUrl: "https://sso.example.com/jwks",
+          egressCidrs: ["198.51.100.0/24"],
+        },
+      },
+      { github: undefined },
+      { agentNativeAdminSessionMode: "unknown" },
+    ]) {
+      await assert.rejects(
+        render("openclaw", { ...input, controlPlane: { ...input.controlPlane, ...changes } }),
+        /profile renderer refused/,
+      );
+    }
+  },
+);

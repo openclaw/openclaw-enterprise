@@ -1,32 +1,51 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
-[workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Keep private routing enabled. Start with the password profile and
-[native Agent administration](native-admin.md#requirements); optional
-[GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
+For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or
+[Amazon EKS setup](eks-openshell-setup.md), then [deploy your first Agent](deploy-first-agent.md)
+in the same operator shell. Those OpenShell workflows support development and
+evaluation; [production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
-Configure with an [installation profile](#recommended-generate-profile-configuration)
-or [manual YAML](#advanced-copy-manual-yaml-examples).
+Use this guide for a custom Helm installation. Choose the [published images](#use-published-images),
+[generate the profile configuration](#recommended-generate-profile-configuration), and
+prepare the cluster resources below. Then [run `occ installation install`](#install-the-control-plane)
+once, [authenticate to the API](#authenticate-to-the-production-api), and
+[deploy a production Agent](production-agents.md).
+
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
+[prerequisites below](#before-you-start), and
+[workspace routing](workspace-routing.md#requirements), including a GatewayClass.
+Private routing is enabled by default. The chart does not install Envoy Gateway,
+Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
+controllers first; create the service-key Secret and match Helm and Installation
+settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
+Start with the password profile and
+[native Agent administration](native-admin.md#requirements); optional
+[GitHub](#enable-github-browser-sign-in) requires disabling native administration or
+selecting [host-only exchange](native-admin.md#install-on-an-existing-cluster).
+[Google](google-sign-in.md) requires native access disabled; [OIDC](oidc-sign-in.md) supports shared-cookie native access.
 
 Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
+
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which checks the image source commits and sets
-`CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+Before generating configuration, [select the published image pair](published-images.md)
+(`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
+`RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
-Public GHCR pulls need no pull Secret. For private registry copies, give every node
-that runs control-plane or tenant Pods its own pull access; see
-[private registry delivery](private-registry-images.md#configure-node-pull-access).
-Workstation `docker login` does not authenticate cluster nodes.
+Public GHCR pulls need no pull Secret. For private copies, grant pull access to
+every control-plane and tenant node; workstation `docker login` does not authenticate
+nodes. See [private registry delivery](private-registry-images.md#configure-node-pull-access).
 
 ## Build and publish production images
 
@@ -41,7 +60,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
@@ -84,9 +103,38 @@ else
 fi
 ```
 
+If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
+
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
+
+### Build through a package registry mirror
+
+When building either image from source, Corepack downloads the pinned pnpm
+version, then pnpm installs dependencies. Corepack does not read npmrc. To
+route both downloads through a mirror, supply the secrets for their respective
+steps to each `docker buildx build` command:
+
+```bash
+--secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
+--secret "id=npmrc,src=$NPMRC_FILE"
+```
+
+Keep both files outside the checkout and readable only by their owner. The
+Corepack file uses dotenv syntax: set `COREPACK_NPM_REGISTRY` to the mirror's
+credential-free HTTPS base URL **without a trailing slash**. When authentication
+is required, use `COREPACK_NPM_TOKEN`; Corepack sends this bearer token only to
+the configured registry origin. Do not use `COREPACK_NPM_USERNAME` and
+`COREPACK_NPM_PASSWORD`: Corepack can send those Basic credentials to a different
+archive host named by registry metadata. If the mirror uses a private CA,
+supply the `build-ca` bundle described above. Keep Corepack integrity checks enabled.
+
+Configure pnpm's registry and a separate read-only dependency credential in
+npmrc. The runtime's permitted dependency lifecycle scripts can read this file.
+The build mounts it only during dependency installation and mounts
+`corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
+default registry selection.
 
 ## Configure the Installation
 
@@ -117,10 +165,8 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
-native admin). Manual YAML does not, but
-the later Agent transport-provisioning example does; without Node, provision
-transports in the console.
+Generation requires Node.js satisfying `engines.node` in the selected release checkout's `package.json` on the operator host (and `pnpm install` with
+native admin). Without Node.js on the operator host, use the manual YAML examples.
 
 Create `$OCC_INPUT_DIRECTORY/profile-input.json` from the schema in
 [Render installation profiles](installation-profiles.md#prepare-inputs). Set
@@ -149,9 +195,8 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
 )
 ```
 
-If rendering fails, stop, fix the input, and rerender; never substitute example
-or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
-`controlPlane.installationChecksum` paired.
+If rendering fails, stop, fix the input, and rerender; do not substitute example
+or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` paired.
 
 ### Advanced: copy manual YAML examples
 
@@ -193,9 +238,9 @@ chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" \
   "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 ```
 
-For profile installs, change `$OCC_PROFILE_INPUT` and rerender instead of editing
+For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
 `values.yaml` or `installation.yaml`. For manual installs, edit the copied YAML
-before running the checks:
+before the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
@@ -204,12 +249,13 @@ before running the checks:
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
-  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  (HTTPS is required for browser sessions), even a bare `?` or `#`, Unicode
   spaces or invisible characters (outer ASCII spaces are ignored), or forms the
   API's URL parser refuses, such as full-width `？`.
-  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
-  native admin, it must be `https` and its host inside
-  `agentNativeAdmin.sharedCookieDomain`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job.
+  In shared-cookie mode, Console and Agent hosts must share a non-public DNS
+  suffix; OCC derives the cookie domain. GitHub host-only exchange requires
+  same-site HTTPS without a shared Console cookie.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
@@ -220,46 +266,101 @@ before running the checks:
   `presets.includeDefaults: false` disables the
   [bundled Presets](../../reference/presets.md#installation-defaults).
 
-For every install, set `bootstrap-pvc.yaml` name, namespace, size, and
-protected `storageClassName`.
+Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`.
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
-Configure native admin domains through [native admin setup](native-admin.md#steps).
+[Configure native admin domains](native-admin.md#steps).
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
 `images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
 
-Run every check below before provisioning the password profile:
+Before running this block, confirm that `OCC_INPUT_DIRECTORY` points to the
+intended protected directory containing your prepared `values.yaml`,
+`installation.yaml`, and `bootstrap-pvc.yaml`. In a new shell, restore that
+[setup](#configure-the-installation) first.
+
+Run this block before provisioning the password profile. If it fails, correct the
+named check before continuing. After the directory check, each run invalidates
+the previous render. Image, claim, database CA, and manifest-path exports are set
+only after every check succeeds:
 
 ```bash
-yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
-  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
-yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
-  (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
-  (.controlPlane.nodeSelector | length > 0) and
-  (.api.clients | length > 0) and .gatewayRouting.enabled == true and
-  .gatewayRouting.gatewayClassName != "" and
-  .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
-  .auth.github.enabled == true or .auth.google.enabled == true or
-  .auth.oidc.enabled == true)' \
-  "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null
-yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
-  (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
-  (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
-  .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
-  (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
-  (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
-  "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null
-yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
-  "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null
-helm template oce deploy/helm/openclaw-enterprise \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  >/tmp/oce-rendered.yaml
-export CONTROLLER_IMAGE="$(yq e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export BOOTSTRAP_CLAIM="$(yq e -r '.bootstrap.password.claimName' "$OCC_INPUT_DIRECTORY/values.yaml")"
-test "$BOOTSTRAP_CLAIM" = "$(yq e -r '.metadata.name' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")"
+{
+  unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset DATABASE_CA_SECRET DATABASE_CA_KEY
+  OCC_RENDER_TEMP=
+  if
+    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
+    test -n "${OCC_INPUT_DIRECTORY:-}" &&
+    test -d "$OCC_INPUT_DIRECTORY" &&
+    test -f "$OCC_INPUT_DIRECTORY/values.yaml" &&
+    test -f "$OCC_INPUT_DIRECTORY/installation.yaml" &&
+    test -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" &&
+    OCC_VALIDATION_STEP='previous render invalidation' &&
+    rm -f -- "$OCC_INPUT_DIRECTORY/rendered.yaml" &&
+    OCC_VALIDATION_STEP='controller image digest' &&
+    yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
+      "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='control-plane settings' &&
+    yq e -e '.auth.baseUrl != "" and .bootstrap.adminEmail != "" and
+      (.database.cidrs | length > 0) and (.cluster.cidrs | length > 0) and
+      (.controlPlane.nodeSelector | length > 0) and
+      (.api.clients | length > 0) and .gatewayRouting.enabled == true and
+      .gatewayRouting.gatewayClassName != "" and
+      .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
+      .auth.github.enabled == true or .auth.google.enabled == true or
+      .auth.oidc.enabled == true)' \
+      "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='runtime settings' &&
+    yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true and
+      (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
+      (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
+      .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
+      (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
+      (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
+      "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='bootstrap PVC' &&
+    yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
+      "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null &&
+    OCC_VALIDATION_STEP='render temporary file' &&
+    OCC_RENDER_TEMP="$(mktemp "$OCC_INPUT_DIRECTORY/.rendered.XXXXXXXX")" &&
+    OCC_VALIDATION_STEP='Helm render' &&
+    helm template oce deploy/helm/openclaw-enterprise \
+      --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
+      >"$OCC_RENDER_TEMP" &&
+    OCC_VALIDATION_STEP='controller image extraction' &&
+    CONTROLLER_IMAGE="$(yq e -e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA Secret extraction' &&
+    DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA key extraction' &&
+    DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='bootstrap claim extraction' &&
+    OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='bootstrap claim match' &&
+    OCC_EXPECTED_BOOTSTRAP_CLAIM="$(yq e -e -o=json -I=0 '.metadata.name | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")" &&
+    test "$OCC_BOOTSTRAP_CLAIM_JSON" = "$OCC_EXPECTED_BOOTSTRAP_CLAIM" &&
+    OCC_VALIDATION_STEP='bootstrap claim export' &&
+    BOOTSTRAP_CLAIM="$(yq e -e -r '.bootstrap.password.claimName + "."' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_CLAIM="${BOOTSTRAP_CLAIM%.}" &&
+    test "$(BOOTSTRAP_CLAIM="$BOOTSTRAP_CLAIM" yq e -n -o=json -I=0 'strenv(BOOTSTRAP_CLAIM)')" = "$OCC_BOOTSTRAP_CLAIM_JSON" &&
+    OCC_VALIDATION_STEP='validated render publication' &&
+    mv -- "$OCC_RENDER_TEMP" "$OCC_INPUT_DIRECTORY/rendered.yaml"
+  then
+    OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
+    export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export DATABASE_CA_SECRET DATABASE_CA_KEY
+    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+  else
+    unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset DATABASE_CA_SECRET DATABASE_CA_KEY
+    if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
+    printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
+    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    false
+  fi
+}
 ```
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
@@ -293,8 +394,6 @@ chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
   /secure/occ/occ-auth-secret
 test -s /secure/occ/occ-application-url
 test -s /secure/occ/occ-migration-url
-export DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")"
 if [ -n "$DATABASE_CA_SECRET" ]; then
   chmod 600 /secure/occ/occ-database-ca.pem
   test -s /secure/occ/occ-database-ca.pem
@@ -317,27 +416,68 @@ create `occ-private-gateway-key` and match the Helm and Installation routing
 settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
+With chart-managed routing and Kubernetes Compute, startup checks the Installation's
+`drivers.compute.configuration.gatewayRouting` settings. Its `gatewayName`,
+`gatewayNamespace`, `envoyNamespace`, and effective `hostname` must match the
+chart's private Gateway. A mismatch reports
+`CHART_LISTENER_MISMATCH`. Correct the profile input and rerender, or align the
+manual Installation and Helm values, before retrying. Leave `hostname` unset in
+both files to use the generated Service DNS name.
+
 ## Provision system Secrets and install
 
-Create system Secrets from protected files:
+Run this whole block only if you have not attempted any of the Secret creates
+below. If you have already attempted a create, follow the recovery instructions
+after the block. Use the Bash shell where validation succeeded and the Secret
+inputs were prepared. In a new shell, restore the input-directory setup and rerun
+validation, which also loads `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the
+intended `values.yaml`. Recheck the prepared protected inputs,
+including the CA file when configured. Keep the existing auth secret. Both server
+dry runs must succeed before the block creates Secrets.
 
 ```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  apply --dry-run=server -f /tmp/oce-rendered.yaml
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url
-if [ -n "$DATABASE_CA_SECRET" ]; then
+(
+  if [ -z "${OCC_RENDERED_MANIFEST:-}" ]; then
+    printf 'Run validation successfully in this Bash shell before provisioning.\n' >&2
+    exit 1
+  fi
+  if ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    apply --dry-run=server -f "$OCC_RENDERED_MANIFEST" ||
+    ! kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+      apply --dry-run=server -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+  then
+    printf 'Server dry run failed; correct the error before provisioning Secrets.\n' >&2
+    exit 1
+  fi
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-    create secret generic "$DATABASE_CA_SECRET" \
-    --from-file="$DATABASE_CA_KEY=/secure/occ/occ-database-ca.pem"
-fi
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret
+    create secret generic occ-installation-startup --from-file=installation.yaml="$OCC_INPUT_DIRECTORY/installation.yaml" || exit 1
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    create secret generic occ-database --from-file=application-url=/secure/occ/occ-application-url --from-file=migration-url=/secure/occ/occ-migration-url || exit 1
+  if [ -n "$DATABASE_CA_SECRET" ]; then
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+      create secret generic "$DATABASE_CA_SECRET" \
+      --from-file="$DATABASE_CA_KEY=/secure/occ/occ-database-ca.pem" || exit 1
+  fi
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    create secret generic occ-auth --from-file=secret=/secure/occ/occ-auth-secret || exit 1
+)
 ```
+
+If either dry run fails and you have never attempted these Secret creates,
+correct the error and rerun the block. If a Secret create fails or its result is
+unknown, verify which Secrets exist in `openclaw-system` on the reviewed cluster.
+Resolve uncertain writes before resuming. Do not repeat confirmed successful
+creates.
+
+If you change any of the three prepared YAML files, rerun validation before
+continuing; it reloads the CA settings from the intended `values.yaml`. Do not
+reuse the previous CA selection. Recheck the protected inputs, including the CA file when
+its settings change. Keep the existing auth secret. Before repeating dry runs or
+any remaining creates, verify that previously created Secrets match the intended
+inputs and resolve any mismatch within the authorized change scope. When resuming
+after a create attempt, run both server dry runs separately from the create
+commands. Only after both dry runs succeed, run the create commands confirmed to
+be outstanding. Continue only after all required Secrets match the intended inputs.
 
 These operator-owned Secrets are not synchronized automatically. The optional CA
 Secret mounts read-only in migration, bootstrap, API, and worker containers at
@@ -397,25 +537,34 @@ labels, one option per label, so preparation and initialization share volume
 topology. Helm refuses keys and values that helper refuses; values may be
 empty, as in `--node-selector node-role.kubernetes.io/infra=`.
 
-The helper refuses any nonfresh mounted root except `lost+found`, schedules with
-the supplied node selector before storage binds, reports `Prepared bootstrap
-volume claim ... with UID/GID 1000 mode 0700.`, and retains failed Pods for
-diagnosis. If policy forbids the preparation Pod, have the storage administrator
-create the same root state.
+The helper refuses nonfresh roots except `lost+found`, schedules before storage
+binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.`,
+and retains failed Pods. If policy forbids the Pod, have the storage administrator
+prepare the same root state.
 
-Install the chart with native values:
+### Install the control plane
+
+Exclude competing installs, upgrades and Job replacements. Use the [OCC CLI](../cli.md#connect-to-your-installation)
+matching the chart source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
-helm upgrade --install oce deploy/helm/openclaw-enterprise \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  --wait --timeout 5m
+INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
+occ installation install --release oce --chart deploy/helm/openclaw-enterprise \
+  --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  --kube-namespace openclaw-system --values "$OCC_INPUT_DIRECTORY/values.yaml" \
+  --receipt "$INSTALL_RECEIPT_DIRECTORY" --wait-timeout 5m
 ```
+
+After a lost response or refused release name, use the read-only
+[`occ installation plan` or `doctor`](production-handoff.md#resume-an-installation-in-progress)
+to inspect the original attempt.
+Do not retry or switch to upgrade. An unused release name does not prove the database, identity or storage is fresh.
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
-verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
-with `--version "$OCE_VERSION"`.
+verify its publication receipt, pull the exact chart version locally, and pass
+that local chart archive to `--chart`. The installer freezes local chart files;
+it does not resolve a mutable remote chart reference.
 
 Helm owns migration and bootstrap ordering through its initialization hook.
 Readiness covers the API and worker probes, not authenticated API access, Agent
@@ -423,13 +572,65 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Retrieve and privately retain `initial-admin-service-key.json` from the
-protected bootstrap PVC through approved storage access. This example works on
-a session copy:
+Read the protected bootstrap files before you authenticate. The claim holds
+`initial-admin-service-key.json` and `initial-admin-password` as mode 0600 files
+in a root directory owned by UID 1000 with mode 0700. A one-use reader Pod must
+run as UID 1000 on the claim's control nodes and mount the claim read-only. If
+admission refuses UID 1000, have the cluster administrator allow it for this Pod.
+Permission to read this claim is privileged.
+
+```bash
+export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
+(
+  set -euo pipefail
+  umask 077
+  jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace openclaw-system \
+    --arg claim "$BOOTSTRAP_CLAIM" \
+    --argjson nodeSelector "$(yq e -o=json -I=0 '.controlPlane.nodeSelector' "$OCC_INPUT_DIRECTORY/values.yaml")" \
+    -f docs/snippets/openshell-quickstart/kubernetes/bootstrap-reader.jq |
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create -f -
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
+  for file in initial-admin-password initial-admin-service-key.json; do
+    test ! -e "$READER_DIRECTORY/$file"
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+      exec oce-owner-bootstrap-reader -- \
+      node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
+      "/bootstrap/$file" > "$READER_DIRECTORY/$file.tmp"
+    test -s "$READER_DIRECTORY/$file.tmp"
+    mv "$READER_DIRECTORY/$file.tmp" "$READER_DIRECTORY/$file"
+  done
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    delete pod oce-owner-bootstrap-reader
+)
+```
+
+The block preserves completed copies, but a failed read can leave an incomplete
+`.tmp` file. If either read fails, delete this attempt's reader Pod using the
+command above. Keep the retrieved files private and in place; do not use `.tmp`
+files as credentials. Select a fresh directory before repeating the block:
+
+```bash
+umask 077
+READER_DIRECTORY="$(mktemp -d /secure/occ/bootstrap-reader.XXXXXXXX)" && export READER_DIRECTORY
+```
+
+Stop if directory creation fails. The retry reads both files from the same PVC
+without overwriting the earlier copies or rerunning bootstrap. After it succeeds,
+select the newly retrieved key, replacing any earlier path in this shell:
+
+```bash
+export OCC_BOOTSTRAP_KEY_FILE="${READER_DIRECTORY:?}/initial-admin-service-key.json"
+```
+
+Use the new directory for the credentials below. The files use the default names;
+`bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
+`bootstrap.adminEmail` and `initial-admin-password`. The service key file
+authenticates the CLI and REST calls below. This example works on a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-/secure/occ/initial-admin-service-key.json}"
+export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-${READER_DIRECTORY:-/secure/occ}/initial-admin-service-key.json}"
 umask 077
 prepare_occ_service_key() {
   local working_directory
@@ -473,59 +674,73 @@ including its [model-response check](production-agents.md#verify-production-work
 
 ## Enable GitHub browser sign-in
 
-Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a commit that includes it, or [your own build](#build-and-publish-production-images).
-Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-during stopped maintenance, after first installing without GitHub as above.
+Install the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+with GitHub off and a compatible [published](#use-published-images) or [self-built](#build-and-publish-production-images) image.
+Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#roll-back-across-human-sign-in) past activation.
+[Deactivate during stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
 
-Activation is one-way: the database refuses older images' sessions and
-`auth.github` must stay set. Never `helm rollback` past activation
-([rollback](production-upgrade-recovery.md#roll-back-across-human-sign-in));
-[stopped maintenance](auth-maintenance.md) deactivates it.
-
-1. Verify password recovery ([replaceable](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-   later). Register
-   the GitHub App callback and protect its **client ID** (not App ID) and secret
-   as the [reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts) describes.
-   As the recovery administrator, read `data.user.id` from
+1. Verify password sign-in as recovery administrator. Read `data.user.id` from
    `GET /api/auth/session`.
-2. Create the Secret, then set `auth.github.enabled: true`, that ID as
-   `auth.recoveryUserId`, and `agentNativeAdmin.enabled: false` in protected
-   values, keeping workspace routing. Optionally narrow `auth.github.egressCidrs`, set `api.trustedProxy`
-   ([settings](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)), or limit
-   sign-in to members with `auth.github.allowedOrgs` and `allowedTeams`, after granting the App
-   Members: read ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)).
-   Profile installs set [these inputs](installation-profiles.md#external-sign-in-and-trusted-proxies)
-   and keep them in every rerender; rerender.
+2. Reuse the release Namespace’s dedicated sign-in Secret without reading values.
+   If absent, use protected files:
 
    ```bash
-   kubectl -n openclaw-system create secret generic occ-github-login \
+   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
+     -n openclaw-system create secret generic occ-github-login \
      --from-file=client-id=/secure/occ/github-client-id \
      --from-file=client-secret=/secure/occ/github-client-secret
    ```
 
-3. Close ingress. Disable automatic restarts and policy/provisioning writers;
-   drain admitted requests.
-4. Run `helm upgrade` with the compatible image. The api Deployment uses
-   `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
-   and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
-   verify password recovery, new session admission,
-   the expected Namespaces and existing Agent detail, and rejected stale sessions.
-   Reopen ingress only after these checks, retaining one serving controller.
+   Protected values:
 
-For enrollment, obtain the numeric subject with `gh api user --jq .id` as the
-intended GitHub user; verify ownership through your identity process, not
-email or usernames. Follow the reference's attachment and unknown-outcome handling.
-Once every ordinary account has an identity, set `auth.passwordSignIn: recovery-only`
-([recovery-only sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)).
-Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub registration.
+   ```yaml
+   auth:
+     recoveryUserId: "<recovery administrator user ID>"
+     github:
+       enabled: true
+       secretName: occ-github-login
+       clientIdKey: client-id
+       clientSecretKey: client-secret
+   agentNativeAdmin:
+     enabled: false
+   ```
+
+   For native admin, replace `enabled: false` with the
+   [host-only exchange settings](native-admin.md#install-on-an-existing-cluster).
+   Match the GitHub sign-in Secret name and distinct keys (client ID, not App ID).
+   Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+   See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
+
+3. Close ingress. Disable auto-restarts and policy/provisioning writers. Drain requests.
+   [Stop API, worker and other database clients](auth-maintenance.md#stop-every-writer).
+   At first activation, [run `activate --recovery-user <recoveryUserId> --writers-stopped`](auth-maintenance.md#run-the-command).
+   This enrolls qualifying accounts, reports skips, and ends unbound sessions. After `status`, return here with ingress closed and old API/worker replicas at zero.
+4. On success, one normal `helm upgrade` restores configured replicas. Keep initialization hooks enabled.
+   The Job checks the Installation, migrates, then bootstraps without reissuing verified Installations’ credentials.
+5. Confirm rollout completion, no old API Pods, and one serving controller.
+   Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access), verify password recovery, new sessions,
+   expected Namespaces and Agent detail, and stale-session rejection before reopening ingress.
+
+Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
+reattach under the new ID before detaching old methods.
+
+For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
+with an existing IAM Group and the App's email-read permission. Otherwise, follow
+the manual attachment procedure below.
+
+[Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
+Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
+Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+Resolve failed or uncertain writes before retrying. Attach identities to all ordinary accounts. Each user must sign in once with theirs before
+[`auth.passwordSignIn: recovery-only`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in).
+
+Loopback cannot qualify production stop/drain, cookies, logging, and GitHub registration.
 
 ## Related
 
-Use the [production image upgrade](production-upgrade.md) for an existing release. For failed
+For existing releases, use [production image upgrade](production-upgrade.md). For failed
 initialization, preserve state and follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
-and the [production startup flow](../../flows/production-startup.md).
+and the [startup flow](../../flows/production-startup.md).
 
-[Connect default metrics and logs](../observability.md) to your collectors. The
-[optional demo stack](../observability/demo.md) is not recommended for production.
+Connect [metrics and logs](../observability.md) to your collectors. The
+[demo stack](../observability/demo.md) is not recommended for production.

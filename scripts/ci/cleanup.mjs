@@ -1,13 +1,23 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  lstat,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -291,14 +301,75 @@ function quoteIdentifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
-async function cleanupComposePostgres(resource, state) {
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    composeArgs(resource, state, "down", "--volumes", "--remove-orphans"),
-    {
-      env: { OCC_POSTGRES_PORT: String(resource.port) },
+async function cleanupComposePostgres(resource, state, statePath) {
+  if (
+    resource.directory !== undefined &&
+    resource.directory !== join(dirname(statePath), `${resource.name}-bootstrap`)
+  ) {
+    throw new Error(
+      `Refusing cleanup outside the owned PostgreSQL directory: ${resource.directory}`,
+    );
+  }
+  const args = composeArgs(resource, state, "down", "--volumes", "--remove-orphans");
+  if (resource.directory !== undefined && resource.directoryCreated !== true) {
+    if (resource.directoryCreated === false) {
+      try {
+        await lstat(resource.directory);
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          return;
+        }
+        throw error;
+      }
+    }
+    throw new Error(`Refusing unconfirmed PostgreSQL bootstrap ownership: ${resource.directory}`);
+  }
+  if (resource.directory !== undefined && resource.initSqlCreated !== true) {
+    if (resource.initSqlCreated === false) {
+      try {
+        // Only an empty owned directory is safe before SQL creation is confirmed.
+        await rmdir(resource.directory);
+        return;
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          return;
+        }
+        if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+          throw error;
+        }
+      }
+    }
+    throw new Error(
+      `Refusing unconfirmed PostgreSQL bootstrap SQL ownership: ${resource.directory}`,
+    );
+  }
+  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+    env: {
+      OCC_POSTGRES_PORT: String(resource.port),
+      ...(resource.directory === undefined
+        ? {}
+        : { OPENCLAW_CI_POSTGRES_INIT_SQL: join(resource.directory, "init-local.sql") }),
     },
-  );
+  });
+  if (resource.directory !== undefined) {
+    let entries;
+    try {
+      if (!(await lstat(resource.directory)).isDirectory()) {
+        throw new Error(`Refusing unexpected PostgreSQL bootstrap contents: ${resource.directory}`);
+      }
+      entries = await readdir(resource.directory, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    if (entries.some((entry) => entry.name !== "init-local.sql" || !entry.isFile())) {
+      throw new Error(`Refusing unexpected PostgreSQL bootstrap contents: ${resource.directory}`);
+    }
+    await rm(join(resource.directory, "init-local.sql"), { force: true });
+    await rmdir(resource.directory);
+  }
 }
 
 async function cleanupDatabase(resource, state) {
@@ -465,8 +536,57 @@ async function cleanupK3dImage(resource, state) {
   }
 }
 
-async function cleanupResource(resource, state) {
+async function cleanupFirstAgentImages(resource, state) {
+  assertResourceOwner(resource, state);
+  assertOwnedName("openclaw-ci-first-images-", resource.name, "first-Agent registry");
+  if (!Number.isInteger(resource.port) || resource.port < 1 || resource.port > 65535) {
+    throw new Error("Invalid first-Agent image registry receipt.");
+  }
+  if (resource.controllerImage !== undefined) {
+    const prefix = `127.0.0.1:${resource.port}/${resource.name}/controller@`;
+    if (
+      typeof resource.controllerImage !== "string" ||
+      !resource.controllerImage.startsWith(prefix) ||
+      !/^sha256:[a-f0-9]{64}$/.test(resource.controllerImage.slice(prefix.length))
+    ) {
+      throw new Error("Refusing to remove an unowned first-Agent controller image.");
+    }
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const inspect = async (kind, name) => {
+    try {
+      return JSON.parse((await execFile(docker, [kind, "inspect", name])).stdout)[0];
+    } catch (error) {
+      if (/No such (?:image|object|container)/i.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    }
+  };
+  const container = await inspect("container", resource.name);
+  if (container) {
+    if (
+      container.Config.Labels?.["openclaw.dev/ci-owner"] !== state.prefix ||
+      !/^[a-f0-9]{64}$/.test(container.Id ?? "") ||
+      (resource.containerId !== undefined && container.Id !== resource.containerId)
+    ) {
+      throw new Error("First-Agent registry changed ownership.");
+    }
+  }
+  if (resource.controllerImage && (await inspect("image", resource.controllerImage))) {
+    // Remove the exact owned reference, without forcing removal from live readers.
+    await execFile(docker, ["image", "rm", resource.controllerImage]);
+  }
+  if (container) {
+    await execFile(docker, ["container", "rm", "--force", "--volumes", container.Id]);
+  }
+}
+
+async function cleanupResource(resource, state, statePath) {
   switch (resource.kind) {
+    case "first-agent-image-registry":
+      await cleanupFirstAgentImages(resource, state);
+      break;
     case ciOtelBackendResourceKind:
       assertResourceOwner(resource, state);
       await cleanupLogging(resource, { execFile });
@@ -475,7 +595,7 @@ async function cleanupResource(resource, state) {
       await cleanupDatabase(resource, state);
       break;
     case "compose-postgres":
-      await cleanupComposePostgres(resource, state);
+      await cleanupComposePostgres(resource, state, statePath);
       break;
     case "k3d-image":
       await cleanupK3dImage(resource, state);
@@ -502,7 +622,7 @@ async function cleanupResource(resource, state) {
   }
 }
 
-// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.ts's default otherwise), so a
 // caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
 // The selected databases are dropped before that wait, each within databaseDropTimeoutMs.
 async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {
@@ -585,7 +705,7 @@ async function cleanupLockedResourceIds(path, resourceIds, dropped = new Map()) 
     }
     try {
       if (!dropped.has(resource.id)) {
-        await cleanupResource(resource, state);
+        await cleanupResource(resource, state, path);
       } else if ("error" in dropped.get(resource.id)) {
         throw dropped.get(resource.id).error;
       }

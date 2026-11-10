@@ -1,7 +1,22 @@
 {
+  "177054202": {
+    "aliasOf": "409321",
+    "url": "https://github.com/kevinslin",
+    "reason": "Kevin Lin's work account; show his personal profile once."
+  },
   "267193182": {
     "exclude": true,
     "url": "https://github.com/codex",
     "reason": "Automated coding agent account; GitHub reports its account type as User."
+  },
+  "309084314": {
+    "exclude": true,
+    "url": "https://github.com/roboclaw-bot",
+    "reason": "The public profile identifies an automated account; GitHub reports its account type as User."
+  },
+  "323300293": {
+    "aliasOf": "4573221",
+    "url": "https://github.com/freeqaz-openai",
+    "reason": "Free Wortley's work account; show his personal profile once."
   }
 }

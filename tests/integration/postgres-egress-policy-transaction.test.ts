@@ -25,6 +25,7 @@ import {
   type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 const admitMetadata = async ({
   app,
@@ -518,26 +519,27 @@ test(
     let send: Promise<Awaited<ReturnType<typeof f.authorize>>> | undefined;
     let blocked = false;
     try {
-      await bounded(deleted.promise, "supported DELETE did not remove its grant");
+      await within(deleted.promise, "supported DELETE did not remove its grant", 3_000);
       withdrawalStarted = false;
       send = f.authorize(f.permitRequest(captured, ready));
-      const end = Date.now() + 2000;
-      while (!blocked && Date.now() < end) {
-        if (withdrawalPid && senderPid && withdrawalPid !== senderPid) {
-          const observation = await f.pool.query(
-            `SELECT EXISTS (
-              SELECT 1 FROM pg_stat_activity
-              WHERE pid = $1 AND datname = current_database() AND usename = current_user
-                AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid))
-            ) AS blocked`,
-            [senderPid, withdrawalPid],
-          );
-          blocked = observation.rows[0].blocked;
-        }
-        if (!blocked) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }
+      await waitUntil(
+        "the sender to wait on the withdrawing transaction's Namespace lock",
+        async () => {
+          if (withdrawalPid && senderPid && withdrawalPid !== senderPid) {
+            const observation = await f.pool.query(
+              `SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                WHERE pid = $1 AND datname = current_database() AND usename = current_user
+                  AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid))
+              ) AS blocked`,
+              [senderPid, withdrawalPid],
+            );
+            blocked = observation.rows[0].blocked;
+          }
+          return blocked;
+        },
+        { timeoutMs: 2000, intervalMs: 10 },
+      );
     } finally {
       release.resolve();
       await Promise.allSettled([withdrawal, ...(send ? [send] : [])]);
@@ -697,20 +699,6 @@ for (const authority of ["directory", "callback"] as const) {
   }
 }
 
-async function bounded<T>(work: Promise<T>, label: string, milliseconds = 3000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(label)), milliseconds);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 for (const [storage, noMaterial] of [
   ["memory", true],
   ["postgres", false],
@@ -765,7 +753,7 @@ for (const [storage, noMaterial] of [
         // A blocked DELETE is released in finally, so the negative control drains.
         let deletion: Promise<void> | undefined;
         try {
-          await bounded(gate.reached, "final runtime read was not observed");
+          await within(gate.reached, "final runtime read was not observed", 3_000);
           const observedAt = now().getTime();
           elapsed += 1200;
           const absoluteDeadline =
@@ -780,16 +768,20 @@ for (const [storage, noMaterial] of [
           );
           if (revoke) {
             deletion = f.revoke();
-            await bounded(deletion, "supported DELETE blocked behind slow runtime verification");
+            await within(
+              deletion,
+              "supported DELETE blocked behind slow runtime verification",
+              3_000,
+            );
           }
         } finally {
           runtimeReleasedAt = now().getTime();
           gate.release();
           if (deletion) {
-            await bounded(deletion, "DELETE did not drain after releasing runtime");
+            await within(deletion, "DELETE did not drain after releasing runtime", 3_000);
           }
           // Always observe the RPC, including when the overlap assertion failed.
-          await bounded(pending, "permit did not drain after releasing runtime");
+          await within(pending, "permit did not drain after releasing runtime", 3_000);
         }
         const releasedAt = now().getTime();
         const result = await pending;
@@ -876,7 +868,7 @@ test(
     armed = true;
     const pending = f.authorize(f.permitRequest(captured, ready));
     try {
-      await bounded(reached.promise, "receipt boundary not reached");
+      await within(reached.promise, "receipt boundary not reached", 3_000);
       assert.equal(
         directory.requests.length - calls,
         1,
@@ -886,7 +878,7 @@ test(
     } finally {
       release.resolve();
     }
-    const result = await bounded(pending, "external decision did not drain");
+    const result = await within(pending, "external decision did not drain", 3_000);
     assert.ok(
       result.allowed,
       "local write participation does not serialize an external withdrawal",
@@ -1080,7 +1072,7 @@ for (const replacement of [
     t.after(gate.release);
     const pending = f.authorize(f.permitRequest(captured, ready));
     try {
-      await bounded(gate.reached, "original placement was not verified");
+      await within(gate.reached, "original placement was not verified", 3_000);
       if (replacement === "Compute receiver") {
         f.controller.registerDriver({
           ...compute,
@@ -1099,7 +1091,7 @@ for (const replacement of [
     } finally {
       gate.release();
     }
-    const result = await bounded(pending, "changed placement did not drain");
+    const result = await within(pending, "changed placement did not drain", 3_000);
     assert.equal(verificationCalls, 1, "final runtime verification is not repeated");
     assert.equal(result.refused?.code, f.refusalCode("DENIED"));
     assert.equal(

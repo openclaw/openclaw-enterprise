@@ -39,6 +39,11 @@ import { withComputeAbortSignal } from "../../apps/controller/src/drivers/comput
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  sshGatewayPasswordRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadableSecretRefProblem,
+} from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { Check } = require("typebox/value");
@@ -1017,6 +1022,130 @@ test("SSH trusted-proxy can opt into direct loopback password authentication", a
   assert.doesNotMatch(await readFile(join(f.units, f.unit(rev)), "utf8"), /gateway\.env/);
   await missing(join(f.agentDir(rev), "gateway.env"));
   assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
+});
+
+// The unit's EnvironmentFile sets OPENCLAW_GATEWAY_PASSWORD, which every env provider reads, so SSH
+// renders a readable SecretRef to it on a custom default alias as written (finding 3065), and
+// refuses an unset password whose default-provider rendering that alias leaves unreadable. A
+// revision SSH admitted before, with the old rendering, still stops and retires: teardown renders
+// it as before, so its snapshot hash matches.
+test("SSH renders a readable custom-alias gateway password and still tears down older snapshots", async (t) => {
+  const f = await fixture(t);
+  const custom = { source: "env", provider: "custom", id: "OPENCLAW_GATEWAY_PASSWORD" };
+  const rev = revision(f.driver, 1, "agent-ssh-custom-reference", {
+    gateway: { tls: { enabled: false }, auth: { mode: "password", password: custom } },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await prepare(f, rev);
+  assert.match(
+    await readFile(join(f.agentDir(rev), "gateway-password.env"), "utf8"),
+    /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
+  );
+  assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
+
+  const unset = revision(f.driver, 1, "agent-ssh-unset-reference", {
+    gateway: { tls: { enabled: false } },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await f.driver.ensureNamespace(tenant);
+  bind(f.driver, unset);
+  const before = f.calls.length;
+  await assert.rejects(f.driver.prepareRevision(unset), {
+    message: sshGatewayPasswordRefusal.rendered(
+      "custom",
+      unreadableSecretRefProblem("defaultAlias", "custom"),
+    ),
+  });
+  assert.equal(f.calls.length, before);
+  // Trusted proxy renders the expression as written, which the runtime substitutes from the
+  // unit's environment whatever the alias, so it needs no SecretRef.
+  const proxy = revision(f.driver, 1, "agent-ssh-proxy-custom-alias", {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        password: "${OPENCLAW_GATEWAY_PASSWORD}",
+        trustedProxy: { userHeader: "x-user" },
+      },
+    },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await prepare(f, proxy);
+  assert.deepEqual(await json(join(f.revisionDir(proxy), "openclaw.json")), proxy.configuration);
+
+  // The old producer admitted the default-provider reference under a custom alias and rendered it
+  // as written; seed that snapshot through the real host helper.
+  const legacy = revision(f.driver, 1, "agent-ssh-legacy-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { password: { ...custom, provider: "default" } },
+    },
+    secrets: { defaults: { env: "custom" } },
+  });
+  bind(f.driver, legacy);
+  await assert.rejects(f.driver.prepareRevision(legacy), {
+    message: unreadableGatewayPasswordRefusal("defaultAlias", "custom"),
+  });
+  const configuration = expectedRuntimeConfiguration(legacy);
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: { ...legacy, configuration },
+    configurationHash: digest(JSON.stringify(configuration)),
+  });
+  await f.driver.deactivateRevision(legacy);
+  await f.driver.stopRevision(legacy);
+  await access(f.revisionDir(legacy));
+  await f.driver.retireRevision(legacy);
+  await missing(f.revisionDir(legacy));
+
+  // A revision admitted with a custom-provider reference also tears down: teardown renders it as
+  // written again, so its snapshot hash matches.
+  await f.driver.deactivateRevision(rev);
+  await f.driver.stopRevision(rev);
+  await f.driver.retireRevision(rev);
+  await missing(f.revisionDir(rev));
+
+  // Teardown checks only the password's shape, never whether OpenClaw reads it: a revision admitted
+  // under a reader that a later OpenClaw pin tightens must still stop and retire. The current reader
+  // refuses this one (the allowlist omits the variable), standing in for that later reader; seed its
+  // as-written snapshot through the real host helper, as the legacy Agent's next version (the
+  // fixture's port range holds three Agents).
+  const tightened = revision(f.driver, 2, "agent-ssh-legacy-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "vault" } },
+    },
+    secrets: { providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+  });
+  bind(f.driver, tightened);
+  await assert.rejects(f.driver.prepareRevision(tightened), {
+    message: unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD", "vault"),
+  });
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: tightened,
+    configurationHash: digest(JSON.stringify(tightened.configuration)),
+  });
+  await f.driver.deactivateRevision(tightened);
+  await f.driver.stopRevision(tightened);
+  await access(f.revisionDir(tightened));
+  await f.driver.retireRevision(tightened);
+  await missing(f.revisionDir(tightened));
+  // Teardown still checks the shape: a reference to another variable never named the password
+  // SSH Compute generates, so stop refuses it before any host call.
+  const misshapen = revision(f.driver, 1, "agent-ssh-misshapen-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "default", id: "OTHER_SECRET" } },
+    },
+  });
+  bind(f.driver, misshapen);
+  const beforeStop = f.calls.length;
+  await assert.rejects(f.driver.stopRevision(misshapen), {
+    message: sshGatewayPasswordRefusal.reference(),
+  });
+  assert.equal(f.calls.length, beforeStop);
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {

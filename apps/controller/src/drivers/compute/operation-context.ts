@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type { CredentialReadLifetime } from "@openclaw-enterprise/contracts";
+import type { CredentialReadLifetime, NamespaceEnsureResult } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
@@ -17,12 +17,33 @@ interface ComputeOperationLifetime {
 
 const operationLifetimes = new AsyncLocalStorage<ComputeOperationLifetime>();
 const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promise<boolean>>();
+
 /**
  * How a stop's termination waits may yield: every wait of a refused candidate's stop, or only the
  * Gateway drain of an ordinary stop.
  */
 type YieldingStop = "refused-candidate" | "gateway-drain";
 const yieldingStops = new AsyncLocalStorage<YieldingStop>();
+
+export type NamespaceEnsureHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
+
+const namespaceEnsureHints = new AsyncLocalStorage<{ hintCode?: NamespaceEnsureHintCode }>();
+
+/** Keep log fields alongside the observation so audit and queue evidence see only the Driver result. */
+export async function captureNamespaceEnsureHint(
+  operation: () => Promise<NamespaceEnsureResult>,
+): Promise<{ observation: NamespaceEnsureResult; hintCode?: NamespaceEnsureHintCode }> {
+  const evidence: { hintCode?: NamespaceEnsureHintCode } = {};
+  const observation = await namespaceEnsureHints.run(evidence, operation);
+  return { observation, ...evidence };
+}
+
+export function recordNamespaceEnsureHint(hintCode: NamespaceEnsureHintCode): void {
+  const evidence = namespaceEnsureHints.getStore();
+  if (evidence !== undefined) {
+    evidence.hintCode = hintCode;
+  }
+}
 
 export function currentComputeAbortSignal(): AbortSignal | undefined {
   return currentComputeOperationLifetime()?.signal;

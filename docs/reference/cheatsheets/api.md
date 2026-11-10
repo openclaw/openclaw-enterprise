@@ -2,6 +2,31 @@
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
 
+## Table of contents
+
+- [Authentication accounts](#authentication-accounts)
+- [Authentication sessions](#authentication-sessions)
+- [Service API keys](#service-api-keys)
+- [Authentication](#authentication)
+- [Installation](#installation)
+- [Namespaces](#namespaces)
+- [Agents](#agents)
+- [Agent deployments](#agent-deployments)
+- [Agent revisions](#agent-revisions)
+- [Agent runtime credentials](#agent-runtime-credentials)
+- [Agent workspace files](#agent-workspace-files)
+- [Configurations](#configurations)
+- [IAM access bindings](#iam-access-bindings)
+- [IAM roles](#iam-roles)
+- [IAM service principals](#iam-service-principals)
+- [Secrets](#secrets)
+- [Service accounts](#service-accounts)
+- [Service account credentials](#service-account-credentials)
+- [Backends](#backends)
+- [Connections](#connections)
+- [Credential sources](#credential-sources)
+- [Presets](#presets)
+
 ## Operations
 
 ### Authentication accounts
@@ -45,7 +70,7 @@
 
 ### Installation
 
-- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver startup configuration schemas.
+- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
@@ -55,6 +80,7 @@
 
 - [`listNamespaces`](../api.md#get-namespaces): List authorized Namespaces.
 - [`getNamespace`](../api.md#get-namespacesnamespaceid): Get an exact Installation-owned Namespace.
+- [`getNamespaceAgentCapabilities`](../api.md#get-namespacesnamespaceidagentcapabilities): Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there.
 - [`getNamespaceCallerPermissions`](../api.md#get-namespacesnamespaceidpermissions): Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation.
 - [`getNamespaceSecretPermissions`](../api.md#get-namespacesnamespaceidpermissionssecrets): Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation.
 - [`createNamespace`](../api.md#post-namespaces): Create an Installation-owned Namespace.
@@ -78,6 +104,7 @@
 - [`getAgentSandboxRecommendations`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations): Read policy suggestions for the requested Agent revision.
 - [`getAgentSecretPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissionssecrets): Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation.
 - [`getSavedAgentPluginPolicyCapabilities`](../api.md#get-namespacesnamespaceidagentsagentidpluginscapabilities): Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission.
+- [`recoverAgentFirstDeployment`](../api.md#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration): Read an exact first-deployment receipt; null does not prove failure; requires Configuration read.
 - [`resolveAgentNativeAdminReturn`](../api.md#get-nativeadminreturnagentkey): Resolve an authorized Agent from a copied native chat link.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
 - [`provisionAgent`](../api.md#post-namespacesnamespaceidagentsprovision): Create a new Agent and queue first-time provisioning.
@@ -85,12 +112,15 @@
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Apply the saved policy to the running Agent revision.
+- [`confirmAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminconfirm): Confirm a native Agent browser challenge.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.
+- [`deployAgentFirst`](../api.md#post-namespacesnamespaceidagentsagentiddeployfirst): Admit the first deployment of an exact reviewed Configuration; requires Configuration read.
 - [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
 - [`discoverAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentspluginsdetails): Read plugin details using the selected Driver.
 - [`discoverAgentPlugins`](../api.md#post-namespacesnamespaceidagentsplugins): List or search available plugins for Agent creation using the selected Driver.
-- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
+- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential.
 - [`discoverSavedAgentPlugins`](../api.md#post-namespacesnamespaceidagentsagentidplugins): List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
+- [`launchAgentNativeAdmin`](../api.md#post-namespacesnamespaceidagentsagentidnativeadminlaunch): Create a browser-bound native Agent launch.
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
 - [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
@@ -179,6 +209,24 @@
 ### Backends
 
 - [`listBackends`](../api.md#get-backends): List configured Backends (experimental).
+
+### Connections
+
+- [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
+- [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller can read in this Namespace.
+- [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
+- [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
+- [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
+- [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
+- [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
+- [`createOAuthClient`](../api.md#post-oauthclients): Register an OAuth client from a connection template.
+- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
+- [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
+- [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
+- [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
+- [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
+- [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect a saved account and retire its OAuth grant.
 
 ### Credential sources
 

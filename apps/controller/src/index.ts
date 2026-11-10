@@ -7,6 +7,8 @@ import {
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -34,6 +36,7 @@ import {
   type IAMDriver,
   type Installation,
   type OccApiRoute,
+  type DiscoverSavedAgentPluginDetailsBody,
   type PermissionAction,
   type ResourceKind,
   type ResourceRef,
@@ -54,19 +57,20 @@ import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
-  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   UserAlreadyExistsError,
   type DeployAgentAuthorization,
   type HarnessResolver,
   type OpenClawController,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import Fastify, {
@@ -96,6 +100,9 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
+import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
+import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
@@ -104,6 +111,7 @@ import {
   type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
@@ -129,12 +137,23 @@ import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/jso
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
+  nativeAdminLaunchOperation,
+  nativeAdminConfirmOperation,
+  nativeAdminLaunchSchema,
   nativeAdminStatusSchema,
   nativeAdminReturnOperation,
   nativeAdminReturnSchema,
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
+import { connectionTemplateHandlers } from "./http/connection-templates.ts";
+import {
+  CONNECTION_CALLBACK_PATH,
+  connectionCallbackOperation,
+  connectionCallbackSchema,
+  createConnectionCallback,
+  namespaceConnectionHandlers,
+} from "./http/connections.ts";
 import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
@@ -157,6 +176,17 @@ import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
+
+class AccountPrincipalAccessDeniedError extends AuthorizationDeniedError {
+  readonly userId: string;
+  readonly principalId: string;
+
+  constructor(userId: string, principalId: string, evidence: AuthorizationEvidence) {
+    super("The caller does not hold every grant of the target account's Principal.", evidence);
+    this.userId = userId;
+    this.principalId = principalId;
+  }
+}
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -186,6 +216,8 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
+  readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
@@ -214,6 +246,7 @@ export interface ControllerApp {
 }
 
 interface RequiredPermission {
+  readonly phase?: "fresh_admission";
   readonly action: PermissionAction;
   readonly resourceKind: ResourceKind;
   readonly scope: "requested" | "installation" | "namespace" | "each_returned" | "request_body";
@@ -230,7 +263,9 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
-    | "bound_credential_source";
+    | "bound_credential_source"
+    | "unless_consent_owner"
+    | "saved_sandbox_policy_additions";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -496,7 +531,9 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createCredentialSource" ||
-      operation.operationId === "listCredentialSources") &&
+      operation.operationId === "listCredentialSources" ||
+      operation.operationId === "listUsableConnectionTemplates" ||
+      operation.operationId === "startNamespaceConnection") &&
     namespaceId
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
@@ -538,10 +575,36 @@ function operationTarget(
 }
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
+  if (operation.operationId === "recoverAgentFirstDeployment") {
+    return [
+      { action: "deploy", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "configuration", scope: "requested" },
+    ];
+  }
+  if (operation.operationId === "deployAgentFirst") {
+    return requiredPermissions(
+      occApiRoutes.find((route) => route.operationId === "deployAgent")!,
+    ).map((permission) =>
+      permission.resourceKind === "configuration" ||
+      (permission.resourceKind === "agent" && permission.action === "deploy")
+        ? permission
+        : { ...permission, phase: "fresh_admission" as const },
+    );
+  }
   const permission = {
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (operation.operationId === "disconnectNamespaceConnection") {
+    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
+  }
+  if (operation.operationId === "listNamespaceConnections") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "credential_source", scope: "each_returned" },
+    ];
+  }
 
   if (
     [
@@ -558,6 +621,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "sandbox_policy",
         scope: "requested",
       },
+      // Apply returns the saved policy and admits its additions, so it also needs read (finding 2874).
+      ...(operation.operationId === "applyAgentSandboxPolicy"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+            },
+          ]
+        : []),
     ];
   }
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
@@ -846,6 +919,18 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               condition: "bound_credential_source" as const,
             },
           ]),
+      // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
+      // network policy additions come after SandboxPolicy read (findings 2151, 2881).
+      ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+              condition: "saved_sandbox_policy_additions" as const,
+            },
+          ]
+        : []),
     ];
   }
 
@@ -974,6 +1059,18 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation?.operationId === "recoverAgentFirstDeployment") {
+    return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
+  }
+  if (operation?.operationId === "deployAgentFirst") {
+    return (
+      "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. " +
+      permissionDescription(
+        permissions,
+        occApiRoutes.find((route) => route.operationId === "deployAgent")!,
+      )
+    );
+  }
   if (
     operation?.operationId === "getAgentProvisioning" ||
     operation?.operationId === "retryAgentProvisioning"
@@ -998,6 +1095,9 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
+      if (condition === "unless_consent_owner") {
+        return "Requires delete permission on this CredentialSource unless the caller owns the saved connection.";
+      }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
@@ -1049,6 +1149,11 @@ function permissionDescription(
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
+      if (condition === "saved_sandbox_policy_additions") {
+        return operation?.operationId === "updateAgent"
+          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
+          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
+      }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
       }
@@ -1083,10 +1188,12 @@ function permissionDescription(
 function clientInstallation(
   installation: Readonly<Installation>,
   computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
+    ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
       : {
@@ -1758,10 +1865,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     auditSink: options.auditSink,
   });
 
+  const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
+  const connectionRedirectUri =
+    connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
+    ...namespaceConnectionHandlers(connectionRedirectUri),
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
+      nativeAdmin: options.nativeAdmin,
+      publicOrigin,
+      installationId,
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
       rejectDeployment: (request, context) =>
@@ -1840,7 +1954,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
-      operation.operationId !== "listAgentRevisions"
+      operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "recoverAgentFirstDeployment" &&
+      operation !== connectionCallbackOperation
     ) {
       throw failure(
         400,
@@ -2015,6 +2131,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const context: RequestContext = {
       actorId: identity.id,
+      ...(admitted.method === "session" && { sessionId: admitted.session.id }),
       issuer: admitted.externalIdentity.issuer,
       subject: admitted.externalIdentity.subject,
       admissionDecisionId: admitted.decisionId,
@@ -2068,6 +2185,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       context.actorId,
       params.namespaceId as string,
       operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
+  }
+
+  // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
+  // holds a session caller's session through COMMIT, as Namespace policy writes do (#2311), so a
+  // sign-out or account disable cannot commit in between. Other work runs unchanged.
+  function performFenced(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: OccApiRoute,
+  ): Promise<void> {
+    const admitted = admissions.get(request);
+    if (controller === undefined || admitted?.method !== "session") {
+      return perform(request, reply, operation);
+    }
+    const { session } = admitted;
+    return controller.withAuthorityFence(
+      (unit) => options.auth.holdSession(unit, session, request),
+      () => perform(request, reply, operation),
     );
   }
 
@@ -2137,16 +2273,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
         await created.transact(async (unit) => {
-          await created.createNamespace(context.actorId, {
-            name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-          });
+          await createBootstrapResources(created, context.actorId);
           await unit.audit.append(
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
         });
+        await created.applyIAMConfiguration();
         controller = created;
         reply.status(201).send({
-          data: clientInstallation(created.installation, options.computeDriver),
+          data: clientInstallation(
+            created.installation,
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
           meta: { requestId: request.id },
         });
         return;
@@ -2167,11 +2306,62 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    const templateHandler = connectionTemplateHandlers[operation.operationId];
+    if (templateHandler) {
+      const admitted = admissions.get(request);
+      if (!admitted) {
+        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+      }
+      const session = admitted.method === "session" ? admitted.session : undefined;
+      const run = () =>
+        templateHandler({
+          ...(session && {
+            holdSession: (unit: PlatformUnitOfWork) =>
+              options.auth.holdSession(unit, session, request),
+          }),
+          meta: {
+            requestId: request.id,
+            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+          },
+          discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
+          controller: controller!,
+          actorId: context.actorId,
+          request,
+          reply,
+          mutationEvent: (resourceId) =>
+            event(
+              operation,
+              request,
+              { kind: "installation", id: installationId },
+              "mutation",
+              context,
+              undefined,
+              {
+                outcome: "success",
+                details: resourceId.startsWith("ccr_")
+                  ? { oauthClientId: resourceId }
+                  : { connectionTemplateId: resourceId },
+              },
+            ),
+        });
+      if (
+        session &&
+        operation.method !== "GET" &&
+        operation.operationId !== "discoverConnectionTemplate"
+      ) {
+        await options.auth.withSessionAuthority(session, run);
+      } else {
+        await run();
+      }
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(
           await controller.getInstallation(context.actorId),
           options.computeDriver,
+          options.nativeAdmin?.enabled === true,
         ),
         meta: { requestId: request.id },
       });
@@ -2243,6 +2433,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespace") {
       reply.send({
         data: await controller.getNamespace(context.actorId, namespaceId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceAgentCapabilities") {
+      reply.send({
+        data: {
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
+        },
         meta: { requestId: request.id },
       });
       return;
@@ -2331,6 +2534,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           body?.harnessId as string,
           agentId,
+          (source, phase) =>
+            event(
+              operation,
+              request,
+              phase === "session_pending"
+                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
+                : source.ref,
+              "mutation",
+              context,
+              undefined,
+              { outcome: "success", details: { phase, sourceId: source.id } },
+            ),
         );
       } else if (operation.operationId.startsWith("poll")) {
         result = await controller.pollAgentDeviceAuthorization(
@@ -2348,7 +2563,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
       }
       // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
         await options.auditSink.append(
           event(
             operation,
@@ -2384,6 +2599,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         {
+          harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2405,6 +2621,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         {
+          harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2455,13 +2672,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         params.agentId as string,
-        {
-          pluginId: body?.pluginId as string,
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        },
+        body as DiscoverSavedAgentPluginDetailsBody,
         pluginDiscoveryRequestSignal(reply),
+        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
@@ -3589,6 +3802,80 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         userId: admitted.session.userId,
         sessionId: admitted.session.id,
         principalId: context.actorId,
+        authorize: async (scope: {
+          readonly targetPrincipalId?: string;
+          readonly successorPrincipalId?: string;
+        }) => {
+          // State invokes this after its locks, on the same transaction as the write.
+          // Throw evidence back to the HTTP error handler; auditing here opens another unit.
+          const resource: ResourceRef = { kind: "installation", id: installationId };
+          let current;
+          let covered = true;
+          let successor;
+          try {
+            current = await selected.authorize({
+              principalId: context.actorId,
+              action: "administer",
+              resource,
+            });
+            if (targetUserId !== undefined) {
+              covered =
+                scope.targetPrincipalId !== undefined &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: scope.targetPrincipalId,
+                })) === true;
+            }
+            if (scope.successorPrincipalId !== undefined) {
+              successor = await selected.authorize({
+                principalId: scope.successorPrincipalId,
+                action: "administer",
+                resource,
+              });
+            }
+          } catch {
+            throw dependencyUnavailable();
+          }
+          if (
+            typeof current.allowed !== "boolean" ||
+            typeof current.reason !== "string" ||
+            current.driverId !== selected.id ||
+            !validAuthorizationEvidence(current.evidence)
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (!current.allowed) {
+            throw new AuthorizationDeniedError(
+              current.reason,
+              current.evidence,
+              { action: "administer", resource },
+              context.actorId,
+            );
+          }
+          if (!covered) {
+            throw new AccountPrincipalAccessDeniedError(
+              targetUserId!,
+              scope.targetPrincipalId!,
+              current.evidence,
+            );
+          }
+          if (scope.successorPrincipalId !== undefined) {
+            if (
+              successor === undefined ||
+              typeof successor.allowed !== "boolean" ||
+              typeof successor.reason !== "string" ||
+              successor.driverId !== selected.id ||
+              !validAuthorizationEvidence(successor.evidence)
+            ) {
+              throw dependencyUnavailable();
+            }
+            if (!successor.allowed) {
+              throw new ResourceStateConflictError(
+                "The recovery account must administer the Installation.",
+              );
+            }
+          }
+        },
       };
     }
     routes.get(
@@ -3956,9 +4243,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw accountControlsUnsupported();
         }
         // The new holder must administer the Installation, as startup requires of the seed. This
-        // check runs before the State transaction. That is sound because Installation-scoped access
-        // bindings have no online revocation path (deleteAccessBinding is Namespace-scoped), and
-        // every controller start re-checks the current holder's authority.
+        // preflight gives an early refusal. State rechecks the exact locked successor's authority
+        // under its policy fence before committing the replacement.
         let principal;
         let decision;
         const selected = selectedIAMDriver();
@@ -4260,10 +4546,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password,
           ...(name === undefined ? {} : { name }),
         });
-        const seed = options.auth.principalSeed(
-          prepared,
-          roleId === undefined ? { grant: "none" } : { roleId },
-        );
+        // Each new account joins the configured `iam.defaultUserGroups` in its creating unit.
+        const groupIds = controller?.defaultUserGroupIds ?? [];
+        const seed = {
+          ...options.auth.principalSeed(
+            prepared,
+            roleId === undefined ? { grant: "none" } : { roleId },
+          ),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const baseAuditEvent = event(
           createAuthAccountOperation,
           request,
@@ -4279,6 +4570,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...baseAuditEvent.details,
             principalId: seed.principal.id,
             ...(roleId === undefined ? { grant: "none" } : { roleId }),
+            ...(groupIds.length === 0 ? {} : { groupIds }),
           },
         };
         try {
@@ -4328,6 +4620,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.addSchema(OAuthConnectionTemplateVersionSchema);
+    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
@@ -4343,6 +4637,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       nativeAdmin.resolveReturn,
     );
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      CONNECTION_CALLBACK_PATH,
+      {
+        schema: connectionCallbackSchema,
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          reply.header("referrer-policy", "no-referrer").header("cache-control", "no-store");
+          const retryAfter = request.routeOptions.config.rateLimit.consume(request.ip);
+          if (retryAfter !== undefined) {
+            reply.header("retry-after", String(retryAfter));
+            throw failure(
+              429,
+              "RATE_LIMITED",
+              "Too many OAuth callback requests. Wait before retrying.",
+            );
+          }
+          await admit(request, connectionCallbackOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
+      },
+      createConnectionCallback({
+        withCurrentSession: (request, work) => {
+          const admitted = admissions.get(request);
+          if (admitted?.method !== "session") {
+            throw failure(403, "FORBIDDEN", "A current browser session is required.");
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            work((unit) => options.auth.holdSession(unit, admitted.session, request)),
+          );
+        },
+        getController: () => controller,
+        getContext: (request) => contexts.get(request),
+        auditEvent: (request, context, target) =>
+          event(connectionCallbackOperation, request, target, "mutation", context),
+        auditFailure: (request, context, reasonCode) =>
+          rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
+      }),
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -4351,6 +4683,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
+    for (const [operation, handler, confirm] of [
+      [nativeAdminLaunchOperation, nativeAdmin.launch, false],
+      [nativeAdminConfirmOperation, nativeAdmin.confirm, true],
+    ] as const) {
+      routes.route({
+        method: "POST",
+        url: operation.path,
+        schema: nativeAdminLaunchSchema(confirm),
+        onRequest: async (request, reply) => {
+          reply.header("cache-control", "no-store");
+          reply.header("referrer-policy", "no-referrer");
+          await admit(request, operation);
+        },
+        preHandler: async (request) => resolveIdentity(request, operation),
+        handler,
+      });
+    }
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -4392,6 +4741,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
             request.headers["transfer-encoding"] !== undefined;
+          if (operation.operationId === "deployAgent" && !hasRequestBody) {
+            request.body = {};
+          }
           if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
             throw failure(
               400,
@@ -4409,7 +4761,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => perform(request, reply, operation),
+        handler: async (request, reply) => performFenced(request, reply, operation),
       });
     }
   });
@@ -4435,7 +4787,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
       reply.header("cache-control", "no-store");
     }
-    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    const nativeFormOrigin =
+      options.nativeAdmin?.enabled &&
+      options.nativeAdmin.sessionMode === "host-only-exchange" &&
+      publicOrigin
+        ? ` https://*.${normalizeNativeAdminDomain(options.nativeAdmin.domain)}${new URL(publicOrigin).port ? `:${new URL(publicOrigin).port}` : ""}`
+        : "";
+    reply.header(
+      "content-security-policy",
+      CONSOLE_CONTENT_SECURITY_POLICY.replace(
+        "form-action 'self'",
+        `form-action 'self'${nativeFormOrigin}`,
+      ),
+    );
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);
     if (asset.variesByEncoding) {
@@ -4607,6 +4971,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               },
             );
           } else {
+            let explanation: Parameters<typeof denial>[6];
+            if (error instanceof DeletionRetryOwnedError) {
+              explanation = {
+                decisionReason:
+                  "A deletion can be retried only by its initiating actor while it holds delete.",
+                details: { initiatingActorId: error.initiatingActorId },
+              };
+            }
+            if (error instanceof AccountPrincipalAccessDeniedError) {
+              explanation = {
+                decisionReason: error.message,
+                reasonCode: "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED",
+                details: { userId: error.userId, principalId: error.principalId },
+              };
+            }
             await denial(
               context.operation,
               request,
@@ -4614,13 +4993,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               context,
               error.evidence,
               error.authorization,
-              error instanceof DeletionRetryOwnedError
-                ? {
-                    decisionReason:
-                      "A deletion can be retried only by its initiating actor while it holds delete.",
-                    details: { initiatingActorId: error.initiatingActorId },
-                  }
-                : undefined,
+              explanation,
             );
           }
         } catch (auditError) {

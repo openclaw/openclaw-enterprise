@@ -59,6 +59,21 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
   "in this Installation",
   "create a Namespace or to give you access to an existing one",
 );
+// Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
+// delete one: the reason names who can, not a grant to ask for (finding D788).
+export const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// An Installation administrator refused Namespace delete is refused by a deny Restriction, which
+// administration cannot lift, as for Agent create (finding 2861).
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+/** Why the Namespace permission answer refuses delete: a Restriction, or missing access. */
+export const namespaceDeleteDenied = (
+  permissions?: { installation?: { administer?: boolean } } | null,
+) =>
+  permissions?.installation?.administer === true
+    ? NAMESPACE_DELETE_RESTRICTED
+    : NAMESPACE_DELETE_DENIED;
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
@@ -94,10 +109,19 @@ const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+// A version the page showed as selected for service exists, so once a stop or another version
+// takes its place it is not named as one that may not exist, nor by its raw ID (finding 3000).
+export const FORMER_CURRENT_VERSION_UNREADABLE = `You cannot read the version that was selected for service, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
 // A version this tab's own Deploy created exists: the API accepted it. A deployer without read on
 // it is told that, not that it may not exist (finding D751).
 export const deployAcceptedVersionUnreadable = (version: string) =>
   `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
+// A current version the reader cannot read, named in words rather than by its raw ID, on the
+// Agents list and the Agent page alike (findings D789, D791). It is newer than every readable
+// version when the newest readable one's deployment succeeded: that made it current, and a
+// different current version came after it.
+export const unreadableCurrentVersion = (newer: boolean) =>
+  newer ? "A newer version you cannot read" : "A version you cannot read";
 
 // A rejected model credential is fixed in the Agent's Credentials, which needs Agent update and
 // the grants each Agent update also checks. A Secret-backed credential can also be replaced in
@@ -183,6 +207,9 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );
+// Deploy also checks SandboxPolicy read on that policy when it has saved rules (finding 2151). The
+// API's denial names the policy by its raw ID; the Agent page names it in words (finding D801).
+export const DEPLOY_SANDBOX_POLICY_READ_DENIED = `Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. ${askAdministratorTo("grant it")}`;
 
 // Log text authorizes Agent read_logs, or Agent administer in its place, plus Agent read. The API
 // and the CLI name the grant in these words (finding 2599); the page is open, so Agent read is held.
@@ -204,6 +231,9 @@ export function runtimeStatusDenied(grants: {
   }
   return `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
 }
+// A version the page could not read: its runtime status would be refused too, so the Logs tab
+// says so in words instead of sending that read (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE = `You cannot read this version, so its runtime status is not shown. ${askForGrant("AgentRevision read on it")}`;
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

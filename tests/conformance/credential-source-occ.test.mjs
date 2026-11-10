@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -18,7 +19,7 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -205,6 +206,7 @@ function createTestSandbox() {
     id: "sandbox-test",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -2841,8 +2843,8 @@ test("an Agent's credentialSources list is validated, and binding or unbinding n
   };
 
   // The controller enforces the list grammar itself, whatever the store would accept.
-  const nine = Array.from({ length: 9 }, (_, i) => ({ sourceId: `${kept.id}-${i}` }));
-  await assert.rejects(update(nine), invalid);
+  const tooMany = Array.from({ length: 65 }, () => ({ sourceId: `cs_${crypto.randomUUID()}` }));
+  await assert.rejects(update(tooMany), invalid);
   await assert.rejects(update([{ sourceId: kept.id, type: "registry" }]), invalid);
   await assert.rejects(update([{ sourceId: 7 }]), invalid);
   await assert.rejects(update([{ sourceId: "" }]), invalid);

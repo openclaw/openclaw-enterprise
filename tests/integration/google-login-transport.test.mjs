@@ -14,6 +14,8 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  providerAttemptId,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
@@ -29,10 +31,7 @@ const googleURLs = new Set([
   "https://www.googleapis.com/oauth2/v3/certs",
 ]);
 
-function digest(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-const providerId = `google:${digest(clientId)}`;
+const providerId = providerInstanceId("google", { clientId });
 
 const signer = createIdTokenSigner();
 const minted = [];
@@ -191,7 +190,7 @@ test(
       assert.equal(parameters.get("nonce"), googleNonce(secret, attemptState));
       assert.equal(url.includes(attemptId), false, "the provider never sees the attemptId");
       const [attempt] = login.attempts;
-      assert.equal(attempt.providerId, `${providerId}:${digest(clientSecret)}`);
+      assert.equal(attempt.providerId, providerAttemptId(providerId, clientSecret));
       assert.equal(attempt.callbackURL, `${origin}/api/auth/providers/google/callback`);
       assert.equal(
         parameters.get("code_challenge"),
@@ -214,7 +213,10 @@ test(
         {},
         { github: { clientId: "github-client", clientSecret: "github-secret" } },
       );
-      assert.equal(both.login.githubProviderId, `github:${digest("github-client")}`);
+      assert.equal(
+        both.login.githubProviderId,
+        providerInstanceId("github", { clientId: "github-client" }),
+      );
       const github = new URL((await (await both.start("10.0.0.1", "github")).json()).url);
       assert.equal(github.origin, "https://github.com");
       assert.equal(github.searchParams.has("nonce"), false);
@@ -243,14 +245,17 @@ test(
           issueSession: async (_proof, session) => {
             issued = {
               ...session,
+              resultExpiresAt: createdAt.getTime() + 120_000,
               createdAt,
               updatedAt: createdAt,
               expiresAt: new Date(createdAt.getTime() + 28_800_000),
             };
             return issued;
           },
-          currentSession: async (token) =>
-            issued?.token === token ? { ...issued, user } : undefined,
+          consumeLoginResult: async (token, receipt) =>
+            issued.token === token &&
+            issued.id === receipt.sessionId &&
+            issued.resultExpiresAt === receipt.expiresAt,
         });
         const started = await login.start();
         const { url, attemptId } = await started.json();
@@ -268,7 +273,7 @@ test(
         assert.equal(exchange.get("grant_type"), "authorization_code");
         // The identity is the provider-instance key and "sub", never the email.
         assert.deepEqual(snapshots, [[providerId, subject]]);
-        assert.equal(login.attempts[1].providerId, `${providerId}:${digest(clientSecret)}`);
+        assert.equal(login.attempts[1].providerId, providerAttemptId(providerId, clientSecret));
         const receipt = callback.headers
           .getSetCookie()
           .find((value) => value.startsWith("__Host-occ_login_receipt="));
@@ -278,7 +283,6 @@ test(
         assert.equal(exchanged.status, 200);
         const { sessionKey } = await exchanged.json();
         assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
-        await expectDenied(await login.result(attemptId, cookies));
         assertNoSecrets(login, cookies, sessionKey);
       },
     );

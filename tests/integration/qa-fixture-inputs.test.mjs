@@ -1,13 +1,30 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText, registerQaSecret } from "../helpers/qa-secrets.mjs";
+import { fileURLToPath } from "node:url";
+import {
+  protectedText,
+  protectedModelApiKey,
+  registerQaSecret,
+  redactQaError,
+} from "../helpers/qa-secrets.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -62,8 +79,7 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
 });
 
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credential-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
   await writeFile(credential, " test-only-credential\n", { mode: 0o600 });
   assert.equal(await protectedText(credential, "test credential"), "test-only-credential");
@@ -81,12 +97,37 @@ test("QA credentials require a private regular file and reject symlink substitut
   await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
 });
 
+test("API-key QA injection stays in the consumer and its errors are redacted", async () => {
+  const secret = "synthetic-environment-model-credential";
+  const env = { OCC_TEST_QA_MODEL_API_KEY: secret };
+  assert.equal(await protectedModelApiKey(env), secret);
+  const failure = redactQaError(new Error("provider rejected " + secret));
+  assert.equal(failure.message, "provider rejected [REDACTED]");
+  await assert.rejects(
+    protectedModelApiKey({ OCC_TEST_QA_MODEL_API_KEY: "  " }),
+    /must not be empty/,
+  );
+  const helper = new URL("../helpers/qa-installation.mjs", import.meta.url).href;
+  const result = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import { launcherEnvironment } from ${JSON.stringify(helper)};
+    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+  `,
+    ],
+    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+  );
+  assert.equal(result.trim(), "false");
+});
+
 test(
   "parallel QA stages publish complete outcomes, failures and timings",
   { timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "qa-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-report-");
     const output = join(directory, "matrix.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
@@ -166,26 +207,113 @@ test(
   },
 );
 
+test("QA matrix summary refuses malformed evidence without printing its contents", async (t) => {
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const summary = join(directory, "summary.md");
+  const existingSummary = "Previous summary content.\n";
+  const marker = "invented report text";
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+  await writeFile(summary, existingSummary);
+
+  for (const [name, evidence] of [
+    ["invalid JSON", `not JSON: ${marker}`],
+    ["missing selection", JSON.stringify({ scope: marker, outcomes: [] })],
+    [
+      "invalid scenario list",
+      JSON.stringify({
+        scope: marker,
+        selection: [{ cell: "compose/Codex", scenarios: "model-ui", unselected: [] }],
+        outcomes: [],
+      }),
+    ],
+    ["null report", "null"],
+  ]) {
+    await t.test(name, async () => {
+      await writeFile(join(evidenceDirectory, "matrix.json"), evidence);
+      const child = spawnSync(process.execPath, [script], {
+        encoding: "utf8",
+        env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+        timeout: 5_000,
+      });
+      assert.ifError(child.error);
+      assert.equal(child.status, 1);
+      assert.equal(child.stdout, "");
+      assert.equal(
+        child.stderr,
+        "Malformed QA matrix evidence: expected a JSON report with scope, selection, and outcomes.\n",
+      );
+      assert.equal(await readFile(summary, "utf8"), existingSummary);
+    });
+  }
+});
+
+test("QA matrix summary distinguishes an initial snapshot from recorded outcomes", async (t) => {
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+
+  async function summarize(name) {
+    const summary = join(directory, name);
+    const child = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+      timeout: 5_000,
+    });
+    assert.ifError(child.error);
+    assert.equal(child.status, 0);
+    assert.equal(child.stderr, "");
+    return readFile(summary, "utf8");
+  }
+
+  assert.match(await summarize("missing.md"), /No scenario results were produced/);
+
+  const { stage, save } = createQaReport(join(evidenceDirectory, "matrix.json"), {
+    scope: "partial",
+    selection: [{ cell: "compose/Codex", scenarios: ["model-ui"], unselected: [] }],
+  });
+  await save();
+  const initial = await summarize("initial.md");
+  assert.match(initial, /Scope: partial/);
+  assert.match(initial, /compose\/Codex \| model-ui \| none/);
+  assert.match(initial, /No stage outcomes were recorded/);
+  assert.doesNotMatch(initial, /Stages absent from this table/);
+  assert.doesNotMatch(initial, /\| Cell \| Scenario \| Stage \| Outcome \|/);
+
+  await stage(t, "compose/Codex", "synthetic stage", () => true, "model-ui");
+  const populated = await summarize("populated.md");
+  assert.match(populated, /compose\/Codex \| model-ui \| synthetic stage \| passed/);
+  assert.doesNotMatch(populated, /No stage outcomes were recorded/);
+});
+
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
-  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,calendar" });
+  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });
   assert.equal(selected.scope, "partial:selected");
   assert.deepEqual(
     selected.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
     [
-      { cell: "compose/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "compose/Codex", scenarios: ["model-ui", "calendar"] },
-      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
+      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["console-secrets"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
   assert.deepEqual(selected.cells[1].unselected, [
-    "console-secrets",
+    "codex-search-config",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, [
+    "codex-search-config",
+    "git-write",
+    "git-push-denied",
+    "slack",
+  ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -193,17 +321,29 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.throws(() => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "" }), /invalid QA scenario/);
   assert.throws(
-    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "calendar", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui", OCC_TEST_QA_PRESET: "Codex" }),
     /not applicable/,
   );
-  const calendar = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "calendar",
-    OCC_TEST_QA_INSTALLATION: "compose",
-  });
-  assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
-  assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets"]);
+  assert.equal(openclaw.repository, false);
+  assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
+  const git = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write,git-push-denied" });
+  assert.deepEqual(
+    git.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: [] },
+      { cell: "compose/Codex", scenarios: ["git-write", "git-push-denied"] },
+      { cell: "kubernetes/OpenClaw", scenarios: [] },
+      { cell: "kubernetes/Codex", scenarios: ["git-write", "git-push-denied"] },
+    ],
+  );
+  assert.ok(git.repository);
+  assert.ok(!git.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",
@@ -218,6 +358,25 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     OCC_TEST_QA_INSTALLATION: "kubernetes",
   });
   assert.equal(sandbox.sandboxPolicy, true);
+  const oidcSelection = {
+    OCC_TEST_QA_SCENARIOS: "oidc-agent-chat",
+    OCC_TEST_QA_PRESET: "OpenClaw",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const oidc = selectQaMatrix(oidcSelection);
+  assert.equal(oidc.oidcAgentChat, true);
+  assert.ok(oidc.cells.every((cell) => cell.scenarios.length === 0));
+  assert.ok(oidc.requiredEnv.includes("OCC_TEST_KEYCLOAK_ISSUER"));
+  assert.ok(oidc.requiredEnv.includes("OPENAI_API_KEY"));
+  assert.throws(() => validateQaInputs(oidc, {}), /KUBERNETES_KUBECONFIG is required/);
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_INSTALLATION: "compose" }),
+    /requires Kubernetes/,
+  );
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_SCENARIOS: "oidc-agent-chat,model-ui" }),
+    /exclusive QA selection/,
+  );
   assert.deepEqual(sandbox.requiredEnv, [
     "OCC_TEST_QA_CODEX_TOKEN_FILE",
     "OCC_TEST_QA_SANDBOX_ENV",
@@ -225,6 +384,32 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
+  const searchConfig = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.deepEqual(searchConfig.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.equal(searchConfig.browser, false);
+  const injectedSearch = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.deepEqual(injectedSearch.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
+      }),
+    /exclusive QA selection/,
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
@@ -258,19 +443,16 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
 test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
   const { spawnSync } = await import("node:child_process");
   const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
-  const directory = await mkdtemp(join(tmpdir(), "qa-hosted-inputs-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
   const githubEnv = join(directory, "github-env");
   const result = spawnSync(process.execPath, [script.pathname], {
     encoding: "utf8",
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets",
       OPENAI_API_KEY: "synthetic-model-key",
       CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "test.calendar.read",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
       // Even if a caller supplies unrelated credentials, do not write them.
       SLACK_APP_TOKEN: "unselected-secret",
       REPOSITORY_APP_KEY: "unselected-secret",
@@ -298,17 +480,16 @@ test("hosted QA materializes only selected credentials and rejects missing selec
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "calendar",
-      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+      OCC_TEST_QA_SCENARIOS: "console-secrets",
+      OCC_TEST_QA_PRESET: "Codex",
     },
   });
   assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /CALENDAR_TOOL_NAME is required/);
+  assert.match(missing.stderr, /CODEX_ACCESS_TOKEN is required/);
   await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
 });
 
-test("QA command diagnostics retain the error while hiding generated and environment secrets", async () => {
+test("QA command diagnostics retain the error while hiding generated and environment secrets", async (t) => {
   const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   registerQaSecret("generated-private-value");
   const output = qaCommandFailureDetail(
@@ -321,6 +502,58 @@ test("QA command diagnostics retain the error while hiding generated and environ
   assert.doesNotMatch(
     output,
     /generated-private-value|process-private-value|example-private-value/,
+  );
+  await t.test(
+    "native failure metadata keeps fixed classes without echoing response or log values",
+    async () => {
+      const { nativeTaskFailureSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const summary = nativeTaskFailureSummary(
+        "thread/start: Codex did not grant the requested permission profile. Authorization: Bearer native-private-value",
+      );
+      assert.deepEqual(summary, {
+        classes: ["profile-grant-mismatch"],
+        nativeMethod: "thread/start",
+      });
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /native-private-value|Authorization|Codex did not/,
+      );
+      assert.deepEqual(nativeTaskFailureSummary("unrecognized private-native-message"), {
+        classes: ["unclassified"],
+        nativeMethod: "unknown",
+      });
+    },
+  );
+  await t.test(
+    "native requirements distinguish missing experimental fields from an explicit allowlist",
+    async () => {
+      const { nativePolicyRequirementsSummary } = await import("../helpers/normal-agent-tools.mjs");
+      assert.deepEqual(nativePolicyRequirementsSummary({}), { available: false });
+      assert.equal(
+        nativePolicyRequirementsSummary({ requirements: {} }).profileAllowlistPresent,
+        "unknown",
+      );
+      const expected = "openclaw-network-0123456789abcdef";
+      const summary = nativePolicyRequirementsSummary({
+        requirements: {
+          allowedPermissionProfiles: {
+            ":workspace": true,
+            ":read-only": true,
+            [expected]: false,
+          },
+          defaultPermissions: ":workspace",
+          modelProviders: { privateProvider: { apiKey: "native-private-value" } },
+        },
+      });
+      assert.equal(summary.profileAllowlistPresent, true);
+      assert.equal(summary.workspaceAllowed, true);
+      assert.equal(summary.generatedNetworkProfilesAllowed, 0);
+      assert.equal(summary.defaultProfileKind, "builtin-workspace");
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /0123456789abcdef|native-private-value|privateProvider|modelProviders/,
+      );
+    },
   );
 });
 
@@ -413,8 +646,7 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
 test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
   const { runQaCommand } = await import("../helpers/qa-installation.mjs");
   const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-run-evidence-");
   const artifacts = await mkdtemp(join(directory, "artifacts-"));
   registerQaSecret("registered-private-2025");
   const f = {
@@ -477,6 +709,184 @@ test("the QA command runner records a failed image build step as redacted eviden
   assert.deepEqual(
     (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
     files,
+  );
+});
+
+// Real children distinguish an elapsed command deadline from an ordinary signal exit.
+// Neither private output nor argv may escape through the added timing diagnostics.
+test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-command-timeout-");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH },
+  };
+  for (const scenario of [
+    {
+      name: "deadline",
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => process.exit(0)); console.error('private-timeout-canary'); setInterval(() => {}, 1000)",
+      ],
+      timeout: 1000,
+      timedOut: true,
+      // A graceful zero exit (or signal before the handler starts) cannot hide a timeout.
+      allowExitCodes: [0, null],
+    },
+    {
+      name: "signal",
+      command: "/bin/sh",
+      args: ["-c", "echo private-timeout-canary >&2; kill -PIPE $$"],
+      timeout: 5000,
+      timedOut: false,
+      signal: "SIGPIPE",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(
+        runQaCommand(f, scenario.command, scenario.args, {
+          timeout: scenario.timeout,
+          allowExitCodes: scenario.allowExitCodes,
+          privateFailureOutput: true,
+        }),
+        (error) => {
+          assert.equal(error.timedOut, scenario.timedOut);
+          assert.equal(error.timeoutMs, scenario.timeout);
+          assert.ok(Number.isInteger(error.elapsedMs) && error.elapsedMs >= 0);
+          assert.ok(
+            error.message.includes(`after ${error.elapsedMs} ms (limit ${scenario.timeout} ms)`),
+          );
+          if (scenario.timedOut) {
+            assert.ok(error.elapsedMs >= scenario.timeout);
+            assert.match(error.message, /timed out/);
+          } else {
+            assert.equal(error.signal, scenario.signal);
+            assert.doesNotMatch(error.message, /timed out/);
+          }
+          assert.doesNotMatch(
+            JSON.stringify(error),
+            /private-timeout-canary|process\.on|kill -PIPE/,
+          );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
+          assert.equal(error.stdout, undefined);
+          assert.equal(error.stderr, undefined);
+          assert.equal(error.cmd, undefined);
+          return true;
+        },
+      );
+    });
+  }
+  // Explicitly allowed ordinary exits still succeed; timeout classification must not
+  // turn a supported nonzero exit into a failure when no deadline fired.
+  assert.equal(
+    await runQaCommand(
+      f,
+      process.execPath,
+      ["-e", "process.stdout.write('allowed'); process.exit(7)"],
+      {
+        timeout: 5000,
+        allowExitCodes: [7],
+      },
+    ),
+    "allowed",
+  );
+});
+
+test("failed QA startup retains only bounded timing records and respects output protection", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-timings-");
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "private-startup-canary" },
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value), { flag: "wx" });
+      return file;
+    },
+  };
+  // Only exact records from the CLI's timing protocol may cross into uploaded evidence.
+  // Unknown stages, extra fields, malformed numbers and ordinary output stay private.
+  const lines = [
+    ...Array.from(
+      { length: 65 },
+      (_, i) => `[occ-dev-timing] stage=runtime-build elapsed_ms=${i} failed=false`,
+    ),
+    "[occ-dev-timing] stage=private-startup-canary elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false token=private-startup-canary",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=-1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1.5 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=9007199254740992 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=unknown",
+    "prefix [occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=kubernetes-readiness elapsed_ms=80 failed=true",
+  ];
+  const write = `process.stdout.write(process.env.OCC_TEST_PRIVATE_INPUT + '\\n' + ${JSON.stringify(lines.join("\n") + "\n")});`;
+  const run = (end, options = {}, installation = f) =>
+    runQaCommand(installation, process.execPath, ["-e", write + end], options);
+
+  // A real child emits timing records, then reaches the command deadline. The evidence
+  // must survive timeout teardown even when the child handles SIGTERM with exit zero.
+  await assert.rejects(
+    run("process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)", {
+      timeout: 1000,
+      captureStartupTimings: true,
+    }),
+    (error) => {
+      assert.equal(error.timedOut, true);
+      assert.match(error.message, /startup timings: kubernetes-startup-timings-\d+\.json/);
+      assert.doesNotMatch(error.message, /private-startup-canary|process\.stdout/);
+      assert.equal(error.stdout, undefined);
+      return true;
+    },
+  );
+  const files = await readdir(artifacts);
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { records, omittedRecords } = JSON.parse(evidence);
+  assert.equal(records.length, 64);
+  assert.equal(omittedRecords, 2);
+  assert.deepEqual(records[0], { stage: "runtime-build", elapsedMs: 2, failed: false });
+  assert.deepEqual(records.at(-1), { stage: "kubernetes-readiness", elapsedMs: 80, failed: true });
+  assert.ok(Buffer.byteLength(evidence) < 6_000);
+  assert.doesNotMatch(
+    evidence,
+    /private-startup-canary|process\.stdout|token=|prefix|9007199254740992/,
+  );
+
+  // Neither a protected command, an ordinary command, nor an allowed exit writes evidence.
+  for (const options of [{ captureStartupTimings: true, privateFailureOutput: true }, {}]) {
+    await assert.rejects(run("process.exit(7)", options), (error) => {
+      assert.equal(error.code, 7);
+      assert.doesNotMatch(error.message, /startup timings|private-startup-canary/);
+      return true;
+    });
+  }
+  await run("process.exit(7)", { captureStartupTimings: true, allowExitCodes: [7] });
+  assert.deepEqual(await readdir(artifacts), files);
+
+  // Evidence is best effort: a storage failure cannot replace the original command failure
+  // or disclose a storage error's potentially private details.
+  await assert.rejects(
+    run(
+      "process.exit(7)",
+      { captureStartupTimings: true },
+      {
+        ...f,
+        async record() {
+          throw new Error("private-startup-canary");
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error.code, 7);
+      assert.match(error.message, /startup timings: unavailable/);
+      assert.doesNotMatch(error.message, /private-startup-canary/);
+      return true;
+    },
   );
 });
 
@@ -696,8 +1106,7 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
     ],
   };
   // Through the real report stage, which redacts before it saves the reason.
-  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-deploy-timeout-");
   const reportPath = join(directory, "matrix.json");
   const report = createQaReport(reportPath, {});
   const parent = { test: async (_name, _options, run) => run() };
@@ -1610,8 +2019,7 @@ test(
   async (t) => {
     const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
     const value = "synthetic-qa-reporter-secret-2026";
-    const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-reporter-");
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
     const file = join(directory, "redacted.test.mjs");
     await writeFile(
@@ -1904,8 +2312,7 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
   const { DatabaseSync } = await import("node:sqlite");
   const { zstdCompressSync } = await import("node:zlib");
   const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "oce-tool-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-tool-evidence-");
   const databasePath = join(directory, "transcript.sqlite");
   const db = new DatabaseSync(databasePath);
   db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);
@@ -3273,93 +3680,63 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
   }
 });
 
-test("an automatically reviewed Calendar read runs again once, only after a reviewer error", async (t) => {
-  const { automaticallyReviewedRead } = await import("../helpers/calendar-review.mjs");
-  const reviewerError = Object.assign(
-    new assert.AssertionError({ message: "reviewer errored: {}" }),
-    {
-      automaticReviewerErrored: true,
-      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
     },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
   );
-  const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
-    automaticReviewerErrored: false,
-  });
-  const success = { approvedReviewIds: ["review-ok"] };
-  function fixture(outcomes) {
-    const turns = [];
-    const checks = [];
-    return {
-      turns,
-      checks,
-      async normalGatewayTurn(turn) {
-        turns.push(turn);
-      },
-      async assertSessionToolCallEvidence(agent, options) {
-        checks.push(options);
-        const outcome = outcomes.shift();
-        if (outcome instanceof Error) {
-          throw outcome;
-        }
-        return outcome;
-      },
-    };
-  }
-  const read = (f, logs) =>
-    automaticallyReviewedRead(f, {
-      agent: { id: "agt" },
-      gatewayPassword: "pw",
-      sessionKey: "agent:main:codex-calendar-automatic-fixture",
-      prompt: "read",
-      toolName: "calendar_read",
-      resultPattern: "x",
-      secrets: [],
-      log: (line) => logs.push(line),
-    });
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
 
-  await t.test("first read passes: one turn", async () => {
-    const f = fixture([success]);
-    const logs = [];
-    assert.equal(await read(f, logs), success);
-    assert.equal(f.turns.length, 1);
-    assert.deepEqual(logs, []);
-    assert.equal(f.checks[0].requireAutomaticReview, true);
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
   });
-  await t.test("reviewer error, then pass: a second turn in the same session", async () => {
-    const f = fixture([reviewerError, success]);
-    const logs = [];
-    assert.equal(await read(f, logs), success);
-    assert.equal(f.turns.length, 2);
-    assert.equal(new Set(f.turns.map((turn) => turn.sessionKey)).size, 1);
-    assert.notEqual(
-      f.checks[0].turnMarker,
-      f.checks[1].turnMarker,
-      "each turn needs a fresh marker",
-    );
-    assert.ok(f.checks.every((check) => check.requireAutomaticReview === true));
-    assert.equal(logs.length, 1);
-    assert.match(
-      logs[0],
-      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
-    );
-  });
-  await t.test("deny judgement: fails without another turn", async () => {
-    const f = fixture([judged, success]);
-    await assert.rejects(read(f, []), (error) => error === judged);
-    assert.equal(f.turns.length, 1);
-  });
-  await t.test("reviewer error twice: the second failure stands", async () => {
-    const second = Object.assign(new assert.AssertionError({ message: "again: {}" }), {
-      automaticReviewerErrored: true,
-    });
-    const f = fixture([reviewerError, second, success]);
-    await assert.rejects(read(f, []), (error) => error === second);
-    assert.equal(f.turns.length, 2);
-  });
-  await t.test("other failures: no retry", async () => {
-    const other = new Error("transcript missing");
-    const f = fixture([other, success]);
-    await assert.rejects(read(f, []), (error) => error === other);
-    assert.equal(f.turns.length, 1);
-  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
 });

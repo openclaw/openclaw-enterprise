@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { writeSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -149,6 +149,17 @@ function readVersion(path) {
   }
 }
 
+// The packaged integration tests exercise the actual producer. This fixture
+// controls only the external result/stream boundary consumed by the OCE wrapper.
+function finishDoctor(child, result = { status: "ok" }) {
+  child.stdout.emit(
+    "data",
+    Buffer.from("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH=" + JSON.stringify(result) + "\n"),
+  );
+  child.emit("exit", result.status === "advisory" ? 86 : 0, null);
+  child.emit("close", result.status === "advisory" ? 86 : 0, null);
+}
+
 // Runs migrateGatewayState() with a stand-in Doctor: doctor(child) decides what
 // it does to the databases and how it exits.
 function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
@@ -167,6 +178,7 @@ function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
     Promise,
     process: {
       env: { OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json", OPENCLAW_STATE_DIR: directory },
+      stdout: { write() {} },
       execPath: "/usr/local/bin/node",
       on: (signal, listener) => listeners[signal].push(listener),
       off: (signal, listener) => {
@@ -181,6 +193,7 @@ function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
     require: (specifier) => nodeRequire(specifier),
     spawn(command, args, options) {
       const child = new EventEmitter();
+      child.stdout = new EventEmitter();
       child.kill = (signal) => child.emit("killed", signal);
       spawned.push({ command, args, env: options.env, stdio: options.stdio });
       setImmediate(() => doctor(child, { listeners }));
@@ -195,7 +208,7 @@ function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
   // The same guard the Gateway program applies before its spawn.
   const result = vm.runInNewContext(
     `${helper}\nconst outdated = outdatedOpenClawDatabases(process.env.OPENCLAW_STATE_DIR);\n` +
-      "outdated.length === 0 ? Promise.resolve(true)\n" +
+      "outdated.length === 0 && !openClawMaintenancePending(process.env.OPENCLAW_STATE_DIR) ? Promise.resolve(true)\n" +
       "  : migrateOpenClawState(process.env.OPENCLAW_STATE_DIR, outdated, process.env);",
     context,
   );
@@ -254,7 +267,7 @@ test("Gateway state migration runs Doctor for an older shared state database bes
     { main: CURRENT },
     { shared: STATE_CURRENT - 2, marker: STATE_CURRENT - 1 },
   );
-  const outcome = await migrate(directory, (child) => child.emit("exit", 0, null));
+  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
   assert.equal(outcome.started, false);
   assert.equal(outcome.spawned.length, 1);
   assert.match(
@@ -269,12 +282,18 @@ test("Gateway state migration runs Doctor for an older shared state database bes
   assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
 });
 
-test("Gateway state migration runs Doctor once for an older agent database and trusts the result over its exit status", async (t) => {
+test("Gateway state migration waits for the settled Doctor result and preserves warnings", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1, current: CURRENT });
   const outcome = await migrate(directory, (child) => {
     setVersion(databasePath(directory, "main"), CURRENT);
-    // Doctor exits 1 here for problems it can only report, such as a read-only path.
-    child.emit("exit", 1, null);
+    // The final record can arrive after exit but before the output stream closes.
+    child.emit("exit", 0, null);
+    child.stdout.emit("data", Buffer.from("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_"));
+    child.stdout.emit(
+      "data",
+      Buffer.from('RESULT_PATH={"status":"ok","warnings":["Gateway is not configured"]}\n'),
+    );
+    child.emit("close", 0, null);
   });
   assert.equal(outcome.started, true);
   assert.equal(outcome.spawned.length, 1);
@@ -283,12 +302,13 @@ test("Gateway state migration runs Doctor once for an older agent database and t
     [...outcome.spawned[0].args],
     ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
   );
-  assert.equal(outcome.spawned[0].stdio, "inherit");
+  assert.deepEqual([...outcome.spawned[0].stdio], ["inherit", "pipe", "inherit"]);
   assert.deepEqual(
     { ...outcome.spawned[0].env },
     {
       OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
       OPENCLAW_CONFIG_READONLY: "1",
+      OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH: "-",
       OPENCLAW_STATE_DIR: directory,
     },
   );
@@ -299,10 +319,58 @@ test("Gateway state migration runs Doctor once for an older agent database and t
   assert.match(outcome.errors.join("\n"), new RegExp(`from schema ${CURRENT - 1} to ${CURRENT}`));
 });
 
+test("Gateway state migration refuses incomplete maintenance even after schemas advance", async (t) => {
+  const records = [
+    ["missing result", undefined],
+    [
+      "malformed advisory",
+      {
+        status: "advisory",
+        advisory: {
+          kind: "package-post-install-doctor",
+          reason: "deferred-configured-plugin-repair",
+        },
+      },
+    ],
+    [
+      "maintenance refusal",
+      { status: "ok", maintenanceRefusal: { kind: "deferred", reason: "coordinator-contention" } },
+    ],
+    [
+      "cleanup refusal",
+      { status: "error", maintenanceRefusal: { kind: "data-at-risk", reason: "active-mutation" } },
+    ],
+    [
+      "unsettled processes",
+      { status: "ok", failureFacts: [{ code: "doctor-processes-unsettled" }] },
+    ],
+    ["config refusal", { status: "ok", configWriteRefusal: {} }],
+    ["malformed facts", { status: "ok", failureFacts: false }],
+    ["unknown outcome", { status: "future" }],
+  ];
+  for (const [name, result] of records) {
+    await t.test(name, async (t) => {
+      const directory = await stateDirectory(t, { main: CURRENT - 1 });
+      const outcome = await migrate(directory, (child) => {
+        setVersion(databasePath(directory, "main"), CURRENT);
+        if (result) {
+          finishDoctor(child, result);
+        } else {
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        }
+      });
+      assert.equal(outcome.started, false);
+      assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
+      assert.match(outcome.errors.at(-1), /did not confirm completed maintenance/);
+    });
+  }
+});
+
 test("Gateway state migration names the failure when Doctor leaves an older agent database", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   // Doctor can hold back a store it cannot verify and still exit 0.
-  const outcome = await migrate(directory, (child) => child.emit("exit", 0, null));
+  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
   assert.equal(outcome.started, false);
   assert.equal(outcome.spawned.length, 1);
   assert.deepEqual(outcome.phases, [{ phase: "state-migration", outcome: "failed" }]);
@@ -331,10 +399,13 @@ test("Gateway state migration leaves an agent database it cannot read to OpenCla
 test("Gateway state migration names a Doctor that could not start or was killed", async (t) => {
   for (const [end, named] of [
     [
-      (child) => child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })),
+      (child) => {
+        child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
+        child.emit("close", -2, null);
+      },
       "error-ENOENT",
     ],
-    [(child) => child.emit("exit", null, "SIGKILL"), "SIGKILL"],
+    [(child) => child.emit("close", null, "SIGKILL"), "SIGKILL"],
   ]) {
     const directory = await stateDirectory(t, { main: CURRENT - 1 });
     const outcome = await migrate(directory, end);
@@ -355,9 +426,10 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
     const directory = await stateDirectory(t, { main: CURRENT - 1 });
     const killed = [];
     const outcome = await migrate(directory, (child, { listeners }) => {
+      setVersion(databasePath(directory, "main"), CURRENT);
       child.on("killed", (received) => {
         killed.push(received);
-        child.emit("exit", null, received);
+        child.emit("close", null, received);
       });
       for (const listener of listeners[signal]) {
         listener();
@@ -367,6 +439,10 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
     assert.deepEqual(outcome.exits, [0]);
     assert.deepEqual(outcome.failures, []);
     assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
+    // Stop after schema publication still requires a completed repair on restart.
+    const restarted = await migrate(directory, (child) => finishDoctor(child));
+    assert.equal(restarted.spawned.length, 1);
+    assert.equal(restarted.started, true);
   }
 });
 
@@ -413,6 +489,7 @@ async function runDockerGateway(
         OPENCLAW_GATEWAY_PORT: "8080",
         OPENCLAW_STATE_DIR: directory,
       },
+      stdout: { write() {} },
       execPath: "/usr/local/bin/node",
       on() {},
       off() {},
@@ -426,7 +503,11 @@ async function runDockerGateway(
         return {
           ...realFs,
           chmodSync() {},
-          mkdirSync() {},
+          mkdirSync(path, options) {
+            if (path.startsWith(directory)) {
+              realFs.mkdirSync(path, options);
+            }
+          },
           writeFileSync: () => events.push("write"),
         };
       }
@@ -434,6 +515,7 @@ async function runDockerGateway(
         return {
           spawn(command, args, options) {
             const child = new EventEmitter();
+            child.stdout = new EventEmitter();
             child.kill = () => {};
             spawned.push({ command, args: [...args], env: options.env });
             events.push(`spawn:${args[1]}`);
@@ -468,11 +550,26 @@ test("Docker development Gateway starts current state without Doctor", async (t)
   assert.deepEqual(outcome.exits, []);
 });
 
+test("Docker development Gateway refuses an unreadable pending-maintenance marker before native startup", async (t) => {
+  const directory = await stateDirectory(t, { main: CURRENT });
+  // A non-file at the reserved path cannot be treated as absent or silently removed.
+  await mkdir(join(directory, "state", ".oce-maintenance-pending"), { recursive: true });
+  await assert.rejects(runDockerGateway(directory), /Invalid pending maintenance marker/);
+});
+
 test("Docker development Gateway migrates an older agent database before starting OpenClaw", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   const outcome = await runDockerGateway(directory, (child) => {
     setVersion(databasePath(directory, "main"), CURRENT);
-    child.emit("exit", 1, null);
+    finishDoctor(child, {
+      status: "advisory",
+      advisory: {
+        kind: "package-post-install-doctor",
+        reason: "deferred-configured-plugin-repair",
+        message: "Deferred configured plugin repair",
+        details: ["A configured plugin needs repair after verified installation."],
+      },
+    });
   });
   assert.deepEqual(
     outcome.spawned.map(({ command, args }) => [command, ...args]),
@@ -500,7 +597,9 @@ test("Docker development Gateway migrates an older agent database before startin
 
 test("Docker development Gateway exits without starting OpenClaw when Doctor leaves an older agent database", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
-  const outcome = await runDockerGateway(directory, (child) => child.emit("exit", 0, null));
+  const outcome = await runDockerGateway(directory, (child) =>
+    finishDoctor(child, { status: "ok" }),
+  );
   assert.deepEqual(
     outcome.spawned.map(({ args }) => args[1]),
     ["doctor"],
@@ -515,16 +614,20 @@ test("Docker development Gateway exits without starting OpenClaw when Doctor lea
 test("Docker development Gateway exits without starting OpenClaw on an unexpected migration error", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   let loads = 0;
-  const outcome = await runDockerGateway(directory, (child) => child.emit("exit", 0, null), {
-    // The re-read after Doctor fails outside the per-database check.
-    sqlite: () => {
-      loads += 1;
-      if (loads > 1) {
-        throw new Error("node:sqlite is unavailable");
-      }
-      return nodeRequire("node:sqlite");
+  const outcome = await runDockerGateway(
+    directory,
+    (child) => finishDoctor(child, { status: "ok" }),
+    {
+      // The re-read after Doctor fails outside the per-database check.
+      sqlite: () => {
+        loads += 1;
+        if (loads > 1) {
+          throw new Error("node:sqlite is unavailable");
+        }
+        return nodeRequire("node:sqlite");
+      },
     },
-  });
+  );
   assert.deepEqual(
     outcome.spawned.map(({ args }) => args[1]),
     ["doctor"],
@@ -569,6 +672,7 @@ async function runHarness(
         OPENAI_API_KEY: "sk-fixture-harness-model-credential",
         ...env,
       },
+      stdout: { write() {} },
       execPath: "/usr/local/bin/node",
       on() {},
       off() {},
@@ -598,12 +702,21 @@ async function runHarness(
       };
       return {
         execFile() {},
-        spawnSync: (command, args, options) => (record(args, options), setup(options)),
         spawn(command, args, options) {
           const child = new EventEmitter();
+          child.stdout = new EventEmitter();
           child.kill = () => {};
-          if (record(args, options) === "doctor") {
+          const name = record(args, options);
+          if (name === "doctor") {
             setImmediate(() => doctor(child));
+          } else if (name === "setup") {
+            // Setup writes its result and diagnostics while its descriptors are open.
+            const result = setup(options);
+            setImmediate(() =>
+              result.error === undefined
+                ? child.emit("exit", result.status ?? null, result.signal ?? null)
+                : child.emit("error", result.error),
+            );
           }
           return child;
         },
@@ -658,8 +771,12 @@ async function harnessDirectory(t, version) {
 test("Harness starts current and fresh workspace node state without Doctor", async (t) => {
   for (const version of [undefined, STATE_CURRENT]) {
     const outcome = await runHarness(await harnessDirectory(t, version));
-    // Current state adds no await before native setup and the children.
-    assert.deepEqual(outcome.synchronous, ["setup", "codex", "node"]);
+    // Current state adds no await before native setup; the children follow its exit.
+    assert.deepEqual(outcome.synchronous, ["setup"]);
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["setup", "codex", "node"],
+    );
     assert.equal(outcome.holds, 0);
   }
 });
@@ -669,7 +786,7 @@ test("Harness migrates older workspace node state with the node's environment be
   const nodeState = join(directory, "node-state");
   const outcome = await runHarness(directory, (child) => {
     setVersion(sharedPath(nodeState), STATE_CURRENT);
-    child.emit("exit", 0, null);
+    finishDoctor(child);
   });
   assert.deepEqual(
     outcome.spawned.map(({ name }) => name),
@@ -678,11 +795,58 @@ test("Harness migrates older workspace node state with the node's environment be
   const [doctor, setup] = outcome.spawned;
   // Doctor migrates the node's state, not the default OpenClaw state, and gets the
   // node's environment: never the model credential the Codex child receives.
-  assert.deepEqual({ ...doctor.env }, { ...setup.env, OPENCLAW_CONFIG_READONLY: "1" });
+  assert.deepEqual(
+    { ...doctor.env },
+    {
+      ...setup.env,
+      OPENCLAW_CONFIG_READONLY: "1",
+      OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH: "-",
+    },
+  );
   assert.equal(doctor.env.OPENCLAW_STATE_DIR, nodeState);
   assert.equal(doctor.env.OPENAI_API_KEY, undefined);
   assert.equal(outcome.spawned[2].env.OPENAI_API_KEY, "sk-fixture-harness-model-credential");
   assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));
+});
+
+test("Harness retries refused maintenance after schemas advance and skips it only after successful settlement", async (t) => {
+  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+  const state = join(directory, "node-state");
+  const refusal = {
+    status: "error",
+    maintenanceRefusal: { kind: "data-at-risk", reason: "active-mutation" },
+  };
+  // The first repair advances SQLite before its external process reports failed cleanup.
+  const first = await runHarness(directory, (child) => {
+    setVersion(sharedPath(state), STATE_CURRENT);
+    finishDoctor(child, refusal);
+  });
+  assert.equal(first.holds, 1);
+  assert.deepEqual(
+    first.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+
+  // A new wrapper receives the same retained files. Current schemas cannot erase refusal.
+  const second = await runHarness(directory, (child) => finishDoctor(child, refusal));
+  assert.equal(second.holds, 1);
+  assert.deepEqual(
+    second.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+  const pending = await lstat(join(state, "state", ".oce-maintenance-pending"));
+  assert.equal(pending.mode & 0o777, 0o600);
+
+  const recovered = await runHarness(directory, (child) => finishDoctor(child));
+  assert.deepEqual(
+    recovered.spawned.map(({ name }) => name),
+    ["doctor", "setup", "codex", "node"],
+  );
+  const current = await runHarness(directory);
+  assert.deepEqual(
+    current.spawned.map(({ name }) => name),
+    ["setup", "codex", "node"],
+  );
 });
 
 test("Harness holds without native setup or children when Doctor leaves older workspace node state", async (t) => {
@@ -691,7 +855,7 @@ test("Harness holds without native setup or children when Doctor leaves older wo
   // provider's token holder on the Harness port (finding 2686).
   for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
     const directory = await harnessDirectory(t, STATE_CURRENT - 1);
-    const outcome = await runHarness(directory, (child) => child.emit("exit", 1, null), { env });
+    const outcome = await runHarness(directory, (child) => child.emit("close", 1, null), { env });
     assert.deepEqual(
       outcome.spawned.map(({ name }) => name),
       ["doctor"],
@@ -912,11 +1076,16 @@ test("Harness names a failed native setup that reported no message", async (t) =
 // `directory`/node-state, until it starts its connect child or holds. Real files;
 // replaced: runtime asset publication, the model probe (it answers "ok"), the
 // readiness listener (`ready()` asks it) and every child process. Doctor runs
-// `doctor(child, { ready })`; `node identity` answers with a fixed device id.
+// `doctor(child, { ready })`; `node identity` runs `identity(callback)`, which answers
+// with a fixed device id by default. `timer` replaces the program's setTimeout.
 async function runNativeWorker(
   directory,
   doctor = () => assert.fail("Doctor must not run"),
-  { env = COMPUTE_STATUS_ENV } = {},
+  {
+    env = COMPUTE_STATUS_ENV,
+    identity = (callback) => callback(null, JSON.stringify({ deviceId: "a".repeat(64) })),
+    timer = setTimeout,
+  } = {},
 ) {
   const spawned = [];
   const identities = [];
@@ -949,7 +1118,7 @@ async function runNativeWorker(
     Promise,
     URL,
     clearTimeout,
-    setTimeout,
+    setTimeout: timer,
     console: { error: (line) => errors.push(String(line)), log() {} },
     process: {
       env: {
@@ -972,6 +1141,7 @@ async function runNativeWorker(
         // The model credential the connect child needs and Doctor must not receive.
         OPENAI_API_KEY: "sk-fixture-native-worker-model-credential",
       },
+      stdout: { write() {} },
       execPath: "/usr/local/bin/node",
       on() {},
       off() {},
@@ -990,12 +1160,13 @@ async function runNativeWorker(
       return {
         execFile(command, args, options, callback) {
           identities.push(args[2]);
-          callback(null, JSON.stringify({ deviceId: "a".repeat(64) }));
+          identity(callback);
         },
         spawnSync: (command, args) =>
           args.includes("--probe") ? { status: 0, stdout: probe } : { status: 0 },
         spawn(command, args, options) {
           const child = new EventEmitter();
+          child.stdout = new EventEmitter();
           child.kill = () => {};
           spawned.push({ name: args[1], env: options.env });
           if (args[1] === "doctor") {
@@ -1028,6 +1199,116 @@ test("Native worker connects current and fresh node state without Doctor", async
   }
 });
 
+// Each readiness check spawns `openclaw node identity`. The kubelet, the agent Gateway
+// and status-proxy callers can ask at once, so concurrent requests share the running
+// check instead of each spawning another (finding 1789). No answer is cached: a request
+// after the check settles runs a fresh one.
+test("Native worker readiness shares one running identity check among concurrent requests", async (t) => {
+  const callbacks = [];
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => callbacks.push(callback),
+  });
+  const answers = Promise.all(Array.from({ length: 5 }, () => outcome.ready()));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  callbacks[0](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await answers, [200, 200, 200, 200, 200]);
+  // A failed fresh check answers 503, not the earlier success.
+  const later = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](new Error("node identity failed"));
+  assert.equal(await later, 503);
+  assert.deepEqual(outcome.identities, ["identity", "identity"]);
+});
+
+// A check that throws or fails frees the slot as a success does, so a worker that recovers
+// reports ready on the next probe instead of keeping the failure. A caller that disconnects
+// while it waits gets no answer and does not stop or restart the check the others share.
+test("Native worker readiness checks again after a failed check and ignores a disconnected caller", async (t) => {
+  const callbacks = [];
+  let throwNext = true;
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => {
+      if (throwNext) {
+        throwNext = false;
+        throw new Error("spawn failed");
+      }
+      callbacks.push(callback);
+    },
+  });
+  assert.deepEqual(await Promise.all([outcome.ready(), outcome.ready()]), [503, 503]);
+  const failed = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  callbacks[0](new Error("node identity failed"));
+  assert.equal(await failed, 503);
+
+  const handler = outcome.servers.find(
+    ({ port }) => port === Number(COMPUTE_STATUS_ENV.OPENCLAW_RUNTIME_STATUS_PORT),
+  ).handler;
+  const first = outcome.ready();
+  // node:http marks a response destroyed and emits "close" when its client disconnects.
+  const dropped = Object.assign(new EventEmitter(), { destroyed: false, writes: [] });
+  dropped.writeHead = (code) => dropped.writes.push(code);
+  dropped.end = () => dropped.writes.push("end");
+  handler({ method: "GET", url: "/readyz", headers: {} }, dropped);
+  dropped.destroyed = true;
+  dropped.emit("close");
+  const last = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([first, last]), [200, 200]);
+  assert.deepEqual(dropped.writes, []);
+  assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
+});
+
+// A check that never settles (here an identity call that never answers) holds the shared
+// slot only until the outer deadline: every waiting probe answers 503 then, and the next
+// probe starts a fresh check instead of waiting on the hung one (finding 2941).
+test("Native worker readiness answers 503 at its deadline when a check never settles", async (t) => {
+  const callbacks = [];
+  const deadlines = [];
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => callbacks.push(callback),
+    // The readiness deadline (5 s) fires when the test says; other timers run as usual.
+    timer: (callback, delay, ...args) => {
+      if (delay !== 5000) {
+        return setTimeout(callback, delay, ...args);
+      }
+      const deadline = { fire: () => callback(...args), unref: () => deadline };
+      deadlines.push(deadline);
+      return deadline;
+    },
+  });
+  const hung = Promise.all([outcome.ready(), outcome.ready()]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  assert.equal(deadlines.length, 1);
+  deadlines[0].fire();
+  assert.deepEqual(await hung, [503, 503]);
+
+  const next = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  // The hung check fails late, while the fresh check still runs: its answer reaches no probe
+  // and does not free the fresh check's slot, so a probe now joins the fresh check.
+  callbacks[0](new Error("node identity failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const joined = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([next, joined]), [200, 200]);
+  const after = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 3);
+  callbacks[2](new Error("node identity failed"));
+  assert.equal(await after, 503);
+  assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
+});
+
 test("Native worker migrates older node state without the model credential before it connects", async (t) => {
   const directory = await harnessDirectory(t, STATE_CURRENT - 1);
   const nodeState = join(directory, "node-state");
@@ -1035,7 +1316,7 @@ test("Native worker migrates older node state without the model credential befor
   const outcome = await runNativeWorker(directory, async (child, { ready }) => {
     readyDuringDoctor = await ready();
     setVersion(sharedPath(nodeState), STATE_CURRENT);
-    child.emit("exit", 0, null);
+    finishDoctor(child);
   });
   // Readiness does not open the node state while Doctor migrates it.
   assert.equal(readyDuringDoctor, 503);
@@ -1061,7 +1342,7 @@ test("Native worker holds unready without connecting when Doctor leaves older no
   // Harness port to a Sandbox provider's token holder (finding 2686).
   for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
     const directory = await harnessDirectory(t, STATE_CURRENT - 1);
-    const outcome = await runNativeWorker(directory, (child) => child.emit("exit", 1, null), {
+    const outcome = await runNativeWorker(directory, (child) => child.emit("close", 1, null), {
       env,
     });
     assert.deepEqual(

@@ -31,7 +31,7 @@ export const DevdayCreateFlow = {
 };
 export const DevdayCreateCheckpoint = {
   ...story("devdayCreateCheckpoint"),
-  name: "DevDay segment 1 checkpoint: deployed devday claw",
+  name: "DevDay segment 1 checkpoint: first deployment queued",
 };
 export const DevdayAdminFlow = {
   ...story("devdayAdminFlow"),

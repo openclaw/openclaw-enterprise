@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-24
-last_updated_session: authoring-run/f070add2-5557-42f3-a399-1af757d219cd
+updated: 2026-11-05
+last_updated_session: authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7
 ---
 
 # Agent Presets flow
@@ -172,9 +172,16 @@ Secret metadata, validates the original template, then substitutes the selected
 reference in a temporary copy. Changing mode discards tokens; stale catalog
 responses cannot replace a later selection.
 The user then selects **Use Preset**. The shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mts)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
+
+An older stored Preset can contain a non-null, non-text primary model that current
+Controller admission refuses. `agents/create.mts:renderAgentForm` rejects that
+selected primary before opening the form. The chooser explains that it must be
+text and keeps entered variables. Select another Preset or ask a Preset editor
+to fix the template. A null primary remains unset so the user can choose a model.
+Partial Presets and valid roster-only selections still open.
 
 Rendering makes no requests. Success opens the Agent form with rendered settings
 and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
@@ -182,6 +189,15 @@ password values into the masked credential input and clears detached controls;
 later Preset changes cannot alter the form. Before saving, **Start over** confirms
 discard and opens a fresh chooser. A successful or uncertain save disables restart
 and uses ordinary creation recovery.
+
+The form keeps the chooser state and the `configuration.values` path each variable
+filled. A Create refusal that starts `Configuration setting <path>` and covers such a
+path names those variables and offers **Change** with their labels, unless the submitted
+value at that path differs from the one the Preset rendered. While restart is
+enabled, that action reopens the chooser from the kept state, marks those fields
+with the server's sentence and focuses the first. The added text names variables, never
+their values. A quoted path segment, such as `models["openai/gpt 5"]`, is one key. If the
+Preset then fails to load, focus moves to the chooser heading.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
@@ -239,7 +255,18 @@ grants access; dedicated provisioning follows its existing flow. Password bytes
 reach only Secret creation. Each API request performs schema, native credential
 and authorization admission before persistence.
 
-If Secret creation fails, the masked input remains for correction or retry.
+A confirmed duplicate-name Secret response offers the existing permission-aware
+picker or an independent new Secret name in the same form. Selection clears the
+entered key; neither path deletes or reads the existing value. Other draft fields
+remain. Other known refusals keep the masked input for correction or retry;
+uncertain writes clear it and lock creation. Agent-name conflicts do not enable
+Secret recovery. Credential-context changes clear the notice, alternate name,
+and required state. Returning to a password method does not revive that recovery.
+The notice and choices share a focused block under the model credential field.
+The notice belongs to the attempted Secret name. Changing that name or submitting
+a new attempt clears the old feedback without discarding an edited alternate name.
+Submit trims and validates alternate names before any write. Choosing an existing
+Secret restores the normal optional service-account plugin discovery token field.
 If a later save fails, its saved Secret reference is reused.
 If Configuration creation succeeds but Agent creation fails, the form retains
 the Configuration ID and locks Configuration-affecting controls. A safe retry
@@ -286,6 +313,12 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
+
+- 2026-10-29 11:06: Clear Secret recovery when credential context changes and group its notice with choices. (authoring-run/1839d93c-8cde-4ebb-b994-4b1333cc7ada - 6e83f6e7409fb4fa238cd4230f1136d278794926)
+
+- 2026-10-29 10:28: Add deliberate model Secret conflict recovery in the current draft. (authoring-run/daf33de1-41b3-4148-86b6-62eade385b72 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 - 2026-10-24 14:11: Align Console roster model selections and local policies. (authoring-run/f070add2-5557-42f3-a399-1af757d219cd - de058b77e4f996c848520d8bee2e9c6122d3e2e1)
 

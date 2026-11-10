@@ -25,10 +25,13 @@ export const DeleteConfirmation = { ...story("namespaceDeleteConfirmation") };
 export const DeleteMobile = { ...story("namespaceDeleteMobile") };
 export const DeleteBlocked = { ...story("namespaceDeleteBlocked") };
 export const DeleteDenied = { ...story("namespaceDeleteDenied") };
+export const DeleteRestricted = { ...story("namespaceDeleteRestricted") };
 export const DeleteRefused = { ...story("namespaceDeleteRefused") };
 export const DeletePending = { ...story("namespaceDeletePending") };
 export const DeleteUnknown = { ...story("namespaceDeleteUnknown") };
+export const DeleteInvalidStatus = { ...story("namespaceDeleteInvalidStatus") };
 export const DeleteRetry = { ...story("namespaceDeleteRetry") };
+export const DeleteRetryStatusFailure = { ...story("namespaceDeleteRetryStatusFailure") };
 
 export const NamespacesUnavailable = { ...story("namespacesUnavailable") };
 export const NamespacesUnavailableMobile = { ...story("namespacesUnavailableMobile") };

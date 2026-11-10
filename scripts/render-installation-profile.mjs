@@ -300,9 +300,9 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
 
 // Kubernetes Compute startup's rule and messages (finding 1296). The normalized URL is the one
 // Compute uses.
-function codexModelBaseUrl(runtime, diagnostics) {
-  const field = "runtime.codexModelBaseUrl";
-  const value = asString(runtime, field.split("."), diagnostics);
+function sharedModelBaseUrl(runtime, diagnostics) {
+  const field = "runtime.modelProvider.baseUrl";
+  const value = asString(runtime.modelProvider, field.split("."), diagnostics);
   // Normalize only after the raw spelling is accepted. `https://192.168.1/v1` would otherwise
   // become `https://192.168.0.1/v1` and pass Compute.
   if (typeof value === "string" && value !== "" && openAiBaseUrlRewritesIpv4(value)) {
@@ -324,6 +324,34 @@ function codexModelBaseUrl(runtime, diagnostics) {
     diagnostics.warnings.push(blocked);
   }
   return url ?? value;
+}
+
+function sharedModelProvider(runtime, diagnostics) {
+  const provider = record(runtime.modelProvider, "runtime.modelProvider", diagnostics);
+  closed(
+    provider,
+    "runtime.modelProvider",
+    ["protocol", "baseUrl", "supportsStandaloneWebSearch"],
+    diagnostics,
+  );
+  if (!["openai-responses", "openai-completions"].includes(provider.protocol)) {
+    diagnostics.errors.push(
+      "runtime.modelProvider.protocol must be openai-responses or openai-completions.",
+    );
+  }
+  return {
+    protocol: provider.protocol,
+    baseUrl: sharedModelBaseUrl(runtime, diagnostics),
+    ...(provider.supportsStandaloneWebSearch === undefined
+      ? {}
+      : {
+          supportsStandaloneWebSearch: asBoolean(
+            provider,
+            ["runtime", "modelProvider", "supportsStandaloneWebSearch"],
+            diagnostics,
+          ),
+        }),
+  };
 }
 
 // URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
@@ -718,71 +746,39 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
   return cidrs;
 }
 
-// The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
-// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
-// list without a new root dependency; load it only when native admin is configured.
-function isPublicSuffix(hostname) {
-  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
-  let tldts;
-  try {
-    tldts = require("tldts");
-  } catch {
-    return undefined;
-  }
-  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
-  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
-}
-
-function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, diagnostics) {
-  const lowerDomain = domain.toLowerCase();
-  const lowerSharedCookieDomain = sharedCookieDomain.toLowerCase();
-  if (!dnsHostname.test(lowerDomain)) {
+function validateNativeAdminDomains(domain, authBaseUrl, diagnostics) {
+  if (!dnsHostname.test(domain.toLowerCase())) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
-  }
-  if (!dnsHostname.test(lowerSharedCookieDomain)) {
-    diagnostics.errors.push(
-      "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
-    );
-  } else {
-    const publicSuffix = isPublicSuffix(lowerSharedCookieDomain);
-    if (publicSuffix === undefined) {
-      diagnostics.errors.push(
-        "controlPlane.sharedCookieDomain needs the public suffix list: run pnpm install first.",
-      );
-    } else if (publicSuffix) {
-      diagnostics.errors.push("controlPlane.sharedCookieDomain must not be a public suffix.");
-    }
-  }
-  if (
-    dnsHostname.test(lowerDomain) &&
-    dnsHostname.test(lowerSharedCookieDomain) &&
-    lowerDomain !== lowerSharedCookieDomain &&
-    !lowerDomain.endsWith(`.${lowerSharedCookieDomain}`)
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain.",
-    );
-  }
-  // The API refuses these at startup: shared session cookies are secure-only, and the
-  // console host must be inside their parent.
-  let baseUrl;
-  try {
-    baseUrl = new URL(authBaseUrl);
-  } catch {
-    // asString already reported it as not an absolute HTTP(S) origin.
     return;
   }
-  if (baseUrl.protocol !== "https:") {
-    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with native admin.");
-  } else if (dnsHostname.test(lowerSharedCookieDomain)) {
-    const host = baseUrl.hostname.replace(/\.$/, "");
-    if (host !== lowerSharedCookieDomain && !host.endsWith(`.${lowerSharedCookieDomain}`)) {
-      diagnostics.errors.push(
-        "controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain.",
-      );
+  if (diagnostics.errors.some((error) => error.startsWith("controlPlane.authBaseUrl"))) {
+    return;
+  }
+  // Load the auth owner lazily so a plain checkout still writes a useful preflight refusal.
+  let deriveSharedCookieDomain;
+  try {
+    ({ deriveSharedCookieDomain } = createRequire(import.meta.url)(
+      "../apps/controller/src/auth/configuration.ts",
+    ));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND" && error.code !== "ERR_MODULE_NOT_FOUND") {
+      throw error;
     }
+    diagnostics.errors.push(
+      "Shared browser sessions need the public suffix list: run pnpm install first.",
+    );
+    return;
+  }
+  try {
+    deriveSharedCookieDomain(authBaseUrl, domain);
+  } catch {
+    diagnostics.errors.push(
+      new URL(authBaseUrl).protocol !== "https:"
+        ? "controlPlane.authBaseUrl must use HTTPS for shared browser sessions."
+        : "controlPlane.authBaseUrl and controlPlane.agentNativeAdminDomain must share a non-public DNS suffix.",
+    );
   }
 }
 
@@ -916,6 +912,18 @@ function signInProvider(source, name, diagnostics) {
       "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
     );
   }
+  if (source.autoEnrollGroupId !== undefined) {
+    rendered.autoEnrollGroupId = optionalString(
+      source,
+      [...path, "autoEnrollGroupId"],
+      diagnostics,
+    );
+    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
+      diagnostics.errors.push(
+        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
+      );
+    }
+  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -997,13 +1005,6 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   // The scheme as URL parsing reads it, like the API: HTTPS:// and surrounding spaces pass.
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
-  }
-  for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
-    if (controlPlane[key] !== undefined) {
-      diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
-      );
-    }
   }
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
@@ -1168,7 +1169,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
-      "sharedCookieDomain",
+      "agentNativeAdminSessionMode",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1196,7 +1197,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayNodeSelector",
       "transportSecretPrefix",
       "codexSeccompProfile",
-      "codexModelBaseUrl",
+      "modelProvider",
     ],
     diagnostics,
   );
@@ -1244,7 +1245,15 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
+    [
+      "secretName",
+      "clientIdKey",
+      "clientSecretKey",
+      "allowedOrgs",
+      "allowedTeams",
+      "autoEnrollGroupId",
+      "egressCidrs",
+    ],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);
@@ -1526,32 +1535,34 @@ function buildRendered(profile, parsed, diagnostics) {
       "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   }
-  // Helm refuses native admin with external sign-in (host-only cookies only).
-  let agentNativeAdmin = { enabled: false };
-  if (!externalSignIn) {
-    const agentNativeAdminDomain = asString(
-      controlPlane,
-      ["controlPlane", "agentNativeAdminDomain"],
-      diagnostics,
+  const sessionMode =
+    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
+      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
+      description: "shared-cookie or host-only-exchange",
+    }) ?? "shared-cookie";
+  const agentNativeAdminDomain = asString(
+    controlPlane,
+    ["controlPlane", "agentNativeAdminDomain"],
+    diagnostics,
+  );
+  validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
+  if (
+    sessionMode === "host-only-exchange" &&
+    (controlPlane.github === undefined ||
+      controlPlane.google !== undefined ||
+      controlPlane.oidc !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
     );
-    const sharedCookieDomain = asString(
-      controlPlane,
-      ["controlPlane", "sharedCookieDomain"],
-      diagnostics,
-    );
-    validateNativeAdminDomains(
-      agentNativeAdminDomain,
-      sharedCookieDomain,
-      authBaseUrl,
-      diagnostics,
-    );
-    // The API lowercases both at startup; the chart accepts only lowercase.
-    agentNativeAdmin = {
-      enabled: true,
-      domain: agentNativeAdminDomain.toLowerCase(),
-      sharedCookieDomain: sharedCookieDomain.toLowerCase(),
-    };
   }
+  const agentNativeAdmin = {
+    enabled:
+      sessionMode === "host-only-exchange" ||
+      (controlPlane.github === undefined && controlPlane.google === undefined),
+    domain: agentNativeAdminDomain.toLowerCase(),
+    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
+  };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
     "envoy-gateway-system";
@@ -1565,7 +1576,7 @@ function buildRendered(profile, parsed, diagnostics) {
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
-  for (const key of ["codexSeccompProfile", "codexModelBaseUrl"]) {
+  for (const key of ["codexSeccompProfile"]) {
     if (profile.name === "openclaw" && runtime[key] !== undefined) {
       diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
     }
@@ -1928,6 +1939,9 @@ function buildRendered(profile, parsed, diagnostics) {
                   "a prefix producing a DNS-safe Secret name of at most 253 characters with its 12-character suffix",
               },
             ),
+            ...(runtime.modelProvider === undefined
+              ? {}
+              : { modelProvider: sharedModelProvider(runtime, diagnostics) }),
             ...(profile.name === "codex"
               ? {
                   codexSeccompProfile: asString(
@@ -1940,9 +1954,6 @@ function buildRendered(profile, parsed, diagnostics) {
                         "a relative localhost profile path without traversal or unconfined mode",
                     },
                   ),
-                  ...(runtime.codexModelBaseUrl === undefined
-                    ? {}
-                    : { codexModelBaseUrl: codexModelBaseUrl(runtime, diagnostics) }),
                 }
               : {}),
             ...(managedSlackProxyEnabled
@@ -2168,13 +2179,16 @@ function buildRendered(profile, parsed, diagnostics) {
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",
-    "Envoy Gateway and cert-manager installed before applying gatewayRouting values.",
+    "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
+    "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
+  );
+  diagnostics.prerequisites.push(
+    "HTTPS Console and Agent DNS hosts configured under a shared non-public DNS suffix.",
   );
   if (agentNativeAdmin.enabled) {
-    diagnostics.prerequisites.push(
-      "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
-    );
-  } else {
+    diagnostics.prerequisites.push("Wildcard DNS and TLS configured for the native admin domain.");
+  }
+  if (externalSignIn) {
     diagnostics.prerequisites.push(
       "External sign-in Secrets created, and controlPlane.recoveryUserId read from a verified password administrator's session, before the first helm upgrade that renders them.",
     );
@@ -2234,15 +2248,28 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
-  return { values, installation };
+  // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
+  // the DNS egress rule needs every merged label. A null deletes the default for a selector
+  // without it. `installation` keeps the exact selector, as Compute does not merge.
+  const dnsPodLabels = values.dns.podLabels;
+  return {
+    values: {
+      ...values,
+      dns: {
+        ...values.dns,
+        podLabels: { ...dnsPodLabels, ...("k8s-app" in dnsPodLabels ? {} : { "k8s-app": null }) },
+      },
+    },
+    installation,
+  };
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];

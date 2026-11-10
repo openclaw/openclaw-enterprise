@@ -10,7 +10,7 @@ import {
   tokenEchoDigest,
   tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
-import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -445,22 +445,26 @@ test("a stalled pod diagnostic gives way to its deadline and starts no read afte
   assert.equal(result, "\nDiagnostic timed out");
   assert.equal(calls.length, 1);
   const late = [];
+  let abandoned;
   const settled = await withinDiagnosticDeadline(
-    async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return podFailureDiagnostic({
-        kubectl: async (...args) => {
-          late.push(args);
-          return "{}";
-        },
-        namespace: "oce-late",
-      });
+    () => {
+      abandoned = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return podFailureDiagnostic({
+          kubectl: async (...args) => {
+            late.push(args);
+            return "{}";
+          },
+          namespace: "oce-late",
+        });
+      })();
+      return abandoned;
     },
     { timeoutMs: 20, timedOut: "late" },
   );
   assert.equal(settled, "late");
-  // Let the abandoned diagnostic finish: past its deadline it reads nothing.
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // Wait for the abandoned diagnostic to finish: past its deadline it reads nothing.
+  await abandoned;
   assert.deepEqual(late, []);
 });
 

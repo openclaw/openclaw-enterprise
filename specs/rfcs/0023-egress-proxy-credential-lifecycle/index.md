@@ -12,7 +12,7 @@ status: Proposed
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.
 
-Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capability and its `CredentialProxyDriver`. It configures and withdraws egress; `SandboxDriver` installs that configuration and prevents bypass. We retain `SecretDriver` and `CredentialRefreshDriver` for credential access and preparation. These are [distinct responsibilities](contracts.md), not a requirement to run four services.
+Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation capabilities. The selected `CredentialProxyDriver` configures and withdraws protected egress. Its paired `SandboxDriver` installs the policy and prevents bypass. OCE’s built-in Token Service registers dynamic credentials and resolves access tokens through provider-specific issuers. `SecretDriver` supplies authorized static material. See [credential access and lifecycle](contracts.md#credential-access-and-lifecycle).
 
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
@@ -22,14 +22,18 @@ Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capab
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
+The [proposed protected Codex artifact amendment](contracts.md#protected-codex-artifact-downloads)
+adds explicitly qualified credential-free download authority to the same frozen
+admission. Its deployment qualification remains pending.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
 
-| Mode | What it means |
-|---|---|
-| **Unprotected** · minimal CI or simple local development | OCE knows the Agent exists but does not authenticate or govern its direct requests. No managed route, clone, or provider credential. Asking for one fails admission, rather than silently using ambient credentials. |
-| **Protected** · OpenShell, in production or locally | Authenticate the whole Agent execution, prevent direct egress, and authorize each operation at the admitted level of protection. A route may explicitly require no provider credential; zero allowed routes means deny all. Failure to establish protection never selects unprotected mode. |
+| Mode                                                     | What it means                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unprotected** · minimal CI or simple local development | OCE knows the Agent exists but does not authenticate or govern its direct requests. No managed route, clone, or provider credential. Asking for one fails admission, rather than silently using ambient credentials.                                                                        |
+| **Protected** · OpenShell, in production or locally      | Authenticate the whole Agent execution, prevent direct egress, and authorize each operation at the admitted level of protection. A route may explicitly require no provider credential; zero allowed routes means deny all. Failure to establish protection never selects unprotected mode. |
 
 ## Two levels of protection
 
@@ -59,7 +63,7 @@ can be satisfied by this preview, and no existing admission changes meaning.
 ## From startup to one repository read with exact dispatch
 
 1. **Admit the execution.** The OpenClaw Control Plane (OCC) admits the routes and grants. Sandbox enforces the plan and authenticates the execution and supervisor installation.
-2. **Prepare the credential.** OCE obtains and stores a scoped GitHub installation token in the background. The request path never issues or renews it.
+2. **Prepare the credential.** OCE registers the GitHub installation and its approved repository permissions with the Token Service. The service renews in the background. If a request needs a fresher token, the service starts or joins renewal for that grant.
 3. **Send the read.** Credential Proxy binds the request and reply to their origin, checks current authority before material access and again before sending, and protects the response. Withdrawal racing the final check may not stop that send.
 
 [Request protocol and failure semantics](protocol.md#capture-and-authorize-a-request) · [Verification and migration](security.md)

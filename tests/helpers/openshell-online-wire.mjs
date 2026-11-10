@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createOpenShellOnlineAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
+import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -46,7 +46,7 @@ export async function openShellOnlineWire(
   t,
   registrationName,
   options,
-  createAuthority = createOpenShellOnlineAuthority,
+  createAuthority = createOpenShellOnlineHttpAuthority,
 ) {
   const { key, cert, caBundle, rootCertificatePath } = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
@@ -76,6 +76,7 @@ export async function openShellOnlineWire(
   return {
     keys,
     client,
+    server,
     endpoint: `https://localhost:${port}`,
     certFile: rootCertificatePath,
     close: () => server.forceShutdown(),

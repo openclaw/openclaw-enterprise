@@ -235,6 +235,20 @@ server.on("connection", (socket, request) => {
   });
 });
 
+// Fails unless `promise` settles within `ms`. A met deadline clears its timer: a pending
+// timer keeps this process, and the docker exec the test waits on, alive until it fires.
+async function within(promise, ms, message) {
+  const settled = new AbortController();
+  try {
+    return await Promise.race([
+      promise,
+      delay(ms, undefined, { signal: settled.signal }).then(() => assert.fail(message)),
+    ]);
+  } finally {
+    settled.abort();
+  }
+}
+
 let reviewer;
 try {
   const deadline = Date.now() + 90_000;
@@ -275,10 +289,7 @@ try {
     },
   });
   reviewer.start();
-  await Promise.race([
-    hello,
-    delay(30_000).then(() => assert.fail("The reviewer did not connect.")),
-  ]);
+  await within(hello, 30_000, "The reviewer did not connect.");
   // The turn comes from the Gateway CLI caller, whose run carries operator.write but not
   // operator.approvals: the authority of an ordinary CLI or channel run (finding 2774).
   const accepted = await callGatewayFromCli("agent", gateway, {
@@ -287,10 +298,7 @@ try {
     sessionKey: "agent:main:command-approval",
     idempotencyKey: randomUUID(),
   });
-  await Promise.race([
-    peerAnswered,
-    delay(60_000).then(() => assert.fail("The native approval request got no answer.")),
-  ]);
+  await within(peerAnswered, 60_000, "The native approval request got no answer.");
   const completed = await callGatewayFromCli("agent.wait", gateway, {
     runId: accepted.runId,
     timeoutMs: 60_000,

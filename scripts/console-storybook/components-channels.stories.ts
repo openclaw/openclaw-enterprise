@@ -50,6 +50,7 @@ export const SlackSecretStaged = {
 };
 export const SlackOpen = { ...story("slackOpen"), name: "Slack open policy" };
 export const SlackDisabled = { ...story("slackDisabled"), name: "Slack disabled policy" };
+export const SlackPluginDenied = { ...story("slackPluginDenied"), name: "Slack plugin denied" };
 export const SlackUnsupported = { ...story("slackUnsupported"), name: "Slack unsupported shape" };
 export const SlackMixedUsersUnsupported = {
   ...story("slackMixedUsersUnsupported"),
