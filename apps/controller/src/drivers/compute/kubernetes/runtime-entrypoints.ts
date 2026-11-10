@@ -2295,8 +2295,9 @@ function probeExitFailure({ error, status, signal }) {
 // its window, sampled by a preload in the CLI: a hung provider leaves the CLI
 // idle there, a starved one waits (finding 2675). Without a window reading it
 // stays MODEL_PROBE_TIMEOUT. The preload (OPENCLAW_PROBE_CPU_WINDOW) samples
-// the cgroup each second with the wrapper's own cpuWaitSample and, at exit,
-// writes the last sample at least 15 s old and the exit sample.
+// the cgroup each second on the CLI's main thread with the wrapper's own
+// cpuWaitSample and, at exit, writes the last sample at least 15 s old and the
+// exit sample.
 // The wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
@@ -2413,9 +2414,9 @@ function cpuWaitBetween(before, after) {
 }
 const cpuStarved = (elapsedMs, cpuWaitMs) => (cpuWaitMs > elapsedMs / 4 ? "MODEL_PROBE_CPU_STARVED" : "MODEL_PROBE_TIMEOUT");
 const OPENCLAW_PROBE_TIMEOUT_MS = 15000;
-const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
+const OPENCLAW_PROBE_CPU_WINDOW = (file) => "try{if(require(\"node:worker_threads\").isMainThread){const fs=require(\"node:fs\");" + cpuCgroupFile + cpuWaitSample +
   "const a=[cpuWaitSample(fs)];setInterval(()=>a.push(cpuWaitSample(fs)),1000).unref();process.on(\"exit\",()=>{try{const e=cpuWaitSample(fs);fs.writeFileSync(" +
-  JSON.stringify(file) + ",JSON.stringify([a.findLast((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "),e]))}catch{}})}catch{}";
+  JSON.stringify(file) + ",JSON.stringify([a.findLast((s)=>s[0]<=e[0]-" + OPENCLAW_PROBE_TIMEOUT_MS + "),e]))}catch{}})}}catch{}";
 
 function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
   const stageStartedAt = Date.now();

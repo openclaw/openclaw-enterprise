@@ -507,8 +507,8 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
 
 test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", () => {
   // Run the generated preload as the CLI would load it, with a fake clock and
-  // cgroup: it samples each second and at exit writes the last sample at least
-  // 15 s old beside the exit sample.
+  // cgroup: on the main thread it samples each second and at exit writes the last
+  // sample at least 15 s old beside the exit sample; worker threads skip it.
   const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("function cpuCgroupFile(");
   const end = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe(");
   assert.ok(begin >= 0 && end > begin);
@@ -518,58 +518,63 @@ test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", 
       '\nthis.preload = OPENCLAW_PROBE_CPU_WINDOW("/probe/cpu-window.json");',
     context,
   );
-  let now = 0;
-  let pressureUs = 0;
-  let tick;
-  let exit;
-  const writes = new Map();
-  const fs = {
-    readFileSync(path) {
-      if (path === "/sys/fs/cgroup/cpu.max") {
-        return "50000 100000\n";
-      }
-      if (path === "/sys/fs/cgroup/cpu.pressure") {
-        return `some avg10=0.00 total=${pressureUs}\n`;
-      }
-      if (path === "/sys/fs/cgroup/cpu.stat") {
-        return "nr_throttled 7\nthrottled_usec 900000\n";
-      }
-      throw new Error(`unexpected path ${path}`);
-    },
-    writeFileSync(path, value) {
-      writes.set(path, value);
-    },
-  };
-  vm.runInNewContext(context.preload, {
-    JSON,
-    Date: { now: () => now },
-    require(name) {
-      assert.equal(name, "node:fs");
-      return fs;
-    },
-    setInterval(callback, delay) {
-      assert.equal(delay, 1000);
-      tick = callback;
-      return { unref() {} };
-    },
-    process: {
-      on(event, callback) {
-        assert.equal(event, "exit");
-        exit = callback;
+  const load = (isMainThread) => {
+    const run = { now: 0, pressureUs: 0, tick: undefined, exit: undefined, writes: new Map() };
+    const fs = {
+      readFileSync(path) {
+        if (path === "/sys/fs/cgroup/cpu.max") {
+          return "50000 100000\n";
+        }
+        if (path === "/sys/fs/cgroup/cpu.pressure") {
+          return `some avg10=0.00 total=${run.pressureUs}\n`;
+        }
+        if (path === "/sys/fs/cgroup/cpu.stat") {
+          return "nr_throttled 7\nthrottled_usec 900000\n";
+        }
+        throw new Error(`unexpected path ${path}`);
       },
-    },
-  });
+      writeFileSync(path, value) {
+        run.writes.set(path, value);
+      },
+    };
+    vm.runInNewContext(context.preload, {
+      JSON,
+      Date: { now: () => run.now },
+      require(name) {
+        if (name === "node:worker_threads") {
+          return { isMainThread };
+        }
+        assert.equal(name, "node:fs");
+        return fs;
+      },
+      setInterval(callback, delay) {
+        assert.equal(delay, 1000);
+        run.tick = callback;
+        return { unref() {} };
+      },
+      process: {
+        on(event, callback) {
+          assert.equal(event, "exit");
+          run.exit = callback;
+        },
+      },
+    });
+    return run;
+  };
+  const worker = load(false);
+  assert.deepEqual([worker.tick, worker.exit], [undefined, undefined]);
+  const run = load(true);
   // A 9 s boot waiting 1 s in every 2, then an idle 15.5 s window.
   for (let second = 1; second <= 24; second += 1) {
-    now = second * 1000;
+    run.now = second * 1000;
     if (second <= 9) {
-      pressureUs += 500_000;
+      run.pressureUs += 500_000;
     }
-    tick();
+    run.tick();
   }
-  now = 24_500;
-  exit();
-  assert.deepEqual(JSON.parse(writes.get("/probe/cpu-window.json")), [
+  run.now = 24_500;
+  run.exit();
+  assert.deepEqual(JSON.parse(run.writes.get("/probe/cpu-window.json")), [
     [9000, 4500, 900, 700],
     [24_500, 4500, 900, 700],
   ]);
