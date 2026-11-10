@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants, createReadStream, createWriteStream } from "node:fs";
 import { appendFile, lstat, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -15,6 +15,7 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
 const indexType = "application/vnd.oci.image.index.v1+json";
 const manifestType = "application/vnd.oci.image.manifest.v1+json";
+const metadataLimit = 16 * 1024 * 1024;
 const architecture = process.arch === "x64" ? "amd64" : process.arch;
 const docker = () => process.env.OCC_DOCKER_BIN ?? "docker";
 
@@ -176,16 +177,47 @@ async function extractLayout(archive, destination, signal) {
   }
 }
 
-async function inspectLayout(directory, sourceSha, signal) {
-  async function json(path) {
-    assert.ok((await lstat(path)).size <= 16 * 1024 * 1024, "Oversized OCI metadata.");
-    return JSON.parse(await readFile(path, { encoding: "utf8", signal }));
+async function readMetadata(path, signal) {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    assert.ok(stat.isFile(), "OCI metadata must be a regular file.");
+    assert.ok(stat.size <= metadataLimit, "Oversized OCI metadata.");
+    const chunks = [];
+    let size = 0;
+    // Read at most one extra byte to detect growth after the descriptor's stat.
+    for await (const chunk of file.createReadStream({
+      autoClose: false,
+      start: 0,
+      end: metadataLimit,
+      signal,
+    })) {
+      size += chunk.length;
+      assert.ok(size <= metadataLimit, "Oversized OCI metadata.");
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, size);
+  } finally {
+    await file.close();
   }
+}
+
+async function inspectLayout(directory, sourceSha, signal) {
   const verified = new Set();
   async function blob(descriptor, parse = true) {
     assert.match(descriptor.digest ?? "", digestPattern);
     assert.ok(Number.isSafeInteger(descriptor.size) && descriptor.size >= 0);
     const path = join(directory, "blobs/sha256", descriptor.digest.slice(7));
+    if (parse) {
+      const bytes = await readMetadata(path, signal);
+      assert.equal(bytes.length, descriptor.size, "OCI descriptor size mismatch.");
+      assert.equal(
+        `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        descriptor.digest,
+        "OCI descriptor digest mismatch.",
+      );
+      return JSON.parse(bytes.toString("utf8"));
+    }
     assert.equal((await lstat(path)).size, descriptor.size, "OCI descriptor size mismatch.");
     if (!verified.has(descriptor.digest)) {
       assert.equal(
@@ -195,18 +227,18 @@ async function inspectLayout(directory, sourceSha, signal) {
       );
       verified.add(descriptor.digest);
     }
-    return parse ? json(path) : undefined;
   }
-  assert.equal((await json(join(directory, "oci-layout"))).imageLayoutVersion, "1.0.0");
-  const rootPath = join(directory, "index.json");
-  const root = await json(rootPath);
+  const layout = await readMetadata(join(directory, "oci-layout"), signal);
+  assert.equal(JSON.parse(layout.toString("utf8")).imageLayoutVersion, "1.0.0");
+  const rootBytes = await readMetadata(join(directory, "index.json"), signal);
+  const root = JSON.parse(rootBytes.toString("utf8"));
   assert.equal(root.schemaVersion, 2);
   assert.equal(root.manifests.length, 1, "Expected one runtime platform.");
   let descriptor = root.manifests[0];
   const indexDigest =
     descriptor.mediaType === indexType
       ? descriptor.digest
-      : `sha256:${await hashFile(rootPath, signal)}`;
+      : `sha256:${createHash("sha256").update(rootBytes).digest("hex")}`;
   if (descriptor.mediaType === indexType) {
     const index = await blob(descriptor);
     assert.equal(index.schemaVersion, 2);
