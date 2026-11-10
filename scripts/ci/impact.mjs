@@ -74,7 +74,8 @@ function documentationPath(path) {
   }
   return (
     ["README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/docs.json"].includes(path) ||
-    /^(?:docs|specs)\/[\s\S]+\.md$/.test(path)
+    /^(?:docs|specs)\/[\s\S]+\.md$/.test(path) ||
+    /^specs\/rfcs\/[\s\S]+\.png$/.test(path)
   );
 }
 

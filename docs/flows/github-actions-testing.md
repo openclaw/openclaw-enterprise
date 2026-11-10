@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961
+last_updated_session: authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc
 ---
 
 # GitHub Actions testing flow
@@ -73,8 +73,9 @@ policy; the second parent must match the event head. Canonical main pushes compa
 the complete `before` to verified `after` range using `before` policy. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
-to docs mode. Generated API references,
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`,
+and `.png` illustrations under `specs/rfcs/` to docs mode. Other image paths and
+extensions retain full CI. Generated API references,
 executables and symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
@@ -263,6 +264,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 19:00: Treat regular RFC PNG illustrations as documentation for CI selection. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
 
 - 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
