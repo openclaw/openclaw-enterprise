@@ -1,9 +1,11 @@
+import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
 } from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
+import { recordsCoverage } from "./full-integration-coverage.ts";
 import {
   openShellGitRetentionKind,
   projectOpenShellGitRetention,
@@ -311,6 +313,7 @@ function safeMeasurement(value) {
         "unknown",
         "canceled",
         "deadline",
+        "controller-image-import",
         "routing",
         "network-verification",
         "network-cleanup",
@@ -1308,6 +1311,9 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "skipper-operation") {
+    return skipperOperationDiagnostic(diagnostic);
+  }
   if (diagnostic.kind === "openshell-startup-process") {
     const keys = Reflect.ownKeys(diagnostic);
     if (!keys.includes("kind") || !keys.includes("outcome")) {
@@ -1732,7 +1738,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}) {
+function location(data = {}, recordCoverage = false) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -1758,6 +1764,22 @@ function location(data = {}) {
     type: data.type,
     testId: data.testId,
     parentId: data.parentId,
+    caseAssertionFailure:
+      recordCoverage &&
+      !fileFailure &&
+      data.details?.type === "test" &&
+      error?.failureType === "testCodeFailure" &&
+      cause?.code === "ERR_ASSERTION" &&
+      cause?.name === "AssertionError"
+        ? true
+        : undefined,
+    caseSubtestsFailed:
+      recordCoverage &&
+      !fileFailure &&
+      (data.details?.type === "test" || data.details?.type === "suite") &&
+      error?.failureType === "subtestsFailed"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1793,6 +1815,7 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
   const progress = [];
   const readProgress = boundedProgressLines((line) => {
@@ -1864,6 +1887,19 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:fail") {
       failed = true;
     }
+    if (
+      recordCoverage &&
+      event.type === "test:summary" &&
+      typeof event.data?.file === "string" &&
+      event.data.counts
+    ) {
+      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
+      yield `${JSON.stringify({
+        type: "test:summary",
+        data: { tests, passed, failed, cancelled, skipped, todo, suites },
+      })}\n`;
+      continue;
+    }
     if (event.type === "test:diagnostic") {
       const message = event.data?.message;
       if (typeof message !== "string") {
@@ -1895,7 +1931,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data),
+      data: location(event.data, recordCoverage),
     })}\n`;
   }
   // Passing files send nothing extra.

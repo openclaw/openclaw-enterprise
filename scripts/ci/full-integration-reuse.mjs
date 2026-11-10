@@ -19,7 +19,7 @@ async function reusableRows() {
   const [rows, ci, full] = await Promise.all([
     laneRows(),
     readFile(join(root, ".github/workflows/ci.yml"), "utf8"),
-    readFile(join(root, ".github/workflows/full-integration.yml"), "utf8"),
+    readFile(join(root, ".github/workflows/full-integration-execution.yml"), "utf8"),
   ]);
   const table = JSON.parse(ci.match(/LANE_TABLE: \|\n\s*(\[[\s\S]*?\n\s*\])/)[1]);
   const node = (source) => source.match(/^ {2}NODE_VERSION: (.+)$/m)?.[1];
@@ -169,7 +169,12 @@ export async function validateResults({ directory, producer, sha, get }) {
     try {
       const path = join(directory, "download", `${lane}.json`);
       const summary = JSON.parse(await readFile(path, "utf8"));
-      if (summary.scope !== "full" || summary.sourceSha !== sha || summary.lane !== lane) {
+      if (
+        summary.scope !== "full" ||
+        summary.sourceSha !== sha ||
+        summary.lane !== lane ||
+        summary.cleanup?.status !== "passed"
+      ) {
         continue;
       }
       const validation = spawnSync(

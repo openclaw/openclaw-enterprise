@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-04
-last_updated_session: authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028
+updated: 2026-11-10
+last_updated_session: authoring-run/33560e14-9724-4c9d-922d-049dfdace344
 ---
 
 # Agent provisioning flow
@@ -115,11 +115,13 @@ and preserves explicit human identities/scopes alongside
 machine administration, defaulting to machine-only. Provisioning and deploy
 admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
 save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
-grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
-admission with admin device scopes, including whitespace; human allowlists render
-`x-openclaw-scopes` as required. With private status, `validateConfiguration`
-also refuses a Codex Configuration without `gateway.auth.password`, which the
-workspace node check signs in with. These refusals precede workload replacement.
+grants for identities outside `allowUsers`, and human admission with admin device
+scopes, including whitespace. Human allowlists require `x-openclaw-scopes`.
+Compute checks resolved `requiredHeaders` entries during provisioning and deploy
+admission and again when it renders Gateway configuration. With private status,
+`validateConfiguration` also refuses a Codex Configuration without
+`gateway.auth.password`, which the workspace node check signs in with.
+These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
 Provisioning supplies no Gateway token or trust override. Losing its claim cancels
@@ -210,6 +212,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 20:02: Trace validation of resolved trusted-proxy header names at admission and Gateway rendering. (authoring-run/33560e14-9724-4c9d-922d-049dfdace344 - 7db6741a6e6eadb48ef0fcb059ae7224b3485782)
 
 - 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 

@@ -2977,3 +2977,41 @@ test("closed Installation observes only its operator-bound Namespace, including 
   });
   assert.deepEqual(writes, []);
 });
+
+// The public startup processes must reject the quota before persistence, while a
+// valid mixed-unit control reaches the deliberately unavailable database.
+test("API and worker startup refuse fractional counted quotas before persistence", async (t) => {
+  for (const [quota, expectedCode] of [
+    [{ pods: "1.5" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ "count/deployments.apps": "1500m" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ pods: "1000m", "requests.cpu": "500m" }, "PERSISTENCE_UNAVAILABLE"],
+  ]) {
+    const configuration = installation();
+    configuration.drivers.compute.configuration.resources.namespace.quota = quota;
+    const path = await fixture(t, configuration);
+    for (const [script, event] of [
+      ["server", "startup-error"],
+      ["worker", "worker.startup-error"],
+    ]) {
+      const result = await boot(`apps/controller/src/${script}.mjs`, {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        ...productionServer,
+        OCC_CONFIG_PATH: path,
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      });
+      assert.equal(result.status, 1, result.stderr);
+      const diagnostic = startupDiagnostic(result.stderr, event);
+      assert.equal(diagnostic.code, expectedCode, result.stderr);
+      if (expectedCode === "DRIVER_CONFIGURATION_INVALID") {
+        assert.deepEqual(diagnostic.details, [
+          {
+            path: "/resources/namespace/quota",
+            code: "INVALID_FORMAT",
+            message: `Namespace quota resource ${Object.keys(quota)[0]} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+          },
+        ]);
+      }
+    }
+  }
+});

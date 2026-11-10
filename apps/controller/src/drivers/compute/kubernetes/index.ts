@@ -24,7 +24,11 @@ import {
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
 } from "../../openai-endpoint.ts";
-import { compareResourceQuantities, isResourceQuantity } from "./resource-quantities.ts";
+import {
+  compareResourceQuantities,
+  hasIntegerQuotaPrecision,
+  isResourceQuantity,
+} from "./resource-quantities.ts";
 import {
   asRecord,
   hasControlCharacter,
@@ -206,6 +210,7 @@ import {
   requireChannelTopology,
   requireCodexPlugin,
   refuseInvalidTrustedProxyIdentities,
+  refuseInvalidTrustedProxyRequiredHeaders,
   refuseKubernetesPluginEntryKeyVariants,
   refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
@@ -1797,6 +1802,34 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
 // quota resource.
 const STANDARD_QUOTA_RESOURCE =
   /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+
+// Kubernetes core/helper IsIntegerResourceName: the standard object counts and
+// extended resources, excluding requests.* and the native kubernetes.io/ namespace.
+const INTEGER_QUOTA_RESOURCES = new Set([
+  "pods",
+  "services",
+  "services.nodeports",
+  "services.loadbalancers",
+  "replicationcontrollers",
+  "resourcequotas",
+  "secrets",
+  "configmaps",
+  "persistentvolumeclaims",
+]);
+
+// An admitted qualified resource key has exactly one slash. Anchor that full
+// shape while retaining Kubernetes's native namespace suffix, not a URL rule.
+const NATIVE_QUOTA_RESOURCE = /^[^/]*kubernetes\.io\/[^/]+$/;
+
+function isIntegerQuotaResource(key: string): boolean {
+  return (
+    INTEGER_QUOTA_RESOURCES.has(key) ||
+    (key.includes("/") &&
+      !NATIVE_QUOTA_RESOURCE.test(key) &&
+      !key.startsWith("requests.") &&
+      isKubernetesQualifiedName(`requests.${key}`))
+  );
+}
 
 // A label key (also a ResourceQuota resource name) as the API server checks it: a qualified
 // name, an optional DNS subdomain prefix and a name of at most 63 characters.
@@ -3710,6 +3743,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/resources/namespace/quota",
           );
         }
+        if (isIntegerQuotaResource(key) && !hasIntegerQuotaPrecision(value)) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${key} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+            "/resources/namespace/quota",
+          );
+        }
       }
       if (asRecord(options.network) === undefined) {
         throw configurationConstraintFailure("Network policy is required.", "/network");
@@ -4853,6 +4892,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
     if (trustedProxy !== undefined) {
       refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+      refuseInvalidTrustedProxyRequiredHeaders(trustedProxy, callerSettingError, options);
     }
     if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
       requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
@@ -13680,18 +13720,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const requiredHeaders = trustedProxy.requiredHeaders;
-    if (
-      requiredHeaders !== undefined &&
-      (!Array.isArray(requiredHeaders) ||
-        requiredHeaders.some(
-          (header) => typeof header !== "string" || header === "" || header.trim() !== header,
-        ))
-    ) {
-      throw new GatewaySettingFailure(
-        "gateway.auth.trustedProxy.requiredHeaders",
-        "must be an array of nonblank, trimmed header names when set",
-      );
-    }
+    refuseInvalidTrustedProxyRequiredHeaders(
+      trustedProxy,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     if (
       this.options.gatewayRouting !== undefined &&
       Array.isArray(requiredHeaders) &&

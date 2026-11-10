@@ -12,6 +12,7 @@ import {
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
+  isHttpFieldName,
   keyedSettingPath,
   pluginSecretInputReference,
   PROVIDER_MODELS_LIST,
@@ -62,6 +63,39 @@ export function refuseInvalidTrustedProxyIdentities(
   );
   if (problem !== undefined) {
     throw createError(problem.setting, problem.requirement);
+  }
+}
+
+/**
+ * A pending Preset variable occurs at an array value, not an object key. Check its literal
+ * fragments with a valid stand-in, then check the actual name again after Preset resolution.
+ */
+export function refuseInvalidTrustedProxyRequiredHeaders(
+  trustedProxy: Readonly<Record<string, unknown>>,
+  createError: SettingError,
+  options?: ConfigurationValidationOptions,
+): void {
+  const requiredHeaders = trustedProxy.requiredHeaders;
+  if (
+    requiredHeaders !== undefined &&
+    (!Array.isArray(requiredHeaders) ||
+      requiredHeaders.some((header, index) => {
+        if (typeof header !== "string") {
+          return true;
+        }
+        const path = ["gateway", "auth", "trustedProxy", "requiredHeaders", index];
+        const type = options?.unresolvedType?.(path);
+        const literals = options?.unresolved?.(path);
+        return (
+          (type !== undefined && type !== "string" && type !== "password") ||
+          !isHttpFieldName(literals === undefined ? header : literals.join("x"))
+        );
+      }))
+  ) {
+    throw createError(
+      "gateway.auth.trustedProxy.requiredHeaders",
+      "must be an array of valid HTTP field names when set",
+    );
   }
 }
 

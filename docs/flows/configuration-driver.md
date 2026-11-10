@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-11-04
-last_updated_session: authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc
+updated: 2026-11-10
+last_updated_session: authoring-run/33560e14-9724-4c9d-922d-049dfdace344
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -15,15 +15,12 @@ requests then create, read, replace, or delete exact Namespace-owned native
 OpenClaw configuration documents through the selected bundled or installed
 Configuration Driver. The bundled Kubernetes implementation persists each
 document in a tenant-owned ConfigMap.
-Each Configuration requires immutable `kind: "agent"` and a server-managed
-generation; documents preserve unresolved inline SecretRefs without interpreting
-them. Agent deployment authorizes the separate Secret bindings, applies any
-selected Sandbox Driver transformation, and saves the validated values in the
-Agent revision. Configuration identity, kind, generation, and Secret
-references are recorded separately. This flow stops when OCC persists that
-version and hands off workload reconciliation; the selected Compute Driver
-then owns the Agent gateway, while worker execution and secret resolution remain
-outside this flow's scope.
+Each Configuration has immutable `kind: "agent"` and server-managed generation.
+It preserves unresolved inline SecretRefs. Deployment authorizes separate Secret
+bindings, applies the selected Sandbox transformation, and saves validated values
+in an Agent revision. OCC records identity, kind, generation, and Secret references
+separately. This flow ends when OCC persists the version and hands workload
+reconciliation to Compute. Worker execution and secret resolution are outside its scope.
 
 ## Entry Points
 
@@ -114,16 +111,13 @@ the exact Configuration.
 
 `packages/occ/src/index.ts:OpenClawController.createConfiguration`
 
-[Configuration route contracts](../../packages/contracts/src/api/routes.ts)
-are dispatched by the
-[controller request handler](../../apps/controller/src/index.ts) to
-`OpenClawController.createConfiguration`, `getConfiguration`,
-`updateConfiguration`, or `deleteConfiguration` in
-[OCC](../../packages/occ/src/index.ts). OCC resolves server-owned Namespace
-identity and checks the selected IAM Driver before touching tenant data:
-creation targets the exact Namespace-owned Configuration resource; reads,
-updates, and deletes target the exact Configuration identifier in that
-Namespace. POST and PATCH accept bodies up to 6 x (1 MiB + 32 KiB): the
+The [controller request handler](../../apps/controller/src/index.ts) dispatches
+[Configuration routes](../../packages/contracts/src/api/routes.ts) to OCC's
+`createConfiguration`, `getConfiguration`, `updateConfiguration`, and
+`deleteConfiguration`. OCC resolves the server-owned Namespace and checks the
+selected IAM Driver before touching tenant data. Creation targets the
+Namespace-owned resource; reads, updates, and deletes target its exact
+Configuration identifier. POST and PATCH accept bodies up to 6 x (1 MiB + 32 KiB): the
 Kubernetes Driver's 1 MiB of values and the envelope in six-byte JSON escapes.
 Their `onRequest` hook runs `authorizeConfigurationWrite` before the body is
 read, so a caller without the grant gets `403` before any body error; the
@@ -141,6 +135,12 @@ a stale one under the row lock with an `/expectedGeneration` `409` detail.
 On the bundled Kubernetes Compute, writes refuse an enabled channel's unbound
 credential reference, or a Slack token SecretRef the Slack Channel Driver cannot
 read, with deployment's rule (`requireChannelSecretBindings`).
+
+Kubernetes Compute checks `gateway.auth.trustedProxy.requiredHeaders` on
+Configuration save. Partial Preset saves check each entry's literal fragments
+with valid stand-ins. [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md)
+defines the accepted names.
+
 `kind`, `generation`, and ownership are server-owned. OCC preserves nested values
 and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
@@ -192,7 +192,7 @@ successful deploy audit row. Its sender is synthetic. The HTTP fixture does not 
 Run focused Configuration conformance and integration checks:
 
 ```bash
-node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs tests/conformance/filesystem-configuration.test.mjs
+node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs tests/conformance/filesystem-configuration.test.ts
 node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.mjs
 node --test tests/integration/postgres-platform-state-kubernetes.test.mjs
 ```
@@ -233,6 +233,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 20:02: Document trusted-proxy header validation at Configuration and Preset save. (authoring-run/33560e14-9724-4c9d-922d-049dfdace344 - 7db6741a6e6eadb48ef0fcb059ae7224b3485782)
 
 - 2026-11-04 08:08: Distinguish network dial failures and invalid receipts in CLI recovery hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - 8c2a1e4a)
 

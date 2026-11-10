@@ -385,15 +385,34 @@ describe("CI preparation", { concurrency }, () => {
   for (const { scenario, error } of [
     { scenario: "success" },
     { scenario: "podman-success" },
+    { scenario: "docker-manifest" },
+    // An index digest can agree across nodes without identifying a platform image.
+    { scenario: "oci-index", error: /Imported.*does not identify an image manifest/ },
+    { scenario: "docker-manifest-list", error: /Imported.*does not identify an image manifest/ },
     { scenario: "delayed-overlay-route" },
     { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
     {
       scenario: "missing-alias",
-      error: /Unable to find imported OCC_TEST_KUBERNETES_IMAGE reference/,
+      error: /canonical image not found/,
     },
     { scenario: "missing-cri", error: /synthetic CRI image not found/ },
     { scenario: "missing-worker-cri", error: /synthetic CRI image not found/ },
     { scenario: "lagging-worker-cri" },
+    // A present image may still await the CRI label event, but missing retention
+    // must never publish successful offline workload inputs.
+    { scenario: "lagging-worker-pin" },
+    { scenario: "lagging-worker-missing-pin" },
+    // Malformed CRI fields are not delayed cache or pin observations.
+    { scenario: "string-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "mixed-worker-cri-digests", error: /CRI.*does not match the imported.*digest/ },
+    { scenario: "malformed-worker-cri-pin", error: /CRI.*reported a malformed.*pin/ },
+    // The worker must independently match containerd even if CRI would agree.
+    {
+      scenario: "wrong-worker-containerd-digest",
+      error: /containerd.*does not match the imported.*digest/,
+    },
+    { scenario: "unpinned-worker-cri", error: /CRI.*did not report the imported.*image pinned/ },
+    { scenario: "wrong-worker-cri-digest", error: /CRI.*does not match the imported.*digest/ },
     { scenario: "absent-worker-cri", error: /level=fatal msg="no such image / },
     // A hung check fails at its own timeout (3 s here, so a busy runner does not trip the
     // host inspects that share it), never retried as a cache miss.
@@ -500,14 +519,23 @@ describe("CI preparation", { concurrency }, () => {
         preparation.filter(
           ({ args }) => args[1] === `k3d-${cluster.name}-${suffix}` && args[2] === "crictl",
         ).length;
-      // Only CRI's "no such image" answer waits for its event-fed cache; other
-      // CRI failures stay final on the first lookup.
+      // Cache misses and valid unpinned observations can lag containerd events;
+      // malformed fields and identity mismatches stay final on the first lookup.
       const expectedWorkerLookups = {
         "missing-worker-cri": 1,
         "lagging-worker-cri": 3,
+        "lagging-worker-pin": 3,
+        "lagging-worker-missing-pin": 3,
+        "string-worker-cri-digests": 1,
+        "mixed-worker-cri-digests": 1,
+        "malformed-worker-cri-pin": 1,
+        "wrong-worker-containerd-digest": 0,
+        "oci-index": 0,
+        "docker-manifest-list": 0,
+        "wrong-worker-cri-digest": 1,
         "hung-worker-cri": 1,
       }[scenario];
-      if (expectedWorkerLookups) {
+      if (expectedWorkerLookups !== undefined) {
         assert.equal(criLookups("agent-0"), expectedWorkerLookups);
       }
       if (scenario === "missing-cri") {
@@ -2762,14 +2790,14 @@ process.exit(2);
     const laneTable = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
     assert.ok(laneTable, "ci.yml declares the CI Impact lane table");
     const fullIntegration = await readFile(
-      join(repositoryRoot, ".github/workflows/full-integration.yml"),
+      join(repositoryRoot, ".github/workflows/full-integration-execution.yml"),
       "utf8",
     );
     const toolProfiles = [
       ...JSON.parse(laneTable[1]).map(({ lane, profile }) => [`ci.yml ${lane}`, lane, profile]),
       ...[
         ...fullIntegration.matchAll(/- lane: ([a-z0-9-]+)\n\s+title: .*\n\s+profile: ([a-z]+)/g),
-      ].map(([, lane, profile]) => [`full-integration.yml ${lane}`, lane, profile]),
+      ].map(([, lane, profile]) => [`full-integration-execution.yml ${lane}`, lane, profile]),
     ];
     for (const [where, lane, profile] of toolProfiles) {
       if (manifest.lanes[lane]?.prepare?.codexSeccomp) {
@@ -2787,7 +2815,10 @@ process.exit(2);
     // so a channel-server outage fails every Compose QA run (finding 1056).
     const workflows = [
       [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
-      [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+      [
+        ".github/workflows/full-integration-execution.yml",
+        (workflow) => workflow.jobs["qa-matrix"].env,
+      ],
     ];
     for (const [path, env] of workflows) {
       const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));
@@ -3271,7 +3302,7 @@ if (args[0] === "pull") {
       assert.equal(result.status, 1, lane);
       assertStderrMatch(
         result.stderr,
-        /Runtime artifacts are supported only by the ordinary image lanes/,
+        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
         lane,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });

@@ -47,6 +47,12 @@ separate password. A Dedicated Codex Gateway that applies its workspace node at
 runtime signs in with that password, so save and deployment refuse such an Agent's
 Configuration without it ([Compute admission](../compute-admission.md#kubernetes-compute)).
 
+Each entry in `gateway.auth.trustedProxy.requiredHeaders` must be a valid HTTP
+field name under [RFC 9110, section 5.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.1). You can omit the list or leave it empty. Compute keeps the spelling
+and case of valid names. For routed Agents, leave out headers the route removes.
+If a name is invalid, the refusal message names only the setting and its
+requirement.
+
 ```json
 {
   "gateway": {
@@ -78,12 +84,12 @@ send a value that is not a scope, such as `none`: many proxies drop empty
 headers. Native HTTP APIs, such as `/tools/invoke` and `/sessions/<key>/kill`,
 ignore `identityScopes`: without the header, OpenClaw gives a trusted-proxy request
 its default operator scopes, including `operator.admin`, narrowed only by native
-role ceilings. So whenever `allowUsers` admits a human, Compute adds
-`x-openclaw-scopes` to `trustedProxy.requiredHeaders` (operator entries are kept;
-they must be nonblank, trimmed names, and on routed Agents may not name a header
-the route removes), and the Gateway refuses any trusted-proxy request without it:
-`401` on HTTP, and a WebSocket connect falls back to device authentication. The
-requirement proves the header is present, not who set it: an ingress that forwards
+role ceilings. When `allowUsers` admits a human, Compute adds
+`x-openclaw-scopes` to `trustedProxy.requiredHeaders` if the list has no
+case-insensitive match. For trusted-proxy requests without the header,
+the Gateway returns `401` on HTTP and falls back to device authentication on
+WebSocket connect. The presence check relies on the ingress to set the header.
+An ingress that forwards
 a client's `x-openclaw-scopes` still lets a person claim `operator.admin` on those
 APIs. The administration HTTPRoute sets the header to `operator.admin` for the
 machine identity. The [OCC browser chat route](../../agent-native-admin.md) uses

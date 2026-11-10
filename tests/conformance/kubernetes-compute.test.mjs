@@ -137,6 +137,8 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
+import { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -1225,300 +1227,63 @@ function dedicatedFirstDeployFixture({
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const agentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
-  const objects = new Map();
-  const templates = [];
-  const key = (kind, name, target = namespace) =>
-    `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
-  const save = (object) =>
-    objects.set(
-      key(object.kind, object.metadata.name, object.metadata.namespace),
-      structuredClone(object),
-    );
-  const read = (kind, name, target = namespace) => {
-    const value = objects.get(key(kind, name, target));
-    if (!value) {
-      throw Object.assign(new Error("not found"), { statusCode: 404 });
-    }
-    return structuredClone(value);
-  };
-  const executionNamespace = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
-  executionNamespace.metadata.name = namespace;
-  if (namespace !== kubernetesNamespaceName(tenant.id)) {
-    executionNamespace.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
-  }
-  save({ ...executionNamespace, status: { phase: "Active" } });
-  save({
-    ...driver.manifest(
-      "v1",
-      "Secret",
-      `transport-${digest(revision.agentId)}`,
-      { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: namespace, plane: "control" },
-    ),
-    type: "Opaque",
-    metadata: {
-      ...driver.manifest(
-        "v1",
-        "Secret",
-        `transport-${digest(revision.agentId)}`,
-        { namespaceId: tenant.id, agentId: revision.agentId },
-        { name: namespace, plane: "control" },
-      ).metadata,
-      uid: "transport-uid",
-      resourceVersion: "1",
-    },
-    data: {
-      "app-server-token": Buffer.from("test-transport").toString("base64"),
-    },
-  });
-  save({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: {
-      name: "occ-model-key",
-      namespace,
-      uid: "model-secret-uid",
-    },
-    data: { value: Buffer.from("fixture-model-key").toString("base64") },
-  });
-  for (const target of [
-    { name: namespace, plane: "execution" },
-    { name: namespace, plane: "control" },
-  ]) {
-    for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
-      save(policy);
-    }
-  }
-  // Only transport observations are supplied. Startup order and readiness use
-  // the real driver; successful writes do not make a Deployment ready.
-  const clients = { core: {}, apps: {}, networking: {}, objects: {}, discovery: {} };
-  for (const [api, kinds] of [
-    [
-      clients.core,
-      [
-        "ConfigMap",
-        "Secret",
-        "Service",
-        "ServiceAccount",
-        "PersistentVolumeClaim",
-        "ResourceQuota",
-      ],
-    ],
-    [clients.apps, ["Deployment"]],
-    [clients.networking, ["NetworkPolicy"]],
-  ]) {
-    for (const kind of kinds) {
-      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) => {
-        if (state.unreadableKind === kind) {
-          throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+  const { objects, templates, key, save, read, clients, podPatches, markReady } =
+    createDedicatedDeployKubernetesFixture(
+      { namespace, gatewayName, state, revision, sandboxDriver, clock },
+      (save) => {
+        const executionNamespace = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
+        executionNamespace.metadata.name = namespace;
+        if (namespace !== kubernetesNamespaceName(tenant.id)) {
+          executionNamespace.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
         }
-        return read(kind, name, target);
-      };
-      const write = async ({ body }, { replace = false } = {}) => {
-        const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
-        // Like the API server: every write bumps resourceVersion, and a replace that names a
-        // stale one is a 409 Conflict (finding 1678). Two writes with the metadata of one read,
-        // as workspaceNodeReady once did (#2750 review), fail here as they do live.
-        const current = previous?.metadata.resourceVersion;
-        const named = body.metadata.resourceVersion;
-        if (replace && previous !== undefined && named !== undefined && named !== current) {
-          throw Object.assign(
-            new Error(
-              `Operation cannot be fulfilled on ${kind} ${body.metadata.name}: the object has been modified`,
-            ),
-            { statusCode: 409 },
-          );
-        }
-        const changed =
-          kind === "Deployment" && JSON.stringify(previous?.spec) !== JSON.stringify(body.spec);
-        const value = {
-          ...previous,
-          ...structuredClone(body),
+        save({ ...executionNamespace, status: { phase: "Active" } });
+        save({
+          ...driver.manifest(
+            "v1",
+            "Secret",
+            `transport-${digest(revision.agentId)}`,
+            { namespaceId: tenant.id, agentId: revision.agentId },
+            { name: namespace, plane: "control" },
+          ),
+          type: "Opaque",
           metadata: {
-            ...previous?.metadata,
-            ...body.metadata,
-            uid: `${body.metadata.name}-uid`,
-            resourceVersion: String(Number(current ?? "0") + 1),
+            ...driver.manifest(
+              "v1",
+              "Secret",
+              `transport-${digest(revision.agentId)}`,
+              { namespaceId: tenant.id, agentId: revision.agentId },
+              { name: namespace, plane: "control" },
+            ).metadata,
+            uid: "transport-uid",
+            resourceVersion: "1",
           },
-        };
-        if (kind === "Deployment") {
-          const template = JSON.stringify(body.spec.template);
-          if (template !== JSON.stringify(previous?.spec.template)) {
-            // Each new pod template is a workload start: both use Recreate.
-            templates.push({
-              name: body.metadata.name,
-              template: structuredClone(body.spec.template),
-            });
-          }
-          value.metadata.generation = (previous?.metadata.generation ?? 0) + Number(changed);
-          if (changed) {
-            delete value.status;
-          }
-        }
-        if (body.stringData) {
-          value.data = Object.fromEntries(
-            Object.entries(body.stringData).map(([name, value]) => [
-              name,
-              Buffer.from(value).toString("base64"),
-            ]),
-          );
-        }
-        save(value);
-        return value;
-      };
-      api[`patchNamespaced${kind}`] = write;
-      api[`createNamespaced${kind}`] = write;
-      api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
-    }
-  }
-  clients.core.listNamespace = async ({ labelSelector }) => ({
-    items:
-      namespace !== kubernetesNamespaceName(tenant.id) &&
-      labelSelector === `openclaw.dev/namespace=${tenant.id}`
-        ? [read("Namespace", namespace)]
-        : [],
-  });
-  clients.core.readNamespace = async ({ name }) => read("Namespace", name);
-  clients.objects.read = async (object) =>
-    read(object.kind, object.metadata.name, object.metadata.namespace);
-  clients.objects.patch = async (object) => {
-    save(object);
-    return object;
-  };
-  clients.discovery.listNamespacedEndpointSlice = async () => ({
-    items: [
-      {
-        metadata: {
-          labels: { "kubernetes.io/service-name": gatewayName },
-          ownerReferences: [{ kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` }],
-        },
-        endpoints: [{ conditions: { ready: true } }],
-      },
-    ],
-  });
-  clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
-    const labels = labelSelectorLabels(labelSelector);
-    const role = labels["openclaw.dev/workload-role"];
-    if (role === "agent" && sandboxDriver !== undefined) {
-      return { items: state.providerPod === undefined ? [] : [structuredClone(state.providerPod)] };
-    }
-    return {
-      items: [
-        {
+          data: {
+            "app-server-token": Buffer.from("test-transport").toString("base64"),
+          },
+        });
+        save({
           apiVersion: "v1",
-          kind: "Pod",
+          kind: "Secret",
           metadata: {
-            name: `${role}-pod`,
-            namespace: requestedNamespace,
-            uid: `${role}-uid`,
-            labels,
-            // A Pod being deleted, as during a rollout or a scale-down.
-            ...(state.terminatingRole === role
-              ? { deletionTimestamp: "2026-08-25T00:00:00Z" }
-              : {}),
+            name: "occ-model-key",
+            namespace,
+            uid: "model-secret-uid",
           },
-          ...(state.unschedulableRole === role
-            ? {
-                status: {
-                  phase: "Pending",
-                  conditions: [
-                    {
-                      type: "PodScheduled",
-                      status: "False",
-                      reason: "Unschedulable",
-                      message: "0/1 nodes are available: 1 Insufficient memory.",
-                    },
-                  ],
-                },
-              }
-            : state.waitingRole === role
-              ? {
-                  status: {
-                    phase: "Pending",
-                    conditions: [{ type: "PodScheduled", status: "True" }],
-                    [state.waitingStatuses ?? "containerStatuses"]: [
-                      {
-                        name: role,
-                        state: {
-                          waiting: {
-                            reason: state.waitingReason,
-                            message: "Back-off pulling image registry.invalid/runtime:missing",
-                          },
-                        },
-                      },
-                    ],
-                  },
-                }
-              : { status: { phase: "Running", podIP: "10.42.0.12" } }),
-        },
-      ],
-    };
-  };
-  // Annotation patches on running Pods: the kubelet syncs a Pod on this update
-  // event, which refreshes its optional setup Secret volume at once.
-  const podPatches = [];
-  clients.core.patchNamespacedPod = async ({ name, namespace: target, body }) => {
-    podPatches.push({ name, namespace: target, body: structuredClone(body) });
-    if (
-      name === "agent-pod" &&
-      state.pairAfterSetupMs !== undefined &&
-      body.metadata.annotations["openclaw.dev/workspace-node-setup"] !== undefined
-    ) {
-      // The setup file reaches the running Harness; its node host boots and pairs.
-      assert.notEqual(clock, undefined, "pairAfterSetupMs needs the fake clock");
-      state.pairAtMs = clock.now + state.pairAfterSetupMs;
-    }
-    const binding = objects.get(key("ConfigMap", `${gatewayName}-workspace-node`, namespace));
-    if (name === "gateway-pod" && binding !== undefined && state.gatewayAppliesBinding) {
-      // The kubelet refreshes the volume and the wrapper hot-applies the node.
-      const { revisionId, deviceId } = JSON.parse(binding.data["workspace-node.json"]);
-      if (revisionId === revision.id) {
-        state.gatewayWorkspaceNodeId = deviceId;
-      }
-    }
-    return body;
-  };
-  clients.core.connectGetNamespacedPodProxyWithPath = async ({ name, path }) => {
-    const role = name.startsWith("agent-") ? "agent" : "gateway";
-    if (path === "openclaw/runtime/status") {
-      return {
-        revisionId: revision.id,
-        container: role,
-        podUid: `${role}-uid`,
-        ...(role === "gateway" && state.gatewayWorkspaceNodeId !== undefined
-          ? { workspaceNodeId: state.gatewayWorkspaceNodeId }
-          : {}),
-        ...(role === "gateway" && state.gatewayWorkspaceNodeFailure !== undefined
-          ? { workspaceNodeFailure: state.gatewayWorkspaceNodeFailure }
-          : {}),
-        ...(role === "gateway" && state.gatewayRuntimeFailure !== undefined
-          ? { runtimeFailure: state.gatewayRuntimeFailure }
-          : {}),
-      };
-    }
-    return {
-      revisionId: revision.id,
-      container: role,
-      podUid: `${role}-uid`,
-      startupId: `${role}-startup`,
-      phase: "ready",
-      successfulPluginIds: ["codex-plugin:example"],
-      failures: [],
-    };
-  };
+          data: { value: Buffer.from("fixture-model-key").toString("base64") },
+        });
+        for (const target of [
+          { name: namespace, plane: "execution" },
+          { name: namespace, plane: "control" },
+        ]) {
+          for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
+            save(policy);
+          }
+        }
+      },
+    );
   driver.apiClients = Promise.resolve(clients);
   const prepare = () =>
     driver.prepareRevision(revision, context ?? authContext(revision, namespace));
-  const markReady = (name) => {
-    const object = read("Deployment", name);
-    object.status = {
-      observedGeneration: object.metadata.generation,
-      replicas: 1,
-      updatedReplicas: 1,
-      readyReplicas: 1,
-    };
-    save(object);
-  };
   return {
     state,
     driver,
@@ -9312,10 +9077,20 @@ async function chatgptIssuanceFixture() {
     await request().driver.createCredential(account);
     binding.externalCredentialId = null;
   };
+  const afterSecretRead = async (afterRead) => {
+    const { core } = await secrets.driver.apiClients;
+    const read = core.readNamespacedSecret;
+    core.readNamespacedSecret = async (request) => {
+      const result = await read(request);
+      afterRead();
+      return result;
+    };
+  };
   const account = { id: secrets.serviceAccountId, namespaceId: tenant.id, name: "issued" };
   return {
     ...secrets,
     account,
+    afterSecretRead,
     binding,
     crashedIssuance,
     deletedAccounts,
@@ -9399,19 +9174,15 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
   await t.test(
     "a reclaim whose lock was lost while reading the Secret touches nothing a later issuance committed",
     async () => {
-      const { account, binding, crashedIssuance, driver, objects, key, request, revoked } =
+      const { account, afterSecretRead, binding, crashedIssuance, objects, key, request, revoked } =
         await chatgptIssuanceFixture();
       await crashedIssuance(account);
       // The request's PostgreSQL session ends during the Kubernetes read, releasing the account
       // lock; another issuance records the Secret it now holds before the read returns. The
       // binding reread after the read sees that record, so nothing is revoked or deleted.
-      const { core } = await driver.apiClients;
-      const read = core.readNamespacedSecret;
-      core.readNamespacedSecret = async (request) => {
-        const result = await read(request);
+      await afterSecretRead(() => {
         binding.externalCredentialId = "cred-1";
-        return result;
-      };
+      });
       await assert.rejects(
         request().driver.createCredential(account),
         (error) =>
@@ -9426,21 +9197,17 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
   await t.test(
     "a reclaim whose session ended while reading the Secret fails without touching it",
     async () => {
-      const { account, crashedIssuance, driver, objects, key, request, revoked, state } =
+      const { account, afterSecretRead, crashedIssuance, objects, key, request, revoked, state } =
         await chatgptIssuanceFixture();
       await crashedIssuance(account);
       // The PostgreSQL session ends during the Kubernetes read, so the binding reread on the
       // transaction's connection fails: no proof the lock still holds, so nothing is revoked.
       const lost = new DependencyUnavailableError("The database session ended.");
-      const { core } = await driver.apiClients;
-      const read = core.readNamespacedSecret;
-      core.readNamespacedSecret = async (request) => {
-        const result = await read(request);
+      await afterSecretRead(() => {
         state.queryInTransaction = async () => {
           throw lost;
         };
-        return result;
-      };
+      });
       await assert.rejects(request().driver.createCredential(account), (error) => error === lost);
       assert.deepEqual(revoked, []);
       assert.equal(objects.has(key), true);
@@ -13531,11 +13298,8 @@ async function exerciseEmbeddedReplacement(scenario) {
   };
   const gatewayName = `gateway-${suffix}`;
   const agentName = `agent-${suffix}`;
-  const objects = new Map();
-  const key = (kind, name) => `${kind}:${name}`;
-  const save = (object) =>
-    objects.set(key(object.kind, object.metadata.name), structuredClone(object));
-  const missing = (name) => Object.assign(new Error(`${name} not found`), { statusCode: 404 });
+  const { objects, key, save, patches, readyDeployments, clients } =
+    createEmbeddedReplacementKubernetesFixture(tenant.id, gatewayName);
 
   save({
     ...driver.manifest("v1", "Namespace", namespace, tenantOwnership),
@@ -13614,182 +13378,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   save(activeRoute);
   const predecessor = structuredClone(objects.get(key("Deployment", gatewayName)));
 
-  const patches = [];
-  const readyDeployments = new Set();
-  let replacementDeploymentPatched = false;
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespacedSecret({ name, namespace: target }) {
-        if (name === "occ-model-key") {
-          return {
-            apiVersion: "v1",
-            kind: "Secret",
-            metadata: { name, namespace: target, uid: "model-secret-uid" },
-            data: { value: Buffer.from("fixture-model").toString("base64") },
-          };
-        }
-        const observed = objects.get(key("Secret", name));
-        if (!observed || observed.metadata.namespace !== target) {
-          throw missing(name);
-        }
-        return structuredClone(observed);
-      },
-      async createNamespacedSecret({ body }) {
-        const value = {
-          ...body,
-          metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
-        };
-        save(value);
-        return value;
-      },
-      async deleteNamespacedSecret({ name, body }) {
-        assert.equal(objects.get(key("Secret", name))?.metadata.uid, body.preconditions.uid);
-        objects.delete(key("Secret", name));
-      },
-      async deleteNamespacedConfigMap({ name, body }) {
-        assert.equal(objects.get(key("ConfigMap", name))?.metadata.uid, body.preconditions.uid);
-        objects.delete(key("ConfigMap", name));
-      },
-
-      async listNamespacedPod() {
-        return { items: [] };
-      },
-      async listNamespace({ labelSelector }) {
-        assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
-        return { items: [] };
-      },
-      async readNamespace({ name }) {
-        return structuredClone(objects.get(key("Namespace", name)) ?? missing(name));
-      },
-      async readNamespacedConfigMap({ name }) {
-        const current = objects.get(key("ConfigMap", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedConfigMap({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedServiceAccount({ name }) {
-        const current = objects.get(key("ServiceAccount", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedServiceAccount({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedService({ name }) {
-        const current = objects.get(key("Service", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedService({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedPersistentVolumeClaim({ name }) {
-        const current = objects.get(key("PersistentVolumeClaim", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedPersistentVolumeClaim({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-    },
-    apps: {
-      async readNamespacedDeployment({ name }) {
-        const current = objects.get(key("Deployment", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        const observed = structuredClone(current);
-        // Readiness is an explicit transport observation, never inferred from a successful write.
-        if (readyDeployments.has(name)) {
-          observed.status = {
-            observedGeneration: observed.metadata.generation,
-            replicas: 1,
-            updatedReplicas: 1,
-            readyReplicas: 1,
-          };
-        }
-        return observed;
-      },
-      async patchNamespacedDeployment({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        if (body.metadata.name === gatewayName) {
-          replacementDeploymentPatched = true;
-        }
-        const previous = objects.get(key("Deployment", body.metadata.name));
-        save({
-          ...previous,
-          ...body,
-          metadata: {
-            ...body.metadata,
-            generation: previous?.metadata.generation ?? 1,
-            uid: previous?.metadata.uid ?? `${body.metadata.name}-uid`,
-          },
-        });
-      },
-    },
-    discovery: {
-      async listNamespacedEndpointSlice() {
-        assert.equal(
-          replacementDeploymentPatched,
-          true,
-          "replacement preparation must not wait on the unready previous gateway",
-        );
-        return {
-          items: [
-            {
-              metadata: {
-                labels: { "kubernetes.io/service-name": gatewayName },
-                ownerReferences: [
-                  { kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` },
-                ],
-              },
-              endpoints: [{ conditions: { ready: true } }],
-            },
-          ],
-        };
-      },
-    },
-    networking: {
-      async readNamespacedNetworkPolicy({ name }) {
-        const current = objects.get(key("NetworkPolicy", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedNetworkPolicy({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-    },
-    objects: {
-      async read({ metadata }) {
-        const current = objects.get(key("HTTPRoute", metadata.name));
-        if (current === undefined) {
-          throw missing(metadata.name);
-        }
-        return structuredClone(current);
-      },
-      async patch(body) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save({ ...body, metadata: { ...body.metadata, uid: "route-uid" } });
-      },
-    },
-  });
+  driver.apiClients = Promise.resolve(clients);
 
   admitRevisionHarness(driver, oldRevision);
   admitRevisionHarness(driver, replacement);
@@ -17106,6 +16695,7 @@ test("resource quantities reject bare numbers with structured field diagnostics"
   // standard quota resource; values are non-negative quantities.
   for (const [resource, value, message] of [
     ["bad key", "1", /Namespace quota resource "bad key" must be a Kubernetes resource name/],
+    ["https://kubernetes.io/pods", "1", /must be a Kubernetes resource name/],
     ["count/", "1", /must be a Kubernetes resource name/],
     ["Example.com/gpu", "1", /must be a Kubernetes resource name/],
     ["podz", "1", /Namespace quota resource "podz" must be a Kubernetes resource name/],
@@ -17176,6 +16766,62 @@ test("resource quantities reject bare numbers with structured field diagnostics"
 // Expected ordering comes from the API server's Quantity.Cmp semantics. These
 // values exercise decimal/binary equivalence, Nano rounding, exact large integers
 // and BinarySI saturation that a floating-point conversion cannot preserve.
+test("counted ResourceQuota values obey native integer precision before construction", () => {
+  for (const resource of [
+    "pods",
+    "services",
+    "services.nodeports",
+    "services.loadbalancers",
+    "replicationcontrollers",
+    "resourcequotas",
+    "secrets",
+    "configmaps",
+    "persistentvolumeclaims",
+    "count/deployments.apps",
+    "example.com/gpu",
+    "kubernetes.io.example/gpu",
+  ]) {
+    const configured = separateResources();
+    configured.resources.namespace.quota = { [resource]: "1500m" };
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.deepEqual(error.error.details, [
+          {
+            path: "/resources/namespace/quota",
+            code: "INVALID_FORMAT",
+            message: `Namespace quota resource ${resource} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+          },
+        ]);
+        return true;
+      },
+    );
+  }
+  // Upstream ValidateResourceQuotaSpec controls: suffixes can represent whole counts;
+  // its MilliValue check also retains values that round up to a whole milliscaled count.
+  for (const [resource, quantity] of [
+    ["pods", "0"],
+    ["pods", "-0"],
+    ["pods", "1000m"],
+    ["pods", "1.5Ki"],
+    ["pods", "1e3"],
+    ["pods", "0.9999"],
+    ["pods", "1.9999"],
+    ["requests.cpu", "500m"],
+    ["requests.memory", "1.5Gi"],
+    ["requests.nvidia.com/gpu", "1500m"],
+    ["example.kubernetes.io/gpu", "1500m"],
+    // Native classification uses the namespace suffix, not a DNS-label boundary.
+    ["notkubernetes.io/gpu", "1500m"],
+  ]) {
+    const configured = separateResources();
+    configured.resources.namespace.quota = { [resource]: quantity };
+    requireConfiguration(KubernetesComputeDriver, configured);
+    assert.equal(configured.resources.namespace.quota[resource], quantity);
+  }
+});
+
 test("resource requests must fit their limits before Namespace or workload preparation", () => {
   const pairs = [
     ["cpu", "500m", "250m", false],
