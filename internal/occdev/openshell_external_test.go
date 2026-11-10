@@ -287,8 +287,8 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 	}
 	// Supervisor callbacks target the translated external address, not Pod selection.
 	callback := installation.Drivers.Sandbox.Configuration.Gateway.NetworkPolicyResources
-	if len(callback) != 1 || len(callback[0].Spec.Egress) != 1 {
-		t.Fatalf("unexpected callback policies: %#v", callback)
+	if len(callback) != 2 || len(callback[0].Spec.Egress) != 1 {
+		t.Fatalf("expected callback and harness policies: %#v", callback)
 	}
 	if !reflect.DeepEqual(callback[0].Spec.Egress[0].To, []map[string]any{{"ipBlock": map[string]any{"cidr": "203.0.113.10/32"}}}) {
 		t.Fatalf("unexpected callback egress targets: %#v", callback[0].Spec.Egress[0].To)
