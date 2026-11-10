@@ -2701,6 +2701,11 @@ export async function renderAgentDetail(
             : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`;
       } else if (!latestDeploymentStatus) {
         note = "Recorded deployment status could not be read.";
+      } else if (deploymentPending(latestDeploymentStatus)) {
+        const wait = latestDeploymentRecord?.progress?.lastAttempt?.message;
+        if (wait) {
+          note = latestDeploymentUnavailable ? `Update delayed. Last recorded: ${wait}` : wait;
+        }
       }
       setText(latestDeploymentNote, note);
     }
