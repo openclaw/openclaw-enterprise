@@ -1,3 +1,4 @@
+import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import {
   boundedProgressLines,
   openShellProgress,
@@ -1309,6 +1310,9 @@ function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
     return undefined;
+  }
+  if (diagnostic.kind === "skipper-operation") {
+    return skipperOperationDiagnostic(diagnostic);
   }
   if (diagnostic.kind === "openshell-startup-process") {
     const keys = Reflect.ownKeys(diagnostic);
