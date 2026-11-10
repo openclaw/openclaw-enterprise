@@ -313,6 +313,19 @@ Prepared delivery [waits for committed material](../reference/repository-credent
 Read-only grant activation verifies the hook. Authenticated redemption starts issuance.
 The broker rechecks live authority before release.
 
+A selected grant deployment can opt into shared issuance with
+`worker.githubSharedIssuanceGeneration` in Helm or
+`OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION` on every Worker. Complete the database
+upgrade and stop per-admission Workers before enabling it. Matching selected repository IDs
+and permissions can share a token within one Namespace and enrollment. Each request still
+needs its own live authorization and matching redemption. Keep recipient token caching disabled.
+
+Start at generation 1. To rotate the App key, mount the replacement and increase the
+generation. The first Worker that records the higher generation fences the old material for
+all Workers. Redemptions fail while old custody is unsettled. After retirement or the existing
+settlement bound, the next eligible redemption issues lazily. Previously authorized sessions
+can use the new material with a fresh authorization. An inconsistent key for the same generation fails startup.
+
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
 `OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported

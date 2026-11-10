@@ -333,6 +333,9 @@ worker:
   leaseDurationMs: 5000
   maxAttempts: 5
   convergenceTimeoutMs: 900000
+  # Empty preserves per-admission custody. Set a positive generation for all Workers
+  # only with the selected OpenShell Git grant profile and the shared custody migration.
+  githubSharedIssuanceGeneration: null
 
 # Optional credential authority listener owned by the single API process.
 # The Installation Credential Proxy authority must use the same port and file paths, on

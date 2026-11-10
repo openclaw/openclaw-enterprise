@@ -2044,6 +2044,26 @@ export const preparedGitHubFamilies = occSchema.table(
     check(
       "prepared_github_families_check",
       sql`(source #>> '{key,source,id}' = source_id AND (
+  (source->>'adoption' = 'credential_proxy_shared_github_repository'
+   AND source_id ~ '^repository-git-shared:[a-f0-9]{64}$'
+   AND NOT (source ? 'session')
+   AND source #>> '{enrollment,issuerId}' ~ '^[a-f0-9]{64}$'
+   AND jsonb_typeof(source #> '{enrollment,driver}') = 'object'
+   AND length(source #>> '{enrollment,installationId}') > 0
+   AND length(source #>> '{enrollment,namespaceId}') > 0
+   AND length(source #>> '{enrollment,repositoryBackendId}') > 0
+   AND length(source #>> '{enrollment,providerInstanceId}') > 0
+   AND source #>> '{issuance,schemaVersion}' = '1'
+   AND source #>> '{issuance,kind}' = 'selected'
+   AND source #>> '{issuance,appId}' = source #>> '{grant,appId}'
+   AND source #>> '{issuance,installationId}' = source #>> '{grant,installationId}'
+   AND source #> '{issuance,permissions}' = source #> '{grant,permissions}'
+   AND source #>> '{grant,profile}' = 'github-repository'
+   AND source #>> '{grant,id}' = source_id
+   AND source #>> '{grant,isolationId}' = source #>> '{enrollment,namespaceId}'
+   AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'
+   AND issuer = '{"kind":"worker-mounted-github-app-key"}'::jsonb)
+  OR
   (source->>'adoption' = 'prepared' AND source #>> '{grant,profile}' = 'metadata-read'
    AND admission->>'familyId' = source_id AND jsonb_typeof(issuer->'backendRef') = 'object')
   OR
@@ -2091,6 +2111,49 @@ export const preparedGitHubFamilies = occSchema.table(
     index("prepared_github_families_due")
       .on(t.nextCheckAt)
       .where(sql`enabled`),
+  ],
+);
+
+/** Consumer links retain each source's original approved revision and grant. */
+export const preparedGitHubSharedMembers = occSchema.table(
+  "prepared_github_shared_members",
+  {
+    admissionId: text("admission_id")
+      .primaryKey()
+      .references(() => repositorySessionAttempts.admissionId),
+    familyId: text("family_id")
+      .notNull()
+      .references(() => preparedGitHubFamilies.sourceId),
+    source: jsonb("source").notNull(),
+  },
+  (t) => [
+    check(
+      "prepared_github_shared_members_binding_check",
+      sql`(source->>'adoption' = 'credential_proxy_github_repository'
+      AND source #>> '{key,source,id}' = 'repository-git:' || admission_id
+      AND source #>> '{session,admissionId}' = admission_id
+      AND source #>> '{grant,profile}' = 'github-repository'
+      AND family_id ~ '^repository-git-shared:[a-f0-9]{64}$') IS TRUE`,
+    ),
+    index("prepared_github_shared_members_family").on(t.familyId),
+  ],
+);
+
+/** Monotonic Worker-selected generation for a shared GitHub issuer enrollment. */
+export const preparedGitHubSharedIssuers = occSchema.table(
+  "prepared_github_shared_issuers",
+  {
+    issuerId: text("issuer_id").primaryKey(),
+    generation: bigint("generation", { mode: "number" }).notNull(),
+    authority: text("authority").notNull(),
+    inputVersion: text("input_version").notNull(),
+  },
+  () => [
+    check(
+      "prepared_github_shared_issuers_shape",
+      sql`issuer_id ~ '^[a-f0-9]{64}$' AND generation BETWEEN 1 AND 9007199254740991
+          AND length(authority) > 0 AND input_version ~ '^[a-f0-9]{64}$'`,
+    ),
   ],
 );
 

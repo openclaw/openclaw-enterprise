@@ -114,7 +114,8 @@ async function closeMetrics() {
   return metricsClosing;
 }
 try {
-  const { databaseUrl, mode, databaseTimeoutMs, ...options } = configuration();
+  const { databaseUrl, mode, databaseTimeoutMs, sharedGitIssuanceGeneration, ...options } =
+    configuration();
   const metricsSettings = metricsConfiguration(process.env, mode);
   startupConfiguration = await loadStartupConfigurationSnapshot({ mode });
   logging = startupConfiguration.logging;
@@ -192,6 +193,7 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
+      ...(sharedGitIssuanceGeneration !== undefined && { sharedGitIssuanceGeneration }),
       gitGrantApprovals: postgresRequestCredentialApprovals,
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
@@ -204,6 +206,10 @@ try {
     );
   } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
+  } else if (sharedGitIssuanceGeneration !== undefined) {
+    throw new Error(
+      "OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION requires the selected repository Git owner.",
+    );
   }
   let metrics;
   if (metricsSettings !== undefined) {
