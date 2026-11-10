@@ -3085,24 +3085,17 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
           },
         },
       });
-      if (expected === "rejects") {
-        await assert.rejects(
-          () =>
-            driver.pluginRuntimeStatus(
-              candidate,
-              { name: namespace, plane: "execution" },
-              "gateway",
-              expectedWarnings,
-            ),
-          DependencyUnavailableError,
-        );
-      } else {
-        const status = await driver.pluginRuntimeStatus(
+      const readStatus = () =>
+        driver.pluginRuntimeStatus(
           candidate,
           { name: namespace, plane: "execution" },
           "gateway",
           expectedWarnings,
         );
+      if (expected === "rejects") {
+        await assert.rejects(readStatus, DependencyUnavailableError);
+      } else {
+        const status = await readStatus();
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
       // Every case, not-ready ones included, reads the running Pod's report.

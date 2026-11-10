@@ -167,7 +167,7 @@ jobs:
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"}
@@ -280,10 +280,12 @@ jobs:
         run: actionlint .github/workflows/*.yml
       - name: Audit suite manifest and workflows
         run: node scripts/ci/run-tests.mjs audit
+      - name: Audit the Full Integration OpenShell view
+        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
-          # This job only restores the store; it has no save step.
+          # The root workspace cache is saved by the test lanes.
           cache-mode: restore
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -299,8 +301,24 @@ jobs:
         run: pnpm format:check
       - name: Run OpenAPI check
         run: pnpm openapi:check
+      - name: Restore documentation dependencies
+        id: docs-store
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-file: scripts/docs-site/package.json
+          lockfile-path: scripts/docs-site/pnpm-lock.yaml
+          cache-mode: read-write
       - name: Check and build documentation
         run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
+      - name: Save documentation dependencies
+        # This job owns the docs cache. The build must run Pagefind successfully
+        # before saving: installation can succeed without its optional binary.
+        if: success() && steps.docs-store.outputs.store-cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.docs-store.outputs.store-path }}
+          key: ${{ steps.docs-store.outputs.store-cache-primary-key }}
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact

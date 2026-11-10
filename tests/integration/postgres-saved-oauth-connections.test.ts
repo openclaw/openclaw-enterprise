@@ -52,11 +52,7 @@ async function accountSession(
   email: string,
   password: string,
 ) {
-  const session = await signInToControllerApp(
-    app,
-    { email, password },
-    { origin: "http://127.0.0.1" },
-  );
+  const session = await signInToControllerApp(app, { email, password });
   return (
     method: "GET" | "POST" | "DELETE",
     url: string,
@@ -66,7 +62,7 @@ async function accountSession(
     target.inject({
       method,
       url,
-      headers: { host: "127.0.0.1", ...authenticatedHeaders(session) },
+      headers: { host: new URL(session.origin).host, ...authenticatedHeaders(session) },
       ...(body === undefined ? {} : { payload: body }),
     });
 }

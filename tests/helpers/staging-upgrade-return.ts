@@ -1,4 +1,4 @@
-import type { Agent } from "@openclaw-enterprise/contracts";
+import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -348,7 +348,7 @@ type ExternalRequest = (
   path: string,
   body: undefined,
   options: { authenticated: boolean; signal?: AbortSignal },
-) => Promise<{ status: number | undefined; body: unknown }>;
+) => Promise<{ status: number | undefined; requestId?: string; body: unknown }>;
 
 // These observations describe the fixture's authenticated HTTPS route. They do
 // not establish continuous availability between requests or gate the upgrade.
@@ -368,6 +368,7 @@ export async function measureUpgradeAvailability<T>(
     outcome:
       "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
     status: number | undefined;
+    requestId?: string;
   }[] = [];
   let previousFinish: number | undefined;
   const evidenceErrors: unknown[] = [];
@@ -386,19 +387,25 @@ export async function measureUpgradeAvailability<T>(
     const signal = AbortSignal.timeout(5_000);
     let outcome: (typeof samples)[number]["outcome"];
     let status: number | undefined;
+    let requestId: string | undefined;
     try {
       const response = await request("GET", "/installation", undefined, {
         authenticated: true,
         signal,
       });
       status = response.status;
-      const body = response.body as { data?: { id?: unknown } } | null;
+      const body = response.body as {
+        data?: { id?: unknown };
+      } | null;
       if (status !== 200) {
         outcome = "http-error";
       } else if (typeof body?.data?.id !== "string") {
         outcome = "invalid-response";
+      } else if (body.data.id !== installationId) {
+        outcome = "wrong-installation";
       } else {
-        outcome = body.data.id === installationId ? "ok" : "wrong-installation";
+        outcome = "ok";
+        requestId = response.requestId;
       }
     } catch (error) {
       // Keep received status even when strict response parsing rejects the body.
@@ -421,6 +428,7 @@ export async function measureUpgradeAvailability<T>(
       gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
       outcome,
       status,
+      ...(requestId === undefined ? {} : { requestId }),
     });
     previousFinish = finish;
     try {

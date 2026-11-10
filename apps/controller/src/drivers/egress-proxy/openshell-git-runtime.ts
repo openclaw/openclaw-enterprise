@@ -25,7 +25,7 @@ import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-c
 import type {
   RepositoryGitDeliveryResolver,
   RepositoryGitDeliveryBinding,
-} from "../repo/credentials/delivery.ts";
+} from "../repo/access/delivery.ts";
 import {
   subtractExpiredOpenShellGit,
   type OpenShellGitContinuity,

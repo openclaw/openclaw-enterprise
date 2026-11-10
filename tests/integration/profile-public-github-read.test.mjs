@@ -41,7 +41,6 @@ function baseInput(overrides = {}) {
       gatewayClassName: "eg",
       gatewayApiKeySecretName: "occ-private-gateway-key",
       agentNativeAdminDomain: "agents.oce.example.internal",
-      sharedCookieDomain: "oce.example.internal",
       gatewayTrustedProxyCidrs: ["192.0.2.12/32"],
       pluginStatusProxySourceCidrs: ["192.0.2.13/32"],
       nodeSelector: { "oce-role": "control" },

@@ -98,7 +98,11 @@ async function createFixture(options = {}) {
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
       auditSink,
-      development: { enabled: true, installationId },
+      development: {
+        enabled: true,
+        installationId,
+        browserOrigin: "https://console.oce.localhost",
+      },
       auth: authFixture.auth,
     });
     app.defaultSession = sessionsByPrincipalId.get(identity.id);
@@ -145,7 +149,7 @@ async function request(app, method, pathname, options = {}) {
     headers["content-type"] ??= "application/json";
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(hasBody ? { body: JSON.stringify(options.body) } : {}),

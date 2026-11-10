@@ -98,18 +98,17 @@ the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native
 digest. For the next schema, qualify both upgrading that restore and restoring
 the new schema. A match cannot establish backup completeness or provenance.
 
-Confirm the target and authorization before `pnpm db:migrate`
-(development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
-definitions and effective privileges under one advisory lock; Drizzle applies SQL
-and receipts transactionally. Production also accepts `--check`.
+Confirm target and authorization before running `pnpm db:migrate` or
+`pnpm db:migrate:production`. Under one advisory lock, both verify source,
+roles, receipts, definitions and grants. Drizzle applies SQL and receipts transactionally.
 
-On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
-means migration stopped before changing recognized OCE history, not that the
-history is corrupt. Inspect the original attempt and confirm the target.
-`empty` describes OCE schemas, not the whole database or its identity.
-`--check` inspects without migrating; it cannot authorize a retry. Upgrades,
-recovery, and unflagged migrations are unchanged. Older controller images
-reject the unknown option.
+Production `--check` inspects recognized history. [Separate service deployment](../../guides/deploy/separate-database-upgrade.md)
+uses `--require-current`: pending history returns `MIGRATION_HISTORY_PENDING`,
+drift returns `MIGRATION_HISTORY_UNSUPPORTED`. Neither check applies SQL or authorizes a retry.
+
+Helm installs with `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY` means recognized
+history already exists. Inspect the original attempt and target. `empty` describes OCE
+schemas only. Older controllers reject unknown options.
 
 Compatibility appends a receipt without rewriting either published 31-receipt
 history. On Provider terminology databases, it renames owned relational columns,

@@ -241,7 +241,7 @@
                       },
                       {
                         "page": "reference/authentication/team-enrollment",
-                        "label": "GitHub Team Enrollment"
+                        "label": "OIDC Account Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -753,6 +753,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
                     "page": "guides/deploy/immutable-installation-upgrade",
                     "label": "Immutable Installation"
                   },
@@ -802,6 +806,7 @@
             ],
             "hidden": [
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
@@ -960,6 +965,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",

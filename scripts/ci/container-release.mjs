@@ -370,8 +370,14 @@ export function readArchivePlatforms(archive, indexDigest) {
   return selected;
 }
 
-// Both commands walk the same immutable extracted layout. Only assemble links its blobs.
-async function verifyPlatform(layout, env, platform, expectedDigest) {
+// Verification shares the immutable OCI walk. Only assemble links its blobs.
+async function verifyPlatform(
+  layout,
+  env,
+  platform,
+  expectedDigest,
+  receiptName = "platform.json",
+) {
   const expected = identity(env, env.IMAGE);
   assert.match(expected.sourceSha, shaPattern, "Expected a full source SHA.");
   assert.match(expected.workflowSha, shaPattern, "Expected a full workflow SHA.");
@@ -402,12 +408,18 @@ async function verifyPlatform(layout, env, platform, expectedDigest) {
     return JSON.parse(await readFile(path, "utf8"));
   }
   assert.equal((await metadata("oci-layout")).imageLayoutVersion, "1.0.0");
-  const receipt = await metadata("platform.json");
+  const receipt = await metadata(receiptName);
   for (const [key, value] of Object.entries(expected)) {
     assert.deepEqual(receipt[key], value, `Platform receipt ${key} mismatch.`);
   }
   assert.equal(receipt.platform, platform, "Platform receipt architecture mismatch.");
-  assert.equal(receipt.native, true, "Platform must pass smoke on its native runner.");
+  assert.equal(
+    receipt.native,
+    receiptName === "platform.json",
+    receiptName === "platform.json"
+      ? "Platform must pass smoke on its native runner."
+      : "Untested builds must not claim native smoke success.",
+  );
   if (expectedDigest !== undefined) {
     assert.equal(receipt.digest, expectedDigest, "Selected build digest mismatch.");
   }
@@ -531,6 +543,43 @@ async function assemble(directory, env) {
   await appendFile(env.GITHUB_OUTPUT, `digest=${digest}\n`);
 }
 
+// Intermediate runtime artifacts cannot satisfy the qualified platform receipt contract.
+async function runtimeBuild(directory, env, record) {
+  assert.equal(env.IMAGE, "runtime");
+  const qualified = await lstat(join(directory, "platform.json")).catch((error) => {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    return null;
+  });
+  assert.equal(qualified, null, "An untested runtime artifact must not contain platform.json.");
+  if (record) {
+    assert.match(env.IMAGE_DIGEST ?? "", digestPattern, "Expected the native build output digest.");
+    await writeFile(
+      join(directory, "build.json"),
+      `${JSON.stringify(
+        {
+          ...identity(env, env.IMAGE),
+          platform: env.PLATFORM,
+          digest: env.IMAGE_DIGEST,
+          native: false,
+        },
+        null,
+        2,
+      )}\n`,
+      { flag: "wx" },
+    );
+  }
+  const { rootDigest } = await verifyPlatform(
+    directory,
+    env,
+    env.PLATFORM,
+    record ? env.IMAGE_DIGEST : undefined,
+    "build.json",
+  );
+  return rootDigest;
+}
+
 async function smoke(directory, env) {
   assert.ok(images.includes(env.IMAGE));
   const arch = process.arch === "x64" ? "amd64" : process.arch;
@@ -633,8 +682,9 @@ async function smoke(directory, env) {
 
 async function seal(directory, env) {
   assert.match(env.IMAGE_DIGEST ?? "", digestPattern);
-  readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
+  const platformDigests = readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
   const metadata = {
+    platformDigests,
     ...identity(env, env.IMAGE),
     digest: env.IMAGE_DIGEST,
     archiveSha256: await fileDigest(join(directory, "image.tar")),
@@ -781,6 +831,9 @@ async function main() {
         configDigest,
       }),
     );
+  } else if (command === "record-build" || command === "verify-build") {
+    const digest = await runtimeBuild(resolve(directory), process.env, command === "record-build");
+    await appendFile(process.env.GITHUB_OUTPUT, `digest=${digest}\n`);
   } else if (command === "assemble") {
     await assemble(directory, process.env);
   } else if (command === "smoke") {
@@ -798,7 +851,9 @@ async function main() {
     );
     await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   } else {
-    throw new Error("Expected validate, verify-platform, assemble, smoke, seal, or publish.");
+    throw new Error(
+      "Expected validate, record-build, verify-build, verify-platform, assemble, smoke, seal, or publish.",
+    );
   }
 }
 

@@ -20,7 +20,6 @@
     "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
-    "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
@@ -506,9 +505,6 @@
         "dev-up rejects an authenticated installation response for a different Installation",
         "development cleanup defaults to the Compose profile"
       ]
-    },
-    {
-      "path": "tests/integration/github-login-transport.test.mjs"
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"

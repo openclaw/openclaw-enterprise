@@ -33,7 +33,7 @@ import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/driver
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";

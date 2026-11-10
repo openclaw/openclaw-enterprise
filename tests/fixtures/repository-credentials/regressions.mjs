@@ -279,7 +279,7 @@ export function registerCredentialFixtureRegressions() {
   });
 
   test("control cleanup rejects unavailable and pending disposal through the actual operator client", async (t) => {
-    const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+    const { callControl } = await appModule("drivers/repo/github/access/client/operator");
     const directory = await socketDirectory(t, "cleanup-control-");
     const socket = join(directory, "control.sock");
     const sessionId = "cleanup-session";

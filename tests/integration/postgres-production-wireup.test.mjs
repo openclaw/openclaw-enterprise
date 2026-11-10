@@ -21,7 +21,11 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
+import {
+  authenticatedHeaders,
+  signInWithEmailPassword as signInThroughTransport,
+} from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -47,7 +51,17 @@ const requireControllerDependency = createRequire(
 );
 const adminEmail = "admin@example.test";
 const authSecret = "production-wireup-auth-secret-at-least-32-bytes";
-const authBaseURL = "http://127.0.0.1:0";
+const authBaseURL = "https://console.oce.localhost";
+const nativeAdmin = { enabled: false, domain: "agents.oce.localhost" };
+
+function signInWithEmailPassword({ origin: transportOrigin, ...options }) {
+  const transport = createConsoleFixtureTransport(authBaseURL, transportOrigin);
+  return signInThroughTransport({
+    ...options,
+    origin: authBaseURL,
+    fetch: transport.fetchThroughLoopback,
+  });
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -150,6 +164,7 @@ test(
       OCC_DATABASE_URL: databaseUrl,
       OCC_AUTH_SECRET: authSecret,
       OCC_AUTH_BASE_URL: authBaseURL,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: nativeAdmin.domain,
       OCC_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
       OCC_BOOTSTRAP_PASSWORD_FILE: join(
         await temporaryDirectory(t, "openclaw-enterprise-bootstrap-password-"),
@@ -439,7 +454,14 @@ test(
               events.push("prepared");
             },
           };
-          const config = { mode, host: "127.0.0.1", databaseUrl, authSecret, authBaseURL };
+          const config = {
+            mode,
+            host: "127.0.0.1",
+            databaseUrl,
+            authSecret,
+            authBaseURL,
+            nativeAdmin,
+          };
           const build = () =>
             mode === "production"
               ? composeProduction({
@@ -570,6 +592,7 @@ test(
             OCC_PORT: String(port),
             OCC_AUTH_SECRET: authSecret,
             OCC_AUTH_BASE_URL: authBaseURL,
+            OCC_AGENT_NATIVE_ADMIN_DOMAIN: nativeAdmin.domain,
           }),
           (error) => error !== cleanupError && error.code === "EADDRINUSE",
         );
@@ -585,13 +608,8 @@ test(
         databaseUrl,
         authSecret,
         authBaseURL,
+        nativeAdmin,
         onStartupPhase: (phase, durationMs) => startupPhases.push({ phase, durationMs }),
-        // Leftover pilot settings must not change authentication when the feature is disabled.
-        nativeAdmin: {
-          enabled: false,
-          domain: "agents.example.test",
-          sharedCookieDomain: "example.test",
-        },
         drivers: await productionDrivers({
           includeDefaults: true,
           configurationRoot: join(passwordDirectory, "configurations"),
@@ -622,7 +640,7 @@ test(
       // The API's `listening` line reports these, so an operator can see which phase was slow.
       assert.deepEqual(
         startupPhases.map(({ phase }) => phase),
-        ["database", "authentication", "identity", "computePreflight", "controller", "routes"],
+        ["database", "identity", "computePreflight", "authentication", "controller", "routes"],
       );
       assert.ok(startupPhases.every(({ durationMs }) => Number.isSafeInteger(durationMs)));
       endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
@@ -642,9 +660,8 @@ test(
         email: adminEmail,
         password,
       });
-      assert.match(session.cookie, /(?:^|; )openclaw_occ\.session_token=/);
-      assert.doesNotMatch(session.cookie, /openclaw_occ_shared/);
-      assert.doesNotMatch(session.setCookie.join("\n"), /Domain=/i);
+      assert.match(session.cookie, /(?:^|; )__Secure-openclaw_occ_shared\.session_token=/);
+      assert.match(session.setCookie.join("\n"), /Domain=oce\.localhost/i);
 
       const anonymousSession = await fetch(`${endpoint}/api/auth/session`);
       assert.equal(anonymousSession.status, 200);
@@ -680,7 +697,7 @@ test(
         const response = await fetch(`${endpoint}${path}`, {
           method,
           headers: authenticatedHeaders(caller, {
-            // This fixture configures port 0 before listening on an ephemeral port.
+            // Browser mutations use the configured HTTPS origin over private loopback transport.
             origin: authBaseURL,
             ...(payload === undefined ? {} : { "content-type": "application/json" }),
           }),
@@ -782,6 +799,7 @@ test(
           databaseUrl,
           authSecret,
           authBaseURL,
+          nativeAdmin,
           drivers: await productionDrivers({
             ...drivers,
             configurationRoot: join(passwordDirectory, "configurations"),
@@ -876,6 +894,7 @@ test(
             databaseUrl,
             authSecret,
             authBaseURL,
+            nativeAdmin,
             logger: developmentLog.logger,
           },
           developmentRuntime,
@@ -1183,6 +1202,7 @@ test(
             databaseUrl,
             authSecret,
             authBaseURL,
+            nativeAdmin,
             drivers: await productionDrivers(),
             logger: apiLog.logger,
           });
@@ -1385,6 +1405,7 @@ test(
                 databaseUrl,
                 authSecret,
                 authBaseURL,
+                nativeAdmin,
                 drivers: await productionDrivers(),
                 logger: apiLog.logger,
               });
@@ -1489,6 +1510,7 @@ test(
                   databaseUrl: proxy.url,
                   authSecret,
                   authBaseURL,
+                  nativeAdmin,
                   drivers: await productionDrivers(),
                   logger: apiLog.logger,
                 });

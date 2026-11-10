@@ -70,6 +70,8 @@ node scripts/ci/first-agent-smoke.mjs run
 The second command builds images; `run` requires those build results. Do not
 substitute a production cluster for the script's disposable installation.
 
+Cold runtime source builds have a 180-minute command budget, matching native runtime assembly. Node compilation alone has exceeded the former 40-minute limit. The protected prepared-Git job allows 240 minutes for image builds and its installed proof. Controller-only builds and artifact-backed bake calls retain 40 minutes; the ordinary artifact-backed smoke job also stays at 40 minutes. These are cancellation bounds, not predicted durations or an explanation for runner losses.
+
 ### Local isolation
 
 Keep the same directory and slot for `images` and `run`. Only a distinct slot

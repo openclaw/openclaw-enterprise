@@ -8,7 +8,12 @@ This record preserves the dated changes to the production image upgrade flow. Se
 
 ## Changelog
 
+- 2026-11-09 09:38: Preserve proxy setting protection with immutable Installation Secret upgrades. (authoring-run/5345dc67-30ca-4ae8-bdc2-22a2198d6d57 - c2bc69f00812f68015ed6b24ee3156fe3a29a52f)
+- 2026-11-08 10:00: Preserve proxy boundaries alongside current upstream lifecycle. (agent:main:subagent:060410f5-67b1-4703-b963-741996a862b6 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+
 - 2026-11-05 19:30: Keep general Gateway proxy selection outside image-only candidate changes (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
+- 2026-11-06 18:44: Bind writer quiescence to observed Deployment identity and version. (authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6 - 5b8901213714a5b0d99f82af8eae1d425ee7cd18)
+- 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
 
 - 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
 

@@ -56,6 +56,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
   revisionPageSize?: number;
@@ -324,6 +325,35 @@ export function createAgentDetailScenarios({
           "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
         ],
         gap: "Simulated UI proof only; this preview does not run a deployment.",
+      },
+      retainedHarnessHistory: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness history",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        unrecordedHarnessRevision: 1,
+        description:
+          "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
+        steps: [
+          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+        ],
+        gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
+      },
+      retainedHarnessWithoutOverrides: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness without overrides",
+        path: revision,
+        deployed: true,
+        unrecordedHarnessRevision: 1,
+        description:
+          "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
+        steps: [
+          "Open draft, then Harness destination. Confirm Use Installation default is selected and Override model provider is the only other choice; no Retain option is offered.",
+          "Choose Override model provider, then return to Use Installation default without deploying. The destination summary follows the selected choice.",
+        ],
+        gap: "Simulated UI proof only; the draft is readable independently of the retained snapshot. No deployment is submitted.",
       },
       newVersion: {
         group: "Pages/Agent detail",
@@ -1883,13 +1913,13 @@ export function createAgentDetailScenarios({
       agentHeader: {
         group: "Pages/Agent detail",
         name: "Page header with a long name",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         agentName: "Quarterly release review and signoff bot",
         description:
-          "The Agent page header: ← Agents, the name with Refresh and Open draft at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+          "The Agent page header: ← Agents, the name, then the Agent ID, Copy Agent ID and Namespace. Refresh and Open draft sit beside the name above 1100 px and beside the back link at narrower widths.",
         steps: [
-          "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Open draft stay on its first line and nothing overlaps.",
+          "At 1440 and 1101 px, Refresh and Open draft stay beside the name. At 1100 and 1024 px, they share the back-link row above the name. Nothing overlaps.",
           "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
           "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
           "Select Open draft; the draft opens and its header shows Refresh only.",
@@ -1899,7 +1929,7 @@ export function createAgentDetailScenarios({
       agentHeaderMobile: {
         group: "Pages/Agent detail",
         name: "Page header at 390px",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         mobile: true,
         description:
@@ -1912,7 +1942,7 @@ export function createAgentDetailScenarios({
       agentHeaderNoClipboard: {
         group: "Pages/Agent detail",
         name: "Copy Agent ID without clipboard access",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
