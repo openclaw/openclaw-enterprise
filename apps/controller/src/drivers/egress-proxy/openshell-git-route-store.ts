@@ -3,6 +3,7 @@ import {
   protectedRepositoryGitInstallationSql,
 } from "./openshell-repository-git-evidence.ts";
 import { openShellGitExecutionIdentity } from "./openshell-git-installation.ts";
+import { withdrawOnlineGitRoute } from "./openshell-git-withdrawal.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,
@@ -71,6 +72,7 @@ export type OpenShellGitRouteWithdrawal =
 export interface OpenShellGitExpiry {
   readonly retainedLaunchHash: string;
   readonly observed: OpenShellPreparedGitInstalled;
+  readonly onlineWithdrawalFence?: number;
   readonly detach?: {
     readonly requestId: string;
     /** The Sandbox resource version the recorded detach is conditional on. */
@@ -136,6 +138,7 @@ export interface OpenShellGitRouteStore {
     workspace: string,
     sandbox: string,
     finiteScopeIsCurrent: boolean,
+    usesTokenGrant?: boolean,
   ): Promise<OpenShellGitExpiry | undefined>;
   beginDetach(
     revision: string,
@@ -346,12 +349,16 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
         return;
       }
       const removal = await c.query(
-        `SELECT FROM ${table} r WHERE r.revision_id=$1 AND ${repositoryWithdrawalStateSql("r")}='removal'`,
+        `SELECT v.admitted_spec #>> '{execution_admission,version}' AS version
+         FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.live_revision_id
+         WHERE r.revision_id=$1 AND ${repositoryWithdrawalStateSql("r")}='removal'`,
         [revisionId],
       );
       if (removal.rowCount) {
-        // Preserve the installed recipient for subtraction; no replacement owns Git.
-        await new CredentialDeliveries(c).block(key, key.fence, "repository_expired");
+        // The original recipient stays recorded. An online withdrawal never owns a detach.
+        const version = (removal.rows[0] as { version: string | null } | undefined)?.version;
+        const reason = version === "9" ? "withdrawn" : "repository_expired";
+        await new CredentialDeliveries(c).block(key, key.fence, reason);
       } else {
         await new CredentialDeliveries(c).adopt(key, workerInstance, "worker_replaced");
       }
@@ -591,18 +598,40 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     workspace: string,
     sandbox: string,
     finiteScopeIsCurrent: boolean,
+    usesTokenGrant = false,
   ): Promise<OpenShellGitExpiry | undefined> {
     const deadline = revision.repositoryCredentials?.deadlineWallMs;
     if (!Number.isSafeInteger(deadline)) {
       return;
     }
+    const plan = revision.egressPlan;
+    const online = revision.executionAdmission?.version === 9;
+    const reason = online ? "withdrawn" : "repository_expired";
+    if (
+      online &&
+      (plan?.authorization !== "online-request" ||
+        plan.repositoryGitAuthorization !== "online-request" ||
+        plan.repositoryGit === undefined ||
+        plan.routes.length !== 1 ||
+        plan.policyReductionVersion !== undefined)
+    ) {
+      return;
+    }
+    // Only the selected pull runtime can retain a grant-ready route without installed
+    // material. The same snapshot and protected installation must still agree below.
+    const grantReady =
+      online &&
+      usesTokenGrant &&
+      !revision.repositoryCredentials?.standingApprovalId &&
+      plan?.repositoryGit?.bindings.length === 1 &&
+      plan.repositoryGit.bindings[0]?.profile === "github-repository";
     return this.query(async (c) => {
       const key = await this.key(c, revision.id);
       if (!key) {
         return;
       }
       const { rows } = await c.query(
-        `SELECT r.binding_id, r.fence, r.material_version,
+        `SELECT r.binding_id, r.fence, r.material_version, r.preparation_attempt_id,
           r.retained_policy_hash AS retained_launch_hash, r.observed
         FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.live_revision_id
         JOIN occ.agents a ON a.namespace_id = v.namespace_id AND a.id = v.agent_id
@@ -618,13 +647,25 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
                 THEN ${repositoryWithdrawalStateSql("r")} = 'expiry'
                 ELSE (${repositoryWithdrawalStateSql("r")}='removal'
                   OR ($9 AND clock_timestamp() >= to_timestamp($7::double precision / 1000))) END
-          AND (r.desired->>'credentialState') = 'active' AND r.write_pending IS NULL AND r.material_version IS NOT NULL
+          AND (r.desired->>'credentialState') = 'active' AND r.write_pending IS NULL
+          AND ((r.material_version IS NOT NULL AND r.preparation_attempt_id IS NOT NULL)
+            OR ($12 AND r.material_version IS NULL AND r.preparation_attempt_id IS NULL))
           AND r.retained_policy_hash IS NOT NULL AND r.observed->>'executionId' = v.id
           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = (r.target->>'workspace')
           AND r.observed->>'sandbox' = (r.target->>'sandbox') AND r.observed->>'providerId' = (r.desired->>'providerId')
           AND r.observed->>'providerResourceVersion' = (r.desired->>'resourceVersion')
           AND r.observed->>'profileVersion' = (r.desired->>'profileVersion')
-          AND (r.blocked IS NULL OR r.blocked = 'repository_expired')`,
+          AND (r.blocked IS NULL OR r.blocked = $11
+            OR ($10::jsonb IS NOT NULL AND r.blocked = 'repository_expired'))
+          AND ($10::jsonb IS NULL OR (
+            v.admitted_spec #>> '{execution_admission,version}' = '9'
+            AND v.admitted_spec->'egress_plan' = $10::jsonb
+            AND EXISTS (
+              SELECT FROM occ.egress_installations p
+              WHERE ${protectedRepositoryGitInstallationSql}
+                AND p.installation->'plan' = $10::jsonb
+            )
+          ))`,
         [
           revision.id,
           revision.namespaceId,
@@ -635,6 +676,9 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           deadline,
           key.bindingId,
           finiteScopeIsCurrent,
+          online ? JSON.stringify(plan) : null,
+          reason,
+          grantReady,
         ],
       );
       const row = rows[0] as
@@ -643,37 +687,56 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
             retained_launch_hash: string;
             binding_id: string;
             fence: string;
-            material_version: string;
+            material_version: string | null;
+            preparation_attempt_id: string | null;
           }
         | undefined;
-      if (row) {
-        if (
-          key.blocked === null &&
-          !(await new CredentialDeliveries(c).block(key, Number(row.fence), "repository_expired"))
-        ) {
-          return;
-        }
-        const progress = await new CredentialDeliveryReductions(c).desire({
-          revisionId: revision.id,
-          bindingId: row.binding_id,
-          fence: Number(row.fence),
-          recipient: { ...row.observed },
-          materialVersion: row.material_version,
-          retainedPolicyHash: row.retained_launch_hash,
-        });
-        return {
-          observed: row.observed,
-          retainedLaunchHash: row.retained_launch_hash,
-          ...(progress.requestId && {
-            detach: {
-              requestId: progress.requestId,
-              ...(progress.expectedVersion && { resourceVersion: progress.expectedVersion }),
-              ...(progress.observedGeneration && { epoch: progress.observedGeneration }),
-            },
-          }),
-        };
+      if (!row) {
+        return;
       }
-      return undefined;
+      const identity = {
+        revisionId: revision.id,
+        bindingId: row.binding_id,
+        fence: Number(row.fence),
+        recipient: { ...row.observed },
+        retainedPolicyHash: row.retained_launch_hash,
+      };
+      const saved = { observed: row.observed, retainedLaunchHash: row.retained_launch_hash };
+      if (online) {
+        // key() already holds the delivery row. A delayed detach reservation must win
+        // that same lock before it can exclude online retention.
+        if (
+          await withdrawOnlineGitRoute(c, {
+            ...identity,
+            materialVersion: row.material_version,
+            preparationAttemptId: row.preparation_attempt_id,
+          })
+        ) {
+          return { ...saved, onlineWithdrawalFence: identity.fence };
+        }
+        return;
+      }
+      if (
+        row.material_version === null ||
+        (key.blocked === null &&
+          !(await new CredentialDeliveries(c).block(key, identity.fence, reason)))
+      ) {
+        return;
+      }
+      const progress = await new CredentialDeliveryReductions(c).desire({
+        ...identity,
+        materialVersion: row.material_version,
+      });
+      return {
+        ...saved,
+        ...(progress.requestId && {
+          detach: {
+            requestId: progress.requestId,
+            ...(progress.expectedVersion && { resourceVersion: progress.expectedVersion }),
+            ...(progress.observedGeneration && { epoch: progress.observedGeneration }),
+          },
+        }),
+      };
     });
   }
 

@@ -81,6 +81,10 @@ function expiryFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryF
   }
   return code === 14 ? "gateway_unavailable" : "failed";
 }
+function cannotRetain(error: unknown): boolean {
+  return error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error));
+}
+
 function requireIdentity(condition: unknown): asserts condition {
   if (!condition) {
     throw new Unsafe("OpenShell cannot retain this execution after Git expiry.");
@@ -187,6 +191,7 @@ function evidence(
   id: string,
   options?: {
     old?: boolean;
+    staleExpiryPending?: boolean;
     receiptId?: string;
     resourceVersion?: string;
     observe?: boolean;
@@ -201,6 +206,7 @@ function evidence(
     old &&
     state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+  const allowStaleExpiry = expired && options?.staleExpiryPending === true;
   const at = timestampNanos(status.observedTime);
   const evaluated = timestampNanos(status.evaluatedTime);
   const now = BigInt(Date.now()) * 1_000_000n;
@@ -252,14 +258,21 @@ function evidence(
       isDeepStrictEqual(generation(o), generation(desired)) &&
       at !== undefined &&
       evaluated !== undefined &&
-      at <= evaluated &&
-      // Stock reports expiry before checking its 15-second supervisor observation lease.
-      (!expired ||
-        (evaluated - at < 15_000_000_000n &&
-          now - at < 30_000_000_000n &&
-          at - now < 30_000_000_000n)) &&
-      Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
+      at <= evaluated,
   );
+  const evaluationAge = Date.now() - Date.parse(status.evaluatedTime ?? "");
+  if (allowStaleExpiry && evaluationAge >= 30_000) {
+    return undefined;
+  }
+  requireIdentity(Math.abs(evaluationAge) < 30_000);
+  // Stock reports expiry before checking its 15-second supervisor observation lease.
+  const freshExpiry =
+    !expired ||
+    (evaluated - at < 15_000_000_000n && now - at < 30_000_000_000n && at - now < 30_000_000_000n);
+  if (!freshExpiry && allowStaleExpiry) {
+    return undefined;
+  }
+  requireIdentity(freshExpiry);
   // Request time includes transport before evaluation. If that conservative budget
   // is exhausted, obtain a fresh witness without treating the matching identity as unsafe.
   if (
@@ -304,7 +317,14 @@ export async function observeOpenShellGitPredecessor(
   });
 }
 
-async function modelProvider(client: Client, git: Git, model: string, signal: AbortSignal) {
+type ObservationClient = Pick<Client, "getSandbox" | "getProvider" | "getSandboxProviderStatus">;
+
+async function modelProvider(
+  client: ObservationClient,
+  git: Git,
+  model: string,
+  signal: AbortSignal,
+) {
   const p = await client.getProvider(git.workspace, model, signal);
   requireIdentity(
     p?.id && p.name === model && p.workspace === git.workspace && p.id !== git.providerId,
@@ -315,13 +335,14 @@ async function modelProvider(client: Client, git: Git, model: string, signal: Ab
 /** Called while Git is installed and after the Sandbox Driver verified its complete admitted spec.
  * Predecessor evidence preserves launch identity, never credential readiness or authority. */
 export async function witnessOpenShellGitLaunch(
-  client: Client,
+  client: ObservationClient,
   owner: OpenShellGitContinuity,
   box: OpenShellSandboxResponse,
   git: Git,
   signal: AbortSignal,
   observation:
     | { kind: "predecessor" }
+    | { kind: "withdrawal"; retainedLaunchHash: string }
     | { kind: "installation"; completedPreviewReceipt?: string | undefined },
 ): Promise<string | undefined> {
   const completedPreviewReceipt =
@@ -342,11 +363,21 @@ export async function witnessOpenShellGitLaunch(
     return;
   }
   const workload = await owner.workload(git.sandboxId, signal);
-  if (
-    observation.kind === "predecessor" &&
+  if (observation.kind === "withdrawal" && workload === undefined) {
+    return;
+  }
+  const retained =
+    observation.kind === "withdrawal" ? launch(box, git, owner, workload, id) : undefined;
+  if (observation.kind === "withdrawal") {
+    // A stale supervisor report cannot hide a separately observed replacement.
+    requireIdentity(retained?.present && retained.hash === observation.retainedLaunchHash);
+  }
+  const expired =
     status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
-    status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED"
-  ) {
+    status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+  const observeExpired =
+    observation.kind === "predecessor" || (observation.kind === "withdrawal" && expired);
+  if (observeExpired && expired) {
     // Check after the report and workload read: the old report cannot identify a replacement.
     const current = await client.getSandbox(
       { workspace: git.workspace, name: git.sandbox },
@@ -362,18 +393,56 @@ export async function witnessOpenShellGitLaunch(
     );
   }
   const model = evidence(status, git, git.attachmentEpoch, owner.model, id, {
-    // OpenShell reports expiry for the aggregate environment even when this query
-    // names the model provider. Only the recorded predecessor may use that evidence.
-    old: observation.kind === "predecessor",
+    // The model-named report can carry aggregate Git expiry. Bind it to the same launch.
+    old: observeExpired,
+    staleExpiryPending: observation.kind === "withdrawal",
     readStartedAt,
     ...(completedPreviewReceipt && { receiptId: completedPreviewReceipt, observe: true }),
   });
   if (!model || !isDeepStrictEqual(generation(model), generation(git))) {
     return;
   }
-  const value = launch(box, git, owner, workload, id);
+  const value = retained ?? launch(box, git, owner, workload, id);
   requireIdentity(value.present);
   return value.hash;
+}
+
+/** Observe the original mixed online execution after OCC closed Git authority. */
+export async function observeOnlineGitWithdrawal(
+  saved: OpenShellGitExpiry,
+  client: ObservationClient,
+  owner: OpenShellGitContinuity,
+  signal: AbortSignal,
+): Promise<OpenShellGitExpiryResult> {
+  const { observed, retainedLaunchHash } = saved;
+  const target = { workspace: observed.workspace, name: observed.sandbox };
+  try {
+    const box = await client.getSandbox(target, signal);
+    requireIdentity(
+      box &&
+        box.id === observed.sandboxId &&
+        box.mainProcessInstanceId === observed.networkInstanceId,
+    );
+    // The supervisor can report aggregate Git expiry for the model attachment. This
+    // observes the original launch. Current model authority is checked separately.
+    const hash = await witnessOpenShellGitLaunch(client, owner, box, observed, signal, {
+      kind: "withdrawal",
+      retainedLaunchHash,
+    });
+    if (hash === undefined) {
+      return "pending";
+    }
+    const current = await client.getSandbox(target, signal);
+    requireIdentity(
+      current &&
+        current.id === box.id &&
+        current.mainProcessInstanceId === box.mainProcessInstanceId,
+    );
+    signal.throwIfAborted();
+    return current.resourceVersion === box.resourceVersion ? "withdrawn" : "pending";
+  } catch (error) {
+    return cannotRetain(error) ? "retire-runtime" : "pending";
+  }
 }
 
 /**
@@ -562,9 +631,7 @@ export async function subtractExpiredOpenShellGit(
     // authorize retention. Transport loss after our durable fence is an observation to repeat.
     // In particular UNIMPLEMENTED must not become pending.
     return result(
-      error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error))
-        ? "retire-runtime"
-        : "pending",
+      cannotRetain(error) ? "retire-runtime" : "pending",
       check,
       error instanceof Unsafe ? "unconfirmed" : expiryFailure(error, signal),
       rawGrpcCode(error),
