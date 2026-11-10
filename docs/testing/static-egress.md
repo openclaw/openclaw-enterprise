@@ -307,6 +307,20 @@ Killing a local client does not establish remote termination. Never replay an un
 
 ### Read evidence and retain cleanup custody
 
+Before the first turn, the fixture uses a two-minute polling budget to find one
+nondeleting Gateway Pod for the exact Agent and revision. Its pinned `gateway`
+container must be running and ready, and the Pod must be Ready. Another
+nondeleting Pod for that same revision prevents selection even if only one is
+ready. An in-flight read retains the existing command bound, and the overall
+test deadline still applies. The ledger records the last
+bounded Pod counts when selection succeeds or fails.
+
+After each pre-turn custody snapshot, the fixture re-reads the selected Pod and
+requires the same UID and readiness before explicitly targeting `gateway`.
+The ledger retains the pre-exec check outcome. Kubernetes exec addresses the
+Pod by name, so a replacement between the read and exec remains possible.
+The fixture does not select a replacement or replay an uncertain turn.
+
 The test creates resources through public APIs, deploys through the real worker,
 reads the persisted installation and verifies the authenticated supplier receipt.
 The Agent Gateway Pod runs the packaged Codex app-server caller. The test adopts

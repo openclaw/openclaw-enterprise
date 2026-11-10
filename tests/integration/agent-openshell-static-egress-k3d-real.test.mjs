@@ -19,6 +19,7 @@ import {
 import {
   registerCleanupAndStartProvider,
   observeInstalledProtection,
+  requestInstalledGatewayTurn,
 } from "../helpers/egress-installed-agent.mjs";
 import {
   describeGatewayAppServerDeclaration,
@@ -288,21 +289,31 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
   const turn = async (phase, expected = "completed") => {
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
-      gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0]),
+      gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0], "gateway"),
       phase,
       nonce,
       upstreamBefore: provider.observations.length,
     });
     const { custodyTransitions } = installed;
-    const before = await custodyTransitions.snapshot();
-    const result = await f.requestCodexTurnFromGatewayPod({
-      namespace: placement,
-      gatewayPod: gatewayPods[0].metadata.name,
-      providerModel: controller.model,
-      prompt: `Reply with exactly ${nonce}.`,
-      observeFailure: true,
-      timeoutMs: 90_000,
-    });
+    const { before, result } = await requestInstalledGatewayTurn(
+      f,
+      evidence,
+      {
+        placement,
+        agentId: agent.id,
+        revisionId: revision.id,
+        image: setup.input.images.gateway,
+        gateway: gatewayPods[0],
+        phase,
+        custodyTransitions,
+      },
+      {
+        providerModel: controller.model,
+        prompt: `Reply with exactly ${nonce}.`,
+        observeFailure: true,
+        timeoutMs: 90_000,
+      },
+    );
     await observeConnectedOperation("gateway-turn-verification", () => {
       excludesCredentials(result, "Codex response/events");
       assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
