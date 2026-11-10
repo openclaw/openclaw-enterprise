@@ -1335,11 +1335,11 @@ test("OpenShell stock selection accepts empty selectors and mirrors of released 
     },
     {
       OCC_TEST_OPENSHELL_GATEWAY_IMAGE:
-        "localhost/mirror/gateway@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+        "localhost/mirror/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
       OCC_TEST_OPENSHELL_SANDBOX_IMAGE:
-        "localhost/mirror/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+        "localhost/mirror/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE:
-        "localhost/mirror/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+        "localhost/mirror/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
     },
   ]) {
     assert.equal(await validateOpenShellSelection(env, execFile), null);

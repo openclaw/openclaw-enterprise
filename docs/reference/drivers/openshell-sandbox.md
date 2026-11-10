@@ -243,13 +243,18 @@ ServiceAccounts, Namespaces, labels, and capabilities.
 
 ### Gateway Kubernetes authority
 
-Stock OpenShell v0.1.6 operator mode
-[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-driver-kubernetes/src/driver.rs#L5264-L5383).
+Stock OpenShell v0.1.8 operator mode
+[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
 Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templates,
 literal values and Secret references, without granting Secret payload access.
 
-The [stock chart](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/deploy/helm/openshell/templates/clusterrole.yaml#L66-L99)
-also permits cluster-wide Sandbox/Pod mutations. Review rendered RBAC.
+The [stock chart](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
+also permits cluster-wide Sandbox and Pod mutations. The
+[0.1.8 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
+adds Pod create, delete, list, patch and watch, plus Service and NetworkPolicy
+create and get in the Workspace namespace. The stock operator ClusterRole already
+granted these operations in 0.1.6. The chart grants them even when the gateway's
+optional sandbox updates are disabled, as they are in the OCE defaults.
 Namespace labels/NetworkPolicies do not limit this authority.
 OCE does not support upstream's namespaced `shared` mode.
 

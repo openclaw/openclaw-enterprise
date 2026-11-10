@@ -119,7 +119,7 @@ function safeKubectlFailure(error, signal) {
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
 // NVIDIA/OpenShell f3d976590d3eb1379690a2abaf0f0e26c21d487d
-// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
+// crates/openshell-driver-kubernetes/src/config.rs:476,754-785.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
