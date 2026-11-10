@@ -17,7 +17,13 @@ the Agent; completion follows the verified finalizing actor:
   it finalized the deletion, while that actor can still read the Namespace.
 
 Every other caller gets the same `403` whether the Agent exists, was deleted or
-never existed. Removing someone's Agent access ends what they can learn about it.
+never existed. Before completion, removing someone's Agent `read` ends their status
+visibility, and removing the actor's `delete` during teardown fails the work. After
+completion, the principal under whose verified authority the deletion was finalized
+can still see that it completed while they hold Namespace read; `delete` is the
+Agent grant the worker rechecks when it finalizes. Deletions finalized before that
+recheck existed show completion only to Namespace-wide Agent readers.
+
 A `403` or `404` never establishes that deletion finished. After an uncertain
 DELETE, check status before deciding whether to send a new request.
 
