@@ -53,13 +53,12 @@ Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` builds the
 runtime when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
-Gateway Routing, Slack Live, and Production TUI restore read-only BuildKit caches through
-`scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
-`scripts/ci/prepare.mjs:imageCacheObservation` reports numeric counts per phase,
-excluding raw output (`image-cache`; OpenShell: `first-agent-image-cache`).
-Step counts deduplicate IDs. `observesImageCache` enables plain progress, including
-alternate source builds. Import lines do not prove hits;
-loads may reuse probe work.
+`scripts/ci/prepare.mjs:imageBuildArgs` restores read-only BuildKit caches. `prepareLane` primes the builder for selected `sourceBuildFiles`,
+including whole lanes; whole OpenShell lanes use their shared stack build. Tests receive the
+builder and epoch, never cache credentials. Local Setup still builds source.
+`imageCacheObservation` reports deduplicated counts (`image-cache`;
+OpenShell: `first-agent-image-cache`), including alternate sources. Imports
+do not prove hits; loads may reuse probe work.
 
 The four ordinary image lanes, First Agent Smoke, and Full Integration's Docker
 Model Runtime use REST lookup by repository, producer run ID and artifact ID.

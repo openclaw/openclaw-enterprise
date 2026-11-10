@@ -114,7 +114,7 @@ runs:
         const lane = lanes[name];
         const file = process.env.CI_SELECTED_TEST_FILE;
         const sourceBuild = lane.prepare?.sourceBuildFiles?.some((path) =>
-          file ? path === file : view === 'full-integration' && lane.files.some((entry) => entry.path === path));
+          file ? path === file : lane.files.some((entry) => entry.path === path));
         const selected = isOpenShellLane(name) &&
           lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
         appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);

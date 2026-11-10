@@ -825,33 +825,44 @@ describe("CI preparation", { concurrency }, () => {
   });
 
   test("installer preparation populates its builder even when the engine holds the images", async (t) => {
-    const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
-      ...imageCacheEnv,
-      NODE_BASE_IMAGE: packagingNodeBaseImage,
-      BUILDX_BUILDER: "owned-installer-builder",
-    });
-    const prepared = await commands.prepare([
-      "--selected-file",
-      "tests/integration/qa-matrix-real.test.mjs",
-    ]);
-    assert.equal(prepared.status, 0, prepared.stderr);
-    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
-    // The installer builds again from source on this builder; tagging an engine image
-    // cannot supply that builder's layers. This checks orchestration, not live image storage.
-    assert.equal(builds.length, 2);
-    assert.ok(builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")));
-    assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
-    assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
-    assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+    for (const file of [undefined, "tests/integration/qa-matrix-real.test.mjs"]) {
+      const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
+        ...imageCacheEnv,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        BUILDX_BUILDER: "owned-installer-builder",
+      });
+      // Full Integration selects the whole lane. It needs the same preparation as
+      // a focused file while retaining whole-lane accounting and installer builds.
+      const prepared = await commands.prepare(file ? ["--selected-file", file] : []);
+      assert.equal(prepared.status, 0, prepared.stderr);
+      const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+      // Tagging an engine image cannot supply this builder's layers. This proves
+      // orchestration, not live cache availability or installation performance.
+      assert.equal(builds.length, 2);
+      assert.ok(
+        builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")),
+      );
+      assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
+      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      assert.equal(state.selectedFile, file);
+      assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
+      assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
+      assert.equal(state.env.OCC_TEST_QA_RUNTIME_IMAGE, undefined);
+      assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+    }
   });
 
-  test("full OpenShell source builds require their selected builder before stack setup", async (t) => {
-    for (const lane of ["openshell-policy", "openshell-installers"]) {
+  test("whole-lane source builds require their selected builder before setup", async (t) => {
+    for (const [lane, view] of [
+      ["qa-matrix", "default"],
+      ["dev-up-k3d", "default"],
+      ["openshell", "default"],
+      ["openshell-policy", "full-integration"],
+      ["openshell-installers", "full-integration"],
+    ]) {
       const commands = await fixtureImageCommands(t, "engine-holds-images", lane, {
         ...imageCacheEnv,
-        OCC_CI_SUITE_VIEW: "full-integration",
+        OCC_CI_SUITE_VIEW: view,
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         CODEX_ACCESS_TOKEN: "synthetic-model-credential",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
@@ -2134,15 +2145,16 @@ assert.equal(commands, 0);
     }
   });
 
-  test("installer cache selection preserves source builds and the unselected manual lane", async (t) => {
+  test("installer cache selection covers whole lanes and preserves focused image selection", async (t) => {
     const action = loadYaml(
       await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
     );
     const select = action.runs.steps.find((step) => step.id === "image-mode");
     const root = await fixture(t);
     for (const [index, [lane, file, sourceBuild, firstAgent, view = "default"]] of [
-      ["dev-up-k3d", "", "false", "false"],
-      ["qa-matrix", "", "false", "false"],
+      ["dev-up-k3d", "", "true", "false"],
+      ["qa-matrix", "", "true", "false"],
+      ["openshell", "", "true", "false"],
       ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
       ["dev-up-k3d", "tests/integration/dev-up-k3d-keycloak-real.test.ts", "true", "false"],
       ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
@@ -2160,7 +2172,7 @@ assert.equal(commands, 0);
     ].entries()) {
       const output = join(root, `image-mode-${index}`);
       // Run the action's actual selector: confusing these paths can replace source-build proof
-      // with selected images, or require cache inputs the manual lane never supplied.
+      // with selected images, or leave whole-lane installer builds without a primed builder.
       const result = spawnSync("bash", ["-e", "-c", select.run], {
         cwd: repositoryRoot,
         env: {

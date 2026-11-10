@@ -714,6 +714,7 @@ jobs:
     timeout-minutes: 240
     environment: integration-main
     env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
       # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
       # in checks-baseline-1 asserts the +v1.35 default.
