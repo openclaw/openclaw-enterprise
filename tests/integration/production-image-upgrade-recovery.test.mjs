@@ -2389,7 +2389,14 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       assert.equal(state.worker, 1);
       assert.equal(state.dispatches, 0);
       assert.deepEqual(state.preflight?.created ?? [], []);
-      for (const file of await readdir(join(f.evidence, "inventory"))) {
+      const inventoryFiles = await readdir(join(f.evidence, "inventory"));
+      if (readFailure) {
+        assert.deepEqual(
+          inventoryFiles.filter((file) => file.endsWith(".json")),
+          ["deployment-inventory.json"],
+        );
+      }
+      for (const file of inventoryFiles) {
         assert.doesNotMatch(
           await readFile(join(f.evidence, "inventory", file), "utf8"),
           /tenant-native-value/u,

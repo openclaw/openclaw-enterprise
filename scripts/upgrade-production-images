@@ -1398,6 +1398,7 @@ if [[ -z "$runtime_image" ]]; then
       :
     else
       read_status=("${PIPESTATUS[@]}")
+      rm -f -- "$snapshot"
       ((read_status[0] == 0)) ||
         die "cannot read active revision $revision_id of Agent $agent_id; no OCC writer was stopped."
       die "active revision $revision_id of Agent $agent_id has missing or unreadable saved Harness settings; this upgrade does not replace Agent revisions. Plan an authorized replacement or stop and settle the Agent before upgrading. No OCC writer was stopped."
