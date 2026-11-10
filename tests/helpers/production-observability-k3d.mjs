@@ -170,6 +170,13 @@ export async function installObservabilityControlPlane(
       : {}),
     cluster: `observability-${suffix}`,
   });
+  if (!modelTurns) {
+    // The Installation's resolved provider and the fixture Agent's native configuration must agree.
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://model.stub.invalid/v1",
+    };
+  }
   const repositoryCredentials = nativeRepository
     ? await prepareObservabilityNativeRepository({
         configuration,
