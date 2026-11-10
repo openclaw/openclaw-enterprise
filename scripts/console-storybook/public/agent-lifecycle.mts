@@ -98,6 +98,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   agentId?: string;
   agentName?: string;
   deleting?: boolean;
+  deletionStatus?: "queued" | "running" | "waiting" | "failed" | "deleted";
   stopped?: boolean;
   deployed?: boolean;
   candidateDeploymentStatus?: string;
@@ -218,6 +219,7 @@ export function createAgentLifecycle(
   const files = new Map<string, unknown>();
   const stagedWorkspaceFiles = new Map<string, Record<string, string>>();
   const deleted = new Set<string>();
+  const deletionReads = new Map<string, number>();
   const clearRevisionOnRead = new Set<string>();
   let runtimeStatusReads = 0;
   let runtimeLogReads = 0;
@@ -528,6 +530,40 @@ export function createAgentLifecycle(
     }
     const id = agentMatch[1] ?? "";
     const suffix = agentMatch[2] ?? "";
+    if (suffix === "/deletion-status" && method === "GET") {
+      // The signed-in fixture user requested and finished every deletion here, so completion
+      // stays visible to them. Anything else is the same not-visible answer.
+      if (!deleted.has(id) && agents.get(id)?.status !== "deleting") {
+        return error(404);
+      }
+      const reads = deletionReads.get(id);
+      let status = scenario.deletionStatus ?? "queued";
+      if (deleted.has(id)) {
+        status = "deleted";
+      } else if (reads !== undefined) {
+        status = (["queued", "running", "deleted"] as const)[Math.min(reads, 2)]!;
+      }
+      if (reads !== undefined) {
+        deletionReads.set(id, reads + 1);
+      }
+      if (status === "deleted") {
+        // Completion changes the same Agent inventory that Back to Agents reads.
+        deleted.add(id);
+        agents.delete(id);
+        for (const [revisionId, revision] of revisions) {
+          if (revision.agentId === id) {
+            revisions.delete(revisionId);
+            deployments.delete(revisionId);
+          }
+        }
+        for (const key of files.keys()) {
+          if (key.startsWith(`${id}/`)) {
+            files.delete(key);
+          }
+        }
+      }
+      return response({ agentId: id, namespaceId, status });
+    }
     const saved = agents.get(id);
     if (!saved) {
       return error(404);
@@ -571,10 +607,6 @@ export function createAgentLifecycle(
           // The API omits the field when no version is selected.
           delete saved.activeRevisionId;
         }
-        if (deleted.has(id)) {
-          agents.delete(id);
-          return error(404);
-        }
         if (clearRevisionOnRead.delete(id)) {
           saved.activeRevisionId = null;
         }
@@ -587,7 +619,7 @@ export function createAgentLifecycle(
       if (method === "DELETE") {
         saved.status = "deleting";
         saved.desiredRuntimeState = "stopped";
-        deleted.add(id);
+        deletionReads.set(id, 0);
         return response(saved, 202);
       }
     }

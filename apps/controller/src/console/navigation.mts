@@ -28,6 +28,7 @@ interface NavigationOptions {
   loadPage(options: {
     fromNavigation: boolean;
     openingAgent?: boolean;
+    focusTarget?: string;
     restoreHistory?(url: string): void;
   }): void;
 }
@@ -55,10 +56,11 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     const path = url.pathname;
     const feature =
       path === "/console" || path === "/console/" ? "agents" : path.slice("/console/".length);
-    const agentPath = /^agents\/(new|agt_[a-f0-9-]+)$/.exec(feature);
+    const agentPath = /^agents\/(?:(new)|(agt_[a-f0-9-]+)(\/deletion)?)$/.exec(feature);
     return {
       feature: agentPath ? "agents" : feature,
-      agentId: agentPath?.[1] === "new" ? null : agentPath?.[1],
+      agentId: agentPath?.[1] === "new" ? null : agentPath?.[2],
+      deletion: agentPath?.[3] !== undefined,
       creating: agentPath?.[1] === "new",
       target: feature + url.search,
       namespace: url.searchParams.get("namespace"),
@@ -106,9 +108,18 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
       return false;
     }
     const detail = intent.feature.startsWith("agents/") && agentId.test(intent.feature.slice(7));
+    // Resume only a structured same-origin status link. The controller checks the newly
+    // signed-in subject's current access to that Agent.
+    const deletion =
+      intent.feature.startsWith("agents/") &&
+      intent.feature.endsWith("/deletion") &&
+      agentId.test(intent.feature.slice(7, -9));
     return (
-      (Object.hasOwn(pages, intent.feature) || intent.feature === "agents/new" || detail) &&
-      (intent.namespaceId === null ||
+      (Object.hasOwn(pages, intent.feature) ||
+        intent.feature === "agents/new" ||
+        detail ||
+        deletion) &&
+      ((!deletion && intent.namespaceId === null) ||
         (typeof intent.namespaceId === "string" && namespaceId.test(intent.namespaceId))) &&
       (intent.revision === null ||
         (detail &&
@@ -185,7 +196,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     history.pushState({ consolePosition: position }, "", url);
   }
 
-  function navigate(feature: string, selection = getNamespaceId(), replace = false) {
+  function navigate(
+    feature: string,
+    selection = getNamespaceId(),
+    replace = false,
+    options: { focusTarget?: string } = {},
+  ) {
     if (isLoggingOut()) {
       return;
     }
@@ -198,8 +214,11 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
-      !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
-    void loadPage({ fromNavigation: true, openingAgent });
+      !replace &&
+      current.url.pathname === "/console/agents" &&
+      Boolean(route().agentId) &&
+      !route().deletion;
+    void loadPage({ fromNavigation: true, openingAgent, ...options });
   }
 
   function traverse({

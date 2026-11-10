@@ -1230,12 +1230,39 @@ export const auditEvents = occSchema.table(
       .where(
         sql`${table.kind} = 'mutation' AND ${table.action} = 'reconcile' AND ${table.resourceKind} = 'agent_revision'`,
       ),
+    index("audit_events_agent_deletion_completion_idx")
+      .on(table.namespaceId, table.resourceId)
+      .where(
+        sql`${table.action} = 'openclaw.agents.lifecycle.delete' AND ${table.kind} = 'mutation' AND ${table.resourceKind} = 'agent' AND ${table.outcome} = 'success' AND ${table.details}->>'reasonCode' = 'AGENT_DELETED'`,
+      ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
       "audit_events_details_object",
       sql`${table.details} IS NULL OR jsonb_typeof(${table.details}) = 'object'`,
     ),
+  ],
+);
+
+/**
+ * Evidence the worker rechecked the actor's delete grant in the transaction that finalized the
+ * Agent's deletion (migration 0077). Only these completions show the actor `deleted`.
+ */
+export const agentDeletionRechecks = occSchema.table(
+  "agent_deletion_rechecks",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    recheckedAt: timestamp("rechecked_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({
+      name: "agent_deletion_rechecks_pkey",
+      columns: [table.namespaceId, table.agentId],
+    }),
   ],
 );
 

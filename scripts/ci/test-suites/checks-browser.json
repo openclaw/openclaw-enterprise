@@ -31,7 +31,8 @@
     "tests/browser/console-namespace-not-ready.test.ts",
     "tests/browser/console-secrets.test.ts",
     "tests/browser/console-namespace-delete.test.ts",
-    "tests/browser/console-lifecycle-refusals.test.ts"
+    "tests/browser/console-lifecycle-refusals.test.ts",
+    "tests/browser/console-agent-deletion-status.test.ts"
   ],
   "files": [
     {
@@ -127,6 +128,9 @@
     },
     {
       "path": "tests/browser/console-lifecycle-refusals.test.ts"
+    },
+    {
+      "path": "tests/browser/console-agent-deletion-status.test.ts"
     }
   ]
 }

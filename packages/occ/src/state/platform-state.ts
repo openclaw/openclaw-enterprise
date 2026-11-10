@@ -41,6 +41,7 @@ import type {
   SavedConnection,
   AccessBinding,
   Agent,
+  AgentDeletionStatusResponse,
   AgentRead,
   AgentRevisionMetadata,
   AgentRevisionSummaryPage,
@@ -1126,8 +1127,29 @@ export type PlatformOperation =
       readonly operationId?: never;
     });
 
+export interface AgentDeletionLookup {
+  readonly installationId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+}
+
 export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
+  /**
+   * An exact live deletion while the Agent exists, or `deleted` once the finalizer removed it
+   * and recorded AGENT_DELETED. The caller has already authorized Agent read.
+   */
+  findAgentDeletionStatus(
+    request: AgentDeletionLookup,
+  ): Promise<Pick<AgentDeletionStatusResponse["data"], "status" | "nextAttemptAt"> | undefined>;
+  /**
+   * True only when the Agent is gone, its AGENT_DELETED record names `actorId`, and the
+   * finalizer recorded that it rechecked that actor's delete grant (migration 0077). Older
+   * completions carry no recheck evidence and never qualify.
+   */
+  agentDeletionCompletedBy(
+    request: AgentDeletionLookup & { readonly actorId: string },
+  ): Promise<boolean>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
   /** Whether this revision completed maintenance requiring fresh repository execution. */
@@ -1286,6 +1308,8 @@ interface PlatformSnapshot {
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly repositoryWithdrawals: Map<string, Readonly<ControllerWork>>;
+  /** occ.agent_deletion_rechecks: the actor whose delete grant the finalizer rechecked. */
+  readonly agentDeletionRechecks: Map<string, string>;
   readonly audit: Readonly<AuditEvent>[];
   readonly operations: Readonly<PlatformOperation>[];
 }
@@ -1429,6 +1453,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
+    agentDeletionRechecks: new Map(snapshot.agentDeletionRechecks),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
     ),
@@ -1800,6 +1825,33 @@ function repositories(
   iamSubjects: IAMSubjectSource,
   preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
+  const liveNamespace = (installationId: string, namespaceId: string) => {
+    const namespace = snapshot.namespaces.get(namespaceId);
+    return (
+      snapshot.installation?.id === installationId &&
+      namespace !== undefined &&
+      namespace.deletedAt === undefined
+    );
+  };
+  // The finalizer's committed AGENT_DELETED record, optionally for the actor it verified.
+  const agentDeleted = (
+    installationId: string,
+    namespaceId: string,
+    agentId: string,
+    actorId?: string,
+  ) =>
+    snapshot.audit.some(
+      (event) =>
+        event.kind === "mutation" &&
+        event.outcome === "success" &&
+        event.installationId === installationId &&
+        event.namespaceId === namespaceId &&
+        event.resource.kind === "agent" &&
+        event.resource.id === agentId &&
+        event.action === "openclaw.agents.lifecycle.delete" &&
+        event.details?.reasonCode === "AGENT_DELETED" &&
+        (actorId === undefined || event.actorId === actorId),
+    );
   const installations: InstallationRepository = {
     findInstallation: async (installationId) =>
       snapshot.installation?.id === installationId
@@ -4353,6 +4405,33 @@ function repositories(
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
+      findAgentDeletionStatus: async ({ installationId, namespaceId, agentId }) => {
+        if (!liveNamespace(installationId, namespaceId)) {
+          return undefined;
+        }
+        const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
+        if (agent !== undefined) {
+          const queued =
+            agent.status === "deleting" &&
+            agent.desiredRuntimeState === "stopped" &&
+            snapshot.operations.some(
+              (op) =>
+                op.kind === "agent" &&
+                op.target === "deleted" &&
+                op.namespaceId === namespaceId &&
+                op.resourceId === agentId,
+            );
+          return queued ? { status: "queued" } : undefined;
+        }
+        return agentDeleted(installationId, namespaceId, agentId)
+          ? { status: "deleted" }
+          : undefined;
+      },
+      agentDeletionCompletedBy: async ({ installationId, namespaceId, agentId, actorId }) =>
+        liveNamespace(installationId, namespaceId) &&
+        !snapshot.agents.has(agentKey(namespaceId, agentId)) &&
+        snapshot.agentDeletionRechecks.get(agentKey(namespaceId, agentId)) === actorId &&
+        agentDeleted(installationId, namespaceId, agentId, actorId),
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,
@@ -4508,6 +4587,10 @@ function finalizeAgentDeletion(
       details: { reasonCode: "AGENT_DELETED", attemptCount: 1 },
     }),
   );
+  // Memory has no worker; this completion stands in for the PostgreSQL finalizer, which records
+  // the actor it rechecked in the same transaction. Memory state never outlives its process, so
+  // it holds no completions from before that evidence existed.
+  snapshot.agentDeletionRechecks.set(key, work.actorId);
 
   // The Agent's own lifecycle work and its revisions' work end with it.
   const remaining = snapshot.operations.filter(
@@ -4554,6 +4637,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     repositoryStandingExecutions: new Map(),
     repositoryStandingApprovals: new Map(),
     repositoryWithdrawals: new Map(),
+    agentDeletionRechecks: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],

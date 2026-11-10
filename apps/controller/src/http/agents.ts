@@ -470,6 +470,14 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       });
       reply.status(202).send({ data: agent, meta: { requestId: request.id } });
     },
+    async getAgentDeletionStatus({ controller, context, request, reply, params, namespaceId }) {
+      const data = await controller.getAgentDeletionStatus(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
     async getAgentRuntimeImages({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;
       const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);

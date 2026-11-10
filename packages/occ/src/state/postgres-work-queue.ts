@@ -1362,8 +1362,21 @@ export class PostgresWorkQueue {
     validateClaim(claim);
     nonempty(namespaceId, "Agent deletion Namespace ID");
     nonempty(agentId, "Agent deletion Agent ID");
+    // The worker calls this only after rechecking the claimed actor's delete grant in this
+    // transaction, so the same statement records that evidence with the completion (migration
+    // 0077). The work CTE reads the actor from the statement snapshot, before the finalizer
+    // deletes the work row.
     const completed = await this.client.query(
-      "SELECT occ.finalize_agent_deletion($1::text, $2::text, $3::text, $4::uuid) AS completed",
+      `WITH work AS MATERIALIZED (
+         SELECT actor_id FROM occ.controller_work
+         WHERE idempotency_key = $3 AND claim_token = $4::uuid
+       ), finalized AS MATERIALIZED (
+         SELECT occ.finalize_agent_deletion($1::text, $2::text, $3::text, $4::uuid) AS completed
+       ), rechecked AS (
+         INSERT INTO occ.agent_deletion_rechecks (namespace_id, agent_id, actor_id)
+         SELECT $1, $2, work.actor_id FROM finalized, work WHERE finalized.completed IS TRUE
+       )
+       SELECT completed FROM finalized`,
       [namespaceId, agentId, claim.idempotencyKey, claim.claimToken],
     );
     const outcome = (completed.rows[0] as { completed?: unknown } | undefined)?.completed;

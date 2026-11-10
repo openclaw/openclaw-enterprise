@@ -465,6 +465,7 @@ export const responseExamples = {
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,
+  getAgentDeletionStatus: { agentId, namespaceId, status: "deleted" },
   createAgent: agent,
   updateAgent: agent,
   deleteAgent: { ...agent, status: "deleting" },

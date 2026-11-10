@@ -262,6 +262,7 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
+    | "deletion_completion"
     | "bound_credential_source"
     | "unless_consent_owner"
     | "saved_sandbox_policy_additions";
@@ -997,6 +998,18 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  if (operation.operationId === "getAgentDeletionStatus") {
+    return [
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      {
+        action: "read",
+        resourceKind: "namespace",
+        scope: "requested",
+        condition: "deletion_completion",
+      },
+    ];
+  }
+
   if (operation.operationId === "diagnoseAgentDeployment") {
     return [
       { action: "operate", resourceKind: "agent", scope: "requested" },
@@ -1161,6 +1174,9 @@ function permissionDescription(
       }
       if (condition === "read_logs_alternative") {
         return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;
+      }
+      if (condition === "deletion_completion") {
+        return "Without Agent read, reports only a completed deletion, and only to the actor whose delete grant the worker verified when it finalized that deletion, while that actor can read the requested Namespace. Every other caller receives the Agent read denial, whether or not the Agent exists.";
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;

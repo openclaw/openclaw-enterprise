@@ -30,10 +30,9 @@ Agent revisions. See
 
 Backing infrastructure behavior is defined by the selected
 [Docker](../drivers/docker-compute.md) or [Kubernetes](../drivers/kubernetes-compute.md)
-Compute implementation. A successful
-queue transition does not itself establish enforcement of cluster admission,
-NetworkPolicy, or a SandboxDriver facet; those guarantees require the selected
-implementation and its documented infrastructure.
+Compute implementation. A successful queue transition does not itself enforce
+cluster admission, NetworkPolicy, or a SandboxDriver facet; those require the
+selected implementation and its documented infrastructure.
 
 ## Agent lifecycle
 
@@ -148,23 +147,23 @@ stateDiagram-v2
 
 - **`queued`:** The operation is durable and awaiting an eligible worker. New
   work becomes available immediately; retries wait until their persisted
-  backoff expires. Both development and production workers process Namespace
-  operations and admitted AgentRevisions through the selected bundled or
-  installed Compute Driver. The bundled Kubernetes Driver supports embedded
-  OpenClaw and dedicated Codex in both modes.
+  backoff expires. Development and production workers process Namespace
+  operations and admitted AgentRevisions through the selected Compute Driver,
+  bundled or installed. The bundled Kubernetes Driver supports embedded OpenClaw
+  and dedicated Codex in both modes.
 - **`claimed`:** One worker owns a time-limited claim and increments the attempt
-  count. It checks current authorization, calls the appropriate Compute Driver
-  method, renews its lease before each effect, and keeps renewing while it runs.
-  Consecutive short effects must not starve renewal. Only the current claim
-  token can publish lifecycle state, audit evidence, or completion.
-- **`succeeded`:** The exact Namespace or Agent operation completed
-  successfully. Namespace transitions finalize with their audit; an Agent
-  version is selected and its route is enabled before the worker commits its
-  activation audit and queue completion together. These terminal records remain
-  available for idempotency. Successful Agent deletion instead removes its work
-  rows after recording lifecycle evidence because the owner no longer exists.
-- **`failed_permanent`:** Processing stopped because authorization failed, an
-  unrecoverable error occurred, or the retry limit was exhausted. The failure
+  count. It checks current authorization, calls the Compute Driver, and renews
+  its lease before and during each effect, so consecutive short effects cannot
+  starve renewal. Only the current claim token can publish lifecycle state,
+  audit evidence, or completion.
+- **`succeeded`:** The operation completed. Namespace transitions commit with
+  their audit; Agent activation enables the version's route, then commits audit
+  and queue completion together. These records remain for idempotency. Deletion
+  rechecks the actor's `delete` while finalizing; one statement then records
+  success and that recheck and removes its work rows. [Status](../agents/deletion.md#follow-deletion)
+  reports `deleted` from those records, never from missing rows.
+- **`failed_permanent`:** Authorization failed, an unrecoverable error occurred,
+  or the retry limit was exhausted. The failure
   is audited, and the terminal operation is never retried automatically.
   The initiating caller can explicitly [retry Agent deletion](../agents.md#deletion)
   or [Namespace deletion](../namespaces.md#failure-semantics-and-limitations).

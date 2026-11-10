@@ -993,8 +993,46 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
         data: { activeRevisionId: null, extraSetting: { retained: true } },
       });
-      assert.equal((await request(agentPath, "DELETE")).status, 202);
+      const deletion = await request(agentPath, "DELETE");
+      assert.equal(deletion.status, 202);
+      const { meta } = await deletion.json();
+      assert.deepEqual(Object.keys(meta), ["requestId"]);
+      const statusPath = `${agentPath}/deletion-status`;
+      // The preview keeps the Agent while simulated cleanup progresses. An Agent with no
+      // deletion has no status to disclose, and reading it must not advance this operation.
+      assert.equal((await request(`agents/${id("agt", 999)}/deletion-status`)).status, 404);
+      const acceptedAgent = await request(agentPath);
+      assert.equal(acceptedAgent.status, 200);
+      assert.partialDeepStrictEqual(await acceptedAgent.json(), { data: { status: "deleting" } });
+      for (const status of ["queued", "running", "deleted"]) {
+        const progress = await request(statusPath);
+        assert.equal(progress.status, 200);
+        const body = await progress.json();
+        assert.partialDeepStrictEqual(body, {
+          data: { agentId: id("agt", 100), namespaceId: namespace, status },
+        });
+        assert.equal(Object.hasOwn(body.data, "receiptId"), false);
+        // Polling a nonterminal state must not remove the Agent before completion.
+        if (status !== "deleted") {
+          const pending = await request(agentPath);
+          assert.equal(pending.status, 200);
+          assert.partialDeepStrictEqual(await pending.json(), { data: { status: "deleting" } });
+        }
+      }
       assert.equal((await request(agentPath)).status, 404);
+      // The fixture user finished this deletion, so its completion stays readable.
+      assert.partialDeepStrictEqual(await (await request(statusPath)).json(), {
+        data: { status: "deleted" },
+      });
+      // Another deleting Agent follows its own status; reading it must not advance this one.
+      const otherAgentPath = `agents/${id("agt", 1)}`;
+      const otherDeletion = await request(otherAgentPath, "DELETE");
+      assert.equal(otherDeletion.status, 202);
+      const otherProgress = await request(`${otherAgentPath}/deletion-status`);
+      assert.equal(otherProgress.status, 200);
+      assert.partialDeepStrictEqual(await otherProgress.json(), {
+        data: { agentId: id("agt", 1), status: "queued" },
+      });
     },
   );
 

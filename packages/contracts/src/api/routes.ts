@@ -92,6 +92,7 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  AgentDeletionStatusResponse,
   FirstDeploymentReceiptResponse,
   FirstDeploymentRecoveryResponse,
   AgentDeviceAuthorizationResponse,
@@ -1945,6 +1946,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 202: AgentResponse, ...mutationErrors },
+    },
+  },
+  {
+    operationId: "getAgentDeletionStatus",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/deletion-status",
+    action: "openclaw.agents.deletion_status.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Follow an Agent deletion through its confirmed completion",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentDeletionStatusResponse, ...readErrors },
     },
   },
   {

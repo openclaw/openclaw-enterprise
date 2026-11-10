@@ -487,6 +487,14 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 - `outcome`
 - `details`
 
+### `agent_deletion_rechecks`
+
+Records the actor whose `delete` grant the worker rechecked when it finalized an Agent's
+[deletion](../agents/deletion.md#follow-deletion). Only these completions show that actor `deleted`.
+
+- `namespace_id`, `agent_id`, `actor_id`
+- `rechecked_at`
+
 ### `controller_work`
 
 Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.

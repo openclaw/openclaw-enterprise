@@ -1011,32 +1011,41 @@ test("an operate answer that arrives while Workspace is shown applies to it", as
 test("a Stop refusal clears once a later answer grants Agent operate", async (t) => {
   const scenario = await operateScenario(t, "Stop refusal grant");
   const { page } = scenario;
+  const requests = apiRequests(page, scenario.fixture.origin);
+  const stopPath = `/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/stop`;
   await withholdPermissionSummary(page, scenario.fixture, scenario.namespace.id, scenario.agent.id);
   await scenario.open({ answered: false });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${scenario.fixture.origin}${stopPath}` &&
+      response.request().method() === "POST",
+  );
   await page
     .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  const refusal = page.getByText(stopRefused("Stop refusal grant"), { exact: true });
-  await refusal.waitFor();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  const { meta } = await response.json();
+  const refusal = stopRow.getByRole("alert");
+  await refusal.getByText(stopRefused("Stop refusal grant"), { exact: true }).waitFor();
+  await refusal.getByText(`Request ID: ${meta.requestId}`, { exact: true }).waitFor();
+  const reason = (await refusal.textContent())?.trim() ?? "";
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
-  // The row stays because this viewer used it; the denial disables Stop and adds its notice.
-  // Exact: the refusal repeats the reason after "Stop was refused:".
-  const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
+  // Confirming denial keeps the attempted Stop's diagnostic and request ID as its reason.
   await scenario.rereadThroughLogs();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await notice.waitFor();
-  // The refused Stop stays in the Tab order, described by that notice (finding 2935).
+  assert.equal((await refusal.textContent())?.trim(), reason);
   const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
-  await expectReachableReason(page, stop, AGENT_STOP_DENIED);
+  await expectReachableReason(page, stop, reason);
   scenario.operate(true);
   await scenario.rereadThroughLogs();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await notice.waitFor({ state: "hidden" });
+  await refusal.waitFor({ state: "detached" });
   await waitForEnabled(stop);
   // The grant leaves no stale reason on Stop.
   assert.deepEqual(
@@ -1047,6 +1056,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
     { ariaDisabled: null, describedby: null },
   );
   assert.equal(await refusal.count(), 0);
+  assert.equal(pathRequests(requests, "POST", stopPath).length, 1);
 });
 
 // After this viewer's Stop is accepted, a later answer that denies Agent operate keeps the row

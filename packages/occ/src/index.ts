@@ -153,6 +153,7 @@ import {
 } from "./device-authorization.ts";
 import type {
   Agent,
+  AgentDeletionStatusResponse,
   AgentCredentialSourceBinding,
   AgentRead,
   AgentRevisionSummary,
@@ -14390,6 +14391,53 @@ export class OpenClawController {
       });
       return deleting;
     });
+  }
+
+  /**
+   * Status follows the Agent; completion follows the verified finalizing actor. While the Agent
+   * exists, its deletion status needs `read` on that exact Agent, like any other Agent read.
+   * Once it is deleted, `deleted` is visible to a caller who still holds Agent read at
+   * Namespace scope, or to the actor the worker verified when it finalized the deletion, while
+   * that actor holds Namespace read. Every other caller gets this Agent read's denial, which
+   * reads the same whether the Agent still exists, was deleted or never existed.
+   */
+  async getAgentDeletionStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<AgentDeletionStatusResponse["data"]> {
+    this.namespaceIdentity(namespaceId);
+    if (!isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    const lookup = { installationId: this.installation.id, namespaceId, agentId };
+    try {
+      await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    } catch (denial) {
+      if (
+        !(denial instanceof AuthorizationDeniedError) ||
+        Object.getPrototypeOf(denial) !== AuthorizationDeniedError.prototype
+      ) {
+        throw denial;
+      }
+      // Only a completed deletion this caller finalized, never live state, and only while the
+      // caller can still read the Namespace. Anything else answers with the same denial.
+      if (
+        (await this.canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId })) &&
+        (await this.read((state) =>
+          state.operations.agentDeletionCompletedBy({ ...lookup, actorId: principalId }),
+        ))
+      ) {
+        return { namespaceId, agentId, status: "deleted" };
+      }
+      throw denial;
+    }
+    const status = await this.read((state) => state.operations.findAgentDeletionStatus(lookup));
+    if (status === undefined) {
+      // A readable Agent with no deletion recorded, or no such Agent in a readable scope.
+      throw new ScopeViolationError("The requested Agent deletion status is unavailable.");
+    }
+    return { namespaceId, agentId, ...status };
   }
 
   /** Observe resources only; the caller owns authorization, claims, and status commits. */

@@ -1737,67 +1737,49 @@ const authoredScenarios = {
   } satisfies LocalScenario,
   deleting: {
     group: "Components/Deletion",
-    name: "Cleanup in progress",
+    name: "Follow deletion to completion",
     path: draft,
-    deleting: true,
-    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1300 }],
+    actions: [click("Delete Agent"), click("Permanently delete Agent")],
     steps: [
-      "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
-      "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
-      "Leave the page open: the 3 s status polls do not change Refresh to Checking or rewrite the deletion notice.",
+      "Follow Deletion queued, Deleting Agent, then Agent deleted. Refresh reads status without sending another deletion.",
+      "Choose Back to Agents when you’re ready. A denied or missing status never confirms deletion.",
     ],
     description:
-      "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
+      "The Console follows an accepted deletion. The fixture simulates the worker and its final result.",
+  } satisfies LocalScenario,
+  deletionWaiting: {
+    group: "Components/Deletion",
+    name: "Waiting for automatic cleanup",
+    path: draft,
+    deleting: true,
+    deletionStatus: "waiting",
+    description: "Cleanup will continue automatically. There is no manual retry action.",
   } satisfies LocalScenario,
   deletionRetryConfirm: {
     group: "Components/Deletion",
-    name: "Repeat cleanup confirmation",
+    name: "Retry after cleanup stopped",
     path: draft,
     deleting: true,
-    actions: [click("Request deletion again")],
-    description:
-      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+    deletionStatus: "failed",
+    actions: [click("Retry cleanup")],
+    description: "Only failed cleanup with current delete permission offers a confirmed retry.",
   } satisfies LocalScenario,
-  deletionRetryAccessEnded: {
+  deletionStatusUnavailable: {
     group: "Components/Deletion",
-    name: "Status access ends during repeat confirmation",
+    name: "Agent no longer visible",
     path: draft,
     deleting: true,
-    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 403 }],
-    actions: [click("Request deletion again")],
+    rules: [{ suffix: "/deletion-status", status: 403 }],
     description:
-      "The Agent was already marked for deletion. The next status check is refused while the repeat confirmation is open.",
-    steps: [
-      "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
-      "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
-    ],
-  } satisfies LocalScenario,
-  deletionRetryUnknown: {
-    group: "Components/Deletion",
-    name: "Repeat cleanup outcome unknown",
-    path: draft,
-    deleting: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
-        method: "DELETE",
-        status: 503,
-        once: true,
-      },
-    ],
-    actions: [
-      click("Request deletion again"),
-      { selector: ".agent-delete-dialog button.danger", click: true },
-    ],
-    description:
-      "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
+      "The status read is denied. The Console says the Agent may have been deleted or access may have changed, never reports it deleted, and offers no destructive action.",
   } satisfies LocalScenario,
   deletionDenied: {
     group: "Components/Deletion",
     name: "Permission denied",
     path: draft,
+    agentPermissionSummary: { update: true, deploy: true, operate: true, delete: false },
     rules: [
-      { suffix: "/permissions", status: 503 },
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -1809,7 +1791,7 @@ const authoredScenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
+      "The initial permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal. Refocus the window: the next permission read confirms denial without losing that refusal or its Request ID.",
   } satisfies LocalScenario,
   deletionConflict: {
     group: "Components/Deletion",
@@ -1832,7 +1814,9 @@ const authoredScenarios = {
     group: "Components/Deletion",
     name: "Outcome unknown",
     path: draft,
+    agentPermissionSummary: { update: true, deploy: true, operate: true, delete: false },
     rules: [
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -1843,7 +1827,9 @@ const authoredScenarios = {
     description:
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
     steps: [
-      "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
+      "Choose Refresh deletion status: the Agent remains active and allows another attempt. Refocus the window: the next permission read denies delete, replacing retry advice with the current access reason.",
+      "Reload this story and reverse the order: refocus first, then Refresh deletion status. The same permission notice must replace Outcome unknown, without offering a retry.",
+      "After refocus, Tab to Delete Agent. It takes focus and looks unavailable, described by the current permission notice; Enter, Space or a click sends nothing.",
     ],
   } satisfies LocalScenario,
   createFlow: {
@@ -2262,8 +2248,9 @@ const authoredScenarios = {
     name: "Permission denied",
     path: revision,
     deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, delete: true, operate: false },
     rules: [
-      { suffix: "/permissions", status: 503 },
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         suffix: "/stop",
         method: "POST",
@@ -2275,7 +2262,7 @@ const authoredScenarios = {
     ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
+      "The initial permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal. Refocus the window: the next permission read confirms denial without losing that refusal or its Request ID.",
   } satisfies LocalScenario,
   stopUnknown: {
     group: "Components/Stop Agent",
@@ -2316,10 +2303,10 @@ const authoredScenarios = {
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
-      "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
+      "Follow Deletion queued, Deleting Agent, then Agent deleted. Refresh deletion status reads progress without repeating the deletion request.",
+      "Choose Back to Agents. The completed Agent is no longer listed.",
     ],
-    gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
+    gap: "The fixture simulates worker cleanup and completion; it does not run a real worker or delete runtime resources. Configurations and Secrets remain Namespace-owned and need separate management.",
   } satisfies LocalScenario,
 };
 
