@@ -13,7 +13,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 ## Entry Points
 
 - Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
-- Source: `scripts/first-agent.mjs:nativeConfiguration`
+- Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 - Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
@@ -98,9 +98,9 @@ plan and identity. The worker creates and deploys the Agent.
 
 ### 0a. Local first-Agent opts into native admin
 
-`scripts/first-agent.mjs:loadLocalInstallation`
-`scripts/first-agent.mjs:nativeConfiguration`
-`scripts/first-agent.mjs:ensureManagedConfiguration`
+`scripts/first-agent.ts:loadLocalInstallation`
+`scripts/first-agent.ts:nativeConfiguration`
+`scripts/first-agent.ts:ensureManagedConfiguration`
 
 With launcher-owned Compose/OpenShell browser state, the helper saves disabled
 Configuration generation 1, creates the Agent, then derives its origin. Before

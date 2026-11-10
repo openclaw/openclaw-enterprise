@@ -27,7 +27,7 @@ Credential issuance and provider internals are outside this flow.
   Agent deployment action: authorized exact Secret references, same-Namespace
   bindings, exact Agent assignment authority, and an approved Harness/Compute
   selection.
-- Local installer: `scripts/first-agent.mjs:main` uses the bootstrap service key.
+- Local installer: `scripts/first-agent.ts:main` uses the bootstrap service key.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
@@ -144,8 +144,8 @@ execution topology.
 
 ### 4. Grant the first local Agent access to its model credential
 
-`scripts/first-agent.mjs:main`;
-`scripts/first-agent.mjs:assertManagedRevision`;
+`scripts/first-agent.ts:main`;
+`scripts/first-agent.ts:assertManagedRevision`;
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
@@ -157,7 +157,7 @@ origin, browser port, and Agent domain for its cluster. These browser settings
 are required with either Sandbox Driver; `--control-ui` still requires OpenShell.
 API requests use the recorded loopback HTTP endpoint. The default `sandboxDriver: "none"`
 path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
-`scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket and
+`scripts/first-agent.ts:loadLocalInstallation` uses the recorded Unix socket and
 removes inherited Docker TLS settings for container-engine calls. Compose setup
 queries the recorded controller port and PostgreSQL service without another
 daemon's certificates.
@@ -179,7 +179,7 @@ CredentialSource and uses the public Namespace IAM API to grant the Agent princi
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
-`scripts/first-agent.mjs:withRecord` creates the PID lock and atomic record
+`scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
 process umask. It closes the temporary file before renaming and removes a
 failed temporary output without replacing the previous record.
@@ -202,7 +202,7 @@ prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
 After a model failure, the CLI prints the original error before a bounded
-[diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from the existing
 revision-scoped runtime status and log API. The API resolves both Kubernetes and
 OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
 and restart count; changed identities suppress log attribution. It prints container

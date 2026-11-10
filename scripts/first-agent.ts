@@ -28,9 +28,11 @@ import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
 import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
 
 type Fields = Record<string, unknown>;
+type Harness = "openclaw" | "codex";
+type AuthMethod = "api_key" | "codex_pat";
 type Options = {
   name: string;
-  harness: string;
+  harness: Harness;
   controlUi: boolean;
   prompt: string | undefined;
   replaceKey: boolean;
@@ -134,7 +136,10 @@ function parseArguments(argv: string[]): Options | undefined {
   if (argv.includes("--help") || argv.includes("-h")) {
     return undefined;
   }
-  const result: Omit<Options, "name"> & { name: string | undefined } = {
+  const result: Omit<Options, "name" | "harness"> & {
+    name: string | undefined;
+    harness: string;
+  } = {
     name: undefined,
     harness: "openclaw",
     controlUi: false,
@@ -186,10 +191,10 @@ function parseArguments(argv: string[]): Options | undefined {
   ) {
     throw new Error("The prompt must contain 1–4,000 characters.");
   }
-  if (!["openclaw", "codex"].includes(result.harness)) {
+  if (result.harness !== "openclaw" && result.harness !== "codex") {
     throw new Error("--harness must be openclaw or codex.");
   }
-  return { ...result, name: result.name };
+  return { ...result, name: result.name, harness: result.harness };
 }
 
 async function exists(path: string) {
@@ -229,7 +234,7 @@ function parseJson(value: string, description: string): unknown {
   }
 }
 
-async function loadLocalInstallation(harness: string, controlUi: boolean) {
+async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   const selected = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const directory = selected
     ? isAbsolute(selected)
@@ -572,7 +577,7 @@ function run(
   });
 }
 
-async function modelKey(authMethod: unknown) {
+async function modelKey(authMethod: AuthMethod) {
   const variable = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
   const fileVariable = `${variable}_FILE`;
   if (process.env[variable] && process.env[fileVariable]) {
@@ -634,7 +639,7 @@ async function modelKey(authMethod: unknown) {
 
 function nativeConfiguration(
   model: unknown,
-  harness: unknown,
+  harness: Harness,
   nativeAdminOrigin?: unknown,
   bootstrapWorkspace = false,
 ) {
@@ -1028,9 +1033,10 @@ async function main(options: Options) {
               : {}),
           }
         : fields(reused, "authMethod");
+    const authMethod = record.authMethod;
     if (
-      !["api_key", "codex_pat"].some((value) => value === record.authMethod) ||
-      (record.authMethod === "codex_pat" &&
+      (authMethod !== "api_key" && authMethod !== "codex_pat") ||
+      (authMethod === "codex_pat" &&
         (options.harness !== "codex" || local.sandboxDriver !== "openshell"))
     ) {
       throw new Error(
@@ -1063,7 +1069,7 @@ async function main(options: Options) {
       );
     }
 
-    const baseConfiguration = nativeConfiguration(model, record.harness);
+    const baseConfiguration = nativeConfiguration(model, options.harness);
     async function ensureManagedConfiguration(selectedAgent: Fields) {
       if (record.controlUi && record.controlUiOrigin === undefined) {
         const target = new URL(local.nativeAdmin.browserOrigin);
@@ -1077,7 +1083,7 @@ async function main(options: Options) {
       }
       const expected = nativeConfiguration(
         model,
-        record.harness,
+        options.harness,
         record.controlUiOrigin,
         Boolean(record.controlUi && local.nativeAdmin.bootstrapWorkspace),
       );
@@ -1143,7 +1149,7 @@ async function main(options: Options) {
     if (!record.secretId) {
       record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
       if (!record.secretId) {
-        suppliedKey = await modelKey(record.authMethod);
+        suppliedKey = await modelKey(authMethod);
         progress("Saving the model credential in the local platform Secret...");
         const secret = await objectResponse(api, "id", "POST", `${base}/secrets`, {
           name: record.secretName,
@@ -1190,7 +1196,7 @@ async function main(options: Options) {
     }
 
     if (options.replaceKey && suppliedKey === undefined) {
-      suppliedKey = await modelKey(record.authMethod);
+      suppliedKey = await modelKey(authMethod);
       progress("Replacing the saved model credential...");
       await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
       if (credentialSource !== undefined) {
