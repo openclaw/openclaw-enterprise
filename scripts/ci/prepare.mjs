@@ -979,6 +979,7 @@ const imageCacheLanes = new Map([
   ["slack", { localStore: false }],
   ["production-tui", { localStore: false }],
   ["gateway-routing", { localStore: false }],
+  ["k3d-otel", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
   ["qa-matrix", { localStore: false }],
@@ -3170,18 +3171,17 @@ async function prepareLane({ lane, statePath, file }) {
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
+  const sourceBuild = lanePrepare(name).sourceBuildFiles?.some((path) =>
+    relativeFile === undefined
+      ? laneDefinition(name).files.some((file) => file.path === path)
+      : path === relativeFile,
+  );
   const fullOpenShellSourceBuild =
     process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    suiteView === "full-integration" &&
+    sourceBuild &&
     isOpenShellLane(name) &&
-    relativeFile === undefined &&
-    laneDefinition(name).files.some(({ path }) =>
-      lanePrepare(name).sourceBuildFiles?.includes(path),
-    );
-  if (
-    process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    (fullOpenShellSourceBuild || lanePrepare(name).sourceBuildFiles?.includes(relativeFile))
-  ) {
+    relativeFile === undefined;
+  if (process.env.OCC_CI_IMAGE_CACHE === "1" && sourceBuild) {
     // Prime the selected builder, but keep the installer's actual source-build path.
     // Cache credentials remain in preparation; tests inherit only the builder name.
     const builder = process.env.BUILDX_BUILDER;

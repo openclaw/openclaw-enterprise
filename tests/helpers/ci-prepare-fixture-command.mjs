@@ -445,6 +445,11 @@ async function fakeCommand({
       state.tag = args[3];
       return finish();
     }
+    if (state.runtime && equals(args, ["image", "inspect", state.runtime])) {
+      // A source-built runtime can enter the same export path as the fixture image.
+      state.tag = state.runtime;
+      return finish("[]\n");
+    }
     if (equals(args, ["image", "inspect", state.tag])) {
       if (scenario === "hung-host-owned") {
         return hang();
