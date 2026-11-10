@@ -84,7 +84,7 @@ the paths.
 | [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
-| [Installation](#installation) | 5 operations |
+| [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 52 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
@@ -1560,40 +1560,9 @@ List all Installation-wide and Namespace-scoped connection templates
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<OAuth connection template>` | Yes | — |
+| `data` | `array<Connection template>` | Yes | — |
 | `data[].createdAt` | `string` | Yes | — |
-| `data[].current` | `OAuth connection template version` | Yes | — |
-| `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data[].current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.createdAt` | `string` | Yes | — |
-| `data[].current.destinations` | `array<object>` | Yes | min items: 1 |
-| `data[].current.destinations[].host` | `string` | Yes | — |
-| `data[].current.destinations[].path` | `string` | Yes | — |
-| `data[].current.destinations[].port` | `integer` | Yes | — |
-| `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mcp` | `object` | No | — |
-| `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data[].current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].current.observed` | `object` | No | — |
-| `data[].current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.issuers` | `array<string>` | Yes | — |
-| `data[].current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.requestedScopes` | `array<string>` | Yes | — |
-| `data[].current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.resourceScopes` | `array<string>` | No | — |
-| `data[].current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.supportedScopes` | `array<string>` | No | — |
-| `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
-| `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
-| `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.version` | `integer` | Yes | minimum: 1 |
+| `data[].current` | `OAuth connection template version or object` | Yes | — |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1669,7 +1638,7 @@ Create an Installation-wide or Namespace-scoped connection template
 
 **Content type:** `application/json`
 
-Schema: `object or object`.
+Schema: `object or object or object`.
 
 Example request
 ```json
@@ -1713,40 +1682,9 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `OAuth connection template` | Yes | — |
+| `data` | `Connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `OAuth connection template version` | Yes | — |
-| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.createdAt` | `string` | Yes | — |
-| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
-| `data.current.destinations[].host` | `string` | Yes | — |
-| `data.current.destinations[].path` | `string` | Yes | — |
-| `data.current.destinations[].port` | `integer` | Yes | — |
-| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp` | `object` | No | — |
-| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.observed` | `object` | No | — |
-| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuers` | `array<string>` | Yes | — |
-| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
-| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.resourceScopes` | `array<string>` | No | — |
-| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.supportedScopes` | `array<string>` | No | — |
-| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
-| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
-| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.current` | `OAuth connection template version or object` | Yes | — |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1955,40 +1893,9 @@ Get one connection template
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `OAuth connection template` | Yes | — |
+| `data` | `Connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `OAuth connection template version` | Yes | — |
-| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.createdAt` | `string` | Yes | — |
-| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
-| `data.current.destinations[].host` | `string` | Yes | — |
-| `data.current.destinations[].path` | `string` | Yes | — |
-| `data.current.destinations[].port` | `integer` | Yes | — |
-| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp` | `object` | No | — |
-| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.observed` | `object` | No | — |
-| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuers` | `array<string>` | Yes | — |
-| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
-| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.resourceScopes` | `array<string>` | No | — |
-| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.supportedScopes` | `array<string>` | No | — |
-| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
-| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
-| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.current` | `OAuth connection template version or object` | Yes | — |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2058,7 +1965,7 @@ Rename a connection template, or create a version with new approved values
 
 **Content type:** `application/json`
 
-Schema: `object or object or object`.
+Schema: `object or object or object or object`.
 
 Example request
 ```json
@@ -2086,40 +1993,9 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `OAuth connection template` | Yes | — |
+| `data` | `Connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `OAuth connection template version` | Yes | — |
-| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.createdAt` | `string` | Yes | — |
-| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
-| `data.current.destinations[].host` | `string` | Yes | — |
-| `data.current.destinations[].path` | `string` | Yes | — |
-| `data.current.destinations[].port` | `integer` | Yes | — |
-| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp` | `object` | No | — |
-| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.observed` | `object` | No | — |
-| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.issuers` | `array<string>` | Yes | — |
-| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
-| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.resourceScopes` | `array<string>` | No | — |
-| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.observed.supportedScopes` | `array<string>` | No | — |
-| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
-| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
-| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.current` | `OAuth connection template version or object` | Yes | — |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2199,40 +2075,9 @@ List connection templates the caller may connect in this Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<OAuth connection template>` | Yes | — |
+| `data` | `array<Connection template>` | Yes | — |
 | `data[].createdAt` | `string` | Yes | — |
-| `data[].current` | `OAuth connection template version` | Yes | — |
-| `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data[].current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.createdAt` | `string` | Yes | — |
-| `data[].current.destinations` | `array<object>` | Yes | min items: 1 |
-| `data[].current.destinations[].host` | `string` | Yes | — |
-| `data[].current.destinations[].path` | `string` | Yes | — |
-| `data[].current.destinations[].port` | `integer` | Yes | — |
-| `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mcp` | `object` | No | — |
-| `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data[].current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].current.observed` | `object` | No | — |
-| `data[].current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.issuers` | `array<string>` | Yes | — |
-| `data[].current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.requestedScopes` | `array<string>` | Yes | — |
-| `data[].current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.resourceScopes` | `array<string>` | No | — |
-| `data[].current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.observed.supportedScopes` | `array<string>` | No | — |
-| `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
-| `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
-| `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.version` | `integer` | Yes | minimum: 1 |
+| `data[].current` | `OAuth connection template version or object` | Yes | — |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2832,6 +2677,11 @@ Complete a browser connection for the signed-in person who started it
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
 | [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
+| [`GET /model-providers`](#get-modelproviders) | List Installation model providers |
+| [`POST /model-providers`](#post-modelproviders) | Create an Installation model provider |
+| [`GET /model-providers/{modelProviderId}`](#get-modelprovidersmodelproviderid) | Read a model provider |
+| [`PUT /model-providers/{modelProviderId}`](#put-modelprovidersmodelproviderid) | Replace model provider settings |
+| [`GET /namespaces/{namespaceId}/model-providers`](#get-namespacesnamespaceidmodelproviders) | List the model providers available when creating an Agent |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -2886,6 +2736,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].staticKeyBaseUrlConfig` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
@@ -3009,6 +2860,7 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].staticKeyBaseUrlConfig` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
@@ -3200,6 +3052,494 @@ Example response
   "data": {
     "configurations": []
   },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /model-providers`
+
+<span id="get-modelproviders"></span>
+
+List Installation model providers
+
+**Operation ID:** `listModelProviders`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data[].id` | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `data[].models[].contextWindow` | `integer` | No | minimum: 1 |
+| `data[].models[].cost` | `object` | No | — |
+| `data[].models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.input` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.output` | `number` | Yes | minimum: 0 |
+| `data[].models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data[].models[].maxTokens` | `integer` | No | minimum: 1 |
+| `data[].models[].name` | `string` | No | min length: 1; max length: 200 |
+| `data[].protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "baseUrl": "https://inference.example.com/v1",
+      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "defaultModelId": "research-model",
+      "displayName": "Research inference",
+      "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+      "models": [
+        {
+          "id": "research-model"
+        }
+      ],
+      "protocol": "openai-responses"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /model-providers`
+
+<span id="post-modelproviders"></span>
+
+Create an Installation model provider
+
+**Operation ID:** `createModelProvider`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `models[].contextWindow` | `integer` | No | minimum: 1 |
+| `models[].cost` | `object` | No | — |
+| `models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `models[].cost.input` | `number` | Yes | minimum: 0 |
+| `models[].cost.output` | `number` | Yes | minimum: 0 |
+| `models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `models[].maxTokens` | `integer` | No | minimum: 1 |
+| `models[].name` | `string` | No | min length: 1; max length: 200 |
+| `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+
+Example request
+```json
+{
+  "baseUrl": "https://inference.example.com/v1",
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "defaultModelId": "research-model",
+  "displayName": "Research inference",
+  "models": [
+    {
+      "id": "research-model"
+    }
+  ],
+  "protocol": "openai-responses"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data.id` | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `data.models[].contextWindow` | `integer` | No | minimum: 1 |
+| `data.models[].cost` | `object` | No | — |
+| `data.models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.input` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.output` | `number` | Yes | minimum: 0 |
+| `data.models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.models[].maxTokens` | `integer` | No | minimum: 1 |
+| `data.models[].name` | `string` | No | min length: 1; max length: 200 |
+| `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "baseUrl": "https://inference.example.com/v1",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "defaultModelId": "research-model",
+    "displayName": "Research inference",
+    "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+    "models": [
+      {
+        "id": "research-model"
+      }
+    ],
+    "protocol": "openai-responses"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /model-providers/{modelProviderId}`
+
+<span id="get-modelprovidersmodelproviderid"></span>
+
+Read a model provider
+
+**Operation ID:** `getModelProvider`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `modelProviderId` | path | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "mpr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data.id` | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `data.models[].contextWindow` | `integer` | No | minimum: 1 |
+| `data.models[].cost` | `object` | No | — |
+| `data.models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.input` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.output` | `number` | Yes | minimum: 0 |
+| `data.models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.models[].maxTokens` | `integer` | No | minimum: 1 |
+| `data.models[].name` | `string` | No | min length: 1; max length: 200 |
+| `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "baseUrl": "https://inference.example.com/v1",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "defaultModelId": "research-model",
+    "displayName": "Research inference",
+    "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+    "models": [
+      {
+        "id": "research-model"
+      }
+    ],
+    "protocol": "openai-responses"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PUT /model-providers/{modelProviderId}`
+
+<span id="put-modelprovidersmodelproviderid"></span>
+
+Replace model provider settings
+
+**Operation ID:** `updateModelProvider`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `modelProviderId` | path | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "mpr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `models[].contextWindow` | `integer` | No | minimum: 1 |
+| `models[].cost` | `object` | No | — |
+| `models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `models[].cost.input` | `number` | Yes | minimum: 0 |
+| `models[].cost.output` | `number` | Yes | minimum: 0 |
+| `models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `models[].maxTokens` | `integer` | No | minimum: 1 |
+| `models[].name` | `string` | No | min length: 1; max length: 200 |
+| `protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+
+Example request
+```json
+{
+  "baseUrl": "https://inference.example.com/v1",
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "defaultModelId": "research-model",
+  "displayName": "Research inference",
+  "models": [
+    {
+      "id": "research-model"
+    }
+  ],
+  "protocol": "openai-responses"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `data.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data.id` | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `data.models[].contextWindow` | `integer` | No | minimum: 1 |
+| `data.models[].cost` | `object` | No | — |
+| `data.models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.input` | `number` | Yes | minimum: 0 |
+| `data.models[].cost.output` | `number` | Yes | minimum: 0 |
+| `data.models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data.models[].maxTokens` | `integer` | No | minimum: 1 |
+| `data.models[].name` | `string` | No | min length: 1; max length: 200 |
+| `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "baseUrl": "https://inference.example.com/v1",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "defaultModelId": "research-model",
+    "displayName": "Research inference",
+    "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+    "models": [
+      {
+        "id": "research-model"
+      }
+    ],
+    "protocol": "openai-responses"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/model-providers`
+
+<span id="get-namespacesnamespaceidmodelproviders"></span>
+
+List the model providers available when creating an Agent
+
+**Operation ID:** `listUsableModelProviders`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].baseUrl` | `string` | Yes | max length: 2048; pattern: `^https://` |
+| `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data[].id` | `string` | Yes | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].models` | `array<object>` | Yes | min items: 1; max items: 256 |
+| `data[].models[].contextWindow` | `integer` | No | minimum: 1 |
+| `data[].models[].cost` | `object` | No | — |
+| `data[].models[].cost.cacheRead` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.cacheWrite` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.input` | `number` | Yes | minimum: 0 |
+| `data[].models[].cost.output` | `number` | Yes | minimum: 0 |
+| `data[].models[].id` | `string` | Yes | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
+| `data[].models[].maxTokens` | `integer` | No | minimum: 1 |
+| `data[].models[].name` | `string` | No | min length: 1; max length: 200 |
+| `data[].protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "baseUrl": "https://inference.example.com/v1",
+      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "defaultModelId": "research-model",
+      "displayName": "Research inference",
+      "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+      "models": [
+        {
+          "id": "research-model"
+        }
+      ],
+      "protocol": "openai-responses"
+    }
+  ],
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
@@ -3586,6 +3926,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].staticKeyBaseUrlConfig` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
@@ -3972,6 +4313,7 @@ Create a Namespace-owned Agent
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `nativeAdmin` | `boolean` | No | Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -4036,6 +4378,7 @@ Example request
 | `data.gatewayManagedMode` | `boolean` | Yes | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `data.harnessAuth` | `object or object or object or object or null` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -4657,6 +5000,7 @@ Create a new Agent and queue first-time provisioning
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `nativeAdmin` | `boolean` | No | Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -5108,6 +5452,7 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
+| `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$`; The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
@@ -5267,6 +5612,7 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.gatewayManagedMode` | `boolean` | Yes | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `data.harnessAuth` | `object or object or object or object or null` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -5433,6 +5779,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
+| `modelProviderId` | `string or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
@@ -5492,6 +5839,7 @@ Example request
 | `data.gatewayManagedMode` | `boolean` | Yes | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `data.harnessAuth` | `object or object or object or object or null` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -5770,6 +6118,7 @@ Example request
 | `data.harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.id` | `string` | Yes | min length: 1 |
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data.harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data.harness.version` | `string` | Yes | min length: 1 |
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
@@ -8039,6 +8388,7 @@ Example request
 | `data.gatewayManagedMode` | `boolean` | Yes | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `data.harnessAuth` | `object or object or object or object or null` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -8219,6 +8569,7 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.gatewayManagedMode` | `boolean` | Yes | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `data.harnessAuth` | `object or object or object or object or null` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
@@ -8982,6 +9333,7 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].harness.configuration` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.id` | `string` | Yes | min length: 1 |
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
+| `data[].harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].harness.overrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9888,6 +10240,11 @@ List readable credential sources without revealing credential values
 | `data[].ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `data[].state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data[].staticKeyGrant` | `object` | No | — |
+| `data[].staticKeyGrant.baseUrl` | `string` | Yes | — |
+| `data[].staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data[].staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data[].status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data[].status.reason` | `string` | No | max length: 512 |
 | `data[].status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
@@ -9974,6 +10331,8 @@ Register a credential source with the selected Credential Gateway
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | Non-secret source configuration keyed by catalog field name. |
+| `connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `connectionTemplateVersion` | `integer` | No | minimum: 1 |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secrets` | `object<string, object>` | No | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
@@ -10028,6 +10387,11 @@ Example request
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data.staticKeyGrant` | `object` | No | — |
+| `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
+| `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
 | `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
@@ -10158,6 +10522,11 @@ Get one credential source and its live Credential Gateway status
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data.staticKeyGrant` | `object` | No | — |
+| `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
+| `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
 | `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
@@ -10284,6 +10653,11 @@ Example request
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data.staticKeyGrant` | `object` | No | — |
+| `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
+| `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
 | `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
@@ -10381,6 +10755,11 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data.staticKeyGrant` | `object` | No | — |
+| `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
+| `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
 | `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
@@ -12850,7 +13229,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `SecretResponse` | `object` |
 | `CredentialSourceResponse` | `object` |
 | `OAuth connection template version` | `object` |
-| `OAuth connection template` | `object` |
+| `Connection template` | `object` |
 | `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |
 | `PluginToolDefaults` | `object` |

@@ -266,6 +266,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,

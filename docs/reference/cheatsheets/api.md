@@ -66,11 +66,16 @@
 
 ### Installation
 
+- [`listModelProviders`](../api.md#get-modelproviders): List Installation model providers.
+- [`listUsableModelProviders`](../api.md#get-namespacesnamespaceidmodelproviders): List the model providers available when creating an Agent.
 - [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
+- [`getModelProvider`](../api.md#get-modelprovidersmodelproviderid): Read a model provider.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
 - [`bootstrapInstallation`](../api.md#post-installationbootstrap): Bootstrap the singleton Installation.
+- [`createModelProvider`](../api.md#post-modelproviders): Create an Installation model provider.
+- [`updateModelProvider`](../api.md#put-modelprovidersmodelproviderid): Replace model provider settings.
 
 ### Namespaces
 

@@ -332,7 +332,10 @@ export interface ComputeDriver extends Driver {
     provider: Readonly<ModelProvider>,
     harness: RevisionHarnessDescriptor,
     configuration: OpenClawConfigurationDocument,
-  ): { readonly values: OpenClawConfigurationDocument; readonly settings: Readonly<Record<string, unknown>> };
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,
