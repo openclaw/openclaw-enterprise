@@ -1368,17 +1368,13 @@ async function main(options: Options) {
         return false;
       }
       if (deployment.status === "failed") {
-        const code = /^[A-Z0-9_]+$/.test(
-          String(
-            (deployment.error == null ? undefined : fields(deployment.error, "code").code) ?? "",
-          ),
-        )
-          ? ` (${fields(deployment.error, "code").code})`
-          : "";
+        const failureCode =
+          deployment.error == null ? undefined : fields(deployment.error, "code").code;
+        const code = /^[A-Z0-9_]+$/.test(String(failureCode ?? "")) ? ` (${failureCode})` : "";
         let advice = "Inspect the deployment in the Console and the controller worker logs.";
-        if (deployment.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
+        if (failureCode === "RUNTIME_AUTHENTICATION_FAILED") {
           advice = `Check the model key and access to ${model}; use --replace-key to store a new key and deploy again.`;
-        } else if (deployment.error?.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+        } else if (failureCode === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
           advice =
             "The Codex runtime's managed permission policy is incompatible with this deployment. Review the configured sandbox, permission profile, and approval reviewer with your policy administrator before deploying again.";
         }
