@@ -33,6 +33,7 @@
     "conformance/kubernetes-embedded-replacement-fixture.ts",
     "conformance/kubernetes-runtime-log-fixture.ts",
     "conformance/kubernetes-teardown-cases.ts",
+    "integration/occ-api-injected-fixture.ts",
     "integration/postgres-agent-provisioning-fixture.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
     "browser/console-agent-detail-cases.mts",

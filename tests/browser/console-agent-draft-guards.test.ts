@@ -1998,11 +1998,27 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     await deploy.focus();
     assert.equal(await hasFocus(deploy), true);
     assert.equal(await focusedDescription(page), reason);
+
+    // A grant takes effect when the same open draft rechecks its permissions on refocus.
+    await settlePageRequests(page);
+    grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
+    const rechecked = responseTo(page, "GET", `${fixture.origin}${path}/permissions/secrets`);
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    const summary = await rechecked;
+    assert.equal(summary.status(), 200, "Secret permissions GET status");
+    assert.deepEqual(record(await summary.json()).data, {
+      operateDenied: [],
+      unreadableOperateDenied: 0,
+    });
+    await expectNoText(page, reason, async () => {
+      await waitForEnabled(deploy);
+      await settlePageRequests(page);
+    });
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
   }
 
   // With Secret operate on the model Secret, the gate never holds less than the API allows: the
   // same operator deploys.
-  grantSecretOperate(fixture, namespace.id, operator.principal, [modelSecret.id]);
   {
     const { page } = await newPage(t, fixture);
     await login(page, fixture, url, operator.credentials);

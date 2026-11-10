@@ -148,7 +148,12 @@ function filter(rustLog = "info,codex_otel=off") {
     },
     forward: async (stream: Readable): Promise<void> => {
       const result: unknown = forward(stream);
-      assert.ok(result instanceof Promise);
+      assert.ok(
+        result !== null &&
+          (typeof result === "object" || typeof result === "function") &&
+          "then" in result &&
+          typeof result.then === "function",
+      );
       await result;
     },
     writes,

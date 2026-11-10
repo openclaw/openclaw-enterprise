@@ -32,3 +32,23 @@ when replacing that credential, supply the replacement and rerun your original
 first-Agent helper command for the same Agent, adding `--replace-key`. Run
 `node scripts/first-agent.mjs --help` for supported options. For other codes,
 inspect the deployment and controller worker logs before choosing a recovery action.
+
+## First-Agent reports an existing lock
+
+Wait for the command using that Agent name to finish, then retry. The helper
+prints the exact lock path. It leaves existing locks untouched, including locks
+left by a killed process, to prevent overlapping commands from replacing each
+other's lock and resume record.
+
+If the lock persists, stop automated retries and wait for or stop every
+first-Agent helper using that state directory and Agent name, including older
+versions. Coordinate with other users of the checkout before proceeding.
+Inspect the exact entry without following links: it must be a regular file,
+owned by the current user, with no group or other permissions. Its PID is a clue
+only; check activity in the host context that ran the helper. Leave an unexpected
+entry or uncertain ownership for investigation.
+
+With all contenders stopped and abandonment confirmed, remove only the printed
+lock file. Preserve the adjacent `.json` resume record. Retry once with the same
+Agent name. Do not remove a lock based only on a PID check while another command
+can start.
