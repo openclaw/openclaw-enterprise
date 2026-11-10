@@ -4,22 +4,51 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   ciOtelBackendResourceKind,
-  cleanupLogging,
+  cleanupLogging as cleanupLoggingJs,
   collectorImage,
   fixture,
-  prepareLogging,
+  prepareLogging as prepareLoggingJs,
   readJsonlPayloads,
 } from "../helpers/ci-logging.mjs";
 
+type CommandCall = [command: string, args: string[]];
+type CommandExecutor = (
+  command: string,
+  args: string[],
+) => Promise<{ stdout: string; stderr: string }>;
+type LoggingResource = { network?: string; namespace?: string };
+type RegisterResource = (
+  kind: string,
+  resource: LoggingResource,
+) => Promise<{ id: string; kind: string }>;
+type PrepareOptions = Parameters<typeof prepareLoggingJs>[0] & {
+  directory?: string;
+  cluster?: { name: string; directory: string; kubeconfig: string; context: string };
+  execFile: CommandExecutor;
+  registerResource: RegisterResource;
+};
+const prepareLogging: (options: PrepareOptions) => ReturnType<typeof prepareLoggingJs> =
+  prepareLoggingJs;
+const cleanupLogging: (
+  resource: {
+    kind: string;
+    containerName: string;
+    directory: string;
+    namespace?: string;
+    cluster?: PrepareOptions["cluster"];
+  },
+  options: Parameters<typeof cleanupLoggingJs>[1] & { execFile: CommandExecutor },
+) => ReturnType<typeof cleanupLoggingJs> = cleanupLoggingJs;
+
 test("prepareLogging registers an owned Collector backend before starting Docker", async (t) => {
   const root = await fixture(t);
-  const calls = [];
-  const registered = [];
-  const execFile = async (command, args) => {
+  const calls: CommandCall[] = [];
+  const registered: { kind: string; resource: LoggingResource }[] = [];
+  const execFile = async (command: string, args: string[]) => {
     calls.push([command, args]);
     return { stdout: "container-id\n", stderr: "" };
   };
-  const registerResource = async (kind, resource) => {
+  const registerResource = async (kind: string, resource: LoggingResource) => {
     assert.equal(calls.length, 0, "resource must be persisted before Docker mutation");
     registered.push({ kind, resource });
     return { id: "resource-1", kind, owner: "openclaw-ci-local-test", ...resource };
@@ -40,7 +69,7 @@ test("prepareLogging registers an owned Collector backend before starting Docker
   });
 
   assert.equal(registered.length, 1);
-  assert.equal(registered[0].kind, ciOtelBackendResourceKind);
+  assert.equal(registered[0]?.kind, ciOtelBackendResourceKind);
   assert.equal(result.resourceId, "resource-1");
   assert.equal(result.env.OCC_TEST_OTEL_LOGS, "1");
   assert.match(result.env.OCC_TEST_OTEL_LOGS_JSONL, /logs[.]jsonl$/);
@@ -78,8 +107,8 @@ test("prepareLogging pulls the Collector image only when the engine lacks its di
   ]) {
     await t.test(name, async (t) => {
       const root = await fixture(t);
-      const calls = [];
-      const execFile = async (command, args) => {
+      const calls: string[][] = [];
+      const execFile = async (command: string, args: string[]) => {
         calls.push(args);
         if (args[0] === "image" && args[1] === "inspect") {
           if (repoDigests === undefined) {
@@ -100,13 +129,17 @@ test("prepareLogging pulls the Collector image only when the engine lacks its di
           OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
         },
         execFile,
-        registerResource: async (kind, resource) => ({ id: "resource-1", kind, ...resource }),
+        registerResource: async (kind: string, resource: LoggingResource) => ({
+          id: "resource-1",
+          kind,
+          ...resource,
+        }),
         waitForReady: false,
       });
       const inspect = calls.findIndex(([command, sub]) => command === "image" && sub === "inspect");
       const pull = calls.findIndex(([command]) => command === "pull");
       const run = calls.findIndex(([command]) => command === "run");
-      assert.equal(calls[inspect].at(-1), collectorImage);
+      assert.equal(calls[inspect]?.at(-1), collectorImage);
       assert.notEqual(run, -1);
       assert.ok(inspect < run);
       if (pulled) {
@@ -130,8 +163,8 @@ test("prepareLogging stops when the engine cannot answer the image inspect", asy
   ]) {
     await t.test(name, async (t) => {
       const root = await fixture(t);
-      const calls = [];
-      const execFile = async (command, args) => {
+      const calls: string[][] = [];
+      const execFile = async (command: string, args: string[]) => {
         calls.push(args);
         if (args[0] === "image" && args[1] === "inspect") {
           throw Object.assign(new Error(`${name} at inspect`), failure);
@@ -148,7 +181,11 @@ test("prepareLogging stops when the engine cannot answer the image inspect", asy
             OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
           },
           execFile,
-          registerResource: async (kind, resource) => ({ id: "resource-1", kind, ...resource }),
+          registerResource: async (kind: string, resource: LoggingResource) => ({
+            id: "resource-1",
+            kind,
+            ...resource,
+          }),
           waitForReady: false,
         }),
         new RegExp(`${name} at inspect`),
@@ -168,9 +205,9 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   const kubeconfig = join(clusterDirectory, "kubeconfig");
   await mkdir(clusterDirectory, { mode: 0o700 });
   await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
-  const calls = [];
-  const registered = [];
-  const execFile = async (command, args) => {
+  const calls: CommandCall[] = [];
+  const registered: { kind: string; resource: LoggingResource }[] = [];
+  const execFile = async (command: string, args: string[]) => {
     calls.push([command, args]);
     if (command === "docker" && args[0] === "inspect") {
       return { stdout: "172.18.0.23\n", stderr: "" };
@@ -197,7 +234,7 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
     }
     return { stdout: "container-id\n", stderr: "" };
   };
-  const registerResource = async (kind, resource) => {
+  const registerResource = async (kind: string, resource: LoggingResource) => {
     assert.equal(
       calls.length,
       0,
@@ -226,13 +263,15 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
     waitForReady: false,
   });
 
-  assert.equal(registered[0].resource.network, `k3d-${clusterName}`);
-  assert.equal(registered[0].resource.namespace, result.artifacts.containerName);
+  assert.equal(registered[0]?.resource.network, `k3d-${clusterName}`);
+  assert.equal(registered[0]?.resource.namespace, result.artifacts.containerName);
   assert.equal(result.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT, "http://172.18.0.23:4318/v1/logs");
   const dockerRun = calls.find(([command, args]) => command === "docker" && args[0] === "run");
+  assert.ok(dockerRun);
   assert.ok(dockerRun[1].includes("--network"));
   assert.ok(dockerRun[1].includes(`k3d-${clusterName}`));
   const helm = calls.find(([command]) => command === "helm");
+  assert.ok(helm);
   assert.ok(helm[1].includes("--show-only"));
   assert.ok(helm[1].includes("templates/collector.yaml"));
   assert.ok(helm[1].includes("--values"));
@@ -241,18 +280,19 @@ test("prepareLogging installs k3d Collector from the canonical Helm template", a
   assert.ok(helm[1].includes("--set-json"));
   assert.ok(helm[1].includes('cluster.cidrs=["10.89.0.2/32"]'));
   assert.ok(helm[1].includes("cluster.port=6443"));
+  const manifestPath = result.artifacts.manifestPath;
+  assert.ok(manifestPath);
   const collectorApply = calls.find(
     ([command, args]) =>
-      command === "kubectl" &&
-      args.includes("apply") &&
-      args.includes(result.artifacts.manifestPath),
+      command === "kubectl" && args.includes("apply") && args.includes(manifestPath),
   );
   assert.ok(collectorApply, "the rendered Collector manifest is applied");
   assert.equal(
     collectorApply[1][collectorApply[1].indexOf("--namespace") + 1],
-    registered[0].resource.namespace,
+    registered[0]?.resource.namespace,
     "Collector resources must share the namespace of their Secrets and rollout checks",
   );
+  assert.ok(result.artifacts.secretsManifestPath);
   const secretManifest = await readFile(result.artifacts.secretsManifestPath, "utf8");
   assert.match(secretManifest, /kind: Namespace/);
   assert.match(secretManifest, /collector[.]yaml: \|-/);
@@ -269,8 +309,8 @@ test("cleanupLogging removes the owned Collector backend and rejects foreign pat
   const containerName = "openclaw-ci-otel-docker-model-abc123def456";
   const directory = join(root, `${containerName}-state`);
   await mkdir(directory, { mode: 0o700 });
-  const calls = [];
-  const execFile = async (command, args) => {
+  const calls: CommandCall[] = [];
+  const execFile = async (command: string, args: string[]) => {
     calls.push([command, args]);
     return { stdout: "", stderr: "" };
   };
@@ -311,8 +351,8 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
   const containerName = "openclaw-ci-otel-k3d-otel-abc123def456";
   const directory = join(root, `${containerName}-state`);
   await mkdir(directory, { mode: 0o700 });
-  const calls = [];
-  const execFile = async (command, args) => {
+  const calls: CommandCall[] = [];
+  const execFile = async (command: string, args: string[]) => {
     calls.push([command, args]);
     if (command === "kubectl") {
       throw new Error("dead cluster");
