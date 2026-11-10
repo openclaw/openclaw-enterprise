@@ -434,8 +434,6 @@ export async function observeControllerUpgrade(
       if (response.status === 201) {
         const source = assertConnectedResponse(response, 201);
         evidence.ledger.resources.push({ kind: "credential-sources", id: source.id });
-      }
-      if (response.status === 201 || response.status === 409) {
         delete evidence.ledger.pendingCreate;
       }
       await checkpoint("create-refusal-response", { status: response.status });
@@ -449,9 +447,6 @@ export async function observeControllerUpgrade(
     }
     const error = assertConnectedResponse(response, 409);
     assert.deepEqual(error, retirement);
-    if (deploying) {
-      delete evidence.ledger.pendingDeploy;
-    }
     assert.deepEqual(
       await retainedState(stack, deployment),
       retained.state,
@@ -462,6 +457,14 @@ export async function observeControllerUpgrade(
       beforeIngress,
       "retirement must precede provider I/O",
     );
+    // A refusal is accounted for only after its persisted and external effects
+    // are checked. Read failures and unexpected work must retain cleanup custody.
+    if (creation) {
+      delete evidence.ledger.pendingCreate;
+    }
+    if (deploying) {
+      delete evidence.ledger.pendingDeploy;
+    }
     await checkpoint("retirement-refused", {
       operation: request.phase,
       status: 409,
