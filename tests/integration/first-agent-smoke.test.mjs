@@ -612,8 +612,13 @@ test("a successful setup stops and reaps an in-flight watcher command", async (t
       'const fs = require("node:fs");\n' +
       'if (process.argv.includes("wide")) {\n' +
       "  fs.writeFileSync(" +
-      JSON.stringify(ready) +
+      JSON.stringify(ready + ".tmp") +
       ", String(process.pid));\n" +
+      "  fs.renameSync(" +
+      JSON.stringify(ready + ".tmp") +
+      ", " +
+      JSON.stringify(ready) +
+      ");\n" +
       "  setTimeout(() => fs.writeFileSync(" +
       JSON.stringify(completed) +
       ', "done"), 3000);\n' +
