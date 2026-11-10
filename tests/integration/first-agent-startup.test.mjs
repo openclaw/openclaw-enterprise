@@ -117,9 +117,12 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
   for (const path of [
     "package.json",
     "scripts/first-agent.mjs",
+    "scripts/first-agent.ts",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-api.mjs",
+    "scripts/first-agent-api.ts",
     "scripts/first-agent-diagnostics.mjs",
+    "scripts/first-agent-diagnostics.ts",
     "packages/contracts/src/runtime-failure.mjs",
     "scripts/first-agent-model.mjs",
     "scripts/lib/private-owned-path.mjs",
