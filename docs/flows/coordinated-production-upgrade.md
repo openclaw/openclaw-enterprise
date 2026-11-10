@@ -95,7 +95,7 @@ Stopped/deleting Agents are excluded; pending repository cleanup is allowed.
 `prepare_upgrade` copies the PostgreSQL `run` result;
 `validate_controller_compatibility` calls
 `scripts/upgrade-evidence.py:validate_compatibility` before preflight to check
-runner/file consistency, passing selected case and cleanup, and recorded incumbent
+runner/file consistency, both passing data and IAM cases, cleanup, and recorded incumbent
 release and selected candidate digests. Hashes freeze the copy for resume.
 Runner SHA cannot verify image source. This neither authenticates execution nor
 permits online migration or rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).

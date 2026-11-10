@@ -39,7 +39,10 @@ def validate_compatibility(path, released, candidate):
     with open(path, encoding="utf-8") as source:
         receipt = json.load(source)
     file_path = "tests/integration/postgres-migration-compatibility.test.mjs"
-    case_name = "Released controller remains usable across candidate database writes"
+    required_cases = (
+        "Released controller remains usable across candidate database writes",
+        "Released controller remains usable after configured IAM activation",
+    )
     if (not isinstance(receipt, dict) or type(receipt.get("version")) is not int or
             receipt["version"] != 1 or receipt.get("command") != "run" or
             receipt.get("lane") != "postgres" or receipt.get("scope") not in ("full", "focused") or
@@ -86,10 +89,11 @@ def validate_compatibility(path, released, candidate):
             counts["passed"] != counts["total"]):
         raise ValueError("compatibility file or cleanup did not pass")
     tests = result["tests"]
-    selected = [item for item in tests if item.get("name") == case_name]
-    if (len(selected) != 1 or selected[0].get("status") != "passed" or
-            selected[0].get("file") != file_path):
-        raise ValueError("selected compatibility case did not pass")
+    for name in required_cases:
+        selected = [item for item in tests if item.get("name") == name]
+        if (len(selected) != 1 or selected[0].get("status") != "passed" or
+                selected[0].get("file") != file_path):
+            raise ValueError("selected compatibility case did not pass")
     # The runner records the reference suffix, not a platform manifest or config ID.
     for role, reference in (("releasedController", released), ("candidateController", candidate)):
         expected = reference.rsplit("@", 1)[-1]

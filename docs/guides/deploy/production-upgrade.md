@@ -239,14 +239,14 @@ Shared-namespace releases refuse this single-cluster layout.
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before startup Jobs or writer changes, the selected case and cleanup must pass
-for the recorded incumbent release image and selected candidate image digests.
+Before startup Jobs or writer changes, both the database-write and configured IAM
+activation cases and their cleanup must pass for the incumbent and candidate image digests.
 Index, platform-manifest and configuration digests are not interchangeable.
 
 The receipt stays [frozen through recovery](production-upgrade-recovery.md).
 Operators must establish authenticity. `sourceSha` identifies the runner checkout,
-not image revisions or worktree cleanliness. This proves neither IAM startup
-compatibility nor online or rollback safety; writers still stop.
+not image revisions or worktree cleanliness. These cases exercise specific database
+and IAM operations. They do not establish online migration or rollback safety; writers still stop.
 
 Omit `--runtime-image`:
 
