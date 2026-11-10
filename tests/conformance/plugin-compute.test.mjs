@@ -3653,7 +3653,11 @@ function assertDeliberateRestart(gateway, code) {
     gateway.files.get("/dev/termination-log"),
     `deliberate restart: ${code.toLowerCase().replaceAll("_", "-")}`,
   );
-  assert.equal(gateway.files.has(UNEXPLAINED_EXITS), false, "a deliberate restart clears the count");
+  assert.equal(
+    gateway.files.has(UNEXPLAINED_EXITS),
+    false,
+    "a deliberate restart clears the count",
+  );
 }
 
 // Where the Kubernetes Gateway wrapper keeps its container's consecutive unexplained exits:

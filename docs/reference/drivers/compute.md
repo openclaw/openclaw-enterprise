@@ -195,7 +195,7 @@ failure, return validated `runtimeFailure` evidence for this revision:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately, such as Kubernetes
+explains which failures end deployment immediately, such as
 [`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
