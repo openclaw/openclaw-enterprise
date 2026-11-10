@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
@@ -16,7 +16,7 @@ import { refusingPort } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-const resource = (name, kind, namespaced, shortNames) => ({
+const resource = (name: string, kind: string, namespaced: boolean, shortNames?: string[]) => ({
   name,
   singularName: kind.toLowerCase(),
   namespaced,
@@ -26,7 +26,7 @@ const resource = (name, kind, namespaced, shortNames) => ({
 });
 
 // Discovery and objects of a small cluster; an unavailable aggregated API group.
-const routes = {
+const routes: Record<string, object> = {
   "/api/v1": {
     kind: "APIResourceList",
     groupVersion: "v1",
@@ -92,7 +92,7 @@ const missing = {
   code: 404,
 };
 
-async function cluster(t) {
+async function cluster(t: TestContext) {
   const directory = await temporaryDirectory(t, "oce-api-read-");
   const server = await selfSigned(directory, {
     name: "api-server",
@@ -104,9 +104,9 @@ async function cluster(t) {
     commonName: "operator",
     subjectAltName: "DNS:operator",
   });
-  const requests = [];
+  const requests: string[] = [];
   // Requests answered so far per URL (a Map: URLs come from the client).
-  const seen = new Map();
+  const seen = new Map<string, number>();
   let connections = 0;
   const listener = createServer({
     key: server.key,
@@ -117,6 +117,7 @@ async function cluster(t) {
   });
   listener.on("secureConnection", () => (connections += 1));
   listener.on("request", (request, response) => {
+    assert.ok(request.url);
     requests.push(request.url);
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/v1/namespaces/slow/pods") {
@@ -201,7 +202,7 @@ async function cluster(t) {
   prependPath(t, directory);
 
   let configurations = 0;
-  const kubeconfig = async (url, user) => {
+  const kubeconfig = async (url: string, user: Record<string, unknown>) => {
     const kubeconfigPath = join(directory, `kubeconfig-${(configurations += 1)}`);
     await writeFile(
       kubeconfigPath,
@@ -230,8 +231,10 @@ async function cluster(t) {
     "client-certificate-data": Buffer.from(client.cert).toString("base64"),
     "client-key-data": Buffer.from(client.key).toString("base64"),
   };
+  const address = listener.address();
+  assert.ok(address && typeof address !== "string");
   return {
-    selection: await kubeconfig(`https://127.0.0.1:${listener.address().port}`, user),
+    selection: await kubeconfig(`https://127.0.0.1:${address.port}`, user),
     kubeconfig,
     user,
     requests,
@@ -341,10 +344,17 @@ test("a plain get is read from the API server and printed as kubectl prints it",
       kind,
     );
   }
-  assert.deepEqual(
-    JSON.parse(await kubectlGetJson(selection, ["get", "namespace", "team", "-n", "x", "-o=json"])),
-    routes["/api/v1/namespaces/team"],
-  );
+  const namespace = await kubectlGetJson(selection, [
+    "get",
+    "namespace",
+    "team",
+    "-n",
+    "x",
+    "-o=json",
+  ]);
+  assert.ok(namespace !== undefined);
+  const parsedNamespace: unknown = JSON.parse(namespace);
+  assert.deepEqual(parsedNamespace, routes["/api/v1/namespaces/team"]);
 
   // Discovery once (core, the group list, then each group's preferred version in
   // parallel), then one request per read on kept-alive connections; kubectl ran
@@ -385,10 +395,18 @@ test("a read retries what kubectl's client retries", async (t) => {
 
 test("a failed read fails as kubectl fails, transient only when kubectl's would be", async (t) => {
   const { selection, kubeconfig, user, requests } = await cluster(t);
-  const failure = (promise) =>
+  const failure = (
+    promise: Promise<unknown>,
+  ): Promise<Error & { code?: unknown; stderr?: string }> =>
     promise.then(
       () => assert.fail("the read succeeded"),
-      (error) => error,
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        if ("stderr" in error) {
+          assert.equal(typeof error.stderr, "string");
+        }
+        return error;
+      },
     );
 
   const notFound = await failure(
@@ -436,6 +454,7 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
   // Tried at 0 and 1 s, then the wait is cut to the 0.2 s left: about 1.2 s, where
   // a full second's wait would end past 2 s.
   assert.ok(Date.now() - droppedAt < 1_800, "no retry waits or starts past the read's timeout");
+  assert.ok(typeof dropped.stderr === "string");
   assert.match(dropped.stderr, /^Unable to connect to the server: /);
   assert.equal(isTransientKubectlFailure(dropped), true);
 
@@ -455,10 +474,11 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
   for (const [args, options] of [
     [["get", "pods", "-n", "slow", "--request-timeout=300ms", "-o", "json"], {}],
     [["get", "pods", "-n", "slow", "-o", "json"], { timeoutMs: 300 }],
-  ]) {
+  ] as const) {
     const startedAt = Date.now();
     const timedOut = await failure(kubectlGetJson(selection, args, options));
     assert.ok(Date.now() - startedAt < 5_000, `${args.join(" ")} stopped at its timeout`);
+    assert.ok(typeof timedOut.stderr === "string");
     assert.match(timedOut.stderr, /^Unable to connect to the server: .*context deadline exceeded/);
     assert.equal(isTransientKubectlFailure(timedOut), true);
   }

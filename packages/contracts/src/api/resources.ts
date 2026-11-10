@@ -324,6 +324,12 @@ const InstallationPluginDiscoverySchema = Type.Object(
 const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
+    repositoryAccessRequired: Type.Optional(
+      Type.Literal(true, {
+        description:
+          "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+      }),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -1107,6 +1113,14 @@ export const InstallationDeploymentInventorySchema = Type.Object(
                 executionMode: AgentSchema.properties.executionMode,
                 activeRevisionId: Type.Optional(RevisionId),
                 deploymentInProgress: Type.Boolean(),
+                repositoryWorkerRestart: Type.Optional(
+                  Type.Union([
+                    Type.Literal("original-worker-required"),
+                    Type.Literal("reverification-supported"),
+                    Type.Literal("not-applicable"),
+                    Type.Literal("unknown"),
+                  ]),
+                ),
               },
               { additionalProperties: false },
             ),

@@ -2720,6 +2720,10 @@ function renderAgentForm(
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
+  const deploymentNeedsRepository = () =>
+    installationCapabilities?.repositoryAccessRequired === true &&
+    !repositories.hasValidSelection();
+  const provisioningNeedsRepository = () => shouldProvision() && deploymentNeedsRepository();
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
   // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
   // form was open, which never does (finding 2022). A refocus still rechecks it.
@@ -3061,6 +3065,9 @@ function renderAgentForm(
           : namespaceEnded()
             ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
             : "Create Agent is unavailable until this Namespace is ready.";
+      } else if (!modeUnavailable && deploymentNeedsRepository()) {
+        nextStatus =
+          "This installation’s Credential Proxy requires repository access to deploy an Agent. Select approved repository access if this Agent needs Git, or use an installation that supports deployment without repositories.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
@@ -3278,14 +3285,19 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
+      (!savedAgent &&
+        (provisioningNeedsRepository() ||
+          provisioningWaitsForNamespace() ||
+          namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
     let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
-      (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
+      (namespaceRefusesAgents() ||
+        (!selectedModeUnavailable() &&
+          (provisioningNeedsRepository() || provisioningWaitsForNamespace())))
     ) {
       submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
@@ -3419,6 +3431,7 @@ function renderAgentForm(
   }
   function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
     installationCapabilities = capabilities;
+    repositories.setDeploymentRequiresRepository(capabilities?.repositoryAccessRequired === true);
     applyPluginCapabilities();
     nativeAdminAvailable = capabilities?.nativeAdmin === true;
     nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
@@ -3783,7 +3796,10 @@ function renderAgentForm(
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
+      (!savedAgent &&
+        (provisioningNeedsRepository() ||
+          provisioningWaitsForNamespace() ||
+          namespaceRefusesAgents())) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {

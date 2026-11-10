@@ -19,7 +19,7 @@ import {
 
 const workflow = ".github/workflows/container-bootstrap.yml";
 
-async function main(env) {
+async function main(env: NodeJS.ProcessEnv) {
   const validate = async () => {
     await verifyMainSource(env, workflow);
     assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
@@ -42,7 +42,7 @@ async function main(env) {
   // Validate every existing destination before any registry write. A 404 only
   // permits harmless bootstrap bytes, never Enterprise source-bearing images.
   for (const pkg of packages) {
-    const existing = await github(pkg.path, { allowNotFound: true });
+    const existing: unknown = await github(pkg.path, { allowNotFound: true });
     if (existing) {
       validatePackage(existing, pkg.image, {
         allowMissingRepository: true,
@@ -50,7 +50,7 @@ async function main(env) {
       });
     }
   }
-  const existingChart = await github(chartPath, { allowNotFound: true });
+  const existingChart: unknown = await github(chartPath, { allowNotFound: true });
   if (existingChart) {
     validatePackage(existingChart, chartPackage, {
       allowMissingRepository: true,
@@ -96,14 +96,14 @@ async function main(env) {
     skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     for (const pkg of packages) {
       await validate();
-      const existing = await github(pkg.path, { allowNotFound: true });
+      const existing: unknown = await github(pkg.path, { allowNotFound: true });
       if (existing) {
         validatePackage(existing, pkg.image, {
           allowMissingRepository: true,
           allowPrivateBootstrap: true,
         });
         await appendFile(
-          env.GITHUB_STEP_SUMMARY,
+          env.GITHUB_STEP_SUMMARY as string,
           `- Existing package: \`${pkg.image}\` (unchanged; set visibility to public and confirm linkage in package settings before publication).\n`,
         );
         continue;
@@ -120,25 +120,26 @@ async function main(env) {
         ],
         { stdio: "inherit" },
       );
-      validatePackage(await github(pkg.path, { retryNotFound: true }), pkg.image, {
+      const published: unknown = await github(pkg.path, { retryNotFound: true });
+      validatePackage(published, pkg.image, {
         allowMissingRepository: true,
         allowPrivateBootstrap: true,
       });
       assert.equal(inspectDigest(`docker://${pkg.image}:${tag}`, authfile), digest);
       await appendFile(
-        env.GITHUB_STEP_SUMMARY,
+        env.GITHUB_STEP_SUMMARY as string,
         `- Bootstrapped marker package: \`${pkg.image}:${tag}\` at \`${digest}\` (marker only; set visibility to public and confirm linkage in package settings before publication).\n`,
       );
     }
     await validate();
-    const chart = await github(chartPath, { allowNotFound: true });
+    const chart: unknown = await github(chartPath, { allowNotFound: true });
     if (chart) {
       validatePackage(chart, chartPackage, {
         allowMissingRepository: true,
         allowPrivateBootstrap: true,
       });
       await appendFile(
-        env.GITHUB_STEP_SUMMARY,
+        env.GITHUB_STEP_SUMMARY as string,
         `- Existing chart package: \`${chartPackage}\` (unchanged; set visibility to public and confirm linkage before publication).\n`,
       );
     } else {
@@ -151,18 +152,26 @@ async function main(env) {
       );
       execFileSync(
         env.OCC_HELM_BIN ?? "helm",
-        ["registry", "login", "ghcr.io", "--username", env.GITHUB_ACTOR, "--password-stdin"],
+        [
+          "registry",
+          "login",
+          "ghcr.io",
+          "--username",
+          env.GITHUB_ACTOR as string,
+          "--password-stdin",
+        ],
         { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
       );
       const chartArchive = join(directory, `openclaw-enterprise-${version}.tgz`);
       const pushedDigest = pushChart(chartArchive, chartPushParent);
-      validatePackage(await github(chartPath, { retryNotFound: true }), chartPackage, {
+      const publishedChart: unknown = await github(chartPath, { retryNotFound: true });
+      validatePackage(publishedChart, chartPackage, {
         allowMissingRepository: true,
         allowPrivateBootstrap: true,
       });
       assert.equal(inspectDigest(`docker://${chartPackage}:${version}`, authfile), pushedDigest);
       await appendFile(
-        env.GITHUB_STEP_SUMMARY,
+        env.GITHUB_STEP_SUMMARY as string,
         `- Bootstrapped chart marker package: \`${chartPackage}:${version}\` at \`${pushedDigest}\` (non-deployable marker; set visibility to public before publication).\n`,
       );
     }
@@ -171,7 +180,7 @@ async function main(env) {
   }
 }
 
-main(process.env).catch((error) => {
-  console.error(error.message);
+main(process.env).catch((error: unknown) => {
+  console.error((error as { message: unknown }).message);
   process.exitCode = 1;
 });

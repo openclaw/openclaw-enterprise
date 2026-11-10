@@ -199,6 +199,7 @@ import type {
   Installation,
   InstallationCapabilities,
   InstallationDeploymentInventory,
+  RepositoryWorkerRestartDisposition,
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
@@ -558,6 +559,7 @@ export {
   TransientDependencyError,
   type ActivationFailedCode,
   type ActivationPendingCode,
+  type CodexPermissionDenial,
   type RuntimeLogsErrorCode,
   type TransientDependency,
   type TransientDependencyReason,
@@ -1288,6 +1290,7 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const CREDENTIAL_PROXY_DISCOVERY_TIMEOUT_MS = 2_000;
 const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
@@ -1298,6 +1301,7 @@ const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
 const HARNESS_OBSERVATION_TIMEOUT_MS = 10_000;
+const REPOSITORY_RESTART_OBSERVATION_TIMEOUT_MS = 10_000;
 const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>([
   "SANDBOX_MISSING",
   "SANDBOX_DELETING",
@@ -2582,19 +2586,23 @@ export class OpenClawController {
       nativeWorkers: _unchecked,
       openclaw: _derived,
       pluginCatalogs: _catalogs,
+      repositoryAccessRequired: _repositoryAccessRequired,
       ...declared
     } = this.installation.capabilities ?? {};
     const openclaw = this.openClawExecutionModes();
     const nativeWorkers = openclaw.executionModes.includes("dedicated")
       ? this.nativeWorkers
       : undefined;
-    const gatewayTypes = this.selections.has("credential_gateway")
-      ? await this.credentialGatewayOperation(() =>
-          this.credentialGatewayDriver().listSourceTypes({
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-          }),
-        )
-      : undefined;
+    const [gatewayTypes, repositoryAccessRequired] = await Promise.all([
+      this.selections.has("credential_gateway")
+        ? this.credentialGatewayOperation(() =>
+            this.credentialGatewayDriver().listSourceTypes({
+              signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            }),
+          )
+        : undefined,
+      this.repositoryAccessRequired(),
+    ]);
     const protectedTypes = this.protectedSourceTypes().map(({ type }) => type);
     const types = [
       ...protectedTypes,
@@ -2604,6 +2612,7 @@ export class OpenClawController {
       ...declared,
       ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
       openclaw,
+      ...(repositoryAccessRequired ? { repositoryAccessRequired: true as const } : {}),
       ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
     };
     const catalogs = this.enabledPluginDrivers().map((driver) => ({
@@ -2620,6 +2629,23 @@ export class OpenClawController {
       ...capabilities,
       ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
     };
+  }
+
+  private async repositoryAccessRequired(): Promise<boolean> {
+    if (!this.selections.has("credential_proxy")) {
+      return false;
+    }
+    try {
+      const proxy = this.selectedProxyOwner().require("credential_proxy");
+      await proxy.sourceControl.assertAvailable(
+        AbortSignal.timeout(CREDENTIAL_PROXY_DISCOVERY_TIMEOUT_MS),
+      );
+      return false;
+    } catch (error) {
+      // Only the permanent profile refusal is a capability restriction. Admission still
+      // checks the current counterpart and distinguishes an unavailable registration.
+      return error instanceof CredentialProxyRepositoryOnlyError;
+    }
   }
 
   /**
@@ -2665,11 +2691,108 @@ export class OpenClawController {
   async getInstallationDeploymentInventory(
     principalId: string,
   ): Promise<Readonly<InstallationDeploymentInventory>> {
+    const before = await this.deploymentInventorySnapshot(principalId);
+    const computeSelection = this.selections.get("compute");
+    const sandboxSelection = this.selections.get("sandbox");
+    let compute: ComputeDriver | undefined;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      // An unavailable implementation cannot supply positive restart evidence.
+      compute = undefined;
+    }
+    const signal = AbortSignal.timeout(REPOSITORY_RESTART_OBSERVATION_TIMEOUT_MS);
+    const dispositions = new Map<string, RepositoryWorkerRestartDisposition>();
+    // Owner reads must not retain the State transaction or mutate repository custody.
+    for (const [revisionId, revision] of before.revisions) {
+      dispositions.set(
+        revisionId,
+        await this.observeRepositoryWorkerRestart(compute, revision, signal),
+      );
+    }
+    // Reauthorize the whole fleet, including newly active Agents and pending deployments.
+    // This detects changed selection; it does not replace exclusive maintenance ownership.
+    const after = await this.deploymentInventorySnapshot(principalId);
+    if (
+      !isDeepStrictEqual(before, after) ||
+      computeSelection !== this.selections.get("compute") ||
+      sandboxSelection !== this.selections.get("sandbox") ||
+      (compute !== undefined &&
+        computeSelection !== undefined &&
+        !this.unchangedDriver(computeSelection))
+    ) {
+      throw new DependencyUnavailableError(
+        "The Agent deployment inventory changed during repository observation. Read it again.",
+      );
+    }
+    return Object.freeze({
+      ...after.inventory,
+      namespaces: Object.freeze(
+        after.inventory.namespaces.map((namespace) =>
+          Object.freeze({
+            ...namespace,
+            agents: Object.freeze(
+              namespace.agents.map((agent) => {
+                const repositoryWorkerRestart =
+                  agent.activeRevisionId === undefined
+                    ? undefined
+                    : dispositions.get(agent.activeRevisionId);
+                return Object.freeze({
+                  ...agent,
+                  ...(repositoryWorkerRestart === undefined ? {} : { repositoryWorkerRestart }),
+                });
+              }),
+            ),
+          }),
+        ),
+      ),
+    });
+  }
+
+  private async observeRepositoryWorkerRestart(
+    compute: ComputeDriver | undefined,
+    revision: Readonly<AgentRevision> | undefined,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition> {
+    if (
+      signal.aborted ||
+      revision === undefined ||
+      compute?.id !== revision.compute.id ||
+      compute.implementation !== revision.compute.implementation ||
+      compute.repositoryWorkerRestartDisposition === undefined
+    ) {
+      return "unknown";
+    }
+    let aborted: (() => void) | undefined;
+    try {
+      const result = await Promise.race([
+        compute.repositoryWorkerRestartDisposition(revision, signal),
+        new Promise<"unknown">((resolve) => {
+          aborted = () => resolve("unknown");
+          signal.addEventListener("abort", aborted, { once: true });
+        }),
+      ]);
+      return result === "original-worker-required" ||
+        result === "reverification-supported" ||
+        result === "not-applicable"
+        ? result
+        : "unknown";
+    } catch {
+      return "unknown";
+    } finally {
+      if (aborted !== undefined) {
+        signal.removeEventListener("abort", aborted);
+      }
+    }
+  }
+
+  private async deploymentInventorySnapshot(principalId: string) {
     await this.authorize(principalId, "administer", {
       kind: "installation",
       id: this.installation.id,
     });
     return this.read(async (state) => {
+      const revisions = new Map<string, Readonly<AgentRevision> | undefined>();
       const deploymentsInProgress = new Set<string>();
       for (const operation of await state.operations.list()) {
         // Credential withdrawal work (CREDENTIAL_WITHDRAWAL_TARGET) targets an active revision
@@ -2727,6 +2850,21 @@ export class OpenClawController {
               namespaceId: namespace.id,
               parentAgentId: agent.id,
             });
+            const revision = await state.revisions.findRevisionForBrowsing(
+              namespace.id,
+              agent.id,
+              agent.activeRevisionId,
+            );
+            revisions.set(
+              agent.activeRevisionId,
+              revision !== undefined &&
+                !("configurationReadError" in revision) &&
+                revision.id === agent.activeRevisionId &&
+                revision.namespaceId === namespace.id &&
+                revision.agentId === agent.id
+                ? revision
+                : undefined,
+            );
           }
           agents.push(
             Object.freeze({
@@ -2749,10 +2887,13 @@ export class OpenClawController {
           }),
         );
       }
-      return Object.freeze({
-        installationId: this.installation.id,
-        namespaces: Object.freeze(namespaces),
-      });
+      return {
+        inventory: Object.freeze({
+          installationId: this.installation.id,
+          namespaces: Object.freeze(namespaces),
+        }),
+        revisions,
+      };
     });
   }
 

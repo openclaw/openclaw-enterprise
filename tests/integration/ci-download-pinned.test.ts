@@ -21,10 +21,27 @@ const half = body.length / 2;
 // with 206; "no-range" sends it whole and ignores Range; "half" sends the
 // first half, then holds the connection open; "trickle" sends the next 4 bytes
 // each second and never finishes.
-async function withServer(plan, run) {
-  const requests = [];
-  const ranges = [];
-  const timers = new Set();
+type ServerMode = "fast" | "no-range" | "half" | "trickle" | "missing";
+interface ServerFixture {
+  url: string;
+  destination: string;
+  requests: (string | undefined)[];
+  ranges: (string | undefined)[];
+  dir: string;
+}
+interface CommandResult {
+  code: string | number;
+  stdout: string;
+  stderr: string;
+}
+
+async function withServer(
+  plan: (requestNumber: number) => ServerMode,
+  run: (fixture: ServerFixture) => Promise<void>,
+) {
+  const requests: ServerFixture["requests"] = [];
+  const ranges: ServerFixture["ranges"] = [];
+  const timers = new Set<NodeJS.Timeout>();
   const server = createServer((request, response) => {
     requests.push(request.url);
     ranges.push(request.headers.range);
@@ -62,32 +79,34 @@ async function withServer(plan, run) {
     timers.add(timer);
     response.on("close", () => clearInterval(timer));
   });
-  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
   const dir = await mkdtemp(join(tmpdir(), "ci-download-pinned-"));
   try {
-    const url = `http://127.0.0.1:${server.address().port}/tool`;
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const url = `http://127.0.0.1:${address.port}/tool`;
     return await run({ url, destination: join(dir, "tool"), requests, ranges, dir });
   } finally {
     for (const timer of timers) {
       clearInterval(timer);
     }
     server.closeAllConnections();
-    await new Promise((resolveClose) => server.close(resolveClose));
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     await rm(dir, { recursive: true, force: true });
   }
 }
 
 function download(
-  url,
-  destination,
-  checksum,
-  env = {},
+  url: string,
+  destination: string,
+  checksum: string,
+  env: NodeJS.ProcessEnv = {},
   creationMask = "022",
-  cache,
-  existing,
-  mode,
+  cache?: string,
+  existing?: string,
+  mode?: string,
 ) {
-  return new Promise((resolveRun) => {
+  return new Promise<CommandResult>((resolveRun) => {
     execFile(
       "bash",
       [
@@ -115,7 +134,7 @@ function download(
 
 // Observe bytes and permissions through the same opened file, rather than
 // combining path-based metadata checks with later accesses to that path.
-async function readTool(path) {
+async function readTool(path: string) {
   const file = await open(path, "r");
   try {
     return { bytes: await file.readFile(), mode: (await file.stat()).mode & 0o7777 };
@@ -204,7 +223,7 @@ test("a slow but moving download above the floor is not cut off", async () => {
 });
 
 test("downloads publish only verified bytes and preserve existing tools on failure", async () => {
-  let mode = "fast";
+  let mode: ServerMode = "fast";
   await withServer(
     () => mode,
     async ({ url, destination, requests, dir }) => {
@@ -305,7 +324,7 @@ test("a verified cached download works offline and an empty cache is populated",
 });
 
 test("corrupt cache falls back to pinned transport and failed transport preserves the destination", async () => {
-  let mode = "missing";
+  let mode: ServerMode = "missing";
   await withServer(
     () => mode,
     async ({ url, destination, requests, dir }) => {
@@ -424,12 +443,13 @@ test("a cache hit replaces a read-only tool without rewriting a read-only cache"
 });
 
 test("a writable destination does not expose unverified staging bytes", async () => {
-  let directory;
-  let observedMode;
+  let directory = "";
+  let observedMode: number | undefined;
   // Inspect the actual staging file while real curl waits for this HTTP reply.
   await withServer(
     () => {
       const temporary = readdirSync(directory).find((name) => name.startsWith("tool.download."));
+      assert.ok(temporary);
       observedMode = statSync(join(directory, temporary)).mode & 0o777;
       return "fast";
     },
@@ -448,7 +468,7 @@ test("a writable destination does not expose unverified staging bytes", async ()
 
 for (const tool of ["yq", "k3d"]) {
   test(`Linux tool setup never executes corrupt cached or existing ${tool} before verification`, async (t) => {
-    if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch)) {
+    if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")) {
       t.skip("Linux amd64/arm64 pinned tool setup");
       return;
     }
@@ -485,7 +505,7 @@ for (const tool of ["yq", "k3d"]) {
       await writeFile(join(cache, digests[process.arch]), untrusted, { mode: 0o755 });
       const setup = fileURLToPath(new URL("../../scripts/ci/setup-tools.sh", import.meta.url));
       const runSetup = () =>
-        new Promise((done) => {
+        new Promise<CommandResult>((done) => {
           execFile(
             "bash",
             [setup, tool === "yq" ? "images" : "k3d"],

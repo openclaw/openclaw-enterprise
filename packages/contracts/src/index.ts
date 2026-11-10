@@ -1,6 +1,9 @@
 import type { Static } from "typebox";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
-import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
+import type {
+  ComputeAgentProvisioningCapabilities,
+  RepositoryWorkerRestartDisposition,
+} from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
@@ -336,6 +339,8 @@ export interface InstallationCapabilities {
   /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
+  /** The selected Credential Proxy requires repository access for deployment. */
+  readonly repositoryAccessRequired?: true;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
@@ -1094,6 +1099,7 @@ export interface InstallationDeploymentInventoryAgent {
   readonly executionMode: HarnessExecutionMode;
   readonly activeRevisionId?: string;
   readonly deploymentInProgress: boolean;
+  readonly repositoryWorkerRestart?: RepositoryWorkerRestartDisposition;
 }
 
 export interface InstallationDeploymentInventoryNamespace {
@@ -1513,6 +1519,7 @@ export type {
   ChannelCredentialReader,
 } from "./drivers/channel/index.ts";
 export type {
+  RepositoryWorkerRestartDisposition,
   ComputeDriver,
   ComputeRevisionContext,
   WorkloadLaunchContext,

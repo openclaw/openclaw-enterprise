@@ -53,6 +53,7 @@ import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
+  validateOpenShellSelection,
 } from "./openshell.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -600,9 +601,9 @@ function execFile(command, args, options = {}) {
   });
 }
 
-async function commandAvailable(command, args = ["--version"]) {
+async function commandAvailable(command, args = ["--version"], options) {
   try {
-    await execFile(command, args);
+    await execFile(command, args, options);
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(`Missing required command on PATH: ${command}`);
@@ -975,6 +976,9 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
+  ["slack", { localStore: false }],
+  ["production-tui", { localStore: false }],
+  ["gateway-routing", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
   ["qa-matrix", { localStore: false }],
@@ -1087,13 +1091,18 @@ const imageBuildTestReserveMs =
     ? Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS)
     : 3 * 60_000;
 
-// What a lane image build may still take, or undefined outside a lane with a deadline.
-function imageBuildBudgetMs() {
+function imageBuildDeadlineMs() {
   const deadline = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
   if (!Number.isSafeInteger(deadline) || deadline <= 0) {
     return undefined;
   }
-  return deadline - imageBuildTestReserveMs - Date.now();
+  return deadline - imageBuildTestReserveMs;
+}
+
+// What a lane image build may still take, or undefined outside a lane with a deadline.
+function imageBuildBudgetMs() {
+  const deadline = imageBuildDeadlineMs();
+  return deadline === undefined ? undefined : deadline - Date.now();
 }
 
 // The lane cannot pass once its image build has used the time its tests need, so it stops
@@ -1134,26 +1143,30 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   }
 }
 
+function observesImageCache(lane) {
+  return isOpenShellLane(lane) || ["slack", "production-tui", "gateway-routing"].includes(lane);
+}
+
 // Keep cache evidence without build arguments, URLs, command text or credentials.
-function firstAgentCacheObservation(state, role, phase, output) {
-  if (!isOpenShellLane(state.lane)) {
+function imageCacheObservation(state, role, phase, output) {
+  if (!observesImageCache(state.lane)) {
     return;
   }
   const text = output ?? "";
   const cached = new Set([...text.matchAll(/^#(\d+) CACHED\r?$/gm)].map((match) => match[1]));
-  const sourceBuild = [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map(
-    (match) => match[1],
+  const sourceBuild = new Set(
+    [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map((match) => match[1]),
   );
   progress(
     state.lane,
     JSON.stringify({
-      stage: "first-agent-image-cache",
+      stage: isOpenShellLane(state.lane) ? "first-agent-image-cache" : "image-cache",
       role,
       phase,
       cacheImports: [...text.matchAll(/^#\d+ importing cache manifest /gm)].length,
       cachedSteps: cached.size,
-      openclawBuildSteps: sourceBuild.length,
-      openclawBuildCached: sourceBuild.filter((id) => cached.has(id)).length,
+      openclawBuildSteps: sourceBuild.size,
+      openclawBuildCached: [...sourceBuild].filter((id) => cached.has(id)).length,
     }),
   );
 }
@@ -1210,7 +1223,7 @@ async function reuseEngineImage(state, role, args, tag) {
         throw error;
       }
     }
-    firstAgentCacheObservation(state, role, "probe", probeResult.stderr);
+    imageCacheObservation(state, role, "probe", probeResult.stderr);
     const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
     if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
       return false;
@@ -1280,7 +1293,7 @@ async function buildRuntimeImages(
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image and command once that ends (parallel builds stay
   // readable), also when it fails or overruns its own deadline inside the job's.
-  const plainProgress = cacheWarm || isOpenShellLane(state.lane) ? ["--progress=plain"] : [];
+  const plainProgress = cacheWarm || observesImageCache(state.lane) ? ["--progress=plain"] : [];
   if (revision !== undefined && !/^[a-f0-9]{40}$/.test(revision)) {
     throw new Error("Image builds require a complete checkout revision.");
   }
@@ -1313,7 +1326,7 @@ async function buildRuntimeImages(
   const build = async (role, args) => {
     if (!cacheWarm) {
       const result = await laneImageCommand(role, args);
-      firstAgentCacheObservation(state, role, "load", result.stderr);
+      imageCacheObservation(state, role, "load", result.stderr);
       return result;
     }
     const exportArgs = imageCacheExportArgs(role, args);
@@ -1361,11 +1374,17 @@ async function buildRuntimeImages(
       );
     }
   };
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
+  const importDeadlineMs =
+    runtimeArtifact && state.lane === "docker-model" ? imageBuildDeadlineMs() : undefined;
+  const importBudgetMs = importDeadlineMs === undefined ? undefined : importDeadlineMs - Date.now();
+  if (importBudgetMs !== undefined && importBudgetMs < 1_000) {
+    throw new Error("No time remains to import the runtime artifact before the test reserve.");
+  }
+  await commandAvailable(
+    process.env.OCC_DOCKER_BIN ?? "docker",
+    ["version", "--format", "{{.Server.Version}}"],
+    { timeoutMs: importBudgetMs },
+  );
   const env = {};
   const resources = [];
   const label =
@@ -1427,11 +1446,11 @@ async function buildRuntimeImages(
         : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
     };
     if (runtimeArtifact) {
-      assertRuntimeArtifactTagAvailable(tag);
+      assertRuntimeArtifactTagAvailable(tag, importDeadlineMs);
       const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
       resources.push(resource);
       await writeState(statePath, state);
-      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag });
+      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag }, importDeadlineMs);
       try {
         await markResourceReady(statePath, state, resource);
         Object.assign(env, runtimeEnv);
@@ -1463,6 +1482,7 @@ async function buildRuntimeImages(
                 ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
                   ? ["--builder", "default", "--load"]
                   : []),
+                ...plainProgress,
                 "--build-arg",
                 "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
                 "-t",
@@ -1496,7 +1516,7 @@ async function buildRuntimeImages(
     builds.map((entry) => async () => {
       if (registryOutput) {
         const result = await laneImageCommand(entry.role, entry.args);
-        firstAgentCacheObservation(state, entry.role, "direct-publish", result.stderr);
+        imageCacheObservation(state, entry.role, "direct-publish", result.stderr);
         const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
         const digest = metadata["containerimage.digest"];
         const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;
@@ -2520,7 +2540,8 @@ export async function prepareDevUpImage(
 // cache, which its serial event monitor fills from containerd ImageCreate events.
 // A reference that `ctr images tag` just created is in containerd's image store
 // (and `ctr images list`) before that event is handled, so CRI can briefly report
-// "no such image". Wait a bounded time for that one answer; any other failure is final.
+// "no such image" or an image whose pin label event has not arrived. Wait a bounded
+// time for those states; a mismatched digest or any other failure is final.
 const criImageCacheWaitMs = 5_000;
 
 // Each check or tag on a node after the import is one short exec. The timeout stops the
@@ -2533,8 +2554,9 @@ async function k3dNodeImageCheck(node, args, what) {
 async function inspectK3dCriImage(lane, node, reference, envName) {
   const deadline = performance.now() + criImageCacheWaitMs;
   for (let attempt = 1; ; attempt += 1) {
+    let result;
     try {
-      return await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
+      result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
     } catch (error) {
       const remainingMs = deadline - performance.now();
       if (!/\bno such image\b/i.test(error.stderr ?? "") || remainingMs <= 0) {
@@ -2545,7 +2567,28 @@ async function inspectK3dCriImage(lane, node, reference, envName) {
         `CRI on ${node} does not list the imported ${envName} reference yet (attempt ${attempt}); retrying.`,
       );
       await delay(Math.min(250 * attempt, 1_000, remainingMs));
+      continue;
     }
+    const { status } = JSON.parse(result.stdout);
+    if (
+      !Array.isArray(status?.repoDigests) ||
+      !status.repoDigests.every((digest) => typeof digest === "string") ||
+      !status.repoDigests.includes(reference)
+    ) {
+      throw new Error(`CRI on ${node} does not match the imported ${envName} digest.`);
+    }
+    if (status.pinned !== undefined && typeof status.pinned !== "boolean") {
+      throw new Error(`CRI on ${node} reported a malformed ${envName} image pin.`);
+    }
+    if (status.pinned === true) {
+      return;
+    }
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      throw new Error(`CRI on ${node} did not report the imported ${envName} image pinned.`);
+    }
+    progress(lane, `CRI on ${node} has not pinned the imported ${envName} image yet; retrying.`);
+    await delay(Math.min(250 * attempt, 1_000, remainingMs));
   }
 }
 
@@ -2556,9 +2599,12 @@ async function assertK3dImageReference(lane, cluster, reference, envName) {
       ["ctr", "-n", "k8s.io", "images", "list"],
       "containerd",
     );
-    const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
+    const found = listed.stdout.split(/\r?\n/).find((entry) => entry.split(/\s+/)[0] === reference);
     if (!found) {
       throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+    }
+    if (found.split(/\s+/)[2] !== `sha256:${immutableDigest(reference)}`) {
+      throw new Error(`containerd on ${node} does not match the imported ${envName} digest.`);
     }
     await inspectK3dCriImage(lane, node, reference, envName);
   }
@@ -2656,7 +2702,20 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
   const imports = cluster.nodes.map((node) =>
     execFile(
       containerEngine,
-      ["exec", "-i", node, "ctr", "-n", "k8s.io", "images", "import", "--all-platforms", "-"],
+      [
+        "exec",
+        "-i",
+        node,
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "import",
+        "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
+        "-",
+      ],
       { timeoutMs: 600_000, input: save.stdout },
     ).catch((error) => {
       // The first node failure is the cause; later ones may follow from it.
@@ -2764,9 +2823,17 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   const line = listed.stdout
     .split(/\r?\n/)
     .find((entry) => entry.split(/\s+/)[0] === importReference);
-  const digest = line?.match(/sha256:[a-f0-9]{64}/i)?.[0];
-  if (!digest) {
+  const [, mediaType, digest] = line?.split(/\s+/) ?? [];
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest ?? "")) {
     throw new Error(`Unable to find imported OCI manifest digest for ${importReference}.`);
+  }
+  if (
+    ![
+      "application/vnd.oci.image.manifest.v1+json",
+      "application/vnd.docker.distribution.manifest.v2+json",
+    ].includes(mediaType)
+  ) {
+    throw new Error(`Imported ${importReference} does not identify an image manifest.`);
   }
   // Workloads use the actual imported platform manifest, not a registry index digest.
   // The approved source image remains recorded and was verified before transport.
@@ -2775,6 +2842,21 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     await k3dNodeImageCheck(
       node,
       ["ctr", "-n", "k8s.io", "images", "tag", importReference, runtimeReference],
+      "containerd",
+    );
+    // The prepared cluster owns a fixed image set until cleanup. Keep its exact
+    // workload alias resident even while no Pod is using it between test cases.
+    await k3dNodeImageCheck(
+      node,
+      [
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "label",
+        runtimeReference,
+        "io.cri-containerd.pinned=pinned",
+      ],
       "containerd",
     );
   }
@@ -2789,7 +2871,7 @@ async function prepareK3dRuntimeImages(
   state,
   cluster,
   env,
-  { buildController = false, buildRuntime = false } = {},
+  { buildController = false, buildRuntime = false, reuseEngineImages = true } = {},
 ) {
   const needsController = buildController && !process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
   const needsRuntime =
@@ -2815,6 +2897,7 @@ async function prepareK3dRuntimeImages(
       controller: needsController,
       runtime: needsRuntime,
       nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+      reuseEngineImages,
     });
     Object.assign(env, built.env);
     if (needsRuntime) {
@@ -3054,19 +3137,27 @@ async function prepareLane({ lane, statePath, file }) {
   if (runtimeArtifact) {
     if (
       ![
+        "docker-model",
         "images-packaging",
         "images-runtime-startup",
         "images-runtime-startup-2",
         "images-runtime-startup-3",
       ].includes(name)
     ) {
-      throw new Error("Runtime artifacts are supported only by the ordinary image lanes.");
+      throw new Error(
+        "Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes.",
+      );
     }
     if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
       throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  // The lane receives source inputs. File preparation later receives its
+  // chart paths and imported image references through the prepared environment.
+  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+    await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -3079,9 +3170,17 @@ async function prepareLane({ lane, statePath, file }) {
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
+  const fullOpenShellSourceBuild =
+    process.env.OCC_CI_IMAGE_CACHE === "1" &&
+    suiteView === "full-integration" &&
+    isOpenShellLane(name) &&
+    relativeFile === undefined &&
+    laneDefinition(name).files.some(({ path }) =>
+      lanePrepare(name).sourceBuildFiles?.includes(path),
+    );
   if (
     process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+    (fullOpenShellSourceBuild || lanePrepare(name).sourceBuildFiles?.includes(relativeFile))
   ) {
     // Prime the selected builder, but keep the installer's actual source-build path.
     // Cache credentials remain in preparation; tests inherit only the builder name.
@@ -3089,16 +3188,19 @@ async function prepareLane({ lane, statePath, file }) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
       throw new Error("Installer image preparation requires its selected job builder.");
     }
-    await timedPreparation(name, "installer-source-images", () =>
-      buildRuntimeImages(resolvedStatePath, state, {
-        controller: true,
-        runtime: true,
-        nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
-        // These callers build from source next; an engine tag does not populate
-        // the selected builder's layer cache, even if it holds an identical image.
-        reuseEngineImages: false,
-      }),
-    );
+    // Full OpenShell lanes populate the same builder during their shared stack
+    // preparation below; focused source-build files have no shared stack.
+    if (!fullOpenShellSourceBuild) {
+      await timedPreparation(name, "installer-source-images", () =>
+        buildRuntimeImages(resolvedStatePath, state, {
+          controller: true,
+          runtime: true,
+          nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+          // An engine tag does not populate the selected builder's layer cache.
+          reuseEngineImages: false,
+        }),
+      );
+    }
     env.BUILDX_BUILDER = builder;
     // WORKDIR cache keys include this value; match the preparation build so the
     // installer reuses its layers instead of rebuilding with an unset epoch.
@@ -3405,7 +3507,8 @@ async function prepareLane({ lane, statePath, file }) {
     case "docker-model":
       Object.assign(
         env,
-        (await buildRuntimeImages(resolvedStatePath, state, { runtime: true })).env,
+        (await buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }))
+          .env,
       );
       await prepareLaneLogging(resolvedStatePath, state, env);
       break;
@@ -3483,6 +3586,7 @@ async function prepareLane({ lane, statePath, file }) {
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
+        reuseEngineImages: !fullOpenShellSourceBuild,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);

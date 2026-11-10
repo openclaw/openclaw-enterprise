@@ -128,6 +128,8 @@ export const DeploymentModelProbeFailedConfigurationEditor = story(
 export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDeployAgainUnreadable");
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
+export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
+export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",
