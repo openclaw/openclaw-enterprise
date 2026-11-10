@@ -15,6 +15,7 @@ import { createCredentialService } from "../fixtures/repository-credentials/serv
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   type AlternateFixtureFactory,
+  type AlternateFixtureOptions,
   createAlternateFixtureFactory,
   requireFixtureDriver,
 } from "../fixtures/repository-credentials/alternate-shape.ts";
@@ -124,7 +125,7 @@ const unexpected = () => {
 };
 
 function setup(
-  options: Partial<Pick<FixtureOptions, "operationMs" | "lifetimeMs" | "controls">> = {},
+  options: Pick<AlternateFixtureOptions, "operationMs" | "lifetimeMs" | "controls"> = {},
 ) {
   const clock = createControlledClock(1700000000000);
   const factory = createAlternateFixtureFactory({

@@ -6,7 +6,7 @@ import type {
 } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createAlternateDriverFactory } from "./alternate.mjs";
 
-type AlternateFixtureOptions = {
+export type AlternateFixtureOptions = {
   origin: string;
   gatewayOrigin: string;
   clock: Clock;
