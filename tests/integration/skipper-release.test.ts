@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { promisify } from "node:util";
+import { inGateway } from "../helpers/skipper-prepared-compute.mjs";
 
 const lane = "skipper-prepared-git-installed";
 const sourceSha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -219,4 +223,66 @@ test("aggregate qualifies only the independently selected Skipper image set with
     "later-turn-reauthorized-and-advanced-same-draft",
   );
   assert.equal((await aggregate(team)).status, "passed");
+});
+
+test("installed Skipper receiver reports failures without exposing response content", async (t) => {
+  for (const [scenario, status, category] of [
+    ["transport", 0, "transport"],
+    ["body", 200, "response-body"],
+    ["json", 200, "response-json"],
+    ["http", 403, "permission"],
+    ["success", 200, undefined],
+  ] as const) {
+    await t.test(scenario, async (t) => {
+      const canary = "private-response-content";
+      // Real sockets exercise fetch rejection, interrupted body reads and JSON parsing.
+      const server = createServer((req, res) => {
+        assert.equal(req.method, "POST");
+        assert.equal(req.url, "/v1/chat/completions");
+        assert.equal(req.headers.authorization, "Bearer synthetic-receiver-key");
+        req.resume();
+        if (scenario === "transport") {
+          req.socket.destroy();
+        } else if (scenario === "body") {
+          res.writeHead(200, { "content-length": 1000 });
+          res.write(canary);
+          setTimeout(() => res.destroy(), 50);
+        } else if (scenario === "json") {
+          res.end(canary);
+        } else if (scenario === "http") {
+          res.writeHead(403);
+          res.end("permission denied " + canary);
+        } else {
+          res.end(JSON.stringify({ choices: [{ message: { content: "reply" } }] }));
+        }
+      });
+      t.after(() => {
+        server.closeAllConnections();
+        server.close();
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      // Serialize the same receiver that kubectl executes, without a fake fetch implementation.
+      const result = await promisify(execFile)(
+        process.execPath,
+        ["-e", `(${inGateway.toString()})("prompt", "session")`],
+        {
+          timeout: 10_000,
+          env: {
+            PATH: process.env.PATH,
+            OPENCLAW_GATEWAY_PASSWORD: "synthetic-receiver-key",
+            OPENCLAW_GATEWAY_PORT: String(address.port),
+          },
+        },
+      );
+      assert.equal(result.stderr, "");
+      assert.deepEqual(
+        JSON.parse(result.stdout),
+        category ? { status, category } : { status, content: "reply" },
+      );
+      assert.ok(!result.stdout.includes(canary));
+    });
+  }
 });

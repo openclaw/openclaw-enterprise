@@ -1040,6 +1040,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);

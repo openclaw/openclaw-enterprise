@@ -787,6 +787,9 @@
       ]
     },
     {
+      "path": "tests/conformance/namespace-lifecycle.test.ts"
+    },
+    {
       "path": "tests/conformance/topology-controller-manifests.test.ts",
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"

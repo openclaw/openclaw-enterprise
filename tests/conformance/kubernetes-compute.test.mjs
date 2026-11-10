@@ -2189,9 +2189,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(withdrawals[0].requirements.labels, provisions[0].requirements.labels);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, false);
   // With the device recorded, later passes provision with the node enrolled and withdraw
-  // nothing more; the connected node makes the revision ready.
+  // nothing more; readiness still waits for the Gateway carrying that device.
   withdrawalFailure = undefined;
-  assert.equal((await prepare()).ready, true);
+  assert.equal((await prepare()).ready, false);
   const confirmedNodeSecret = read("Secret", driver.workspaceNodeName(revision));
   assert.equal(confirmedNodeSecret.data.setupReceiptDeviceId, undefined);
   assert.equal(Buffer.from(confirmedNodeSecret.data.deviceId, "base64").toString("utf8"), "node-1");
@@ -2205,6 +2205,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(deleted, []);
   await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
   markReady(gatewayName);
+  assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, context);
 
   assert.deepEqual(deleted, [stale.metadata.name]);
@@ -2235,6 +2236,65 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   );
   const harness = read("Service", `agent-${suffix}`);
   assert.equal(harness.spec.selector["app.kubernetes.io/name"], `agent-${suffix}-inactive`);
+});
+
+test("native Sandbox enrollment waits for the bound Gateway before reporting readiness", async () => {
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision }) {
+      return provisions.length > 0 ? supervisorPeerLabels(revision.id) : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+      plugins: undefined,
+    },
+  });
+  const { state, namespace, gatewayName, markReady, prepare, read } = fixture;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions.at(-1).requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  // The node enrolls after this pass rendered its initial Gateway. Pod readiness alone must
+  // not publish that unbound Gateway as a usable native Agent.
+  state.connected = true;
+  assert.equal(
+    (await prepare()).ready,
+    false,
+    "first enrollment must wait for the Gateway's native worker binding",
+  );
+  assert.equal((await prepare()).ready, false);
+  const gateway = read("Deployment", gatewayName).spec.template.spec.containers[0];
+  assert.equal(
+    gateway.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")?.value,
+    "node-1",
+  );
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, true);
 });
 
 // Finding 1642: a native worker under a Sandbox provider holds a failed model check and never
@@ -2406,6 +2466,8 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   // The device is recorded: the provider now provisions with the node enrolled, which has
   // it complete the withdrawal itself, and Compute asks for no second withdrawal.
   withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
   assert.equal((await prepare()).ready, true);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
@@ -2660,13 +2722,14 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   assert.equal(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId, undefined);
   answer = { state: "starting" };
   recovered.state.connected = true;
-  assert.equal((await recovered.prepare()).ready, true);
+  assert.equal((await recovered.prepare()).ready, false);
   assert.equal(
     decode(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId),
     recovered.revision.id,
   );
   assert.equal(withdrawals.length, 1);
   assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  recovered.markReady(recovered.gatewayName);
   assert.equal((await recovered.prepare()).ready, true);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
@@ -5168,8 +5231,23 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     objects: {},
   });
 
+  const { sandboxNamespaceLifecycleBinding } =
+    await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
+  const binding = sandboxNamespaceLifecycleBinding(driver, sandboxDriver);
+  const remove = () =>
+    reconcileNamespaceLifecycle(
+      driver,
+      [{ id: sandboxDriver.id, hooks: binding.hooks }],
+      { ...tenant, status: "deleting" },
+      "deleted",
+      new AbortController().signal,
+      () => {},
+    );
+
   // A provider cleanup failure must leave the Kubernetes Namespace intact for a safe retry.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await remove(), {
     namespaceId: tenant.id,
     namespaceDeleted: false,
     failure: "retryable",
@@ -5177,7 +5255,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   assert.equal(present, true);
   assert.deepEqual(calls, ["sandbox-cleanup"]);
 
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await remove(), {
     namespaceId: tenant.id,
     namespaceDeleted: true,
   });
@@ -5806,20 +5884,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   for (const external of [false, true]) {
     for (const foreign of [false, true]) {
       const calls = [];
-      const driver = new KubernetesComputeDriver(twoClusterOptions(), {
-        lifecycleDrivers: [
-          {
-            id: "configuration-selected",
-            capability: "configuration",
-            implementation: "local-selected",
-            computeLifecycleHooks: {
-              async beforeNamespaceDelete() {
-                calls.push("revoke");
-              },
-            },
-          },
-        ],
-      });
+      const driver = new KubernetesComputeDriver(twoClusterOptions());
       let gateway = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
       gateway.metadata.uid = "owned-gateway-namespace-uid";
       if (foreign) {
@@ -5851,17 +5916,42 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
         },
       });
       driver.executionApiClients = driver.apiClients;
-      const result = await driver.deleteNamespace({
-        ...tenant,
-        status: "deleting",
-        ...(external ? { existingNamespace: "customer-support" } : {}),
-      });
+      const { reconcileNamespaceLifecycle } =
+        await import("../../packages/occ/src/namespace-lifecycle.ts");
+      const result = await reconcileNamespaceLifecycle(
+        driver,
+        [
+          {
+            id: "provider",
+            hooks: {
+              async ensureNamespace() {
+                assert.fail("Deletion must not run setup.");
+              },
+              async deleteNamespace() {
+                calls.push("provider-cleanup");
+                return { namespaceId: tenant.id, namespaceDeleted: true };
+              },
+            },
+          },
+        ],
+        {
+          ...tenant,
+          status: "deleting",
+          ...(external ? { existingNamespace: "customer-support" } : {}),
+        },
+        "deleted",
+        new AbortController().signal,
+        () => {},
+      );
       assert.deepEqual(result, {
         namespaceId: tenant.id,
         namespaceDeleted: !foreign,
         ...(foreign ? { failure: "permanent" } : {}),
       });
-      assert.deepEqual(calls, foreign ? [] : ["revoke", "delete-gateway"]);
+      assert.deepEqual(
+        calls,
+        foreign ? [] : external ? ["delete-gateway"] : ["provider-cleanup", "delete-gateway"],
+      );
     }
   }
 });
@@ -14926,7 +15016,7 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
     id: "configuration-selected",
     capability: "configuration",
     implementation: "local-selected",
-    computeLifecycleHooks: { async afterNamespacePrepared() {} },
+    computeLifecycleHooks: { async beforeWorkloadStart() {} },
   };
   const driver = new KubernetesComputeDriver(options(), { lifecycleDrivers: [selected] });
 
@@ -14944,7 +15034,7 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
       driver.setLifecycleDrivers([
         {
           ...selected,
-          computeLifecycleHooks: { async afterNamespacePrepared() {} },
+          computeLifecycleHooks: { async beforeWorkloadStart() {} },
         },
       ]),
     /owners cannot change.*operations begin/i,
@@ -14959,17 +15049,11 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     capability: "configuration",
     implementation: "local-selected",
     computeLifecycleHooks: {
-      async afterNamespacePrepared() {
-        calls.push("namespace-prepared");
-      },
       async beforeWorkloadStart() {
         calls.push("workload-start");
       },
       async beforeWorkloadStop() {
         calls.push("workload-stop");
-      },
-      async beforeNamespaceDelete() {
-        calls.push("namespace-delete");
       },
     },
   };

@@ -197,6 +197,7 @@ export async function composePostgresDevelopment(
       persistedInstallation,
       {
         ...installationControllerOptions(drivers?.installation),
+        namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined

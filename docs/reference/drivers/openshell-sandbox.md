@@ -1,20 +1,21 @@
 # OpenShell SandboxDriver
 
-The OpenShell SandboxDriver pairs its Gateway, dedicated Codex/native OpenClaw
+The Driver pairs its Gateway, dedicated Codex/native OpenClaw
 Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
-Development supports native OpenClaw and dedicated Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
-OCE runtime declares native Dedicated support. The
-[Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
-each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
+Development supports dedicated native OpenClaw and Codex with
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE runtime.
+The [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
+Agent revision providers supply node enrollment and Codex files. These APIs are
 unqualified for production.
 
 Embedded OpenClaw is unsupported. See
 [containment facets](#openshell-containment-facets),
 [qualification](#qualification-contract), and
 [public egress](../configuration/network-egress.md).
+
+Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Gateway settings below describe operator-owned gateways.
 
 ## Ownership model
 
@@ -395,9 +396,9 @@ The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
 exposure sweep and retries.
 
 For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
-raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as
-permanent. For setup, the worker records the refusal code as the reason. Check
-the gateway identity and Workspace access before retrying. Worker diagnostics
+raises `SandboxNamespaceRefusedError`. The Namespace lifecycle adapter classifies
+the failure as permanent. The worker records the setup refusal code as its reason. Check
+gateway identity and Workspace access before retrying. Worker diagnostics
 report the method, gRPC status, and validation category without provider text or
 request values.
 
