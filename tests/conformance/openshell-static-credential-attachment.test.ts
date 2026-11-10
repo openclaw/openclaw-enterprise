@@ -171,6 +171,19 @@ test("startup composes both OpenShell members from one Backend for static source
     async getSandbox() {
       return observed.sandbox;
     },
+    async getPolicyStatus(request) {
+      assert.ok(observed.sandbox);
+      assert.equal(request.workspace, observed.sandbox.workspace);
+      assert.equal(request.sandbox, observed.sandbox.name);
+      // Admission now freezes restricted mode. Model its loaded policy so the
+      // real readiness gate can proceed to the attachment lifecycle under test.
+      return {
+        version: 1,
+        activeVersion: 1,
+        state: "POLICY_STATUS_LOADED",
+        policy: { allow_unconfigured_public_tcp: false },
+      };
+    },
     async createSandbox(request) {
       calls.push(["createSandbox", structuredClone(request)]);
       observed.sandbox = {

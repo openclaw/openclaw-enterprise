@@ -630,18 +630,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -709,6 +699,12 @@
       "35e58241d2983bd4fc147d33258696016190972b54fd75d58e2821f031facd06",
       "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
       "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5"
+    ],
+    "db88ea2d8aeef87e58e647cfc5d9d03cd08b768cf3a679388072e0708907c9b3": [
+      "8f377cee264e17f0c7b2eaf91fc78ee4d5bcb5f473fcda61ef8e2cc533f62458",
+      "c14de5ade7d68c53f0d1d0643e050bb8bfa8af6096837a8c5b3e23b753a821f5",
+      "d926c7e714e93d126e5209ba658217b15955154c0fb6e62238608dad22d759c3",
+      "6d9d2fd5db05c160a8528f9c3aff42429111d115a4f9c8f3e80078192e98336f"
     ]
   },
   "catalogs": {
@@ -773,7 +769,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The catalog through 0077 and its logical restore aliases were measured on PostgreSQL 18.6 with the migrator role: completed canonical and Provider histories used pg_dump/pg_restore, and restored canonical prefixes 51, 74, 75, and 76 used the production migrator to reach 0077."
   },
   "compatibleLineages": {
     "providerCompleted": {
