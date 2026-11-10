@@ -43,6 +43,16 @@ import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { startCodexGatewaySupervisor as startGatewaySupervisor } from "../helpers/codex-gateway-supervisor.ts";
+import {
+  CODEX_LINEAR_APP_ID,
+  CODEX_LINEAR_NATIVE_ID,
+  CODEX_LINEAR_REMOTE_ID,
+  CODEX_LINEAR_VERSION,
+  codexConfigReadResponse,
+  codexReadResponse,
+  codexSearchResponse,
+  runCodexRuntimeHelper,
+} from "../helpers/codex-runtime-helper-fixture.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
 import {
@@ -55,10 +65,6 @@ import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
 
-const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
-const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
-const CODEX_LINEAR_APP_ID = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
-const CODEX_LINEAR_VERSION = "5.0.1";
 const CODEX_ASANA_NATIVE_ID = "asana@openai-curated-remote";
 const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";
 const CODEX_ASANA_APP_ID = "asdk_app_asana";
@@ -249,227 +255,6 @@ function kubernetesOptions(overrides = {}) {
     }),
     ...overrides,
   };
-}
-
-function codexSearchResponse(options = {}) {
-  const plugins = options.plugins ?? [
-    {
-      id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
-      remotePluginId: options.remotePluginId ?? CODEX_LINEAR_REMOTE_ID,
-      name: options.name ?? "linear",
-      source: { type: "remote" },
-      installed: false,
-      enabled: false,
-      installPolicy: "AVAILABLE",
-      authPolicy: "ON_USE",
-      availability: "AVAILABLE",
-      version: options.version ?? CODEX_LINEAR_VERSION,
-      interface: null,
-    },
-  ];
-  return {
-    data: plugins.map((plugin) => ({ marketplaceName: "openai-curated-remote", plugin })),
-    nextCursor: null,
-  };
-}
-
-function codexReadResponse(options = {}) {
-  return {
-    plugin: {
-      marketplaceName: "openai-curated-remote",
-      marketplacePath: null,
-      summary: {
-        id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
-        remotePluginId: options.remotePluginId ?? CODEX_LINEAR_REMOTE_ID,
-        name: options.name ?? "linear",
-        source: { type: "remote" },
-        installed: options.installed ?? true,
-        enabled: options.enabled ?? true,
-        installPolicy: "AVAILABLE",
-        authPolicy: "ON_USE",
-        availability: "AVAILABLE",
-        version: options.version ?? CODEX_LINEAR_VERSION,
-        interface: null,
-      },
-      description: null,
-      skills: options.skills ?? [],
-      apps: options.apps ?? [{ id: CODEX_LINEAR_APP_ID, name: "Linear", needsAuth: false }],
-      appTemplates: options.appTemplates ?? [],
-      hooks: [],
-      mcpServers: options.mcpServers ?? [],
-      scheduledTasks: [],
-    },
-  };
-}
-
-function codexConfigReadResponse(appConfig = {}, pluginEnabled = true) {
-  return {
-    config: {
-      approval_policy: "on-request",
-      model: "test-model",
-      features: { apps: true, plugins: true, remote_plugin: true },
-      apps: {
-        _default: { enabled: false },
-        [CODEX_LINEAR_APP_ID]: {
-          enabled: true,
-          default_tools_approval_mode: "auto",
-          ...appConfig,
-        },
-      },
-      plugins: {
-        _default: { enabled: false },
-        [CODEX_LINEAR_NATIVE_ID]: { enabled: pluginEnabled },
-      },
-    },
-    origins: {},
-  };
-}
-
-async function runCodexRuntimeHelper(runtime, handler, options = {}) {
-  const requests = [];
-  const sockets = [];
-  const files = new Map(options.files ?? []);
-  // options.refusedConnections models an app-server that is not listening yet.
-  const refusedConnections = options.refusedConnections ?? 0;
-  class FakeWebSocket {
-    constructor(url, options) {
-      this.url = url;
-      this.options = options;
-      this.listeners = new Map();
-      sockets.push(this);
-      const refused = sockets.length <= refusedConnections;
-      setTimeout(() => this.dispatch(refused ? "error" : "open", {}), 0);
-    }
-    on(name, listener) {
-      const existing = this.listeners.get(name) ?? [];
-      existing.push(listener);
-      this.listeners.set(name, existing);
-      return this;
-    }
-    dispatch(name, event) {
-      for (const listener of this.listeners.get(name) ?? []) {
-        listener(event);
-      }
-    }
-    send(raw) {
-      const request = JSON.parse(raw);
-      if (request.method === "initialized") {
-        return;
-      }
-      requests.push({ method: request.method, params: request.params });
-      Promise.resolve()
-        .then(() => handler(request.method, request.params, request.id))
-        .then(
-          (result) => {
-            if (result?.__rawMessage !== undefined) {
-              this.dispatch(
-                "message",
-                Buffer.from(
-                  typeof result.__rawMessage === "string"
-                    ? result.__rawMessage
-                    : JSON.stringify(result.__rawMessage),
-                ),
-              );
-              return;
-            }
-            this.dispatch("message", Buffer.from(JSON.stringify({ id: request.id, result })));
-          },
-          (error) =>
-            this.dispatch(
-              "message",
-              Buffer.from(
-                JSON.stringify({ id: request.id, error: { code: -32000, message: error.message } }),
-              ),
-            ),
-        );
-    }
-    close() {}
-  }
-  // The helper's clock advances only through its own timer waits, so the 25 ms install
-  // budget below counts retry delays, never host scheduling: a loaded runner cannot
-  // expire a successful RPC (finding 3034). Expiry cases pass their own Date.
-  let now = 0;
-  class FixtureDate extends Date {
-    static now() {
-      return now;
-    }
-  }
-  const sandbox = {
-    JSON,
-    Buffer,
-    Date: options.Date ?? FixtureDate,
-    WebSocket: FakeWebSocket,
-    setTimeout:
-      options.setTimeout ??
-      ((callback, delay, ...args) =>
-        setTimeout(() => {
-          now += delay ?? 0;
-          callback(...args);
-        }, delay)),
-    clearTimeout,
-    process: {
-      env: {
-        APP_SERVER_PORT: "4321",
-        APP_SERVER_TOKEN: "capability-token-test-value",
-        CODEX_HOME: "/home/node/.codex",
-        OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "25",
-        ...(options.env ?? {}),
-      },
-    },
-    require(specifier) {
-      if (specifier === "ws") {
-        return FakeWebSocket;
-      }
-      if (specifier === "node:fs") {
-        return {
-          existsSync(path) {
-            return files.has(path);
-          },
-          mkdirSync() {},
-          readFileSync(path) {
-            if (!files.has(path)) {
-              throw new Error(`Missing mocked file: ${path}`);
-            }
-            return files.get(path);
-          },
-          writeFileSync(path, data) {
-            files.set(path, String(data));
-          },
-        };
-      }
-      return nodeRequire(specifier);
-    },
-    result: {},
-  };
-  const completion = new Promise((resolve, reject) => {
-    sandbox.result.resolve = resolve;
-    sandbox.result.reject = reject;
-  });
-  try {
-    vm.runInNewContext(
-      `${PLUGIN_RUNTIME_HELPERS}
-installCodexPlugins(
-  ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])},
-  codexAppServerRequest
-).then(result.resolve, result.reject);`,
-      sandbox,
-    );
-  } catch (error) {
-    if (options.captureError === true) {
-      return { requests, sockets, files, error };
-    }
-    throw error;
-  }
-  try {
-    const value = await completion;
-    return { requests, sockets, files, value };
-  } catch (error) {
-    if (options.captureError === true) {
-      return { requests, sockets, files, error };
-    }
-    throw error;
-  }
 }
 
 test("compute renders plugin-free Codex revisions with native default-deny plugin config", () => {
