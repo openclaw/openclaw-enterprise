@@ -23,7 +23,7 @@ import {
   validateResults,
   waitMilliseconds,
 } from "../../scripts/ci/full-integration-reuse.mjs";
-import { skipperPassingReceipt } from "../../scripts/ci/skipper-release.ts";
+import { projectSkipperRunnerReceipt } from "../../scripts/ci/skipper-release.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 
 async function reuseFixture() {
@@ -235,7 +235,7 @@ test("full coverage receipts require real case evidence and retain approved same
   privateSkipper.diagnostic = "private-output-canary";
   privateSkipper.files[0].diagnostic = "private-output-canary";
   privateSkipper.files[0].tests[0].diagnostic = "private-output-canary";
-  const publicSkipper = skipperPassingReceipt(privateSkipper);
+  const publicSkipper = { ...projectSkipperRunnerReceipt(privateSkipper), lane: skipperLane };
   assert.doesNotMatch(JSON.stringify(publicSkipper), /private-output-canary/);
   await json(skipperPath, publicSkipper);
   assert.equal(clean(skipperLane).status, 0);
@@ -309,19 +309,13 @@ test("full coverage receipts require real case evidence and retain approved same
     await verify(0, false);
   }
   await writeFile(policyReceipt, passingPolicy);
-  // Never turn absent, unsafe, or unsuccessful private evidence into a passing receipt.
+  // Incomplete or focused evidence remains publishable, but never proves full coverage.
   for (const damage of [
     (value) => {
       delete value.scope;
     },
     (value) => {
       value.scope = "focused";
-    },
-    (value) => {
-      delete value.issues;
-    },
-    (value) => {
-      value.issues = [{ message: "private-output-canary" }];
     },
     (value) => {
       delete value.files[0].exercised;
@@ -348,9 +342,6 @@ test("full coverage receipts require real case evidence and retain approved same
       value.files[0].fileFailure = { message: "private-output-canary" };
     },
     (value) => {
-      value.files[0].cleanup.status = "failed";
-    },
-    (value) => {
       delete value.files[0].counts;
     },
     (value) => {
@@ -358,6 +349,28 @@ test("full coverage receipts require real case evidence and retain approved same
     },
     (value) => {
       value.files[0].status = "failed";
+    },
+  ]) {
+    const damaged = structuredClone(privateSkipper);
+    damage(damaged);
+    const projected = projectSkipperRunnerReceipt(damaged);
+    assert.doesNotMatch(JSON.stringify(projected), /private-output-canary/);
+    await json(skipperPath, { ...projected, lane: skipperLane });
+    assert.equal(clean(skipperLane).status, 0);
+    await verify(projected.scope === "focused" ? 1 : 0, false);
+  }
+  await json(skipperPath, publicSkipper);
+  assert.equal(clean(skipperLane).status, 0);
+  // Malformed outcomes and diagnostic-bearing values are rejected at the private boundary.
+  for (const damage of [
+    (value) => {
+      delete value.issues;
+    },
+    (value) => {
+      value.issues = [{ message: "private-output-canary" }];
+    },
+    (value) => {
+      value.files[0].cleanup.status = "failed";
     },
     (value) => {
       value.files[0].tests[0].durationMs = { diagnostic: "private-output-canary" };
@@ -371,11 +384,11 @@ test("full coverage receipts require real case evidence and retain approved same
   ]) {
     const damaged = structuredClone(privateSkipper);
     damage(damaged);
-    assert.throws(() => skipperPassingReceipt(damaged), { code: "ERR_ASSERTION" });
+    assert.throws(() => projectSkipperRunnerReceipt(damaged), { code: "ERR_ASSERTION" });
   }
   const noDuration = structuredClone(privateSkipper);
   delete noDuration.files[0].tests[0].durationMs;
-  assert.equal(skipperPassingReceipt(noDuration).files[0].tests[0].durationMs, undefined);
+  assert.equal(projectSkipperRunnerReceipt(noDuration).files[0].tests[0].durationMs, undefined);
   const legacy = JSON.parse(reusedReceipt);
   for (const file of legacy.files) {
     delete file.exercised;

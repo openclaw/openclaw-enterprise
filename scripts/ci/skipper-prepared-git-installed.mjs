@@ -11,8 +11,8 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import {
+  projectSkipperRunnerReceipt,
   skipperFailureSummary,
-  skipperPassingReceipt,
   skipperInstalledProof,
   skipperImageScope,
 } from "./skipper-release.ts";
@@ -159,7 +159,7 @@ async function checkImage(stack, selected, built) {
 
 let phase = "fresh cluster preflight";
 let failed = false;
-let summary;
+let runnerReceipt;
 let imageDigests;
 try {
   await noCluster();
@@ -400,14 +400,14 @@ try {
   }
   assert.deepEqual(observed, proof);
   assert.equal(records.at(-1), proof.at(-1));
-  summary = await read(privateResult);
+  const summary = await read(privateResult);
   assert.equal(summary.sourceSha, sourceCommit);
   assert.equal(summary.lane, lane);
   assert.equal(summary.status, "passed");
   assert.equal(summary.exitCode, 0);
   assert.deepEqual(summary.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
   assert.deepEqual(summary.issues, []);
-  summary = skipperPassingReceipt(summary);
+  runnerReceipt = projectSkipperRunnerReceipt(summary);
 } catch (error) {
   failed = true;
   // File and line are useful on a failed guard. Never print values, runner or subprocess output.
@@ -436,15 +436,16 @@ try {
   await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true });
 }
 
-if (failed) {
+if (failed || !runnerReceipt) {
   process.exitCode = 1;
 } else {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
   const results = join(env.RUNNER_TEMP, "results");
   const receipt = {
-    ...summary,
+    ...runnerReceipt,
     cleanup: { status: "passed" },
+    lane,
     imageDigests,
     imageScope: skipperImageScope,
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],

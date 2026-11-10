@@ -114,9 +114,10 @@ export or upload failures still fail their job and aggregate; they do not undo
 completed execution or cleanup. Missing lane artifacts prevent qualification.
 
 The installed-Skipper lane publishes a sanitized passing receipt only after its
-test and owned-resource cleanup succeed. It retains the runner's full scope,
-empty issue lists, and each file's exercised status, exit code, and signal for
-coverage validation. Raw test output and diagnostics remain private.
+test and owned-resource cleanup succeed. Complete full-scope results retain
+empty issue lists and each file's exercised status, exit code, and signal for
+coverage validation. Focused or incomplete results carry no full-coverage proof.
+Raw test output and diagnostics remain private.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
 its assigned files serially, and the aggregate requires both results. QA Advisory uses
