@@ -391,7 +391,7 @@ try {
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
     console.error(
-      "Installed test failed after %s (%s, exit=%s)",
+      "Installed test failed after %s (%s, runner-exit=%s)",
       last,
       skipperFailureSummary(resultText, process.cwd(), text),
       runner.code ?? "unknown",

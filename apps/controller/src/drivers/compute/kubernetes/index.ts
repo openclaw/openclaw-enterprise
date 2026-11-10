@@ -7680,6 +7680,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete("REPOSITORY_GIT_ROUTE_PENDING");
           }
         }
+        // Enrollment may have completed after this pass rendered the Gateway. Native workers
+        // need its exact device binding and completed rollout before the revision can serve.
+        if (
+          nativeRuntime !== undefined &&
+          (configuration.nativeWorkerNodeId === undefined ||
+            !(await this.gatewayReady(
+              gatewayOwnership,
+              gatewayName,
+              gatewayNamespace,
+              revision.id,
+            )))
+        ) {
+          return incomplete();
+        }
         return ready();
       }
       await this.reconcile(agentDeployment, revisionOwnership, namespace);

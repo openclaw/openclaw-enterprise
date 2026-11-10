@@ -272,5 +272,5 @@ entry point requires `OCC_TEST_QA_OPENAI_KEY_FILE`, `OCC_TEST_QA_OPENAI_MODEL` a
 It also checks pending setup, graceful worker restart, IAM denial and revocation,
 quota refusal, unavailable gateway cleanup, and deletion of an unclaimed external
 Namespace while preserving its operator-owned resources. Active database-lease
-loss remains outside this live case. See the [implementation plan](../../specs/plans/0034-namespace-driver-lifecycle.md)
+loss remains outside this live case. See the [implementation plan](../../specs/plans/0035-namespace-driver-lifecycle.md)
 for recorded run results and remaining delivery checks.

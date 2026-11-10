@@ -1,15 +1,15 @@
 ---
 status: Proposed
-implementation_status: Partially implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
 # Proposal: Run Driver setup for every new Namespace
 
-- **ID:** RFC-0034
+- **ID:** RFC-0035
 - **Created:** 2026-11-06
-- **Last updated:** 2026-11-07
-- **Implementation plan:** [Namespace Driver lifecycle](../plans/0034-namespace-driver-lifecycle.md)
+- **Last updated:** 2026-11-10
+- **Implementation plan:** [Namespace Driver lifecycle](../plans/0035-namespace-driver-lifecycle.md)
 - **Related:** [Namespace lifecycle](../../docs/reference/namespaces.md),
   [Sandbox contract](../../docs/reference/drivers/sandbox.md),
   [closed Installation lifecycle proposal](https://github.com/openclaw/openclaw-enterprise/pull/176)
@@ -195,7 +195,7 @@ permissions or mark the Namespace ready.
 ## Delivery and verification
 
 Submit this proposal for human review before contract implementation. The
-[implementation plan](../plans/0034-namespace-driver-lifecycle.md) tracks work and
+[implementation plan](../plans/0035-namespace-driver-lifecycle.md) tracks work and
 proof separately from the RFC decision. Required evidence:
 
 - Bootstrap a fresh Installation through shipped bootstrap, real PostgreSQL,
@@ -225,7 +225,7 @@ infrastructure remains a delivery gap; no integration waiver applies.
 Update owning Namespace, Driver, worker-flow, and testing documentation with code.
 Current references continue to describe current behavior until implementation.
 Source findings are from `ecb2973b13c1`; no runtime verification is claimed.
-RFC-0034 remains provisional until merge. The repository
+RFC-0035 remains provisional until merge. The repository
 requires renumbering against the current base before merge.
 
 ## Rationale and alternatives

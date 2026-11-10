@@ -2189,9 +2189,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(withdrawals[0].requirements.labels, provisions[0].requirements.labels);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, false);
   // With the device recorded, later passes provision with the node enrolled and withdraw
-  // nothing more; the connected node makes the revision ready.
+  // nothing more; readiness still waits for the Gateway carrying that device.
   withdrawalFailure = undefined;
-  assert.equal((await prepare()).ready, true);
+  assert.equal((await prepare()).ready, false);
   const confirmedNodeSecret = read("Secret", driver.workspaceNodeName(revision));
   assert.equal(confirmedNodeSecret.data.setupReceiptDeviceId, undefined);
   assert.equal(Buffer.from(confirmedNodeSecret.data.deviceId, "base64").toString("utf8"), "node-1");
@@ -2205,6 +2205,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(deleted, []);
   await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
   markReady(gatewayName);
+  assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, context);
 
   assert.deepEqual(deleted, [stale.metadata.name]);
@@ -2235,6 +2236,65 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   );
   const harness = read("Service", `agent-${suffix}`);
   assert.equal(harness.spec.selector["app.kubernetes.io/name"], `agent-${suffix}-inactive`);
+});
+
+test("native Sandbox enrollment waits for the bound Gateway before reporting readiness", async () => {
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision }) {
+      return provisions.length > 0 ? supervisorPeerLabels(revision.id) : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+      plugins: undefined,
+    },
+  });
+  const { state, namespace, gatewayName, markReady, prepare, read } = fixture;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions.at(-1).requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  // The node enrolls after this pass rendered its initial Gateway. Pod readiness alone must
+  // not publish that unbound Gateway as a usable native Agent.
+  state.connected = true;
+  assert.equal(
+    (await prepare()).ready,
+    false,
+    "first enrollment must wait for the Gateway's native worker binding",
+  );
+  assert.equal((await prepare()).ready, false);
+  const gateway = read("Deployment", gatewayName).spec.template.spec.containers[0];
+  assert.equal(
+    gateway.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")?.value,
+    "node-1",
+  );
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, true);
 });
 
 // Finding 1642: a native worker under a Sandbox provider holds a failed model check and never
@@ -2406,6 +2466,8 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   // The device is recorded: the provider now provisions with the node enrolled, which has
   // it complete the withdrawal itself, and Compute asks for no second withdrawal.
   withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
   assert.equal((await prepare()).ready, true);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
@@ -2660,13 +2722,14 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   assert.equal(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId, undefined);
   answer = { state: "starting" };
   recovered.state.connected = true;
-  assert.equal((await recovered.prepare()).ready, true);
+  assert.equal((await recovered.prepare()).ready, false);
   assert.equal(
     decode(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId),
     recovered.revision.id,
   );
   assert.equal(withdrawals.length, 1);
   assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  recovered.markReady(recovered.gatewayName);
   assert.equal((await recovered.prepare()).ready, true);
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);

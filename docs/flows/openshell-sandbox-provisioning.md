@@ -24,6 +24,7 @@ Kubernetes Compute provisions Codex/OpenClaw through OpenShell.
 
 ```mermaid
 graph TD
+  %%{init: {"flowchart": {"htmlLabels": true}}}%%
   A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
   B --> C{"<b>Workspace mode</b><br/>Installation setting"}
   C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
@@ -58,7 +59,10 @@ graph TD
   R1 --> Y
   Y -- "yes" --> S{"<b>Attachment status</b><br/>All ready?"}
   S -- "failed, withheld, revoked" --> R
-  S -- "ready" --> P1["<b>Publish revision</b><br/>Commit active selection"]
+  S -- "ready" --> NG{"<b>Native OpenClaw?</b>"}
+  NG -- "yes" --> NR["<b>Confirm Gateway</b><br/>Node binding and rollout"]
+  NG -- "no" --> P1["<b>Publish revision</b><br/>Commit active selection"]
+  NR --> P1
   P1 --> Z{"<b>Activate Harness</b>"}
   Z -- "Codex" --> C2{"<b>Recheck Codex readiness</b><br/>Before replacing Gateway"}
   C2 -- "refused" --> R2["<b>Fail deployment</b><br/>Published selection retained"]
@@ -80,8 +84,8 @@ graph TD
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F,D1 state
-  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U operation
-  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2 gate
+  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U,NR operation
+  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2,NG gate
   class X,R,R0,R2,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -430,6 +434,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
+
 - 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
 - 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
@@ -439,9 +445,5 @@ model execution.
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
 
 - 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
-
-- 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
-
-- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

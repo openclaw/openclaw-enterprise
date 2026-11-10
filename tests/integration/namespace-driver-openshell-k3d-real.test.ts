@@ -42,6 +42,7 @@ import {
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   createScopedController,
+  apiServerPodProxySourceCidrs,
   withFirstPrepareRevisionFailureDiagnostic,
 } from "../helpers/openshell-sandbox-workflows.mjs";
 
@@ -185,7 +186,10 @@ test(
       openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     }) as ReturnType<typeof createOpenShellInstallationConfiguration> & {
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
-      drivers: { sandbox: { configuration: OpenShellSandboxDriverOptions } };
+      drivers: {
+        sandbox: { configuration: OpenShellSandboxDriverOptions };
+        credential_gateway: { configuration: { binaries: string[] } };
+      };
     };
     const modelBaseUrl = env.OCC_TEST_OPENSHELL_MODEL_BASE_URL ?? "https://api.openai.com/v1";
     const compute = configuration.drivers.compute.configuration;
@@ -195,12 +199,17 @@ test(
         ...compute.network,
         gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         gatewayClients: undefined,
+        pluginStatusProxySourceCidrs: await apiServerPodProxySourceCidrs(),
       },
       // The task explicitly permits the supported OpenShell Credential Gateway topology's
       // existing identity and credential placement. This proof does not change those contracts.
       servicePrincipalCredentials: { mode: "disabled" },
       resources: {
         ...compute.resources,
+        agent: {
+          ...compute.resources.agent,
+          limits: { ...compute.resources.agent.limits, memory: "6Gi" },
+        },
         namespace: {
           ...compute.resources.namespace,
           quota: { ...compute.resources.namespace.quota, "limits.memory": "20Gi" },
@@ -208,9 +217,17 @@ test(
       },
       runtime: {
         ...compute.runtime,
+        nativeOpenClawSessionCapacity: 2,
         modelProvider: { protocol: "openai-responses", baseUrl: modelBaseUrl },
       },
     });
+    // Native OpenClaw uses Node for model traffic; the Codex-only binary policy must not apply.
+    configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
+    const sandboxResources = configuration.drivers.sandbox.configuration.kubernetes
+      .agentResources as {
+      limits: Record<string, string>;
+    };
+    sandboxResources.limits.memory = "6Gi";
     const templateNamespace = "oce-namespace-template";
     const service = `openshell-${openshellHash(templateNamespace, 10)}`;
     const common = ["--namespace", templateNamespace, `--set-string=fullnameOverride=${service}`];
@@ -233,6 +250,16 @@ test(
       );
       return loadAll(stdout).filter(Boolean) as KubernetesObject[];
     };
+    const workspace = await render(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART!, [
+      `--set-string=fullnameOverride=${service}-workspace`,
+      "--set=gateway.allowDriverConfig=true",
+      `--set-string=gateway.serviceAccount.name=${service}`,
+      `--set-string=gateway.serviceAccount.namespace=${templateNamespace}`,
+      `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${service}`,
+    ]);
+    const sandboxAccounts = workspace.filter((resource) => resource.kind === "ServiceAccount");
+    assert.equal(sandboxAccounts.length, 1, "the workspace chart must supply its Sandbox account");
+    const sandboxAccount = sandboxAccounts[0]!.metadata!.name!;
     // Rendering contributes configuration only. Neither Helm nor this test creates a gateway,
     // Service, gateway data volume, signing key, or Workspace.
     const gateway = await render(env.OCC_TEST_OPENSHELL_HELM_CHART!, [
@@ -244,19 +271,14 @@ test(
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
       "--set=workspaceResources.enabled=false",
+      "--set=sandboxServiceAccount.create=false",
+      `--set-string=sandboxServiceAccount.name=${sandboxAccount}`,
       "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
       `--set-string=server.defaultRuntimeClassName=${env.OCC_TEST_OPENSHELL_RUNTIME_CLASS}`,
       `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       ...openShellChartImageValues("gateway.image", env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE),
       ...openShellChartImageValues("sandboxRuntime.image", env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE),
       ...openShellChartImageValues("supervisor.image", env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE),
-    ]);
-    const workspace = await render(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART!, [
-      `--set-string=fullnameOverride=${service}-workspace`,
-      "--set=gateway.allowDriverConfig=true",
-      `--set-string=gateway.serviceAccount.name=${service}`,
-      `--set-string=gateway.serviceAccount.namespace=${templateNamespace}`,
-      `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${service}`,
     ]);
     const operatorKinds = new Set(["Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"]);
     const prerequisites = [...gateway, ...workspace].filter((item) =>
@@ -750,7 +772,6 @@ test(
             ...workspaceGateway.nativeOptions.gatewayAuth.auth,
             password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
           },
-          controlUi: { enabled: true, allowedOrigins: ["http://127.0.0.1"] },
         },
       };
       const agentConfiguration = await request(
@@ -808,7 +829,15 @@ test(
       const sandbox = await fixture.waitForSandbox(placement, deployed.data);
       const harness = await fixture.waitForProviderHarnessPod(placement, deployed.data);
       assert.equal(harness.metadata.namespace, placement);
-      await fixture.assertProviderOwnedHarness(placement, deployed.data, sandbox, harness);
+      assert.equal(harness.spec.serviceAccountName, sandboxAccount);
+      // The authorized gateway-configured identity uses the maintained launcher's Namespace account.
+      await fixture.assertProviderOwnedHarness(
+        placement,
+        deployed.data,
+        sandbox,
+        harness,
+        "maintainedLauncher",
+      );
       const workspaceAfter = await provider.getWorkspace(placement, AbortSignal.timeout(10_000));
       assert.ok(workspaceBefore);
       assert.ok(workspaceAfter);
@@ -819,27 +848,63 @@ test(
         "Agent deployment must reuse the Workspace created by Namespace reconciliation",
       );
       assert.deepEqual(workspaceAfter.labels, workspaceBefore.labels);
+      const gatewayPods = (await fixture.resources("pods", placement)).filter(
+        (pod: { metadata: { labels?: Record<string, string> } }) =>
+          pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
+          pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+      );
+      assert.equal(gatewayPods.length, 1);
+      assert.equal(gatewayPods[0].metadata.labels["openclaw.dev/namespace"], namespaceId);
+      assert.equal(gatewayPods[0].metadata.labels["openclaw.dev/revision"], deployed.data.id);
+      const gatewayContainer = gatewayPods[0].spec.containers.find(
+        (container: { name: string }) => container.name === "gateway",
+      );
+      const workspaceNodeId = gatewayContainer.env.find(
+        (entry: { name: string; value?: string }) => entry.name === "OPENCLAW_WORKSPACE_NODE_ID",
+      )?.value;
+      assert.equal(typeof workspaceNodeId, "string");
+      assert.ok(workspaceNodeId.length > 0);
       const { GatewayClient } = await import(require.resolve("@openclaw/gateway-client"));
       const hello = Promise.withResolvers();
       const client = new GatewayClient({
         url: `wss://${workspaceGateway.routing.hostname}:${gatewayEndpointPort}${path}`,
-        origin: "http://127.0.0.1",
         edgeAuthHeaders: { "x-api-key": workspaceGateway.apiKey },
-        clientName: "openclaw-control-ui",
-        mode: "ui",
+        clientName: "gateway-client",
+        mode: "backend",
         role: "operator",
         scopes: [],
         deviceIdentity: null,
         onHelloOk: hello.resolve,
-        onConnectError: hello.reject,
+        onConnectError: (error: { code?: string; details?: { httpStatus?: number } }) => {
+          // The real client retries startup admission; authentication refusals still fail immediately.
+          if (error.code === "UNAVAILABLE" && error.details?.httpStatus === 503) {
+            return;
+          }
+          hello.reject(error);
+        },
       });
       const timeout = setTimeout(
         () => hello.reject(new Error("Agent gateway connection timed out")),
-        30_000,
+        120_000,
       );
       try {
         client.start();
         await hello.promise;
+        // Runtime Pod readiness precedes native node enrollment. Use the live Gateway contract
+        // to wait for this revision's exact paired node before exercising its remote workspace.
+        await fixture.waitFor(
+          "the revision's native workspace node connection",
+          async () => {
+            const { nodes } = await client.request("node.list", {});
+            return nodes.some(
+              (node: { nodeId: string; paired: boolean; connected: boolean }) =>
+                node.nodeId === workspaceNodeId && node.paired && node.connected,
+            )
+              ? true
+              : undefined;
+          },
+          120_000,
+        );
         const nonce = `namespace-proof-${randomUUID()}`;
         const sessionKey = `agent:main:${nonce}`;
         const sent = await client.request("chat.send", {
@@ -857,7 +922,20 @@ test(
             if (["pending", "timeout"].includes(outcome.status) && outcome.endedAt === undefined) {
               return undefined;
             }
-            assert.equal(outcome.status, "ok", "the real provider-backed Agent run must succeed");
+            assert.equal(
+              outcome.status,
+              "ok",
+              `the real provider-backed Agent run must succeed: ${redactedQaTail(
+                JSON.stringify(outcome),
+                {
+                  ...environment,
+                  AUTH_SECRET: authSecret,
+                  BOOTSTRAP_PASSWORD: credentials.password,
+                  GATEWAY_API_KEY: workspaceGateway.apiKey,
+                },
+                { lines: 4, lineChars: 2000 },
+              ).join("\n")}`,
+            );
             return true;
           },
           600_000,
@@ -877,6 +955,51 @@ test(
           ),
           "the real model must return the unique nonce",
         );
+      } catch (error) {
+        const pods = await fixture.resources("pods", placement);
+        const messages: string[] = [];
+        for (const pod of pods.filter(
+          (pod: { metadata: { labels?: Record<string, string> } }) =>
+            pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
+            pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+        )) {
+          const logs = String(
+            await fixture
+              .kubectl(
+                "logs",
+                pod.metadata.name,
+                "--namespace",
+                placement,
+                "--container",
+                "gateway",
+                "--tail=150",
+              )
+              .catch(() => "unavailable"),
+          );
+          messages.push(
+            ...logs
+              .split("\n")
+              .filter((line) =>
+                /unauthor|forbidden|denied|admission|origin|proxy|error|failed/iu.test(line),
+              )
+              .slice(-16),
+          );
+        }
+        // eslint-disable-next-line preserve-caught-error -- Raw gateway responses may contain credentials; retain only the redacted diagnostic.
+        throw new Error(
+          redactedQaTail(
+            `${error instanceof Error ? error.message : "Agent model turn failed"}\n${messages.join("\n")}`,
+            {
+              ...environment,
+              AUTH_SECRET: authSecret,
+              BOOTSTRAP_PASSWORD: credentials.password,
+              GATEWAY_API_KEY: workspaceGateway.apiKey,
+            },
+            { lines: 18, lineChars: 900 },
+          )
+            .join("\n")
+            .replace(/[A-Za-z0-9_+/.=-]{40,}/g, "[opaque]"),
+        );
       } finally {
         clearTimeout(timeout);
         await client.stopAndWait();
@@ -888,6 +1011,15 @@ test(
         async () => ((await request("GET", path)).status === 404 ? true : undefined),
         120_000,
       );
+      // Namespace deletion requires each independent resource owner to finish its cleanup.
+      for (const resource of [
+        `credential-sources/${source.data.id}`,
+        `secrets/${modelSecret.data.id}`,
+        `configurations/${agentConfiguration.data.id}`,
+      ]) {
+        const removed = await request("DELETE", `/namespaces/${namespaceId}/${resource}`);
+        assert.equal(removed.status, 204, JSON.stringify(removed.error));
+      }
       await provider.health(AbortSignal.timeout(10_000));
       assert.ok(await provider.getWorkspace(placement, AbortSignal.timeout(10_000)));
       testContext.diagnostic(
@@ -1096,7 +1228,7 @@ test(
       "label",
       "namespace",
       externalPlacement,
-      "pod-security.kubernetes.io/enforce=restricted",
+      "pod-security.kubernetes.io/enforce=baseline",
       "pod-security.kubernetes.io/audit=restricted",
       "pod-security.kubernetes.io/warn=restricted",
     );
@@ -1118,13 +1250,28 @@ test(
     });
     assert.equal(external.status, 201);
     await prepareNamespace(external.data.id, externalPlacement);
+    worker = startWorker(await loadDrivers());
     await worker.start();
-    // Missing operator NetworkPolicies refuse adoption before tenant markers are written.
-    await fixture.waitFor("external adoption fails before claiming infrastructure", async () =>
-      (await request("GET", `/namespaces/${external.data.id}`)).data.status === "failed"
+    // An incompatible operator Pod Security setting refuses adoption before ownership is claimed.
+    // Require the committed Compute refusal, so an undispatched queue item cannot satisfy this.
+    await fixture.waitFor("Compute refuses external adoption before claiming", async () => {
+      const evidence = (
+        await pool.query(
+          "select details from occ.audit_events where namespace_id = $1 and action = 'openclaw.namespaces.lifecycle.ensure'",
+          [external.data.id],
+        )
+      ).rows;
+      return evidence.some(({ details }) =>
+        details.participants?.some(
+          (participant: { registrationId: string; outcome: string }) =>
+            participant.registrationId === drivers.computeDriver.id &&
+            participant.outcome === "permanent",
+        ),
+      )
         ? true
-        : undefined,
-    );
+        : undefined;
+    });
+    assert.equal((await request("GET", `/namespaces/${external.data.id}`)).data.status, "failed");
     const unclaimed = await fixture.resource("namespace", externalPlacement);
     assert.equal(unclaimed.metadata.labels?.["openclaw.dev/namespace"], undefined);
     assert.equal(unclaimed.metadata.annotations?.["openclaw.dev/namespace-id"], undefined);

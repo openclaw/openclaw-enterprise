@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0034-namespace-driver-lifecycle.md
+rfc: ../rfcs/0035-namespace-driver-lifecycle.md
 ---
 
 # Implementation plan: Namespace Driver lifecycle
 
-- **ID:** RFC-0034
-- **Delivery status:** In progress
+- **ID:** RFC-0035
+- **Delivery status:** Implemented
 - **Owner:** kevinlin-openai
-- **Authority:** [Proposed Namespace lifecycle RFC](../rfcs/0034-namespace-driver-lifecycle.md)
+- **Authority:** [Proposed Namespace lifecycle RFC](../rfcs/0035-namespace-driver-lifecycle.md)
 - **Source baseline:** `ecb2973b13c1a338c7b9ddbc468fca6fa8e9a848`
 
 ## Outcome and scope
@@ -40,14 +40,14 @@ not establish acceptance.
 | Required outcome                               | Evidence and result                                                                                                                                                                                                       |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Default gateway and Workspace before any Agent | Passed: shipped bootstrap, PostgreSQL, queued worker, selected Drivers and real OpenShell; zero persisted Agents at the checkpoint.                                                                                       |
-| Later Namespace and regular Agent workflow     | Later Namespace readiness and distinct owned resources passed. Agent/model-turn coverage is added; its live run is pending.                                                                                               |
+| Later Namespace and regular Agent workflow     | Passed: distinct later Namespace resources, API-created Agents, real model replies, and API teardown in both Namespaces.                                                                                               |
 | Pending, refusal and worker resume             | Zero-replica pending state, real quota refusal, and graceful worker stop/restart passed. This does not prove active database-lease loss during a provider call.                                                           |
 | IAM denial and revocation                      | Denied API creation and revoked queued actor passed; no Namespace infrastructure was created for the denied work.                                                                                                         |
-| Deletion and ownership                         | Partial and fully ready Namespace deletion passed; another Namespace remained healthy. Live external-namespace cleanup through the new hook path remains unverified.                                                      |
+| Deletion and ownership                         | Passed: partial, unavailable-gateway, and ready Namespace cleanup; unclaimed external Namespace and operator sentinel retained; default gateway stayed healthy.                                                      |
 | Selection and contracts                        | 20 lifecycle conformance cases, 443 Kubernetes/SSH conformance cases, all six installed-registration cases, and five focused Sandbox startup cases passed with zero skips.                                                |
 | Kubernetes fixtures                            | The three required real-cluster files passed four tests with zero skips. They do not establish Agent model execution.                                                                                                     |
 | Repository checks                              | Typecheck, lint, workspace isolation, formatting, documentation links/length and flow structure passed. These are not runtime proof.                                                                                      |
-| Independent review                             | GitHub Codex review of `d136156233` reported two cleanup defects and missing Agent proof. Cleanup fixes are under verification; Agent proof remains pending. The earlier local reviewer failed before producing a report. |
+| Independent review                             | GitHub Codex review of `d136156233` reported two cleanup defects and missing Agent proof. Both cleanup regressions and the Agent proof now pass. The earlier local reviewer produced no report. |
 
 The live suite requires approved images and existing model credentials, enforcing
 NetworkPolicies, and administrator/migrator/application PostgreSQL roles. Missing
@@ -57,8 +57,8 @@ completion. Cleanup applies only to task-owned disposable resources.
 ## Delivery record
 
 [RFC PR #4956](https://github.com/openclaw/openclaw-enterprise/pull/4956) was
-submitted at `91b1a51eb` before contract changes. Implementation is in progress
-on the same assigned branch. The RFC remains Proposed.
+submitted at `91b1a51eb` before contract changes. Implementation is on the same assigned branch. The RFC remains Proposed; final
+CI, review-thread resolution, and merge status are recorded in that PR.
 
 The expanded `namespace-driver-openshell-k3d-real.test.ts` passed one real scenario
 with zero failures and zero skips on 2026-11-07. An additional 45 controller/API
@@ -74,7 +74,32 @@ topology for Agent/model-turn proof, with an explicit exception to the generic
 projected-identity and Agent-only model-credential constraints. The test uses that
 topology without changing its identity or credential contracts. The user also
 authorized merging after CI becomes green. No integration waiver or RFC acceptance
-is recorded; the new Agent proof and cleanup regressions still need live verification.
+is recorded.
+
+On 2026-11-10, the expanded real scenario passed through the registered QA entry
+point: **2 passed, 0 failed, 0 skipped**; its child integration passed **1/0/0**.
+Both bootstrap checkpoints, both real model turns, IAM revocation, quota refusal,
+unreachable gateway deletion, and unclaimed external-resource preservation passed.
+The test used a task-owned loopback k3d cluster, separately provisioned PostgreSQL
+roles, a real built runtime image, and existing authorized model credentials.
+
+This proof found a native Sandbox readiness defect: node enrollment could finish
+after the Gateway configuration snapshot was rendered. Compute now waits for the
+Gateway bound to that node and its rollout before reporting readiness. The new
+regression failed before the fix and passed afterward. Full Kubernetes Compute
+conformance passed **412/0/0**. Sandbox startup and Namespace conformance passed
+**179/0/0** with the real runtime image. QA input checks passed **92/0/0**. The
+PostgreSQL platform-state and stale-claim cases passed **19/0/0**. These checks do
+not establish active claim loss during an OpenShell RPC.
+
+Reproduce the live result with the prepared OpenShell lane file environment and
+the selectors documented on the testing page:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=OpenClaw OCC_TEST_QA_SCENARIOS=namespace-lifecycle \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
 
 Current behavior belongs to [Namespace lifecycle](../../docs/reference/drivers/namespace-lifecycle.md)
 and [namespace-owned gateways](../../docs/reference/drivers/openshell-sandbox/namespace-gateway.md).
@@ -84,6 +109,8 @@ owns the runnable Namespace checkpoint and its limits.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10: Renumbered to RFC-0035 after main assigned RFC-0034 to reusable model providers.
 
 - 2026-11-10: Renumbered to RFC-0034, the next contiguous ID on main; other open proposals also use 0034 and must be checked again before merge; added regression coverage for unavailable managed gateways and unclaimed external namespaces. Live verification is pending.
 

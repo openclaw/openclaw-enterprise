@@ -34,6 +34,11 @@ the Driver. Do not include another manifest for that Secret or put Agent/model
 credentials in gateway manifests. Configure the gateway to read its signing key
 from that Secret. Retries keep the existing owned key.
 
+In operator Workspace mode, configure the gateway to use the Sandbox ServiceAccount
+from the Namespace's Workspace manifests. Agent accounts do not exist during
+bootstrap, and the gateway chart's default account name can differ from that
+Workspace account.
+
 Deletion removes the owned Workspace before gateway resources and its signing key
 when the managed gateway is reachable. Without a ready gateway Pod, or after a
 recognized transport outage, cleanup removes the owned gateway resources directly.
