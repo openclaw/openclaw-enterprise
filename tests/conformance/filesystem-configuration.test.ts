@@ -3,13 +3,17 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import type {
+  Configuration,
+  OpenClawConfigurationDocument,
+} from "../../packages/contracts/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("Filesystem Configuration cleans its temporary file after a failed rename and can retry", async (t) => {
   const root = await temporaryDirectory(t, "occ-configuration-write-");
   const driver = new FilesystemConfigurationDriver(root);
-  const configuration = {
+  const configuration: Configuration = {
     id: `cfg_${randomUUID()}`,
     namespaceId: `ns_${randomUUID()}`,
     kind: "agent",
@@ -48,7 +52,7 @@ test("Filesystem Configuration shares the URL credential check work budget acros
   const root = await temporaryDirectory(t, "occ-configuration-url-check-");
   const driver = new FilesystemConfigurationDriver(root);
   const namespaceId = `ns_${randomUUID()}`;
-  const configuration = (values) => ({
+  const configuration = (values: OpenClawConfigurationDocument): Configuration => ({
     id: `cfg_${randomUUID()}`,
     namespaceId,
     kind: "agent",
@@ -57,7 +61,7 @@ test("Filesystem Configuration shares the URL credential check work budget acros
     values,
   });
   // Each fallback requires another rendering; these short values exhaust the shared check only together.
-  const url = (fallbacks) => `x://h${"${A:-x}".repeat(fallbacks)}`;
+  const url = (fallbacks: number) => `x://h${"${A:-x}".repeat(fallbacks)}`;
   const proxy = url(300);
   const channels = {
     telegram: {
@@ -85,7 +89,7 @@ test("Filesystem Configuration shares the URL credential check work budget acros
 test("Filesystem Configuration replacement keeps its promised file mode under a restrictive umask", async (t) => {
   const root = await temporaryDirectory(t, "occ-configuration-update-mode-");
   const driver = new FilesystemConfigurationDriver(root);
-  const original = {
+  const original: Configuration = {
     id: `cfg_${randomUUID()}`,
     namespaceId: `ns_${randomUUID()}`,
     kind: "agent",
