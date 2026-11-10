@@ -19,6 +19,7 @@ import {
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
+  ModelProviderId,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -426,6 +427,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,

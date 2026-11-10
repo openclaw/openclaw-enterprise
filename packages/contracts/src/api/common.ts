@@ -61,6 +61,7 @@ export const RevisionHarnessSchema = Type.Object(
     id: Type.String({ minLength: 1 }),
     version: Type.String({ minLength: 1 }),
     mode: HarnessExecutionModeSchema,
+    modelProviderId: Type.Optional(ModelProviderId),
     overrides: HarnessSettings,
     configuration: HarnessSettings,
   },
@@ -799,6 +800,7 @@ export const CreateAgentBody = Type.Object(
     ),
     workspaceDefaultsId: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
     name: Name,
+    modelProviderId: Type.Optional(ModelProviderId),
     configurationId: ConfigurationId,
     nativeAdmin: Type.Optional(
       Type.Boolean({
@@ -842,6 +844,7 @@ export const ProvisionAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
+    modelProviderId: Type.Optional(ModelProviderId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
@@ -861,6 +864,7 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     name: Type.Optional(
       Type.String({
         minLength: 1,
@@ -932,6 +936,7 @@ export const UpdateAgentBody = Type.Object(
         ),
       ]),
     ),
+    modelProviderId: Type.Optional(Type.Union([ModelProviderId, Type.Null()])),
     configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
@@ -945,7 +950,7 @@ export const UpdateAgentBody = Type.Object(
   },
   {
     additionalProperties: false,
-    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }, { required: ["modelProviderId"] }],
   },
 );
 

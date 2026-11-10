@@ -1054,6 +1054,8 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Installation provider selected for future deployments. */
+  readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;
@@ -1134,6 +1136,8 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
+  /** Catalog identity at admission; execution uses the saved settings below. */
+  readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;
   /** Requested settings, normalized by the selected Compute Driver. */
   readonly overrides?: Readonly<Record<string, unknown>>;
