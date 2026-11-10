@@ -288,12 +288,13 @@ before replacing the controller images.
   reports a verified current-startup warning for an admitted selected plugin.
 - **Check `gateway-config` fails:** See
   [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
-- **Check `crash-loop` fails (`RUNTIME_STARTUP_FAILED`):** A live Pod's `gateway`
-  container, or a Deployment-run `agent` container, waits in `CrashLoopBackOff`
-  after 3 restarts, and its last exit status is not 75. The Gateway wrapper exits 75 when it
-  restarts its container on purpose and logs startup phase `container-restart`;
-  these restarts never count. Read the last exit and previous logs in
-  [runtime diagnostics](#current-runtime-diagnostics).
+- **`RUNTIME_STARTUP_FAILED` with a container in `CrashLoopBackOff`:** A live
+  Pod's `gateway` container, or a Deployment-run `agent` container, exited 3
+  times in a row without a deliberate restart (internal check `crash-loop`).
+  The Gateway wrapper exits 75 and logs startup phase `container-restart` when
+  it restarts its container on purpose; those restarts never count, and readiness
+  resets the count. `occ agent runtime` shows the restart count and last exit
+  code; `occ agent logs --previous` shows the crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

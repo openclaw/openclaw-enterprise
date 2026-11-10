@@ -157,13 +157,16 @@ state after admission.
   one, and never a value. Fix or remove those settings, then deploy again.
   A dedicated Gateway's tool policy step holds the same check before OpenClaw
   starts when no invalid setting belongs to the tool policy.
-- A `crash-loop` check with code `UNAVAILABLE` is one Kubernetes Compute builds
-  from Pod status, not a runtime hold
+- A `crash-loop` check with code `UNAVAILABLE` is a startup failure Kubernetes
+  Compute reads from Pod status, as it does `workspace-setup`; no runtime holds it
   (`apps/controller/src/drivers/compute/kubernetes/index.ts:safeCrashLoopObservation`):
-  the role's container waits in `CrashLoopBackOff` after 3 restarts and its last
-  exit status is not 75, the Gateway wrapper's deliberate restart
-  (`runtime-entrypoints.ts:stopContainer`). The deployment fails with
-  `RUNTIME_STARTUP_FAILED`; the runtime description keeps the exit code.
+  the role's container waits in `CrashLoopBackOff` after 3 consecutive
+  unexplained exits. The Gateway wrapper states that count in its termination
+  message (`runtime-entrypoints.ts:countUnexplainedExits`); readiness starts it
+  again at 1, and a deliberate restart (exit 75, `stopContainer`) clears it and
+  never counts. Without a count, and for a Harness, the restart count stands in.
+  The deployment fails with `RUNTIME_STARTUP_FAILED`; the record keeps no check,
+  but the runtime description shows the restart count and last exit code.
 - When a Codex startup check returns `model_not_found`, the worker saves that
   code. Codex can omit the code from its error event. In that case, the probe
   recognizes the provider’s HTTP 404 missing-model message for the requested model.
@@ -211,6 +214,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 23:30: Count only consecutive unexplained Gateway exits toward a crash loop, from the wrapper's termination message. (crashloop-fix-2, finding 3041)
 
 - 2026-11-10 12:00: Fail a Kubernetes runtime container in a crash loop as check `crash-loop`; deliberate Gateway restarts exit 75. (crashloop-fail-fast, finding 3041)
 

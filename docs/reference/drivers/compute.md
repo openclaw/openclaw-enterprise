@@ -191,7 +191,7 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
 The worker rejects another revision's readiness result. For a held startup
-failure, return validated `runtimeFailure` evidence:
+failure, return validated `runtimeFailure` evidence for this revision:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)

@@ -164,9 +164,10 @@ Deployment for that version reports a full Pod quota in `ReplicaFailure`,
 outstanding. Activation of a dedicated version reports
 `WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
 was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a held
-failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
-[crash loop](../drivers/kubernetes-compute.md#troubleshooting)) ends it, or the
+the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a
+startup failure ends it (a runtime's held failure, or one Kubernetes Compute
+reads from Pod status: `WORKSPACE_SETUP_REFUSED` or a
+[crash loop](../drivers/kubernetes-compute.md#troubleshooting)), or the
 convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
