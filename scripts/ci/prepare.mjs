@@ -601,9 +601,9 @@ function execFile(command, args, options = {}) {
   });
 }
 
-async function commandAvailable(command, args = ["--version"]) {
+async function commandAvailable(command, args = ["--version"], options) {
   try {
-    await execFile(command, args);
+    await execFile(command, args, options);
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(`Missing required command on PATH: ${command}`);
@@ -1097,13 +1097,18 @@ const imageBuildTestReserveMs =
     ? Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS)
     : 3 * 60_000;
 
-// What a lane image build may still take, or undefined outside a lane with a deadline.
-function imageBuildBudgetMs() {
+function imageBuildDeadlineMs() {
   const deadline = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
   if (!Number.isSafeInteger(deadline) || deadline <= 0) {
     return undefined;
   }
-  return deadline - imageBuildTestReserveMs - Date.now();
+  return deadline - imageBuildTestReserveMs;
+}
+
+// What a lane image build may still take, or undefined outside a lane with a deadline.
+function imageBuildBudgetMs() {
+  const deadline = imageBuildDeadlineMs();
+  return deadline === undefined ? undefined : deadline - Date.now();
 }
 
 // The lane cannot pass once its image build has used the time its tests need, so it stops
@@ -1375,11 +1380,17 @@ async function buildRuntimeImages(
       );
     }
   };
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
+  const importDeadlineMs =
+    runtimeArtifact && state.lane === "docker-model" ? imageBuildDeadlineMs() : undefined;
+  const importBudgetMs = importDeadlineMs === undefined ? undefined : importDeadlineMs - Date.now();
+  if (importBudgetMs !== undefined && importBudgetMs < 1_000) {
+    throw new Error("No time remains to import the runtime artifact before the test reserve.");
+  }
+  await commandAvailable(
+    process.env.OCC_DOCKER_BIN ?? "docker",
+    ["version", "--format", "{{.Server.Version}}"],
+    { timeoutMs: importBudgetMs },
+  );
   const env = {};
   const resources = [];
   const label =
@@ -1441,11 +1452,11 @@ async function buildRuntimeImages(
         : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
     };
     if (runtimeArtifact) {
-      assertRuntimeArtifactTagAvailable(tag);
+      assertRuntimeArtifactTagAvailable(tag, importDeadlineMs);
       const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
       resources.push(resource);
       await writeState(statePath, state);
-      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag });
+      const loaded = await loadRuntimeArtifact({ ...runtimeArtifact, tag }, importDeadlineMs);
       try {
         await markResourceReady(statePath, state, resource);
         Object.assign(env, runtimeEnv);
@@ -2535,7 +2546,8 @@ export async function prepareDevUpImage(
 // cache, which its serial event monitor fills from containerd ImageCreate events.
 // A reference that `ctr images tag` just created is in containerd's image store
 // (and `ctr images list`) before that event is handled, so CRI can briefly report
-// "no such image". Wait a bounded time for that one answer; any other failure is final.
+// "no such image" or an image whose pin label event has not arrived. Wait a bounded
+// time for those states; a mismatched digest or any other failure is final.
 const criImageCacheWaitMs = 5_000;
 
 // Each check or tag on a node after the import is one short exec. The timeout stops the
@@ -2548,8 +2560,9 @@ async function k3dNodeImageCheck(node, args, what) {
 async function inspectK3dCriImage(lane, node, reference, envName) {
   const deadline = performance.now() + criImageCacheWaitMs;
   for (let attempt = 1; ; attempt += 1) {
+    let result;
     try {
-      return await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
+      result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
     } catch (error) {
       const remainingMs = deadline - performance.now();
       if (!/\bno such image\b/i.test(error.stderr ?? "") || remainingMs <= 0) {
@@ -2560,7 +2573,28 @@ async function inspectK3dCriImage(lane, node, reference, envName) {
         `CRI on ${node} does not list the imported ${envName} reference yet (attempt ${attempt}); retrying.`,
       );
       await delay(Math.min(250 * attempt, 1_000, remainingMs));
+      continue;
     }
+    const { status } = JSON.parse(result.stdout);
+    if (
+      !Array.isArray(status?.repoDigests) ||
+      !status.repoDigests.every((digest) => typeof digest === "string") ||
+      !status.repoDigests.includes(reference)
+    ) {
+      throw new Error(`CRI on ${node} does not match the imported ${envName} digest.`);
+    }
+    if (status.pinned !== undefined && typeof status.pinned !== "boolean") {
+      throw new Error(`CRI on ${node} reported a malformed ${envName} image pin.`);
+    }
+    if (status.pinned === true) {
+      return;
+    }
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      throw new Error(`CRI on ${node} did not report the imported ${envName} image pinned.`);
+    }
+    progress(lane, `CRI on ${node} has not pinned the imported ${envName} image yet; retrying.`);
+    await delay(Math.min(250 * attempt, 1_000, remainingMs));
   }
 }
 
@@ -2571,9 +2605,12 @@ async function assertK3dImageReference(lane, cluster, reference, envName) {
       ["ctr", "-n", "k8s.io", "images", "list"],
       "containerd",
     );
-    const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
+    const found = listed.stdout.split(/\r?\n/).find((entry) => entry.split(/\s+/)[0] === reference);
     if (!found) {
       throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+    }
+    if (found.split(/\s+/)[2] !== `sha256:${immutableDigest(reference)}`) {
+      throw new Error(`containerd on ${node} does not match the imported ${envName} digest.`);
     }
     await inspectK3dCriImage(lane, node, reference, envName);
   }
@@ -2671,7 +2708,20 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
   const imports = cluster.nodes.map((node) =>
     execFile(
       containerEngine,
-      ["exec", "-i", node, "ctr", "-n", "k8s.io", "images", "import", "--all-platforms", "-"],
+      [
+        "exec",
+        "-i",
+        node,
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "import",
+        "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
+        "-",
+      ],
       { timeoutMs: 600_000, input: save.stdout },
     ).catch((error) => {
       // The first node failure is the cause; later ones may follow from it.
@@ -2779,9 +2829,17 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   const line = listed.stdout
     .split(/\r?\n/)
     .find((entry) => entry.split(/\s+/)[0] === importReference);
-  const digest = line?.match(/sha256:[a-f0-9]{64}/i)?.[0];
-  if (!digest) {
+  const [, mediaType, digest] = line?.split(/\s+/) ?? [];
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest ?? "")) {
     throw new Error(`Unable to find imported OCI manifest digest for ${importReference}.`);
+  }
+  if (
+    ![
+      "application/vnd.oci.image.manifest.v1+json",
+      "application/vnd.docker.distribution.manifest.v2+json",
+    ].includes(mediaType)
+  ) {
+    throw new Error(`Imported ${importReference} does not identify an image manifest.`);
   }
   // Workloads use the actual imported platform manifest, not a registry index digest.
   // The approved source image remains recorded and was verified before transport.
@@ -2790,6 +2848,21 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     await k3dNodeImageCheck(
       node,
       ["ctr", "-n", "k8s.io", "images", "tag", importReference, runtimeReference],
+      "containerd",
+    );
+    // The prepared cluster owns a fixed image set until cleanup. Keep its exact
+    // workload alias resident even while no Pod is using it between test cases.
+    await k3dNodeImageCheck(
+      node,
+      [
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "label",
+        runtimeReference,
+        "io.cri-containerd.pinned=pinned",
+      ],
       "containerd",
     );
   }
@@ -3070,13 +3143,16 @@ async function prepareLane({ lane, statePath, file }) {
   if (runtimeArtifact) {
     if (
       ![
+        "docker-model",
         "images-packaging",
         "images-runtime-startup",
         "images-runtime-startup-2",
         "images-runtime-startup-3",
       ].includes(name)
     ) {
-      throw new Error("Runtime artifacts are supported only by the ordinary image lanes.");
+      throw new Error(
+        "Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes.",
+      );
     }
     if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
       throw new Error("A runtime artifact cannot be combined with OCC_K3D_OPENCLAW_SOURCE.");
@@ -3437,7 +3513,8 @@ async function prepareLane({ lane, statePath, file }) {
     case "docker-model":
       Object.assign(
         env,
-        (await buildRuntimeImages(resolvedStatePath, state, { runtime: true })).env,
+        (await buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }))
+          .env,
       );
       await prepareLaneLogging(resolvedStatePath, state, env);
       break;

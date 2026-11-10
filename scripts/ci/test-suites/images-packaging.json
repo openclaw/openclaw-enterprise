@@ -31,7 +31,7 @@
     "tests/integration/repository-runtime-volume.test.mjs",
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
-    "tests/integration/container-publication-workflow.test.mjs",
+    "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.mjs",
     "tests/integration/ci-runtime-artifact.test.mjs"
   ],
@@ -40,7 +40,7 @@
       "path": "tests/integration/production-upgrade-signal-lock.test.ts"
     },
     {
-      "path": "tests/integration/container-publication-workflow.test.mjs",
+      "path": "tests/integration/container-publication-workflow.test.ts",
       "expectedTests": [
         "publication workflow requires explicit chart opt-in and a successful image job",
         "chart publication consumes the exact successful image receipt without archives",

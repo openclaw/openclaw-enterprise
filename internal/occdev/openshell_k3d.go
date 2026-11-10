@@ -332,7 +332,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
 		controllerImage, err = r.importDevelopmentController(ctx, state)
 		if err != nil {
-			return fmt.Errorf("import the development controller image: %w", err)
+			return startupError("controller-image-import", fmt.Errorf("import the development controller image: %w", err))
 		}
 		// The probe Pods run the controller image. The check creates its own
 		// Namespaces and policy and no routing resources, and its probes wait on
