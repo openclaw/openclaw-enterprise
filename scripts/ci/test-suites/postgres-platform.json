@@ -446,6 +446,7 @@
         "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
+        "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
         "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
         "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
         "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
