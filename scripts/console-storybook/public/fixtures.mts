@@ -85,13 +85,13 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     };
     rules?: Parameters<typeof createFixtureFetch>[0];
     signedOut?: boolean;
-    pendingGithubAttempt?: boolean;
+    pendingOidcAttempt?: boolean;
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
-    githubEnabled?: boolean;
+    oidcEnabled?: boolean;
     googleEnabled?: boolean;
     passwordRecoveryOnly?: boolean;
     namespaceDeleteDenied?: boolean;
@@ -198,9 +198,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
-  if (scenario.pendingGithubAttempt) {
-    // Simulates returning from a GitHub callback started in this tab.
-    sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
+  if (scenario.pendingOidcAttempt) {
+    // Simulates returning from an OIDC callback started in this tab.
+    sessionStorage.setItem("occ.console.oidcAttempt", "a".repeat(43));
   }
   // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
   // one whose tab had a session before it expired keeps it; a first visit has none.
@@ -424,22 +424,29 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
-        github: scenario.githubEnabled === true,
+        oidc: scenario.oidcEnabled === true,
+        ...(scenario.oidcEnabled
+          ? {
+              oidcSignIn: {
+                label: "single sign-on",
+                authorizationUrl: "https://idp.example.test/authorize",
+              },
+            }
+          : {}),
         google: scenario.googleEnabled === true,
         password: scenario.passwordRecoveryOnly !== true,
-        sessionBinding: scenario.githubEnabled === true || scenario.googleEnabled === true,
+        sessionBinding: scenario.oidcEnabled === true || scenario.googleEnabled === true,
       });
     }
     if (
-      (path === "/api/auth/providers/github/start" ||
-        path === "/api/auth/providers/google/start") &&
+      (path === "/api/auth/providers/oidc/start" || path === "/api/auth/providers/google/start") &&
       method === "POST"
     ) {
       // Keep the preview local; provider navigation needs real backend verification.
       return error(503);
     }
     if (
-      (path === "/api/auth/providers/github/result" ||
+      (path === "/api/auth/providers/oidc/result" ||
         path === "/api/auth/providers/google/result") &&
       method === "POST"
     ) {

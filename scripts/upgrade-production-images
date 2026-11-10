@@ -1268,8 +1268,9 @@ verify_agent_continuity() {
 }
 
 prepare_upgrade() {
+mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
-  mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
+  mkdir -m 700 "$evidence_dir/dispatch" "$evidence_dir/status"
 fi
 printf '%s\n' "$source_revision" >"$evidence_dir/source-revision"
 [[ -z "$controller_image" ]] || printf '%s\n' "$controller_image" >"$evidence_dir/controller-image"
@@ -1350,15 +1351,62 @@ installation_id=$(jq -er '.id' "$evidence_dir/installation.json")
 targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
-if [[ -n "$runtime_image" ]]; then
-  inventory="$evidence_dir/inventory/deployment-inventory.json"
-  "${occ_json[@]}" installation deployment-inventory >"$inventory"
-  jq -e --arg installationId "$installation_id" '.installationId == $installationId' \
-    "$inventory" >/dev/null || die "the deployment inventory belongs to another Installation."
+inventory="$evidence_dir/inventory/deployment-inventory.json"
+"${occ_json[@]}" installation deployment-inventory >"$inventory"
+# Validate the fields used below before filtering: absent state is not settled state.
+jq -es --arg installationId "$installation_id" '
+  def identifier: type == "string" and length > 0;
+  length == 1 and (.[0] |
+    .installationId == $installationId and
+    (.namespaces | type == "array" and all(.[];
+      (.id | identifier) and (.status | IN("provisioning", "ready", "failed", "deleting")) and
+      (.agents | type == "array" and all(.[];
+        (.id | identifier) and (.status | IN("active", "deleting")) and
+        (.desiredRuntimeState | IN("running", "stopped")) and
+        (.executionMode | IN("embedded", "dedicated")) and
+        (.deploymentInProgress | type == "boolean") and
+        ((has("activeRevisionId") | not) or (.activeRevisionId | identifier))
+      ))
+    )))
+' "$inventory" >/dev/null ||
+  die "the deployment inventory must be one complete JSON document belonging to this Installation."
 
-  if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$inventory" >/dev/null; then
-    die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
-  fi
+if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$inventory" >/dev/null; then
+  die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
+fi
+
+if [[ -z "$runtime_image" ]]; then
+  # This path does not replace Agent revisions. Read the exact active snapshot,
+  # not the current draft, before stopping the worker that will maintain it.
+  jq -c '.namespaces[] as $namespace | $namespace.agents[] |
+    select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
+    {namespaceId: $namespace.id, agentId: .id, revisionId: .activeRevisionId}' \
+    "$inventory" >"$evidence_dir/inventory/active-revisions.jsonl"
+  while IFS= read -r active; do
+    json_fields "$active" namespace_id=namespaceId agent_id=agentId revision_id=revisionId
+    snapshot="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id--$revision_id").json"
+    # Validate in memory; retain no native Configuration or credential references.
+    if "${occ_json[@]}" --namespace "$namespace_id" agent revision "$agent_id" "$revision_id" </dev/null |
+      jq -es --arg namespaceId "$namespace_id" --arg agentId "$agent_id" --arg revisionId "$revision_id" '
+        if length == 1 and (.[0] |
+          .namespaceId == $namespaceId and .agentId == $agentId and .id == $revisionId and
+          (.harness.overrides | type) == "object" and (.harness.configuration | type) == "object")
+        then {namespaceId: $namespaceId, agentId: $agentId, revisionId: $revisionId,
+          savedHarnessSettings: "readable"}
+        else empty end
+      ' >"$snapshot"; then
+      :
+    else
+      read_status=("${PIPESTATUS[@]}")
+      rm -f -- "$snapshot"
+      ((read_status[0] == 0)) ||
+        die "cannot read active revision $revision_id of Agent $agent_id; no OCC writer was stopped."
+      die "active revision $revision_id of Agent $agent_id has missing or unreadable saved Harness settings; this upgrade does not replace Agent revisions. Plan an authorized replacement or stop and settle the Agent before upgrading. No OCC writer was stopped."
+    fi
+  done <"$evidence_dir/inventory/active-revisions.jsonl"
+fi
+
+if [[ -n "$runtime_image" ]]; then
   # shellcheck disable=SC2016 # $namespace is a jq variable.
   unrevisioned_agents='.namespaces[] as $namespace | $namespace.agents[] |
     select(.status == "active" and .desiredRuntimeState == "running" and (.activeRevisionId == null))'

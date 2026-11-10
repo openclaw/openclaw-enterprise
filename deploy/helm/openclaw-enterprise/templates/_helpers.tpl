@@ -164,46 +164,26 @@ true
 {{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
-{{- $github := .Values.auth.github -}}
+{{- if hasKey .Values.auth "github" -}}{{- fail "auth.github was removed; use auth.oidc.enrollment. See docs/guides/deploy/oidc-upgrade.md" -}}{{- end -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
-{{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
 {{- $google := .Values.auth.google -}}
 {{- $oidc := .Values.auth.oidc -}}
-{{- $external := or (and $github $github.enabled) (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
-{{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- $external := or (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
+{{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
-{{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. Go's lower maps U+0130 (İ) to i, but JavaScript's toLowerCase maps it to i and U+0307, which the API then refuses, so the allowlists below map it that way first. */ -}}
 {{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
-{{- $githubLists := default dict $github -}}
 {{- $googleLists := default dict $google -}}
-{{- if not (or (kindIs "invalid" $githubLists.allowedOrgs) (kindIs "slice" $githubLists.allowedOrgs)) -}}{{- fail "auth.github.allowedOrgs must be a list of GitHub organization logins" -}}{{- end -}}
-{{- range $org := $githubLists.allowedOrgs -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $org) "") "i\u0307"))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
-{{- end -}}
-{{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
-{{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
-{{- end -}}
-{{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
-{{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $githubLists.autoEnrollGroupId) (kindIs "string" $githubLists.autoEnrollGroupId)) -}}
-{{- fail "auth.github.autoEnrollGroupId must be a Group ID string" -}}
-{{- end -}}
-{{- with $group := $githubLists.autoEnrollGroupId -}}
-{{- if or (not (kindIs "string" $group)) (not (regexReplaceAll $jsTrim (toString $group) "")) (not (default list $githubLists.allowedTeams)) (default list $githubLists.allowedOrgs) -}}
-{{- fail "auth.github.autoEnrollGroupId requires a valid Group ID, allowedTeams and no allowedOrgs" -}}
-{{- end -}}
-{{- end -}}
 {{- with $binding := .Values.preprovisionedNamespace -}}
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
 {{- end -}}
-{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.github.enabled $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
+{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
 {{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, egress or OpenShell Git authority, disposable password operator and no external login or native admin" -}}
 {{- end -}}
 {{- end -}}
@@ -215,19 +195,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
 {{- $nativeSessionMode := .Values.agentNativeAdmin.sessionMode -}}
 {{- if not (has $nativeSessionMode (list "shared-cookie" "host-only-exchange")) -}}{{- fail "agentNativeAdmin.sessionMode must be shared-cookie or host-only-exchange" -}}{{- end -}}
-{{- if and $github $github.enabled -}}
-{{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
-{{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientIdKey" "value" $github.clientIdKey) -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientSecretKey" "value" $github.clientSecretKey) -}}
-{{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
-{{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- if and .Values.agentNativeAdmin.enabled (ne (.Values.agentNativeAdmin.sessionMode) "host-only-exchange") -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false or explicit host-only-exchange; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $github.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.github.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
-{{- end -}}
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -242,6 +209,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
+{{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
 {{- range $key := list "caSecretName" "caSecretKey" -}}
 {{- if hasKey $oidcCa $key -}}{{- include "openclaw.requireString" (dict "label" (printf "auth.oidc.%s" $key) "value" (index $oidcCa $key)) -}}{{- end -}}
 {{- end -}}
@@ -328,7 +296,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $cookieDomain := include "openclaw.sharedCookieDomain" . -}}
 {{- if lt (len (splitList "." $cookieDomain)) 2 -}}{{- fail "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix" -}}{{- end -}}
 {{- if eq $nativeSessionMode "host-only-exchange" -}}
-{{- if or (not .Values.auth.github.enabled) .Values.auth.google.enabled .Values.auth.oidc.enabled -}}{{- fail "agentNativeAdmin host-only-exchange requires guarded GitHub sign-in without Google or OIDC" -}}{{- end -}}
+{{- if or (not .Values.auth.oidc.enabled) .Values.auth.google.enabled -}}{{- fail "agentNativeAdmin host-only-exchange requires guarded OIDC sign-in without Google" -}}{{- end -}}
 {{- if .Values.gatewayRouting.sandbox.enabled -}}{{- fail "agentNativeAdmin host-only-exchange does not support sandbox preview" -}}{{- end -}}
 {{- /* API startup validates the registrable site with the public suffix list. */ -}}
 {{- end -}}
@@ -748,7 +716,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
-{{- range $provider := list "github" "google" "oidc" -}}
+{{- range $provider := list "google" "oidc" -}}
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
 {{- end -}}
@@ -1015,12 +983,11 @@ limit every user.
 */}}
 {{- define "openclaw.trustedProxy.notice" -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
-{{- $github := default dict .Values.auth.github -}}
 {{- $google := default dict .Values.auth.google -}}
 {{- $oidc := default dict .Values.auth.oidc -}}
 {{- if not $proxy.preset -}}
-{{- if or $github.enabled $google.enabled $oidc.enabled -}}
-WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, failed
+{{- if or $google.enabled $oidc.enabled -}}
+WARNING: api.trustedProxy is not set. With Google or OIDC sign-in, failed
 password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as

@@ -6,8 +6,7 @@
   "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
   "fileConcurrency": 2,
   "parallelFiles": [
-    "tests/integration/postgres-github-outage.test.mjs",
-    "tests/integration/postgres-github-sign-in.test.mjs",
+    "tests/integration/postgres-oidc-outage.test.mjs",
     "tests/integration/native-admin-session-postgres.test.mjs",
     "tests/integration/postgres-google-sign-in.test.mjs",
     "tests/integration/postgres-external-session-provider.test.mjs",
@@ -17,20 +16,18 @@
     "tests/integration/postgres-auth-accounts.test.mjs",
     "tests/integration/postgres-password-recovery-only.test.mjs",
     "tests/integration/postgres-oidc-sign-in.test.mjs",
-    "tests/integration/postgres-github-tab-binding.test.mjs",
     "tests/integration/postgres-oidc-tab-binding.test.mjs",
-    "tests/integration/postgres-github-admin-attach.test.mjs",
+    "tests/integration/postgres-oidc-admin-attach.test.mjs",
     "tests/integration/postgres-password-default-activation.test.mjs",
     "tests/integration/postgres-password-default.test.mjs",
-    "tests/integration/postgres-github-admin-scope.test.mjs",
-    "tests/integration/postgres-github-org-allowlist.test.mjs",
-    "tests/integration/postgres-github-cookie-commit.test.mjs",
+    "tests/integration/postgres-oidc-admin-scope.test.mjs",
+    "tests/integration/postgres-oidc-cookie-commit.test.mjs",
     "tests/integration/postgres-sign-in-result-processes.test.ts",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
-    "tests/integration/postgres-github-session-cookie.test.mjs",
+    "tests/integration/postgres-human-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
     "tests/integration/postgres-auth-binding.test.mjs",
-    "tests/integration/postgres-github-team-enrollment.test.ts",
+    "tests/integration/postgres-oidc-enrollment.test.ts",
     "tests/integration/postgres-native-host-only-browser.test.ts"
   ],
   "files": [
@@ -56,13 +53,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-github-sign-in.test.mjs",
-      "expectedTests": [
-        "PostgreSQL GitHub sign-in preserves an existing account through the ordinary Console"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-github-cookie-commit.test.mjs",
+      "path": "tests/integration/postgres-oidc-cookie-commit.test.mjs",
       "expectedTests": [
         "opted-in HTTP login and logout preserve cookies until real State commit acknowledgement"
       ]
@@ -72,32 +63,20 @@
       "expectedTests": ["sign-in results retain one-use ownership across real API processes"]
     },
     {
-      "path": "tests/integration/postgres-github-session-cookie.test.mjs",
+      "path": "tests/integration/postgres-human-session-cookie.test.mjs",
       "expectedTests": [
         "guarded production sessions share the browser cookie with trusted Agent hosts"
       ]
     },
     {
-      "path": "tests/integration/postgres-github-outage.test.mjs",
+      "path": "tests/integration/postgres-oidc-outage.test.mjs",
       "expectedTests": [
-        "a GitHub outage fails GitHub sign-in closed while password sign-in keeps working"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-github-org-allowlist.test.mjs",
-      "expectedTests": [
-        "a GitHub org and team allowlist refuses non-members before the account lookup and fails closed when GitHub cannot answer"
+        "a OIDC outage fails OIDC sign-in closed while password sign-in keeps working"
       ]
     },
     {
       "path": "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
       "expectedTests": ["unmatched external sign-in callbacks are counted, not audited"]
-    },
-    {
-      "path": "tests/integration/postgres-github-tab-binding.test.mjs",
-      "expectedTests": [
-        "a GitHub tab keeps its own session: another tab's password sign-in signs it out"
-      ]
     },
     {
       "path": "tests/integration/postgres-oidc-tab-binding.test.mjs",
@@ -134,23 +113,23 @@
     {
       "path": "tests/integration/postgres-password-default.test.mjs",
       "expectedTests": [
-        "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes"
+        "a password-only install onboards, signs in and out, and refuses external sign-in"
       ]
     },
     {
       "path": "tests/integration/postgres-password-default-activation.test.mjs",
       "expectedTests": [
-        "password accounts from before GitHub activation keep signing in, and creation continues after it"
+        "password accounts from before OIDC activation keep signing in, and creation continues after it"
       ]
     },
     {
-      "path": "tests/integration/postgres-github-admin-attach.test.mjs",
+      "path": "tests/integration/postgres-oidc-admin-attach.test.mjs",
       "expectedTests": [
-        "Installation administrators attach, detach and re-attach GitHub identities and disable accounts"
+        "Installation administrators attach, detach and re-attach OIDC identities and disable accounts"
       ]
     },
     {
-      "path": "tests/integration/postgres-github-admin-scope.test.mjs",
+      "path": "tests/integration/postgres-oidc-admin-scope.test.mjs",
       "expectedTests": [
         "an exact-scope Installation administrator cannot manage an account with broader grants"
       ]
@@ -190,9 +169,9 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-github-team-enrollment.test.ts",
+      "path": "tests/integration/postgres-oidc-enrollment.test.ts",
       "expectedTests": [
-        "GitHub team enrollment creates one account with configured Group access and refuses unsafe enrollment"
+        "OIDC enrollment creates scoped accounts and preserves explicit identity links"
       ]
     },
     {

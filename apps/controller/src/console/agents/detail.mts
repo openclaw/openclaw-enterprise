@@ -3938,7 +3938,7 @@ export async function renderAgentDetail(
           ? `Requested destination: ${providerUrl.value}`
           : "Enter a provider URL in Harness destination.";
       }
-      const retained = retainedHarnessRevision?.harness.overrides.modelProvider;
+      const retained = retainedHarnessRevision?.harness.overrides?.modelProvider;
       return harnessChoice.value === "retain" &&
         typeof retained === "object" &&
         retained !== null &&

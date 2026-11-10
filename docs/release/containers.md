@@ -128,14 +128,19 @@ especially for public source.
 
 ### Retain native export evidence
 
-Before using the exports, require a successful terminal workflow with all four
-`Prepare <controller|runtime> (<amd64|arm64>)` jobs successful, including their
-exact-export smoke and upload steps. Runtime jobs must also finish cleanup
-successfully. One successful platform does not establish that the full native
-matrix passed.
+Before using exports, require a successful terminal workflow with all four
+`Prepare <controller|runtime> (<amd64|arm64>)` jobs and both
+`Smoke runtime (<amd64|arm64>)` jobs successful. Controller preparation includes
+smoke and qualified upload. Runtime preparation supplies build digests; its
+separate smoke jobs verify the handoff, run startup tests, clean up and upload
+qualified artifacts. All four image/architecture outcomes are required.
+
+After smoke failure, rerun the whole native workflow. A smoke-only retry cannot
+consume the previous attempt's build artifact.
 
 Download the selected artifacts before their **one-day retention** expires.
 Their names are `platform-<controller|runtime>-<amd64|arm64>-<run-id>-<attempt>`.
+The intermediate `built-runtime-*` artifacts are unqualified.
 Keep the original download and artifact metadata, including its ID and SHA-256
 digest, together with the run, attempt, source SHA and successful job records.
 Compare the downloaded ZIP's checksum with the artifact metadata; this checksum
@@ -160,7 +165,7 @@ For a manual **CI** run that requests native images, use that CI run’s own ID
 and attempt. For **Enterprise Containers**, use the validated source CI run ID
 and attempt. The command checks `platform.json` and the reachable OCI
 bytes offline and prints the platform, build root, manifest and config digests.
-Preserve these identities through transport. ZIP verification and the four-job
+Preserve these identities through transport. ZIP verification and the six-job
 success check above are separate requirements. Registry and deployment checks
 use their own evidence. For local use, follow the
 [populated controller return rehearsal](../testing/populated-controller-return.md#prepare-the-cluster-and-images).
@@ -180,7 +185,8 @@ use their own evidence. For local use, follow the
    periods, and hyphens; it must start with a letter, digit, or underscore.
    Tags beginning with `sha-` or `bootstrap-` are reserved, case-insensitively.
    The selected alias is mutable and an existing tag can be replaced.
-   Each native Linux runner builds and loads its own platform's OCI export.
+   Each platform builds natively; runtime smoke loads that export on a fresh
+   native runner, while controller smoke remains with its build.
    Preparation verifies the loaded config against the export using Docker's image
    ID on the legacy store or the verified config digest on the containerd store,
    where the image ID identifies a manifest or index. After both platforms pass
@@ -250,11 +256,15 @@ on `main` with:
 
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
-  Containers** run. Validation, all four native preparation jobs, and both
-  image assembly jobs must succeed. For older runs that assembled each image
+  Containers** run. Validation, all four native preparation jobs, both runtime
+  smoke jobs, and both image assembly jobs must succeed. For older runs that assembled each image
   in its preparation job, validation and both image jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
+
+Native preparations that ran smoke inside `Prepare` jobs are unsupported by the
+current recovery gate. They require fresh full qualification, which does not
+reconstruct their original bytes.
 
 Review the original digests and current public package settings before dispatch.
 Recovery validates artifact IDs and downloads the exact

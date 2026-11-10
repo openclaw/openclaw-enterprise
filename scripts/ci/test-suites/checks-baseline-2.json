@@ -78,6 +78,7 @@
     "tests/integration/oidc-login-transport.test.mjs",
     "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
     "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
@@ -247,6 +248,9 @@
     },
     {
       "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
       "path": "tests/integration/runtime-image-failure-output.test.mjs"

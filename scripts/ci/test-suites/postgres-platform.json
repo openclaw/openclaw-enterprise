@@ -11,7 +11,7 @@
     "tests/integration/postgres-agent-provisioning.test.mjs",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
-    "tests/integration/postgres-github-recovery-replacement.test.mjs",
+    "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
     "tests/integration/postgres-production-wireup.test.mjs",
     "tests/integration/compute-singleton-worker-postgres.test.mjs",
     "tests/integration/postgres-backend-ownership.test.mjs",
@@ -151,6 +151,7 @@
       "expectedTests": [
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
         "an administrator registers OAuth clients against a pinned template and its availability",
+        "OAuth client secret mutations refuse an enclosing controller transaction",
         "OAuth client rotation updates its stable private reference across an unknown commit",
         "the worker removes an unpublished OAuth client after interrupted creation",
         "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
@@ -324,7 +325,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-github-recovery-replacement.test.mjs",
+      "path": "tests/integration/postgres-oidc-recovery-replacement.test.mjs",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
       ]

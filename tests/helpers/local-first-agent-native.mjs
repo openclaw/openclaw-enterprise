@@ -1012,6 +1012,7 @@ export function nativeWorkerProofProgram({
   createSessionFile,
 }) {
   return [
+    'process.stderr.write("FIRST_AGENT_NATIVE_PROGRAM_ENTRY\\n");',
     'let operation="write-session-file";try{',
     ...(createSessionFile
       ? [
@@ -1124,10 +1125,61 @@ export function nativeWorkerHistoryEvidence({
   );
   const nestedExitCodes = [];
   const nestedFailures = [];
+  const execStage = {};
   let failureMarkerCount = 0;
   const envelopes = exec.map((message) => {
     try {
       const value = JSON.parse(text(message.content));
+      if (exec.length === 1) {
+        if (["completed", "failed", "waiting"].includes(value?.status)) {
+          execStage.historyExecOuterStatus = value.status;
+        }
+        if (value?.status === "failed") {
+          if (
+            [
+              "aborted",
+              "invalid_input",
+              "runtime_unavailable",
+              "timeout",
+              "output_limit_exceeded",
+              "snapshot_limit_exceeded",
+              "internal_error",
+            ].includes(value.code)
+          ) {
+            execStage.historyExecOuterCode = value.code;
+          }
+          if (["input", "guest", "bridge", "host"].includes(value.failurePhase)) {
+            execStage.historyExecOuterFailurePhase = value.failurePhase;
+          }
+          if (typeof value.bridgeDispatchStarted === "boolean") {
+            execStage.historyExecBridgeDispatchStarted = value.bridgeDispatchStarted;
+          }
+        }
+        const nested = value?.status === "completed" ? value.value : undefined;
+        if (typeof nested?.aggregated === "string") {
+          execStage.historyExecProofProgramEntryPresent = nested.aggregated
+            .split(/\r?\n/)
+            .includes("FIRST_AGENT_NATIVE_PROGRAM_ENTRY");
+          if (["completed", "failed"].includes(nested.status)) {
+            execStage.historyExecNestedStatus = nested.status;
+          }
+          if (
+            nested.status === "failed" &&
+            [
+              "shell-command-not-found",
+              "shell-not-executable",
+              "overall-timeout",
+              "no-output-timeout",
+              "memory-limit",
+              "signal",
+              "aborted",
+              "runtime-error",
+            ].includes(nested.failureKind)
+          ) {
+            execStage.historyExecNestedFailureKind = nested.failureKind;
+          }
+        }
+      }
       if (
         typeof value?.value?.aggregated === "string" &&
         Number.isSafeInteger(value.value.exitCode)
@@ -1185,6 +1237,7 @@ export function nativeWorkerHistoryEvidence({
     messages,
     output: tool ? execOutput(tool.content) : undefined,
     observation: {
+      ...execStage,
       historyMessageCount: history.length,
       historyRunMessageCount: messages.length,
       historyExecCount: exec.length,

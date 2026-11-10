@@ -56,6 +56,7 @@ type AgentDetailScenario = {
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
   revisionPageSize?: number;
@@ -324,6 +325,35 @@ export function createAgentDetailScenarios({
           "Find Open draft once, in the page header. The version picker names the draft as New version, Editable Configuration.",
         ],
         gap: "Simulated UI proof only; this preview does not run a deployment.",
+      },
+      retainedHarnessHistory: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness history",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        unrecordedHarnessRevision: 1,
+        description:
+          "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
+        steps: [
+          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+        ],
+        gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
+      },
+      retainedHarnessWithoutOverrides: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness without overrides",
+        path: revision,
+        deployed: true,
+        unrecordedHarnessRevision: 1,
+        description:
+          "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
+        steps: [
+          "Open draft, then Harness destination. Confirm Use Installation default is selected and Override model provider is the only other choice; no Retain option is offered.",
+          "Choose Override model provider, then return to Use Installation default without deploying. The destination summary follows the selected choice.",
+        ],
+        gap: "Simulated UI proof only; the draft is readable independently of the retained snapshot. No deployment is submitted.",
       },
       newVersion: {
         group: "Pages/Agent detail",
