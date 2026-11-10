@@ -73,6 +73,24 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.mjs
+      - name: Prepare full admission marker
+        id: prepare-admission-marker
+        if: steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
+        continue-on-error: true
+        run: printf '1\n' > "$RUNNER_TEMP/full-integration-admitted"
+      - name: Upload full admission marker
+        id: admission-marker
+        if: steps.prepare-admission-marker.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-integration-admitted-v1
+          path: ${{ runner.temp }}/full-integration-admitted
+          if-no-files-found: error
+          retention-days: 1
+      - name: Confirm full admission marker
+        if: steps.admission-marker.outcome == 'success'
+        run: echo 'Recorded full admission.'
 
   ci-reuse:
     name: Reuse successful same-SHA CI
@@ -687,8 +705,25 @@ jobs:
         if: needs.preflight.outputs.run_all != 'true'
         run: node scripts/ci/run-tests.mjs aggregate "${{ needs.preflight.outputs.selected_lane || inputs.lane }}" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
+        id: aggregate-full
         if: needs.preflight.outputs.run_all == 'true'
-        run: node scripts/ci/run-tests.mjs aggregate full --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+        run: >-
+          node scripts/ci/run-tests.mjs aggregate full
+          --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+          --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
+      - name: Upload full coverage marker
+        id: coverage-marker
+        if: ${{ !cancelled() && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-integration-exercised-v1-${{ github.sha }}
+          path: ${{ runner.temp }}/full-integration-exercised
+          if-no-files-found: error
+          retention-days: 7
+      - name: Confirm full coverage marker
+        if: ${{ !cancelled() && steps.coverage-marker.outcome == 'success' }}
+        run: echo 'Recorded complete full-suite coverage.'
 
   qa-matrix:
     name: Shipped Installation QA Matrix

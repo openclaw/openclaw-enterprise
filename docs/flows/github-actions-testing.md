@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2
+last_updated_session: authoring-run/b99ad0c3-5ba1-40a6-8719-e0216a7c49a8
 ---
 
 # GitHub Actions testing flow
@@ -163,12 +163,10 @@ both commits.
 The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
 
 `scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
-kind, stage and outcome fields; `run-tests.mjs:runNode` logs them with lane/file
-labels. Installation records add invocation ordinals and millisecond offsets,
-retained in [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof)
-without live logging. Readers bound partial records; the parent enforces its
-byte budget first. Markers and separators stay out of failure tails. Timing and
-case accounting remain separate.
+categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
+and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof),
+not live logs. Readers bound partial records; parent byte limits apply first.
+Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -235,9 +233,13 @@ Windows bounds streams and terminates only the direct child.
 Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
 60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`scripts/ci/impact-gate.mjs:main` and Full Integration report matrix failures by job.
-`scripts/ci/run-tests.mjs:aggregateGroup` attributes lane outcomes only to matching lane/SHA
-receipts, even when the parent fails. Reused lanes have independent successful job entries; fresh lanes retain their matrix parent. Passing requires successful jobs, one owner per lane, test evidence and cleanup. Docs mode skips aggregation. Full Integration checks its lane or `full` group; `ssh-host` requires a [disposable host](../testing/ssh.md#ssh-raw-hosts).
+`scripts/ci/run-tests.mjs:aggregateGroup` checks SHA, ownership, jobs and execution.
+Reused lanes retain separate owners; fresh lanes retain matrix parents.
+`scripts/ci/cleanup.ts:main` records final cleanup; missing state cannot clear failure.
+Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
+requires every lane's required cleanup to pass. Later delivery failures
+keep checks red; missing artifacts cannot qualify.
+`ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
 awaits an approved resource ledger.
 
@@ -245,7 +247,7 @@ awaits an approved resource ledger.
 
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
-- Reproduce the sanitized result's failing file, name and location with approved prerequisites. The named aggregate bounds coverage.
+- Reproduce the reported case with approved prerequisites. The named aggregate bounds coverage.
 - After measured disk or network instability on local VM-backed Docker hosts, run Kubernetes lanes sequentially. GitHub Actions retains its configured matrix.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
@@ -263,7 +265,13 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-10 16:26: Reconcile installation receipts and cleanup coverage. (authoring-run/b99ad0c3-5ba1-40a6-8719-e0216a7c49a8 - 9641a352044b81f1f00afc40870ba54cccdefa75)
+
+- 2026-11-10 16:05: Preserve cleanup failures across missing-state retries. (authoring-run/9259c9bd-8e96-4172-ba73-d945dedd0c0e - ef14f2ab13e47d703fd4bddac3c1862de65b0092)
+
 - 2026-11-10 16:02: Document installation receipt retention. (authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2 - 242eed4481d16c13227383acd8b58c4d8757ae1f)
+
+- 2026-11-10 15:47: Require final lane cleanup evidence for execution coverage. (authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905 - 60dba17cf36b796aee257e61499803b5dacc5a8c)
 
 - 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
 

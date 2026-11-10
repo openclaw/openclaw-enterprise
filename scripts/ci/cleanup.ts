@@ -767,11 +767,11 @@ async function cleanupResourceIds(
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
   if (!(await stateExists(path))) {
-    return;
+    return false;
   }
   const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
   // A test may prepare and clean databases from its own process beside the runner.
-  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds, dropped), {
+  return withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds, dropped), {
     timeoutMs: lockTimeoutMs,
   });
 }
@@ -834,7 +834,7 @@ async function cleanupLockedResourceIds(
   dropped: Map<unknown, DropResult> = new Map(),
 ) {
   if (!(await stateExists(path))) {
-    return;
+    return false;
   }
   const state = await readState(path);
   const selected = new Set(
@@ -872,10 +872,39 @@ async function cleanupLockedResourceIds(
   if (state.resources.length === 0) {
     await rm(path, { force: true });
   }
+  return true;
 }
 
 async function cleanupState(statePath: string) {
-  await cleanupResourceIds(statePath);
+  return cleanupResourceIds(statePath);
+}
+
+// Final job cleanup runs after the runner wrote its file-level evidence.
+async function recordLaneCleanup(
+  path: string,
+  status: "passed" | "failed",
+  processedState = false,
+) {
+  if (!(await stateExists(path))) {
+    return; // Setup may have failed before a lane result existed.
+  }
+  const result: unknown = JSON.parse(await readFile(path, "utf8"));
+  if (!isRecord(result) || result.version !== 1 || result.command !== "run") {
+    throw new Error("Cannot record cleanup on an invalid lane result.");
+  }
+  if (
+    status === "passed" &&
+    !processedState &&
+    isRecord(result.cleanup) &&
+    result.cleanup.status === "failed"
+  ) {
+    throw new Error("Cannot verify failed cleanup without resource state.");
+  }
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify({ ...result, cleanup: { status } }, null, 2), {
+    mode: 0o600,
+  });
+  await rename(temporary, path);
 }
 
 export async function main() {
@@ -883,7 +912,18 @@ export async function main() {
   if (!args.state) {
     throw new Error("--state is required.");
   }
-  await cleanupState(args.state);
+  let processedState: boolean;
+  try {
+    processedState = await cleanupState(args.state);
+  } catch (error) {
+    if (args.results) {
+      await recordLaneCleanup(args.results, "failed");
+    }
+    throw error;
+  }
+  if (args.results) {
+    await recordLaneCleanup(args.results, "passed", processedState);
+  }
 }
 
 export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
