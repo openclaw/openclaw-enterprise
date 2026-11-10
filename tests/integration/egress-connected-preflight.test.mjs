@@ -164,6 +164,7 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
     openShellGatewaySelector: "app=gateway",
     runtimeClass: "openshell",
     oceCommit: "a".repeat(40),
+    harnessCommit: "d".repeat(40),
     supplierCommit: "b".repeat(40),
     images: Object.fromEntries(
       ["agent", "controller", "gateway", "openShellGateway", "sandbox", "supervisor"].map(
@@ -235,10 +236,21 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
     ...input,
     credentialConnector: undefined,
     authorityProfile: "fresh-whole-execution",
+    provider: { ...input.provider, origin: "https://provider.test/v1", bindPort: 443 },
   };
   const wholeExecution = (input) =>
-    validateConnectedInputs(input, controller, { wholeExecution: true });
+    validateConnectedInputs(input, selection(input), { wholeExecution: true });
+  // The supplier terminal exchange requires HTTPS 443; a valid-looking high
+  // port previously passed preflight and failed only at the real model probe.
   assert.equal(wholeExecution(fresh), fresh);
+  assert.throws(() => wholeExecution({ ...fresh, provider: input.provider }), {
+    code: "ERR_ASSERTION",
+  });
+  for (const harnessCommit of [undefined, "short-sha"]) {
+    assert.throws(() => wholeExecution({ ...fresh, harnessCommit }), {
+      code: "ERR_ASSERTION",
+    });
+  }
   assert.throws(
     () => validate(fresh),
     { code: "ERR_ASSERTION" },

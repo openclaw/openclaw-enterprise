@@ -70,8 +70,8 @@ test(
       });
       assert.equal(
         execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        setup.input.oceCommit,
-        "run this qualification from the selected candidate checkout",
+        setup.input.harnessCommit,
+        "run this qualification from the selected harness checkout",
       );
       const upgrade = setup.input.controllerUpgrade;
       if (upgrade) {
@@ -87,6 +87,12 @@ test(
           "--is-ancestor",
           upgrade.fromCommit,
           setup.input.oceCommit,
+        ]);
+        execFileSync("git", [
+          "merge-base",
+          "--is-ancestor",
+          setup.input.oceCommit,
+          setup.input.harnessCommit,
         ]);
       }
       const evidence = await createRunEvidence(t, setup, progress);

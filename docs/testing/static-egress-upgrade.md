@@ -22,6 +22,8 @@ and prepare its exact command before starting the test. The lane observes an
 operator-performed upgrade; it does not execute scripts named in input files.
 
 In the private connected input, `oceCommit` and `images.controller` identify B.
+`harnessCommit` identifies the exact test checkout, which must contain B. A reviewed
+test-only successor can run the proof without relabeling B's image or build receipt.
 Add:
 
 ```json
@@ -37,7 +39,7 @@ Add:
 Use distinct immutable images and full commits. The timeout is an integer from
 60,000 to 900,000 milliseconds. This option requires
 `authorityProfile: "fresh-whole-execution"`. Other inputs retain the connected
-lane's contract. Run its normal command from the clean B checkout; no additional
+lane's contract. Run its normal command from the clean `harnessCommit` checkout; no additional
 test selector is needed. Its initial controller observation selects A.
 
 ## Replace the controllers at the checkpoint

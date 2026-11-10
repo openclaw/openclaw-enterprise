@@ -266,14 +266,15 @@ The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing
 | `apiOrigin`                                                                                          | The controller's literal `127.0.0.1` origin with an explicit port above 1024.                                                                                                                                                                |
 | `kubeconfigPath`, `kubernetesContext`, `runtimeClass`                                                | Explicit kubeconfig, disposable `k3d-*` context and approved OpenShell RuntimeClass.                                                                                                                                                         |
 | `controllerNamespace`, `controllerSelector`, `openShellGatewayNamespace`, `openShellGatewaySelector` | Exact namespaces and selectors for the prepared controller (both API and worker) and supplier gateway Pods.                                                                                                                                  |
-| `oceCommit`, `supplierCommit`                                                                        | Accepted 40-character source commits. These are recorded provenance; Pod image references do not establish build-source equivalence.                                                                                                         |
+| `oceCommit`, `harnessCommit`, `supplierCommit`                                                       | Full product, test-checkout and supplier commits. Retain independent image build receipts.                                                                                                                                                   |
 | `images`                                                                                             | Digest-pinned references under `agent`, `controller`, `gateway`, `openShellGateway`, `sandbox`, and `supervisor`, imported and registered in k3s. Use the exact references rendered in Pod specs.                                            |
 | `openShellBackend`                                                                                   | HTTPS `endpoint`, absolute `rootCertificatePath`, and exactly `auth: { mode: "bearerTokenFile", path: "…" }` or `auth: { mode: "mtls", certificatePath: "…", privateKeyPath: "…" }`. All auth paths must be absolute; no insecure transport. |
-| `provider`                                                                                           | Fixture-only HTTPS `.test` or exact `host.openshell.internal` `origin` ending `/v1`, explicit reachable IP `bindHost`, matching high `bindPort`, and absolute `certificatePath`/`privateKeyPath`.                                            |
+| `provider`                                                                                           | Fixture-only HTTPS `.test` or exact `host.openshell.internal` `origin` ending `/v1`, explicit reachable IP `bindHost`, matching `bindPort: 443`, and absolute `certificatePath`/`privateKeyPath`.                                            |
 
-Before listening, prepare the provider certificate, supervisor DNS, routing,
-trust and scoped egress. `host.openshell.internal` must resolve there and match the
-certificate SAN. mTLS requires Backend support.
+Prepare provider TLS, supervisor DNS, routing and scoped egress before listening.
+`host.openshell.internal` must resolve and match the certificate SAN. Authorize
+only the owned listener's port-443 bind; keep host-wide privilege settings unchanged.
+mTLS requires Backend support.
 
 Before admission, configure the Installation
 [model provider](../reference/drivers/kubernetes-compute/model-provider.md) with
@@ -291,10 +292,10 @@ parameters, which can override host or database. Keep both files and credentials
 
 Set `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
 This lane requires execution authority, all five supplier capabilities, and a
-loaded managed policy with the `/**` binary matcher on each model route. Run it
-from the candidate checkout named by `oceCommit`.
+loaded managed policy with the `/**` binary matcher on each model route. Run from
+`harnessCommit`; `oceCommit` identifies the product.
 
-The qualified OpenShell supplier requires Helm value
+The qualified supplier requires Helm value
 `gatewayConfig["openshell.gateway"].config_delivery_mode: push` (default: `poll`)
 for execution enrollment. Complete Gateway rollout before admission.
 This does not qualify stock images.

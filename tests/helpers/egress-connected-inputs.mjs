@@ -109,7 +109,7 @@ export function validateConnectedInputs(input, controller, { wholeExecution = fa
     assert.equal(pin.image, input.images.agent);
     assert.equal(pin.verification, "operator-verified-image-executable");
   }
-  for (const head of [input.oceCommit, input.supplierCommit]) {
+  for (const head of [input.oceCommit, input.harnessCommit, input.supplierCommit]) {
     assert.match(head ?? "", /^[a-f0-9]{40}$/);
   }
   if (input.controllerUpgrade !== undefined) {
@@ -161,9 +161,15 @@ export function validateConnectedInputs(input, controller, { wholeExecution = fa
   assert.ok(isIP(input.provider.bindHost), "explicit provider listener IP is required");
   assert.ok(
     Number.isSafeInteger(input.provider.bindPort) &&
-      input.provider.bindPort > 1024 &&
+      input.provider.bindPort > 0 &&
       input.provider.bindPort < 65536,
   );
+  if (wholeExecution) {
+    // The supplier terminal exchange only supports inspected HTTPS on 443.
+    assert.equal(input.provider.bindPort, 443, "execution authority requires HTTPS port 443");
+  } else {
+    assert.ok(input.provider.bindPort > 1024);
+  }
   assert.equal(Number(provider.port || 443), input.provider.bindPort);
   return input;
 }

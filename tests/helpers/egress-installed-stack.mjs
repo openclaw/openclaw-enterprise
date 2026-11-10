@@ -60,6 +60,7 @@ export async function createRunEvidence(t, setup, progress) {
     runId,
     startedAt: new Date().toISOString(),
     oceCommit: input.oceCommit,
+    harnessCommit: input.harnessCommit,
     supplierCommit: input.supplierCommit,
     images: input.images,
     ...(input.controllerUpgrade && { controllerUpgrade: input.controllerUpgrade }),

@@ -81,7 +81,7 @@ test(
       );
       assert.equal(
         execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        setup.input.oceCommit,
+        setup.input.harnessCommit,
       );
       const evidence = await createRunEvidence(t, setup, progress);
       const stack = await observePreparedStack(t, setup, evidence, progress);
