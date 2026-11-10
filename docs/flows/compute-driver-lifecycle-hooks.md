@@ -153,7 +153,7 @@ after the remaining resources. The worker settles deletion only from the resulti
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/utils.test.mjs tests/conformance/compute-lifecycle-hooks.test.mjs`
+- Run `node --test tests/conformance/utils.test.ts tests/conformance/compute-lifecycle-hooks.test.mjs`
   for shared immutable copies, callback capture, preparation/teardown ordering, opaque placeholders,
   cancellation, and rollback.
 - Run `node --test --test-name-pattern='Kubernetes lifecycle owners cannot be replaced|Kubernetes lifecycle hooks never run' tests/conformance/kubernetes-compute.test.mjs`

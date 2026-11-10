@@ -29,6 +29,13 @@
   },
   "include": [
     "**/*.test.ts",
+    "conformance/kubernetes-dedicated-deploy-fixture.ts",
+    "conformance/kubernetes-embedded-replacement-fixture.ts",
+    "conformance/kubernetes-runtime-log-fixture.ts",
+    "conformance/kubernetes-teardown-cases.ts",
+    "integration/occ-api-injected-fixture.ts",
+    "integration/postgres-agent-provisioning-fixture.ts",
+    "integration/postgres-agent-provisioning-transport-fixture.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
@@ -38,6 +45,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/bounded-teardown.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
     "helpers/node-test-summary.ts",
@@ -51,6 +59,8 @@
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
     "helpers/codex-preparation-caller.ts",
+    "helpers/codex-gateway-supervisor.ts",
+    "helpers/codex-runtime-helper-fixture.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",
@@ -61,7 +71,9 @@
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
     "helpers/protected-static-secret-read.ts",
-    "../scripts/observe-worker-terminations.ts"
+    "../scripts/observe-worker-terminations.ts",
+    "helpers/native-admin-postgres.ts",
+    "conformance/topology-launch-cases.ts"
   ],
   "references": [
     {

@@ -1,4 +1,8 @@
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  gatewayEndpointRewritesIpv4,
+  type CodexPermissionDenial,
+} from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -37,6 +41,9 @@ export class OpenShellServiceTransportError extends DependencyUnavailableError {
 }
 
 const MAX_SERVICE_RESPONSE_BYTES = 16 * 1024;
+// Managed requirements include full instructions and provider definitions. This
+// is OCE's defensive read limit, not a maximum imposed by the native protocol.
+const MAX_CODEX_REQUIREMENTS_BYTES = 1024 * 1024;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // The pinned OpenShell release serves provider-advertised service traffic on the
@@ -318,13 +325,70 @@ export async function serviceWebSocketHandshake(
   )) as boolean;
 }
 
-/** A fresh serving process must have hydrated its admitted PAT, not merely opened its port. */
-export async function serviceCodexPatStatus(
+interface CodexPermissionRefusal {
+  readonly state: "permission-refused";
+  readonly permissionDenials: readonly CodexPermissionDenial[];
+}
+
+type CodexPermissionReadiness = "starting" | "serving" | CodexPermissionRefusal;
+
+export type OpenShellCodexReadiness =
+  CodexPermissionReadiness | "unavailable" | "requirements-too-large";
+
+function codexPermissionReadiness(requirements: unknown): CodexPermissionReadiness {
+  if (requirements === null) {
+    return "serving";
+  }
+  const policy = asRecord(requirements);
+  if (policy === undefined) {
+    return "starting";
+  }
+  const modes = policy.allowedSandboxModes;
+  const profiles = asRecord(policy.allowedPermissionProfiles);
+  const reviewers = policy.allowedApprovalsReviewers;
+  if (
+    (modes != null &&
+      (!Array.isArray(modes) ||
+        modes.some(
+          (mode) =>
+            mode !== "read-only" && mode !== "workspace-write" && mode !== "danger-full-access",
+        ))) ||
+    (policy.allowedPermissionProfiles != null &&
+      (profiles === undefined ||
+        Object.values(profiles).some((value) => typeof value !== "boolean"))) ||
+    (reviewers != null &&
+      (!Array.isArray(reviewers) ||
+        reviewers.some(
+          (reviewer) =>
+            reviewer !== "user" && reviewer !== "auto_review" && reviewer !== "guardian_subagent",
+        )))
+  ) {
+    return "starting";
+  }
+  // The named profile and the effective sandbox mode have separate requirements.
+  const permissionDenials: CodexPermissionDenial[] = [];
+  if (Array.isArray(modes) && !modes.includes("danger-full-access")) {
+    permissionDenials.push("sandbox-mode-denied");
+  }
+  if (profiles !== undefined && profiles[":danger-full-access"] !== true) {
+    permissionDenials.push("named-profile-denied");
+  }
+  if (Array.isArray(reviewers) && !reviewers.includes("user")) {
+    permissionDenials.push("reviewer-denied");
+  }
+  return permissionDenials.length === 0
+    ? "serving"
+    : { state: "permission-refused", permissionDenials };
+}
+
+/** Check the serving process's policy and, for provider-managed PATs, its current authentication. */
+export async function serviceCodexReadinessStatus(
   options: ServiceTransportOptions,
   serviceUrl: string,
   bearer: string,
+  requirePat: boolean,
   signal: AbortSignal,
-): Promise<"unavailable" | "starting" | "serving"> {
+): Promise<OpenShellCodexReadiness> {
   const target = serviceTarget(options, serviceUrl);
   const authorization = bearerHeader(bearer);
   signal.throwIfAborted();
@@ -339,7 +403,10 @@ export async function serviceCodexPatStatus(
   // Preserve the advertised Host while verifying/connecting to the control endpoint,
   // exactly as the HTTP service transport does. This dispatcher belongs to this read only.
   const dispatcher = new Agent({
-    webSocket: { maxPayloadSize: MAX_SERVICE_RESPONSE_BYTES, maxFragments: 32 },
+    webSocket: {
+      maxPayloadSize: MAX_CODEX_REQUIREMENTS_BYTES + MAX_SERVICE_RESPONSE_BYTES,
+      maxFragments: 32,
+    },
     connect: (settings, callback) =>
       connect(
         {
@@ -373,9 +440,10 @@ export async function serviceCodexPatStatus(
   url.port = "";
   return new Promise((resolve, reject) => {
     let settled = false;
-    let initialized = false;
+    let expectedId = 1;
     let opened = false;
     let bytes = 0;
+    let statusBytes = 0;
     const socket = new WebSocket(url, {
       dispatcher: serviceDispatcher,
       headers: { authorization },
@@ -387,7 +455,7 @@ export async function serviceCodexPatStatus(
       transportSocket?.destroy();
       void dispatcher.destroy().catch(() => {});
     };
-    const finish = (status: "unavailable" | "starting" | "serving", error?: unknown) => {
+    const finish = (status: OpenShellCodexReadiness, error?: unknown) => {
       if (settled) {
         return;
       }
@@ -431,7 +499,10 @@ export async function serviceCodexPatStatus(
         JSON.stringify({
           id: 1,
           method: "initialize",
-          params: { clientInfo: { name: "occ-harness-readiness", version: "1" } },
+          params: {
+            clientInfo: { name: "codex_app_server_daemon", version: "1" },
+            capabilities: { experimentalApi: true },
+          },
         }),
       );
     });
@@ -441,7 +512,8 @@ export async function serviceCodexPatStatus(
       }
       if (
         typeof event.data !== "string" ||
-        (bytes += Buffer.byteLength(event.data)) > MAX_SERVICE_RESPONSE_BYTES
+        (bytes += Buffer.byteLength(event.data)) >
+          MAX_CODEX_REQUIREMENTS_BYTES + MAX_SERVICE_RESPONSE_BYTES
       ) {
         finish("starting");
         return;
@@ -453,24 +525,46 @@ export async function serviceCodexPatStatus(
         finish("starting");
         return;
       }
-      // Notifications do not complete either request; the shared byte/deadline bounds apply.
+      // Only the expected requirements reply receives the larger allowance.
+      // Initialization, authentication and all notifications share the small budget.
+      const messageBytes = Buffer.byteLength(event.data);
+      const result = asRecord(message?.result);
+      if (expectedId === 2 && message?.id === 2) {
+        if (messageBytes > MAX_CODEX_REQUIREMENTS_BYTES) {
+          finish(
+            message.error === undefined &&
+              result !== undefined &&
+              codexPermissionReadiness(result.requirements) !== "starting"
+              ? "requirements-too-large"
+              : "starting",
+          );
+          return;
+        }
+      } else if ((statusBytes += messageBytes) > MAX_SERVICE_RESPONSE_BYTES) {
+        finish("starting");
+        return;
+      }
+      // Notifications do not complete a request; the shared deadline still applies.
       if (typeof message?.method === "string" && message.id === undefined) {
         return;
       }
-      const result = asRecord(message?.result);
-      if (message?.error !== undefined || result === undefined) {
+      if (message?.id !== expectedId || message.error !== undefined || result === undefined) {
         finish("starting");
-      } else if (!initialized && message?.id === 1 && typeof result.userAgent === "string") {
-        initialized = true;
+        return;
+      }
+      if (expectedId === 1) {
+        if (typeof result.userAgent !== "string" || !result.userAgent.trim()) {
+          finish("starting");
+          return;
+        }
         socket.send(JSON.stringify({ method: "initialized" }));
-        socket.send(
-          JSON.stringify({
-            id: 2,
-            method: "getAuthStatus",
-            params: { includeToken: false, refreshToken: false },
-          }),
-        );
-      } else if (initialized && message?.id === 2) {
+      } else if (expectedId === 2) {
+        const readiness = codexPermissionReadiness(result.requirements);
+        if (readiness !== "serving" || !requirePat) {
+          finish(readiness);
+          return;
+        }
+      } else {
         finish(
           result.authMethod === "personalAccessToken" &&
             result.authToken === null &&
@@ -478,9 +572,20 @@ export async function serviceCodexPatStatus(
             ? "serving"
             : "starting",
         );
-      } else {
-        finish("starting");
+        return;
       }
+      expectedId++;
+      socket.send(
+        JSON.stringify(
+          expectedId === 2
+            ? { id: 2, method: "configRequirements/read", params: {} }
+            : {
+                id: 3,
+                method: "getAuthStatus",
+                params: { includeToken: false, refreshToken: false },
+              },
+        ),
+      );
     });
     socket.addEventListener("error", () => finish(opened ? "starting" : "unavailable"));
     socket.addEventListener("close", () => finish(opened ? "starting" : "unavailable"));

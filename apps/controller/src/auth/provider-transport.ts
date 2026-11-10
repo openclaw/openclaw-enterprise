@@ -1,6 +1,7 @@
 import { APIError } from "better-auth";
+import type { ResolvedOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 
-// Bounded HTTP transport shared by the GitHub, Google and OIDC sign-in providers.
+// Bounded HTTP transport shared by the Google and OIDC sign-in providers.
 
 export function rejected(): APIError {
   return APIError.fromStatus("UNAUTHORIZED", { message: "Authentication was not accepted." });
@@ -8,10 +9,8 @@ export function rejected(): APIError {
 
 const providerResponseLimit = 64 * 1024;
 
-// The provider step a failure happened at. `authorization` is the provider's own error
-// redirect to the callback; `profile` is GitHub's user lookup; `membership` is GitHub's
-// organization or team membership lookup for the sign-in allowlist.
-export type ProviderStep = "authorization" | "token" | "jwks" | "profile" | "membership" | "email";
+// The provider step at which the failure occurred.
+export type ProviderStep = "authorization" | "token" | "jwks";
 
 /**
  * Why a provider gave no well-formed answer, from a fixed vocabulary. It is logged for
@@ -54,31 +53,19 @@ export class ProviderUnavailableError extends Error {
 
 export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE";
 
-// A code exchange yields the provider subject or the audited reason it did not. An
-// unavailable provider also says why, for the operator log. The membership denials come only
-// from GitHub's sign-in allowlist, after the provider authenticated `subject`.
+// A code exchange yields a subject or a bounded reason for refusal.
 export type ProviderExchange =
   | {
       readonly subject: string;
-      readonly login?: string | undefined;
-      readonly enrollment?: {
-        readonly groupId: string;
-        readonly profile: () => Promise<{ readonly email: string; readonly name: string }>;
+      readonly enrollment?: Pick<
+        ResolvedOidcEnrollmentPolicy,
+        "groupIds" | "createAccount" | "policyId"
+      > & {
+        readonly profile: { readonly email: string; readonly name: string } | undefined;
       };
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
-  | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
-  | {
-      readonly denial: "MEMBERSHIP_REQUIRED";
-      readonly subject: string;
-      readonly login?: string | undefined;
-    }
-  | {
-      readonly denial: "MEMBERSHIP_UNAVAILABLE";
-      readonly subject: string;
-      readonly login?: string | undefined;
-      readonly failure: ProviderFailure;
-    };
+  | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure };
 
 export function providerExchangeFailure(error: unknown, signal: AbortSignal): ProviderExchange {
   if (error instanceof ProviderUnavailableError) {
@@ -158,10 +145,7 @@ function transportFailure(error: unknown, step: ProviderStep): ProviderFailure {
 
 // Every fixed provider endpoint the controller may call. Nothing else is fetchable.
 export type ProviderEndpoint =
-  | "https://github.com/login/oauth/access_token"
-  | "https://api.github.com/user"
-  | "https://oauth2.googleapis.com/token"
-  | "https://www.googleapis.com/oauth2/v3/certs";
+  "https://oauth2.googleapis.com/token" | "https://www.googleapis.com/oauth2/v3/certs";
 
 declare const pinnedEndpoint: unique symbol;
 /**
@@ -170,13 +154,6 @@ declare const pinnedEndpoint: unique symbol;
  * one; request input never chooses what the controller fetches.
  */
 export type PinnedEndpoint = string & { readonly [pinnedEndpoint]: true };
-
-declare const membershipEndpoint: unique symbol;
-/**
- * A GitHub membership URL on https://api.github.com, built in github.ts only from a validated
- * allowlist entry and the login GitHub's own profile answer returned, each URL-encoded.
- */
-export type MembershipEndpoint = string & { readonly [membershipEndpoint]: true };
 
 // A provider's fixed requests share a deadline, including streaming body reads.
 // A well-formed 4xx answer is a rejection unless it refuses this client; every other failure
@@ -207,91 +184,11 @@ export async function providerJSON(
   }
 }
 
-/** The verified-email endpoint returns an array, bounded like other provider replies. */
-export async function providerEmailAddresses(
-  init: RequestInit,
-  signal: AbortSignal,
-): Promise<unknown[]> {
-  const step = "email";
-  try {
-    const response = await fetch("https://api.github.com/user/emails?per_page=100", {
-      ...init,
-      signal,
-      redirect: "error",
-    });
-    if (response.status !== 200 || !response.body) {
-      await response.body?.cancel();
-      throw new ProviderUnavailableError({ step, cause: "http_status", status: response.status });
-    }
-    return await readBoundedJSON(response, response.body, signal, step, true);
-  } catch (error) {
-    if (error instanceof ProviderUnavailableError) {
-      throw error;
-    }
-    throw new ProviderUnavailableError(
-      error instanceof SyntaxError
-        ? { step, cause: "malformed_response" }
-        : transportFailure(error, step),
-    );
-  }
-}
-
-/**
- * Reads one GitHub membership: `true` for `state: active`, `false` for a 404 (not affiliated)
- * or `state: pending`. Anything else, including 401 and 403 (for example an organization that
- * blocked the App, or a Members: read permission its owner has not accepted), is
- * unavailability: the allowlist fails closed and the operator log says why. GitHub may also
- * answer 404 for an organization without the App installed, which reads as "not a member".
- */
-export async function providerMembership(
-  endpoint: MembershipEndpoint,
-  init: RequestInit,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const step = "membership";
-  let response: Response;
-  try {
-    response = await fetch(endpoint, { ...init, signal, redirect: "error" });
-  } catch (error) {
-    throw new ProviderUnavailableError(transportFailure(error, step));
-  }
-  try {
-    if (response.status === 404) {
-      await response.body?.cancel();
-      return false;
-    }
-    if (response.status !== 200 || !response.body) {
-      await response.body?.cancel();
-      throw new ProviderUnavailableError({ step, cause: "http_status", status: response.status });
-    }
-    const data = await readBoundedJSON(response, response.body, signal, step);
-    if (data.state === "active" || data.state === "pending") {
-      return data.state === "active";
-    }
-    throw new ProviderUnavailableError({ step, cause: "malformed_response" });
-  } catch (error) {
-    if (error instanceof ProviderUnavailableError) {
-      throw error;
-    }
-    throw new ProviderUnavailableError(
-      error instanceof SyntaxError
-        ? { step, cause: "malformed_response" }
-        : transportFailure(error, step),
-    );
-  }
-}
-
-// Token errors that refuse this Installation's OAuth client rather than the person: RFC 6749
-// section 5.2's invalid_client, unauthorized_client and unsupported_grant_type (the controller
-// always sends authorization_code), and GitHub's own codes for a wrong client secret or callback
-// registration (GitHub answers them with HTTP 200). Every sign-in fails until the operator fixes
-// the client configuration, so they are logged, not rejected.
+// RFC 6749 client configuration errors make the provider unavailable to every user.
 const refusedClientErrors = new Set([
   "invalid_client",
   "unauthorized_client",
   "unsupported_grant_type",
-  "incorrect_client_credentials",
-  "redirect_uri_mismatch",
 ]);
 
 function refusesClient(step: ProviderStep, data: Record<string, unknown>): boolean {

@@ -63,6 +63,7 @@ type CreateAgentScenario = {
     "at"
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
+  repositoryAccessRequired?: true;
   repositoryOptions?: readonly RepositoryOption[];
   secretOperateDenied?: readonly string[];
   denySecretCreate?: true;
@@ -328,20 +329,35 @@ export const createAgentFormScenarios = {
   },
   createNativeAdmin: {
     group: "Pages/Create Agent",
-    name: "Native admin UI opt-in",
+    name: "Browser chat opt-in",
     path: create,
     nativeAdminSetup: true,
     actions: readyForm,
     description:
-      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+      "Enable browser access during creation. Simulated UI proof; no runtime is deployed.",
     steps: [
-      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check Enable browser chat, then uncheck it. It starts off and explains chat and administration permissions.",
       "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createMemberBrowserChat: {
+    group: "Pages/Create Agent",
+    name: "Member browser chat setup",
+    path: create,
+    nativeAdminSetup: true,
+    observabilityDenied: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A Namespace creator without Installation access enables browser chat through ordinary Agent creation. This is simulated UI proof.",
+    steps: [
+      "Confirm Enable browser chat is available after the Namespace capability response.",
+      "Create the Agent. The request log shows ordinary POST agents with nativeAdmin true and expectedConfigurationGeneration 1, not guided provisioning.",
     ],
   },
   createNativeAdminSelected: {
     group: "Pages/Create Agent",
-    name: "Native admin UI selected",
+    name: "Browser chat selected",
     path: create,
     nativeAdminSetup: true,
     actions: [...readyForm, { selector: "#native-admin", click: true }],
@@ -350,7 +366,7 @@ export const createAgentFormScenarios = {
   },
   createNativeAdminDisabled: {
     group: "Pages/Create Agent",
-    name: "Native admin UI unavailable",
+    name: "Browser chat unavailable",
     path: create,
     actions: form,
     description:
@@ -1481,6 +1497,28 @@ export const createAgentProvisioningScenarios = {
       "The simulated Installation declares custom-image native worker support. Dedicated OpenClaw displays its experimental status and runtime-build compatibility requirement before deployment.",
     gap: "This simulated form does not verify that a selected OpenClaw runtime image includes native worker-inference support.",
   },
+  createRepositoryOnlyCredentialProxy: {
+    group: "Pages/Create Agent",
+    name: "Repository-only Credential Proxy",
+    path: create,
+    actions: dedicatedOpenclawForm,
+    openclawExecutionModes: ["dedicated"],
+    repositoryAccessRequired: true,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["git-write"],
+      },
+    ],
+    description:
+      "The installation supports Dedicated OpenClaw but requires repository access to deploy. Create explains the restriction before it submits a provisioning request.",
+    steps: [
+      "Check the reason beside Create Agent on the model-only form.",
+      "Choose Codex and select example/application under Repository access.",
+      "In Customize access, turn off Create and manage issues to use the repository's approved access level. The requirement clears.",
+    ],
+  },
   createRepositoriesSelected: {
     group: "Pages/Create Agent",
     name: "Repositories using the Agent default",
@@ -2265,6 +2303,7 @@ export const createAgentProvisioningScenarios = {
     steps: [
       'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
       "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
+      "Enable browser chat is disabled. Its hint says browser chat is not enabled on this installation and asks an Installation administrator to enable it, without offering a capability retry.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",

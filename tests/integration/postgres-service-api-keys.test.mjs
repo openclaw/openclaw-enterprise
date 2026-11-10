@@ -37,9 +37,9 @@ test(
       pool,
       installationId,
       mode: "development",
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: `storage-test-${randomUUID()}`,
-      secureCookies: false,
     };
     const issuer = await createPostgresControllerAuth(options);
     const verifier = await createPostgresControllerAuth(options);
@@ -118,8 +118,9 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
     const email = "service-principal-admin@openclaw.local";
     const password = "service-principal-development-password";
@@ -142,8 +143,9 @@ test(
       configurationDriver: createTestConfigurationDriver(),
     });
     const session = await signInToControllerApp(app, { email, password });
-    const admin = (method, url, body) => injectJson(app, method, url, { session, body });
-    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body });
+    const host = new URL(config.authBaseURL).host;
+    const admin = (method, url, body) => injectJson(app, method, url, { session, body, host });
+    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body, host });
     const namespaceIds = [];
     for (const name of [
       `sp-team-${randomUUID().slice(0, 8)}`,

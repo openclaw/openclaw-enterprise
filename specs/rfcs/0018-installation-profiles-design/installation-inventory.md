@@ -112,7 +112,7 @@ and plugin selection without rewriting existing saved presets. Custom templates
 remain optional `presets.files` entries.
 
 Source: [seeding](../../../packages/occ/src/index.ts),
-[existing preservation coverage](../../../tests/integration/presets-controller.test.mjs).
+[existing preservation coverage](../../../tests/integration/presets-controller.test.ts).
 
 ## Repository access
 
@@ -138,7 +138,7 @@ access, not just broker Pod health. Repository binding configures access; it doe
 not promise automatic checkout at startup.
 
 Live sessions/bearers reside in Maps in the
-[credential service](../../../apps/controller/src/drivers/repo/credentials/service.ts).
+[credential service](../../../apps/controller/src/drivers/repo/access/service.ts).
 The [worker](../../../apps/controller/src/worker/repository-credentials.ts) marks a
 missing previously open session invalidated and can reject recovery with
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`. A durable OCC ledger does not restore broker

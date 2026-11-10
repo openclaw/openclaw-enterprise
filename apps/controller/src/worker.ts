@@ -127,7 +127,7 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
-import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/credentials/prepared-repository-git.ts";
+import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
   captureNamespaceEnsureHint,
@@ -374,6 +374,7 @@ function loggedErrorClass(error: unknown): string {
 function revisionFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -400,6 +401,7 @@ function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: stri
 function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -411,6 +413,9 @@ function primaryFailureLogFields(error: unknown): {
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
   const errorClass = loggedErrorClass(error);
+  if (error instanceof ActivationFailedError && error.permissionDenials !== undefined) {
+    return { cause: errorClass, failure: error.permissionDenials.join("_") };
+  }
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -1406,7 +1411,10 @@ export class ControllerWorker {
     const bound = this.repositoryAdmission?.policy;
     if (
       this.repositoryAdmission !== undefined &&
-      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+      ((this.repositoryAdmission.policyMode === "built-in"
+        ? this.repositoryPolicy !== undefined
+        : bound !== this.repositoryPolicy) ||
+        typeof bound?.resolveBindings !== "function")
     ) {
       throw new Error("The bound repository admission owner is not selected or unavailable.");
     }
@@ -5085,7 +5093,14 @@ export class ControllerWorker {
         throw error;
       }
       const pending = error.pending();
-      await this.finalizeRevision(claim, pending.result, pending.logFields);
+      const permissionDenials =
+        result.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+          ? failureLogFields?.failure
+          : undefined;
+      await this.finalizeRevision(claim, pending.result, {
+        ...pending.logFields,
+        ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
+      });
     }
   }
 

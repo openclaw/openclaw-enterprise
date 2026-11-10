@@ -385,7 +385,10 @@ test("a trusted development CIDR admits its own range and nothing else", async (
     app.inject({
       url: "/namespaces",
       remoteAddress,
-      headers: authenticatedHeaders(fixture.app.defaultSession),
+      headers: {
+        host: new URL(fixture.app.defaultSession.origin).host,
+        ...authenticatedHeaders(fixture.app.defaultSession),
+      },
     });
   for (const admitted of ["127.0.0.1", "10.89.0.1", "10.89.255.254", "::ffff:10.89.3.4"]) {
     assert.equal((await list(admitted)).statusCode, 200, admitted);
@@ -409,7 +412,7 @@ test("an exact development browser origin admits only its trusted proxy", async 
     browserOrigin,
     trustedCidrs: ["10.89.0.0/16"],
   };
-  const fixture = await createFixture({ development });
+  const fixture = await createFixture();
   await bootstrap(fixture);
   const app = fixture.createApp(fixture.administrator, { development }, createFastifyApp);
   t.after(() => app.close());
@@ -693,7 +696,7 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
       },
     });
 
-    return new Request("http://127.0.0.1/installation/bootstrap", {
+    return new Request(new URL("/installation/bootstrap", fixture.app.defaultSession.origin), {
       method: "POST",
       duplex: "half",
       headers: authenticatedHeaders(fixture.app.defaultSession, {
@@ -1074,7 +1077,9 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
     }),
   );
   t.after(() => app.close());
-  const headers = authenticatedHeaders(fixture.app.defaultSession);
+  const origin = fixture.app.defaultSession.origin;
+  const host = new URL(origin).host;
+  const headers = { host, ...authenticatedHeaders(fixture.app.defaultSession) };
   const email = "http-password-compatible@example.test";
   const password = "account-password-\u0000-\ud800-\ufffd";
   const create = (body, suppliedHeaders = headers) =>
@@ -1084,7 +1089,7 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
       headers: suppliedHeaders,
       payload: body,
     });
-  assert.equal((await create({ email, password }, { origin: "http://127.0.0.1" })).statusCode, 401);
+  assert.equal((await create({ email, password }, { host, origin })).statusCode, 401);
   assert.equal(
     (await create({ email, password }, { ...headers, origin: "https://foreign.example" }))
       .statusCode,
@@ -1098,13 +1103,13 @@ test("account creation preserves hashed passwords through HTTP sign-in and sessi
   const signedIn = await app.inject({
     method: "POST",
     url: "/api/auth/sign-in/email",
-    headers: { origin: "http://127.0.0.1" },
+    headers: { host, origin },
     payload: { email, password },
   });
   assert.equal(signedIn.statusCode, 200, signedIn.body);
   const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
   assert.ok(cookie);
-  const session = await app.inject({ url: "/api/auth/session", headers: { cookie } });
+  const session = await app.inject({ url: "/api/auth/session", headers: { host, cookie } });
   assert.equal(session.statusCode, 200, session.body);
   assert.equal(session.json().data.user.id, created.json().data.id);
 });

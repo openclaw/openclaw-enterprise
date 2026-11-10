@@ -152,6 +152,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	started := time.Now()
 	operationStarted := started
 	stage := "openshell-image-selection"
+	var manifestOutcome manifestFailure
 	advance := func(next string) {
 		stage, operationStarted = next, time.Now()
 	}
@@ -161,7 +162,11 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		if resultErr == nil {
 			stage, operationStarted = "openshell-prepare", started
 		}
-		fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t\n", stage, time.Since(operationStarted).Milliseconds(), resultErr != nil)
+		outcome := ""
+		if stage == "openshell-agent-sandbox-manifest" && resultErr != nil && manifestOutcome != "" {
+			outcome = "\n[occ-dev-outcome] stage=openshell-agent-sandbox-manifest outcome=" + string(manifestOutcome)
+		}
+		fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t%s\n", stage, time.Since(operationStarted).Milliseconds(), resultErr != nil, outcome)
 	}()
 	images, err := r.selectOpenShellImages(state.SandboxDriver)
 	if err != nil {
@@ -182,7 +187,8 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		return nil, err
 	}
 	advance("openshell-agent-sandbox-manifest")
-	manifest, err := r.agentSandboxManifest(ctx, root)
+	manifest, failure, err := r.agentSandboxManifest(ctx, root)
+	manifestOutcome = failure
 	if err != nil {
 		return nil, err
 	}
