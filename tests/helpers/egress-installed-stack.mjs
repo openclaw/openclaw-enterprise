@@ -74,18 +74,24 @@ export async function createRunEvidence(t, setup, progress) {
   let writing = Promise.resolve();
   const saveLedger = () => {
     const snapshot = JSON.stringify(ledger, null, 2) + "\n";
-    writing = writing.then(async () => {
+    const write = writing.then(async () => {
       const pending = join(directory, "observations.pending.json");
       await writeFile(pending, snapshot, { mode: 0o600 });
       await rename(pending, join(directory, "observations.json"));
     });
-    return writing;
+    // A failed diagnostic write must not prevent a later cleanup checkpoint.
+    writing = write.catch(() => {});
+    return write;
   };
   const checkpoint = async (phase, details = {}, privateDetails = {}) => {
     progress.stage = phase;
     ledger.phases.push({ phase, at: new Date().toISOString(), ...details, ...privateDetails });
     await saveLedger();
     t.diagnostic(`egress-connected ${phase} ${JSON.stringify(details)}`);
+  };
+  const recordFailure = async (failure) => {
+    ledger.failure = failure;
+    await saveLedger();
   };
   const credentials = {
     initial: `SYNTHETIC-OCE-EGRESS-${runId}-v1`,
@@ -157,6 +163,7 @@ export async function createRunEvidence(t, setup, progress) {
     directory,
     ledger,
     checkpoint,
+    recordFailure,
     credentials,
     protect,
     excludesCredentials,

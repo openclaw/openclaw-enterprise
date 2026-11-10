@@ -19,7 +19,10 @@ import {
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
+import { observeConnectedOperation, rememberKubectlOutcome } from "./egress-connected-failure.mjs";
+
 const execute = promisify(execFile);
+const kubectlKillSignal = "SIGKILL";
 
 // Stock OpenShell shorthand timestamps describe rendering, not event occurrence. This
 // bounded tail inventory is deliberately uncorrelated with the failed curl request.
@@ -101,18 +104,31 @@ const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
-function safeKubectlFailure(error, signal) {
-  // A child-process Error carries raw stdout/stderr. Returning it as a cause
-  // would let the test reporter publish model or credential bytes.
+function safeKubectlFailure(error, child, signal) {
+  // execFile's error.killed includes attempted kills, even after the child exits
+  // while inherited pipes remain open. Require the private child's confirmation
+  // that a kill was sent. Buffer overflow and cancellation have their own codes.
+  const exitCode = Number.isInteger(error.code) ? error.code : (child?.exitCode ?? null);
+  const terminationSignal = error.signal ?? child?.signalCode ?? null;
   let outcome = "transport";
-  if (Number.isInteger(error.code)) {
-    outcome = `exit ${error.code}`;
-  } else if (signal?.aborted) {
+  if (error.code === "ABORT_ERR") {
     outcome = "cancelled";
-  } else if (error.killed) {
+  } else if (Number.isInteger(error.code)) {
+    outcome = "exit";
+  } else if (error.code === null && child?.killed === true && error.signal === kubectlKillSignal) {
     outcome = "deadline";
+  } else if (error.code === null && terminationSignal !== null) {
+    outcome = "signal";
   }
-  return new Error(`OpenShell fixture kubectl failed (${outcome})`);
+  // Keep raw command, output, and AbortSignal reason out of the new Error.
+  const description = outcome === "exit" ? `exit ${exitCode}` : outcome;
+  return rememberKubectlOutcome(new Error(`OpenShell fixture kubectl failed (${description})`), {
+    outcome,
+    exitCode,
+    signal: terminationSignal,
+    killed: child?.killed ?? error.killed,
+    signalAborted: signal?.aborted === true,
+  });
 }
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
@@ -866,16 +882,18 @@ export function createOpenShellKubernetesFixture({
       : createKubernetesClient({
           selection,
           async kubectl(...args) {
+            let execution;
             try {
-              const { stdout } = await execute("kubectl", original.kubectlArguments(args), {
+              execution = execute("kubectl", original.kubectlArguments(args), {
                 timeout: commandTimeoutMs,
-                killSignal: "SIGKILL",
+                killSignal: kubectlKillSignal,
                 signal,
                 maxBuffer: 4 * 1024 * 1024,
               });
+              const { stdout } = await execution;
               return stdout;
             } catch (error) {
-              throw safeKubectlFailure(error, signal);
+              throw safeKubectlFailure(error, execution?.child, signal);
             }
           },
         })),
@@ -1520,6 +1538,7 @@ export function createOpenShellKubernetesFixture({
     appServerUrl,
     appServerTokenPath,
     readThreadId,
+    gatewayTurn = false,
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
@@ -1841,8 +1860,8 @@ export function createOpenShellKubernetesFixture({
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];
-    return JSON.parse(
-      await retryModelAtCapacity(
+    const run = async () => {
+      const output = await retryModelAtCapacity(
         () =>
           kubectl(
             "exec",
@@ -1856,8 +1875,23 @@ export function createOpenShellKubernetesFixture({
             script,
           ),
         modelAtCapacityRetry,
-      ),
-    );
+      );
+      try {
+        return JSON.parse(output);
+      } catch (error) {
+        if (commandTimeoutMs !== undefined && gatewayTurn) {
+          rememberKubectlOutcome(error, {
+            outcome: "exit",
+            exitCode: 0,
+            signal: null,
+            killed: null,
+            signalAborted: signal?.aborted === true,
+          });
+        }
+        throw error;
+      }
+    };
+    return gatewayTurn ? observeConnectedOperation("gateway-codex-exec", run) : run();
   }
 
   async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
@@ -1876,6 +1910,7 @@ export function createOpenShellKubernetesFixture({
     return requestCodexFromPod({
       namespace,
       pod: gatewayPod,
+      gatewayTurn: true,
       providerModel,
       prompt,
       observeFailure,
