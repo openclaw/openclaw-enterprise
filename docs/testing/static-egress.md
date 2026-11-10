@@ -6,23 +6,21 @@ last_verified: "2026-11-04"
 
 # Verify protected static inference
 
-New local protected static-inference launches are retired. The launcher rejects
+The launcher has retired local protected static inference. It rejects
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty value, before effects.
-Unset, empty or `0` protected-egress selections retain ordinary startup. There is
-no fallback. See the [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, even empty, before side effects. There is no fallback.
+Unset, empty or `0` protected-egress selections retain ordinary startup.
+See the [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
-Use these retained checks for existing installations. Keep recorded state and
-ownership evidence for withdrawal and cleanup.
-
-Bundled OpenShell cannot enforce this profile. Candidate Kubernetes Compute verifies
-the current installation before signing the workload release. Other Compute Drivers
-refuse protected admission. [Qualify the installed pair](#installed-runtime-and-provider-qualification)
-before relying on [this boundary](../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
+Keep ownership and state evidence for withdrawal and cleanup of existing installs.
+Candidate Kubernetes Compute verifies the current installation before signing
+workload release. Other Compute Drivers refuse protected admission. Bundled
+OpenShell cannot enforce this profile. [Qualify the installed pair](#installed-runtime-and-provider-qualification)
+before relying on the [execution admission cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
 
 ## Check a Credential Proxy change
 
-With installed workspace dependencies, run the focused source suites:
+With workspace dependencies installed, run:
 
 ```sh
 pnpm test:files -- tests/integration/static-egress.test.mjs \
@@ -30,10 +28,9 @@ pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-installation-exchange.test.mjs
 ```
 
-This selects literal files; it does not provision dependencies or guarantee
-that cases ran without skips. For strict PostgreSQL coverage, use the broader
-`postgres-platform` lane with local Docker. No provider or cluster credentials
-are needed:
+File selection neither installs dependencies nor guarantees zero skips. Use
+`postgres-platform` with local Docker for strict PostgreSQL coverage. This
+requires no provider or cluster credentials.
 
 ```sh
 (
@@ -52,39 +49,39 @@ are needed:
 )
 ```
 
-The runner rejects unexpected skips and missing cases; cleanup failures also
-fail this recipe. Keep the printed state/results directory for diagnosis and
-[cleanup recovery](postgresql.md). Source and database
-checks do not replace [installed qualification](#installed-runtime-and-provider-qualification).
+Unexpected skips, missing cases and cleanup failures fail the recipe. Keep
+state and results for diagnosis and [cleanup recovery](postgresql.md). These
+checks complement [installed qualification](#installed-runtime-and-provider-qualification).
 
 ## Authority and provider fixtures
 
-The focused suites above use synthetic acceptance. Test [installation-bound exchange
-and response custody](protected-repository-custody.md) on the candidate pair separately.
+These suites use synthetic acceptance. Check [installed exchange and response custody](protected-repository-custody.md)
+on the candidate pair separately.
 
-`static-egress.test.mjs` exercises Fastify authentication, source and Agent admission,
-native IAM, controller transactions, OpenShell adapters, Ed25519 identity, TLS gRPC
-and an HTTPS provider fixture. The Kubernetes Secret Driver reads UID and resourceVersion
-over TLS; one case deliberately gives logical and runtime Namespaces different names.
-No Sandbox, model service or cluster runs here.
+`static-egress.test.mjs` exercises Fastify authentication, source and Agent
+admission, native IAM, controller transactions, OpenShell adapters, Ed25519,
+TLS gRPC and fixture HTTPS. The Kubernetes Secret Driver reads UID and
+resourceVersion over TLS, including distinct logical and runtime Namespaces.
+No Sandbox, model service or cluster runs.
 
-Gateway policy and V1 loaded-policy observations match the supplier protobuf, but
-do not prove supervisor enforcement. Missing observations refuse even with LOADED
-and legacy field 3. We check current evidence at access and send, admitting only
-the exact name-only rule. Source and effective hashes are distinct synthetic values, not computed supplier policy hashes.
-Extra endpoints, binaries, changed policy and stale identities refuse before Secret reads.
+Gateway policy and V1 loaded-policy observations match supplier protobuf.
+Only the exact name-only rule with current evidence at access and send qualifies.
+Missing observations refuse even with LOADED and legacy field 3. Source and
+effective hashes are distinct synthetic values. Extra endpoints, binaries,
+changed policy and stale identities refuse before Secret reads. Supervisor
+enforcement requires installed proof.
 
-Forged identities and unsupported operations refuse before credential access. Cases also
-cover permission revoked between checks, material rotation, replay, selection mismatch,
-credential reflection, rejection fencing and withdrawal. Sequential requests exceed 4,096 reservations using the test clock;
-blocked Secret reads fill the 1,024 active slots, which delivery releases.
+Cases cover pre-access refusal of forged identities and unsupported operations,
+permission revocation between checks, rotation, replay, selection mismatch,
+reflection, rejection fences and withdrawal. The test clock exceeds 4,096
+sequential reservations. Blocked Secret reads fill 1,024 active slots, released by delivery.
 
-The fast digest regression reads the committed authorization from the in-memory receipt
-store; it sends no request. `postgres-egress-send-receipts.test.mjs` uses real PostgreSQL
-transactions, a fault proxy and a byte-counting origin. It drops the second COMMIT reply
-after reservation, verifies no permit or origin arrival, and reconstructs the Forwarder
-before the deadline to rule out a replacement send. Policy, material and acceptance remain
-synthetic. The suite also covers expiry, cancellation and lost custody after authorization.
+The digest regression reads committed authorization from in-memory receipts
+without sending. `postgres-egress-send-receipts.test.mjs` uses real PostgreSQL,
+a fault proxy and a byte-counting origin. Losing the second COMMIT reply after
+reservation yields no permit or origin arrival, even after reconstructing the
+Forwarder before the deadline. It also covers expiry, cancellation and lost custody
+after authorization. Policy, material and acceptance are synthetic.
 
 `tests/fixtures/static-egress/codex-responses.json` preserves a selected Codex
 0.163.0-alpha.2 packaged CLI request and finite synthetic SSE response consumed by
@@ -119,7 +116,7 @@ and a failed CLI turn; it is not a provider-effect recovery test.
 
 ## Startup enrollment
 
-Run the startup coordination integration separately:
+Run startup coordination separately:
 
 ```sh
 node --test tests/integration/egress-enrollment.test.mjs
@@ -138,16 +135,13 @@ zero retry arguments, protected timeout failure and unchanged legacy retry behav
 
 ## Captured supplier wires
 
-The companion `openshell-receipt.json` contains actual protobuf bytes from the
-supplier's connected gateway token, TLS registry, OPA installation and receipt-query
-fixture. The consumer decodes those bytes, preserving uint64 values, and verifies
-the captured claim shape with a local fixture signing key and renewed timestamps;
-it does not reuse or establish custody of the producer's token. That capture covers
-the nested enforcement message, not the complete V1 policy observation. The separate
-`openshell-operation.json` captures the sender's TLS/gRPC request after a 100 ms
-delay. Its deadline remains creation plus 30 seconds. The consumer checks that
-historical operation refuses before material access. The two captures come from
-separate synthetic fixtures, not one installed Sandbox.
+`openshell-receipt.json` holds protobuf bytes from the supplier's synthetic
+gateway token, TLS registry, OPA installation and receipt-query fixture. The
+consumer preserves uint64 values and verifies the nested enforcement claim with
+a local signing key and renewed timestamps. The producer token and complete V1
+policy observation are outside that capture. A separate synthetic fixture captured
+`openshell-operation.json` after a 100 ms delay, with its TLS/gRPC deadline fixed
+at creation plus 30 seconds. The consumer verifies refusal before material access.
 
 ## PostgreSQL state
 
@@ -241,21 +235,17 @@ cluster or model runtime and supplies no installation receipt.
 
 ## Select the prepared connected lane
 
-Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-through the `egress-connected` CLI lane for existing qualified installations.
-CI, GitHub dispatch and the generic `openshell` HTTP fixture omit this lane.
-It requires a prepared, authenticated controller, worker and supplier gateway.
-Missing selected inputs fail.
+The `egress-connected` CLI lane runs [installed qualification](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs).
+CI, GitHub dispatch and the generic `openshell` HTTP fixture omit it. Missing
+inputs fail. Prepare an authenticated controller, worker and supplier gateway,
+a ready Namespace with one placement in disposable loopback k3d, NetworkPolicies
+and [OpenShell launch prerequisites](openshell.md). [Migrate](postgresql.md) a
+dedicated `openclaw_k8s_*` database. Run controller and observer as `occ_app`;
+the test compares database and controller Installations.
 
-Prepare a ready Namespace with one placement in disposable loopback k3d.
-Enforce NetworkPolicies and the [OpenShell launch prerequisites](openshell.md).
-[Migrate](postgresql.md) a dedicated `openclaw_k8s_*` database. Run the controller
-and observer as `occ_app`. The test compares database and controller Installations.
-
-Build and select immutable product and supplier images with matching physical
+Select immutable, nonlegacy product and supplier images with matching physical
 namespace mapping, loaded-enforcement receipt readiness, finite Responses
-protection and zero automatic retries, including the startup authentication
-probe. The test requires these contracts and excludes legacy gateway copies.
+protection and zero automatic retries, including startup authentication.
 
 Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
 The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
@@ -276,19 +266,17 @@ Prepare the synthetic provider certificate, supervisor DNS, routing, trust and s
 egress before the test binds its listener. `host.openshell.internal` must resolve there
 and appear in the certificate SAN. An mTLS input requires actual Backend mTLS support.
 
-In the runner's private environment file, set `OCC_TEST_EGRESS_CONNECTED_CONTROLLER`
-to JSON containing the prepared `apiOrigin`, `namespaceId`, `model` and `providerOrigin`.
-They must match the stack manifest. Supply the provisioned non-Agent controller key
-in `OCC_TEST_EGRESS_CONNECTED_SERVICE_KEY`, never via a manifest-selected file.
-The test confines that key to the selected origin, refuses redirects and removes it from child environments.
+In the private runner environment, set `OCC_TEST_EGRESS_CONNECTED_CONTROLLER`
+to JSON with the manifest's `apiOrigin`, `namespaceId`, `model` and `providerOrigin`.
+Supply the provisioned non-Agent key via `OCC_TEST_EGRESS_CONNECTED_SERVICE_KEY`.
+The test restricts it to the selected origin and removes it from child environments.
+Redirects and manifest-selected key files are forbidden. Set `OCC_TEST_DATABASE_URL`
+to the controller's loopback PostgreSQL URL without query parameters that can
+override host or database. Keep files and credentials out of logs and Git.
 
-Set `OCC_TEST_DATABASE_URL` to the controller's loopback PostgreSQL URL without query
-parameters, which can override host or database. Keep both files and credentials out of logs and Git.
-
-Set `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
-This lane requires execution authority, all five supplier capabilities, and a
-loaded managed policy with no caller executable list. Run it from the candidate
-checkout named by `oceCommit`.
+Select `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
+Provide execution authority, five supplier capabilities and loaded managed policy
+without a caller executable list. Run from the `oceCommit` checkout.
 
 Select a fresh result directory:
 
@@ -300,20 +288,22 @@ node --env-file=/absolute/path/to/private/connected.env \
   --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
-The lane sets `OCC_TEST_EGRESS_CONNECTED=1`. Its 30-minute deadline bounds activation
-(12 minutes), Codex turns (90 seconds), API requests (20 seconds) and local cluster
-commands (120 seconds). Allow 40 minutes for test and cleanup, plus stack teardown.
-Killing a local client does not establish remote termination. Never replay an uncertain operation.
+The lane sets `OCC_TEST_EGRESS_CONNECTED=1`. Within 30 minutes it allows 12 minutes
+for activation, 90 seconds per Codex turn, 20 seconds per API request and 120 seconds
+per local cluster command. Allow 40 minutes with cleanup, plus stack teardown.
+Local client termination leaves remote execution uncertain. Never replay an uncertain operation.
 
 ### Read evidence and retain cleanup custody
 
-Before the first turn, the fixture uses a two-minute polling budget to find one
-nondeleting Gateway Pod for the exact Agent and revision. Its pinned `gateway`
-container must be running and ready, and the Pod must be Ready. Another
-nondeleting Pod for that same revision prevents selection even if only one is
-ready. An in-flight read retains the existing command bound, and the overall
-test deadline still applies. The ledger records the last
-bounded Pod counts when selection succeeds or fails.
+Before the first turn, the fixture requires deployment success and the exact
+active revision. Terminal deployment failure stops the wait. The ledger
+retains bounded, sanitized deployment observations.
+
+The fixture then polls for up to two minutes for exactly one nondeleting Gateway
+Pod for that Agent and revision. The Pod must be Ready and its pinned `gateway`
+container running and ready. A second nondeleting Pod for that revision blocks
+selection. The command and overall test deadlines still apply. The ledger retains
+the last bounded Pod counts.
 
 After each pre-turn custody snapshot, the fixture re-reads the selected Pod and
 requires the same UID and readiness before explicitly targeting `gateway`.
@@ -321,12 +311,12 @@ The ledger retains the pre-exec check outcome. Kubernetes exec addresses the
 Pod by name, so a replacement between the read and exec remains possible.
 The fixture does not select a replacement or replay an uncertain turn.
 
-The test creates resources through public APIs, deploys through the real worker,
-reads the persisted installation and verifies the authenticated supplier receipt.
-The Agent Gateway Pod runs the packaged Codex app-server caller. The test adopts
-a fresh unbound source with `adoption: "live"` and `authorityScope: "execution"`.
-The origin observes the startup probe, measured Codex sends during hostile
-responses and recovery, and an ordinary sibling's managed request.
+The test creates resources via public APIs, deploys through the worker, reads
+the persisted installation and verifies the authenticated supplier receipt.
+It adopts a fresh unbound source using `adoption: "live"` and
+`authorityScope: "execution"`. The Gateway runs the packaged Codex caller.
+The origin observes startup, hostile-response and recovery sends, and an ordinary
+sibling's managed request.
 
 Use the supplier's authenticated [workload launch path](./protected-repository-custody.md)
 for the sibling and TCP probe so both inherit connection mediation. Kubernetes
@@ -349,12 +339,16 @@ messages and other headers. Interrupted or undecodable responses remain
 and requires its own successful checkpoint.
 
 The ledger records the failed operation and `failure.kubectl` outcome.
-`failure.nativeExec` is `recorded`, `absent` or `invalid`. A frame gives client step,
-last acknowledged RPC, failure site, URL shape and nonempty token presence.
-Missing frames leave startup uncertain. The pre-turn Pod declarations leave
-effective inputs unknown. The terminal error preserves bounded failure facts
-without raw output or replay authority. The deployed checkpoint records public
-owner capability.
+`failure.nativeExec` distinguishes recorded, absent and invalid frames. A frame
+records client step, last acknowledged RPC, failure site, URL shape and nonempty
+token presence. Missing frames leave startup uncertain. Pod declarations describe
+configured inputs. The deployed checkpoint records public owner capability.
+
+Before verifying each turn, the ledger checkpoints its expected and actual
+terminal status. A bound result also records acknowledged `turn/start`, matching
+`turn/completed`, an allowlisted typed error and HTTP status when supplied, and
+up to four correlated retry observations. The summary omits raw messages, headers,
+output and RPC identifiers. A startup probe's status describes that probe alone.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 removes supporting resources and closes the provider. Use the ledger to reconcile
@@ -362,14 +356,13 @@ missing Sandbox identities or unconfirmed creates. The parent owns interrupted
 cleanup and disposal of the prepared Namespace, database, cluster, controller
 and Gateway.
 
-A passing run covers this slice at its recorded inputs.
-Real-provider usefulness, full workload credential and control API containment,
-revocation between Resolve and AuthorizeSend, mixed-version activation, HA,
-dynamic credentials, long-lived streaming and complete Egress MVP delivery
-require separate proof.
+Separate proof covers real-provider usefulness, full workload credential and
+control API containment, revocation between Resolve and AuthorizeSend,
+mixed-version activation, HA, dynamic credentials, long-lived streaming and
+complete Egress MVP delivery.
 
 ## Installed repository response and dispatch custody
 
-Use the [dedicated qualification](protected-repository-custody.md) to prepare the
-synthetic issuer, observe the exact authorization commit, exercise two clients and
-a replacement, and check the response boundary on the installed pair.
+The [dedicated qualification](protected-repository-custody.md) covers synthetic
+issuer setup, the exact authorization commit, two clients and a replacement,
+and the installed response boundary.

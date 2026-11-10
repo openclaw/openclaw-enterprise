@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { observeConnectedOperation } from "./egress-connected-failure.mjs";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
+import {
+  observeConnectedOperation,
+  summarizeGatewayTurnResult,
+} from "./egress-connected-failure.mjs";
 import { deleteInstalledResource } from "./egress-installed-resource-cleanup.mjs";
 import { createCustodyTransitions } from "./egress-supplier-custody-transitions.mjs";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
@@ -239,6 +243,80 @@ function gatewayRunningAndReady(pod) {
   );
 }
 
+const deploymentStatuses = new Set(["queued", "running", "succeeded", "failed"]);
+const deploymentProgressCodes = new Set([
+  "RECONCILIATION_PENDING",
+  "REVISION_INCOMPLETE",
+  "REVISION_FINALIZATION_INCOMPLETE",
+  "ACTIVE_REVISION_RECOVERY",
+  "WORKSPACE_NODE_PENDING",
+  "AGENT_GATEWAY_UNAVAILABLE",
+  "SANDBOX_GATEWAY_UNAVAILABLE",
+]);
+
+export async function waitForProtectedAgentActivation(
+  waitFor,
+  { api, checkpoint },
+  { agentPath, deploymentPath, revisionId },
+) {
+  let last = null;
+  let outcome = "timeout";
+  let reading = null;
+  let lastPending;
+  let pendingCheckpoints = 0;
+  try {
+    return await waitFor(
+      "protected Agent activation with genuine installed evidence",
+      async () => {
+        reading = "deployment";
+        const deployment = await api("GET", deploymentPath);
+        const status = deploymentStatuses.has(deployment.status) ? deployment.status : "unknown";
+        const progressCode = deployment.progress?.lastAttempt?.code;
+        last = {
+          status,
+          progressCode: deploymentProgressCodes.has(progressCode) ? progressCode : null,
+          activeRevisionMatches: null,
+        };
+        if (status === "failed") {
+          reading = null;
+          outcome = "failed";
+          const code = deployment.error?.code;
+          last.errorCode =
+            typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code)
+              ? code
+              : "UNKNOWN";
+          assert.fail("The protected Agent deployment failed; inspect the safe checkpoint");
+        }
+        reading = "agent";
+        const current = await api("GET", agentPath);
+        last.activeRevisionMatches = current.activeRevisionId === revisionId;
+        reading = null;
+        // The worker publishes the active pointer before finishing activation.
+        if (status === "succeeded" && last.activeRevisionMatches) {
+          return current;
+        }
+        // Record the first observation and changes, with a cap even if the pointer
+        // oscillates. The failure checkpoint always retains the last observation.
+        const pending = JSON.stringify(last);
+        if (pendingCheckpoints < 6 && pending !== lastPending) {
+          pendingCheckpoints += 1;
+          lastPending = pending;
+          await checkpoint("activation-pending", { last }).catch(() => {});
+        }
+        return undefined;
+      },
+      12 * 60_000,
+    );
+  } catch (error) {
+    await checkpoint("activation-failed", {
+      outcome: reading === null ? outcome : "read-error",
+      ...(reading !== null && { reading }),
+      last,
+    }).catch(() => {});
+    throw error;
+  }
+}
+
 export async function waitForInstalledGateway(f, evidence, placement, agentId, revisionId, image) {
   let last = null;
   let listing = false;
@@ -301,7 +379,7 @@ export async function waitForInstalledGateway(f, evidence, placement, agentId, r
 export async function requestInstalledGatewayTurn(
   f,
   evidence,
-  { placement, agentId, revisionId, image, gateway, phase, custodyTransitions },
+  { placement, agentId, revisionId, image, gateway, phase, custodyTransitions, expected },
   turn,
 ) {
   const before = await custodyTransitions.snapshot();
@@ -340,7 +418,12 @@ export async function requestInstalledGatewayTurn(
     gatewayPod: name,
     container: gatewayContainer,
   });
-  return { before, result };
+  const nativeTurnResult = summarizeGatewayTurnResult(expected, result);
+  // checkpoint retains the summary in memory before attempting the durable write.
+  await evidence
+    .checkpoint("gateway-turn-result", { turnPhase: phase, nativeTurnResult })
+    .catch(() => {});
+  return { before, result, nativeTurnResult };
 }
 
 export async function observeInstalledProtection(
