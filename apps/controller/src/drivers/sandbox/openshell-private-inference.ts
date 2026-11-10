@@ -42,6 +42,25 @@ export function privateInferenceHold(revision: Readonly<AgentRevision>) {
 
 // OpenShell chooses the first matching endpoint for its SSRF allowlist. An independent
 // allow (including wildcard or IP-only rules) cannot share the private credential's route.
+function privateHostMatches(host: string, pattern: string): boolean {
+  if (!pattern.includes("*")) {
+    return host === pattern;
+  }
+  if (pattern === "*") {
+    return !host.includes(".");
+  }
+  const leadingWildcard = /^(\*{1,2})(\.[a-z0-9.-]+)$/.exec(pattern);
+  if (!leadingWildcard) {
+    return true;
+  }
+  const [, wildcard, suffix] = leadingWildcard;
+  if (!host.endsWith(suffix!)) {
+    return false;
+  }
+  const prefix = host.slice(0, -suffix!.length);
+  return prefix.length > 0 && (wildcard === "**" || !prefix.includes("."));
+}
+
 export function assertExclusiveInferenceEndpoint(
   policies: unknown,
   destination: { host: string; ports: number[] },
@@ -70,10 +89,7 @@ export function assertExclusiveInferenceEndpoint(
       // The stock rule matcher supports literal hosts, DNS globs and hostless IP grants.
       const matches = !host
         ? Array.isArray(endpoint?.allowed_ips) && endpoint.allowed_ips.length > 0
-        : host.includes("*")
-          ? !/^\*{1,2}\.[a-z0-9.-]+$/.test(host) ||
-            destination.host.endsWith(host.slice(host.indexOf(".")))
-          : host === destination.host;
+        : privateHostMatches(destination.host, host);
       if (matches) {
         throw new Error(
           "An independent OpenShell network rule overlaps the private inference endpoint.",

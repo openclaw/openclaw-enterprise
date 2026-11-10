@@ -123,7 +123,7 @@ test("startup composes both OpenShell members from one Backend for static source
   let activePolicyVersion = 1;
   let sourcePolicy: Readonly<Record<string, unknown>>;
   let startupReleases = 0;
-  let overlappingRoute = false;
+  let otherHost = "*.cluster.local";
   // Model only Backend storage and transport responses; the real Drivers choose,
   // authorize, reconcile, and withdraw the attachment. No provider is contacted.
   const unexpected = (): never => {
@@ -157,9 +157,7 @@ test("startup composes both OpenShell members from one Backend for static source
             },
           ]),
       );
-      const collision = overlappingRoute
-        ? { shared: { endpoints: [{ host: "**", port: 443 }] } }
-        : {};
+      const collision = { shared: { endpoints: [{ host: otherHost, port: 443 }] } };
       return {
         workspace,
         policy_source: 1,
@@ -606,13 +604,13 @@ test("startup composes both OpenShell members from one Backend for static source
   assert.equal(policyVersion, 1);
   assert.equal(startupReleases, 0);
   delegateHostname = false;
-  overlappingRoute = true;
+  otherHost = "**.cluster.local";
   await assert.rejects(
     driver.prepareRevision(revision, context),
     /overlaps the private inference endpoint/,
   );
   assert.equal(policyVersion, 1);
-  overlappingRoute = false;
+  otherHost = "*.cluster.local";
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(policyVersion, 2);
   // Saving an update is not the supervisor's acknowledgement of that policy.
