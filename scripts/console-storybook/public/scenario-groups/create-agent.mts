@@ -2548,6 +2548,25 @@ export const createAgentProvisioningScenarios = {
 } satisfies Record<string, CreateAgentScenario>;
 
 export const createAgentOutcomeScenarios = {
+  createSelectableModels: {
+    group: "Pages/Create Agent",
+    name: "Choose additional session models",
+    path: create,
+    oauthCatalog: "inference",
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "mpr_00000000-0000-4000-8000-000000000001" },
+      { selector: "#provider-key-credential", value: "crs_00000000-0000-4000-8000-000000000009" },
+      { selector: 'input[aria-label="Use qwen3-32b"]', click: true },
+    ],
+    description:
+      "Use the Internal vLLM provider and its approved key. The Agent can use both offered models and starts with qwen3-8b.",
+    steps: [
+      "Change the default to qwen3-32b. The previous default stays checked.",
+      "Remove qwen3-8b. In Advanced settings, check the provider catalog and the model allowlist.",
+    ],
+  },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
     name: "Switch from Service Accounts to OpenClaw",

@@ -1971,6 +1971,13 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   delete fallbackEntry.api;
   nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
+  const alternate = "openai/team/alternate";
+  nativeConfiguration.agents.defaults.modelPolicy = { allow: ["openai/team/model", alternate] };
+  nativeConfiguration.agents.defaults.models[alternate] = { agentRuntime: { id: "openclaw" } };
+  nativeConfiguration.models.providers.openai.models.push({
+    ...fallbackEntry,
+    id: "team/alternate",
+  });
   nativeConfiguration.models.providers.openai.models.push({
     id: "unselected",
     baseUrl: "https://other.example.test/v1",
@@ -2106,6 +2113,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     [
       ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
       ["team/fallback", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/alternate", "openai-responses", "https://models.example.test/inference/v1"],
     ],
   );
   // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids

@@ -24,6 +24,10 @@ and uncertain-registration stories. An empty authorization uses OpenAI's default
 destination. Pending registration locks its configuration. Check registration before editing
 a refused request; uncertain registration reuses the same request. Switching to account authentication hides source configuration.
 
+## Choose several models for an Agent
+
+Open **Pages/Create Agent → Choose additional session models**. In the model table, set the checked alternate as **Default**. Both models stay checked. Clear the old default and inspect **Advanced settings**. The Configuration lists only the new default for session selection and adds no automatic fallback.
+
 ## Correct an edited model catalog
 
 Open **Pages/Create Agent → Model choices before credential entry**. Use the

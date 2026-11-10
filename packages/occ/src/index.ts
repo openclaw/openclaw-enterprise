@@ -293,6 +293,8 @@ import {
   hasControlCharacter,
   immutableCopy,
   isNonEmptyString,
+  selectableCatalogModels,
+  splitModelRef,
 } from "@openclaw-enterprise/utils";
 import {
   codexRunsPrimaryModel,
@@ -8704,7 +8706,9 @@ export class OpenClawController {
     if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
       policyReductionVersion = 1;
     }
-    const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
+    const agents = asRecord(configuration.agents);
+    const defaults = asRecord(agents?.defaults);
+    const selection = defaults?.model;
     const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
     if (
       sources.some((source) => source.egress?.adoption === "live") &&
@@ -8733,7 +8737,25 @@ export class OpenClawController {
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
-      const grant = provider.normalizeGrant([modelId], source.config);
+      const grantedModels = new Set([modelId]);
+      if (provider.sourceType.harnessAuth && typeof model === "string") {
+        const primary = splitModelRef(model);
+        const scopes = [defaults, ...Object.values(asRecord(agents?.entries) ?? {})];
+        for (const reference of scopes.flatMap(selectableCatalogModels)) {
+          const alternate = splitModelRef(reference);
+          if (
+            !alternate.id ||
+            alternate.provider !== primary.provider ||
+            alternate.id.length > 256
+          ) {
+            throw new ConfigurationHarnessError(
+              "Protected session models must use the primary model's provider and model IDs of at most 256 characters.",
+            );
+          }
+          grantedModels.add(alternate.id);
+        }
+      }
+      const grant = provider.normalizeGrant([...grantedModels], source.config);
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
         const canonical = credentialFreeMetadataGrant(source.config);

@@ -101,7 +101,10 @@ test("supplier-produced receipt protobuf and registered-instance claims decode t
 });
 
 test("protected inference uses real admission, fresh IAM, versioned Secret reads and TLS authority/provider wires", async (t) => {
-  const f = await staticEgressFixture(t, { physicalPlacement: true });
+  const f = await staticEgressFixture(t, {
+    physicalPlacement: true,
+    sessionModels: ["larger-model"],
+  });
   assert.notEqual(f.namespace.name, f.runtimeNamespace.name);
   assert.equal(f.namespace.id, f.runtimeNamespace.id);
   assert.deepEqual(f.source.egress, { adoption: "live", retention: "none" });
@@ -133,14 +136,20 @@ test("protected inference uses real admission, fresh IAM, versioned Secret reads
     pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(unprotected))["config.toml"],
     /web_search/,
   );
-  const capture = f.capture();
+  // An unselected model is refused before reading the key or contacting the provider.
+  const reads = f.secretReads;
+  const unselected = f.capture({ model: "other-model", input: "hello", store: false });
+  assert.ok((await f.resolve(unselected)).refused);
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, 0);
+  const capture = f.capture({ model: "larger-model", input: "hello", store: false });
   const result = await f.resolve(capture);
   assert.ok(result.ready, JSON.stringify(result));
   const permit = f.permitRequest(capture, result.ready);
   assert.ok((await f.authorize(permit)).allowed);
   const response = await f.send(capture, result.ready);
   assert.deepEqual(f.providerRequests[0].body, {
-    model: "fixture-model",
+    model: "larger-model",
     input: "hello",
     store: false,
   });

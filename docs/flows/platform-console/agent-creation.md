@@ -16,6 +16,14 @@ user-visible behavior.
 
 For a saved provider, the form loads the Installation catalog through the Namespace and matches ready credentials against the provider's template, URL, and format. It submits the provider ID and selected source to admission. Compute resolves the selected model against the catalog and the revision pins its metadata and destination. A retry uses that revision. The [model provider reference](../../reference/drivers/kubernetes-compute/model-provider.md) describes runtime and network requirements.
 
+Create Agent writes the default model to `agents.defaults.model`. Saved providers show their model catalog with a checkbox and default radio per row in `apps/controller/src/console/agents/named-provider-choices.mts`. Built-in provider checkboxes in
+`apps/controller/src/console/agents/additional-models.mts` update `agents.defaults.modelPolicy.allow`,
+the per-model Harness settings, and the selected provider's catalog. OCC admits those explicit catalog
+choices in `packages/occ/src/configured-harness.ts`. Dedicated OpenClaw uses the same concrete
+choices for the worker catalog and the credential destination check in
+`apps/controller/src/drivers/native-openai-catalog.ts`. Changing the session model leaves the
+revision's primary and automatic fallbacks intact. If a Credential Proxy protects inference, OCC also pins these explicit IDs in its grant. The sender checks the request body's model before it reads the credential.
+
 ## Entry Points
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the

@@ -70,6 +70,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/logs-view.mts",
       "agents/presets.mts",
       "agents/create.mts",
+      "agents/additional-models.mts",
       "agents/named-provider-choices.mts",
       "agents/provisioning-job.mts",
       "agents/plugin-discovery.mts",

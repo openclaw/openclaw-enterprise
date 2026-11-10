@@ -91,6 +91,7 @@ export async function staticEgressFixture(
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     protectedSourceOnly = false,
+    sessionModels = /** @type {string[]} */ ([]),
     proxyDriverId = "openshell-egress",
     now = () => new Date(),
     physicalPlacement = false,
@@ -592,7 +593,19 @@ export async function staticEgressFixture(
     agents: {
       defaults: {
         model: { primary: "codex/fixture-model" },
-        models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+        models: Object.fromEntries(
+          ["fixture-model", ...sessionModels].map((id) => [
+            `codex/${id}`,
+            { agentRuntime: { id: "codex" } },
+          ]),
+        ),
+        ...(sessionModels.length
+          ? {
+              modelPolicy: {
+                allow: ["fixture-model", ...sessionModels].map((id) => `codex/${id}`),
+              },
+            }
+          : {}),
       },
     },
   });

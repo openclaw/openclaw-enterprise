@@ -477,7 +477,7 @@ export const selectableModelRuntimeMismatch = (policy, runtime) =>
 // A provider catalog row (`provider` such as models.providers.openai) that names no selected
 // model; with no model selected at all, the refusal names the model setting instead.
 export const catalogRowUnselected = (provider) =>
-  `Configuration setting ${provider}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`;
+  `Configuration setting ${provider}.models may list only a primary, fallback, or explicit session model selected by the Agent.`;
 export const catalogRowNoModel = (provider) =>
   `Configuration setting ${provider}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
 // Deploy refused because the cluster denied the controller the RoleBindings for this Agent's

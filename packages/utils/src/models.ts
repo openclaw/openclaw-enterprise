@@ -1,3 +1,5 @@
+import { asRecord } from "./objects.ts";
+
 // OpenClaw's compatibility selectors for OpenRouter's auto router and free models name the
 // openrouter provider without a slash, trimmed and in any case (`model-selection-normalize.ts`
 // and `model-policy-ref.ts` at the commit in deploy/runtime/openclaw-source.json). Update this
@@ -18,4 +20,20 @@ export function splitModelRef(reference: string): { provider: string; id: string
   return separator < 0
     ? { provider: reference, id: undefined }
     : { provider: reference.slice(0, separator), id: reference.slice(separator + 1) };
+}
+
+/** Concrete catalog selections a scope explicitly allows for session model switching. */
+export function selectableCatalogModels(scope: unknown): string[] {
+  const values = asRecord(scope);
+  const policies = asRecord(values?.models);
+  const allow = asRecord(values?.modelPolicy)?.allow;
+  if (!policies || !Array.isArray(allow)) {
+    return [];
+  }
+  return allow.filter(
+    (reference): reference is string =>
+      typeof reference === "string" &&
+      /^[^/*?]+\/[^*?]+$/u.test(reference) &&
+      Object.hasOwn(policies, reference),
+  );
 }

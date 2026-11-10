@@ -266,6 +266,7 @@ export const CreateOAuthNotOffered = story("createOAuthNotOffered");
 export const CreateOAuthStartUnconfirmed = story("createOAuthStartUnconfirmed");
 export const CreateOAuthError = story("createOAuthError");
 export const CreateOAuthExpired = story("createOAuthExpired");
+export const CreateSelectableModels = story("createSelectableModels");
 export const CreatePatToOpenClaw = {
   ...story("createPatToOpenClaw"),
   name: "Switch from Service Accounts to OpenClaw",
