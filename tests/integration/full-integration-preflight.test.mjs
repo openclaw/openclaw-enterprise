@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -107,6 +107,179 @@ test("same-SHA reuse admits only successful canonical CI jobs and immutable curr
     assert.equal(await admitProducer(get, run, sha, 456, rows), null);
     artifacts[0] = original;
   }
+});
+
+test("full coverage receipts require real case evidence and retain approved same-SHA CI reuse", async (t) => {
+  const { get, run, sha, rows } = await reuseFixture();
+  const lane = "logging-collector";
+  assert.ok(rows.some((row) => row.lane === lane));
+  const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+  const suites = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+  const reusedFiles = suites.lanes[lane].files;
+  const full = loadTestSuites(
+    join(repositoryRoot, "scripts/ci/test-suites.json"),
+    "full-integration",
+  );
+  const installerPaths = full.lanes["openshell-installers"].files.map(({ path }) => path);
+  const fixtureRoot = await temporaryDirectory(t, "full-coverage-receipts-");
+  const policyPath = "tests/integration/coverage-policy.test.mjs";
+  const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+  const json = (path, value) => writeFile(path, JSON.stringify(value));
+  const generate = async (path, names, body) => {
+    const target = join(fixtureRoot, path);
+    await mkdir(dirname(target), { recursive: true });
+    const tests = names.length ? [...new Set(names)] : ["sentinel"];
+    await writeFile(
+      target,
+      [
+        'import assert from "node:assert/strict"; import test from "node:test";',
+        ...tests.map((name) => `test(${JSON.stringify(name)}, async () => { ${body} });`),
+      ].join("\n"),
+    );
+  };
+  const invoke = (command, target, args, env = {}) => {
+    const result = spawnSync(
+      process.execPath,
+      [runner, command, target, "--root", fixtureRoot, "--manifest", "manifest.json", ...args],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          GITHUB_SHA: sha,
+          GITHUB_WORKFLOW: "Full Integration",
+          OCC_CI_SUITE_VIEW: "full-integration",
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_RUN_ATTEMPT: "1",
+          GIT_CEILING_DIRECTORIES: dirname(fixtureRoot),
+          CI_RUNNER_DEADLINE_MS: "",
+          ...env,
+        },
+      },
+    );
+    assert.equal(result.error, undefined);
+    return result;
+  };
+  const produce = (target, directory = "results", env = {}) =>
+    invoke(
+      "run",
+      target,
+      ["--state", `state/${target}.json`, "--results", `${directory}/${target}.json`],
+      env,
+    );
+  await json(join(fixtureRoot, "manifest.json"), {
+    version: 1,
+    lanes: {
+      [lane]: { files: reusedFiles },
+      openshell: {
+        files: [policyPath, ...installerPaths].map((path) => ({
+          path,
+          expectedTests: ["sentinel"],
+        })),
+      },
+    },
+    groups: { full: [lane, "openshell"] },
+  });
+  for (const { path, expectedTests = [] } of reusedFiles) {
+    await generate(path, expectedTests, "assert.equal(1, 1);");
+  }
+  for (const path of installerPaths) {
+    await generate(path, ["sentinel"], "assert.equal(1, 1);");
+  }
+  const installer = produce("openshell-installers");
+  assert.equal(installer.status, 0, installer.stderr);
+  const ordinary = produce(lane, "download", {
+    GITHUB_WORKFLOW: "CI",
+    OCC_CI_SUITE_VIEW: "default",
+  });
+  assert.equal(ordinary.status, 0, ordinary.stderr);
+  const producer = await admitProducer(get, run, sha, 456, rows);
+  assert.ok(producer);
+  assert.deepEqual(await validateResults({ directory: fixtureRoot, producer, sha, get }), [lane]);
+  const reusedReceipt = await readFile(join(fixtureRoot, "accepted", `${lane}.json`), "utf8");
+  const reusedPath = join(fixtureRoot, "results", `${lane}.json`);
+  await writeFile(reusedPath, reusedReceipt);
+  const policyReceipt = join(fixtureRoot, "results/openshell-policy.json");
+  const needsPath = join(fixtureRoot, "needs.json");
+  let serial = 0;
+  const verify = async (expectedExit, expectedMarker, env = {}) => {
+    serial += 1;
+    const marker = join(fixtureRoot, `marker-${serial}`);
+    const output = join(fixtureRoot, `output-${serial}`);
+    const result = invoke(
+      "aggregate",
+      "full",
+      ["--results-dir", "results", "--needs", needsPath, "--full-coverage-marker", marker],
+      { GITHUB_OUTPUT: output, ...env },
+    );
+    assert.equal(result.status, expectedExit, result.stderr || result.stdout);
+    if (expectedMarker) {
+      assert.equal(JSON.parse(result.stdout).fullCoverageExercised, true);
+      assert.equal(await readFile(marker, "utf8"), "1\n");
+      assert.equal(await readFile(output, "utf8"), "full_coverage_exercised=true\n");
+    } else {
+      await assert.rejects(readFile(marker), { code: "ENOENT" });
+    }
+  };
+  const needs = {
+    preflight: { result: "success" },
+    [lane]: { result: "success" },
+    openshell: { result: "success", lanes: ["openshell-policy", "openshell-installers"] },
+  };
+  await json(needsPath, needs);
+  await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
+  assert.equal(produce("openshell-policy").status, 0);
+  await verify(0, true);
+  const legacy = JSON.parse(reusedReceipt);
+  for (const file of legacy.files) {
+    delete file.exercised;
+  }
+  await json(reusedPath, legacy);
+  await verify(0, false);
+  await writeFile(reusedPath, reusedReceipt);
+
+  needs.openshell.result = "failure";
+  await json(needsPath, needs);
+  await generate(
+    policyPath,
+    ["sentinel"],
+    'await Promise.reject(new Error("synthetic setup")); assert.equal(1, 1);',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, false);
+
+  await generate(policyPath, ["sentinel"], 'assert.fail("synthetic assertion");');
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, true);
+  await verify(1, false, { GITHUB_RUN_ATTEMPT: "2" });
+  const genuine = await readFile(policyReceipt, "utf8");
+  const zero = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 };
+  for (const damage of [
+    (value) => {
+      value.files[0].counts = zero;
+      value.files[0].tests = [];
+      value.counts = zero;
+    },
+    (value) => {
+      value.scope = "focused";
+    },
+    (value) => {
+      value.sourceSha = "0".repeat(40);
+    },
+    (value) => {
+      value.files = [];
+    },
+  ]) {
+    const bad = JSON.parse(genuine);
+    damage(bad);
+    await json(policyReceipt, bad);
+    await verify(1, false);
+  }
+  await writeFile(policyReceipt, genuine);
+  needs.openshell.result = "cancelled";
+  await json(needsPath, needs);
+  await verify(1, false);
 });
 
 test("same-SHA reuse waits at most twelve minutes and falls back without delaying credentialed lanes", async () => {

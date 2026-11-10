@@ -4,6 +4,7 @@ import {
   openShellProgressPrefix,
 } from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
+import { recordsCoverage } from "./full-integration-coverage.ts";
 import {
   openShellGitRetentionKind,
   projectOpenShellGitRetention,
@@ -1732,7 +1733,7 @@ function* interruptedOutput({ lines, omitted }) {
   }
 }
 
-function location(data = {}) {
+function location(data = {}, recordCoverage = false) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
   const fileFailure = typeof data.file === "string" && data.name === data.file;
@@ -1758,6 +1759,15 @@ function location(data = {}) {
     type: data.type,
     testId: data.testId,
     parentId: data.parentId,
+    caseAssertionFailure:
+      recordCoverage &&
+      !fileFailure &&
+      data.details?.type === "test" &&
+      error?.failureType === "testCodeFailure" &&
+      cause?.code === "ERR_ASSERTION" &&
+      cause?.name === "AssertionError"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1793,6 +1803,7 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
   const progress = [];
   const readProgress = boundedProgressLines((line) => {
@@ -1864,6 +1875,19 @@ export default async function* jsonLinesReporter(source) {
     if (event.type === "test:fail") {
       failed = true;
     }
+    if (
+      recordCoverage &&
+      event.type === "test:summary" &&
+      typeof event.data?.file === "string" &&
+      event.data.counts
+    ) {
+      const { tests, passed, failed, cancelled, skipped, todo } = event.data.counts;
+      yield `${JSON.stringify({
+        type: "test:summary",
+        data: { tests, passed, failed, cancelled, skipped, todo },
+      })}\n`;
+      continue;
+    }
     if (event.type === "test:diagnostic") {
       const message = event.data?.message;
       if (typeof message !== "string") {
@@ -1895,7 +1919,7 @@ export default async function* jsonLinesReporter(source) {
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data),
+      data: location(event.data, recordCoverage),
     })}\n`;
   }
   // Passing files send nothing extra.
