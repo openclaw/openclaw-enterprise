@@ -3,12 +3,19 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 
+import type {
+  InstallationRuntimeDrivers,
+  SelectedDriverConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
+import { DEFAULT_LOGGING_CONFIGURATION } from "../../apps/controller/src/logging.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import type {
   AuthorizationDecision,
   AuthorizationRequest,
+  ComputeDriver,
+  DriverImplementation,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
@@ -17,8 +24,10 @@ import {
   PostgresWorkQueue,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 
 // Native IAM whose next `delete` check of one Agent throws once armed: an IAM Driver outage at
@@ -43,6 +52,18 @@ class RecheckOutageIAM extends NativeIAMDriver {
   }
 }
 
+// The selections of this test's own Drivers, which define no configuration.
+const unconfigured: DriverImplementation = {
+  configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+  validateConfiguration: () => [],
+};
+function selected(
+  driver: { readonly id: string; readonly implementation: string },
+  definition: DriverImplementation = unconfigured,
+): SelectedDriverConfiguration {
+  return { id: driver.id, implementation: driver.implementation, configuration: {}, definition };
+}
+
 // Error bodies carry a fresh request ID; everything else must match byte for byte.
 const withoutRequestId = (body: string) =>
   body.replace(/req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "req");
@@ -53,7 +74,9 @@ test(
   async (t) => {
     // Seed revisions without starting their compute work. The users, their sessions and scoped
     // grants, the deletions, work claims and finalization all use their normal persisted paths.
+    const secretDriver = createTestSecretDriver({ id: "agent-deletion-status-pg-secret" });
     const f = await createPostgresAgentApp(t, {
+      secretDriver,
       appOptions: {
         async provisionAuthAccount(seed, auditEvent, prepared) {
           const id = installation!.id;
@@ -156,36 +179,23 @@ test(
 
     // Removing an actor's Agent access while teardown runs must stop its finalization.
     const duringRetire = new Map<string, () => Promise<void>>();
-    // Each worker's IAM is Native IAM on that worker's own state; the outage stays unarmed until
-    // the retry case below.
-    const outageDrivers: RecheckOutageIAM[] = [];
+    const computeDriver: ComputeDriver = {
+      ...f.computeDriver,
+      capability: "compute",
+      async stopRevision() {
+        assert.fail("Deletion retires the revision");
+      },
+      async retireRevision(revision) {
+        assert.ok(
+          [agent.id, selfDeleted.agent.id, revoked.agent.id, unavailable.agent.id].includes(
+            revision.agentId,
+          ),
+        );
+        await duringRetire.get(revision.agentId)?.();
+      },
+    };
     const createWorker = () =>
-      new ControllerWorker({
-        pool: new pg.Pool({ connectionString: databaseUrl }),
-        createIAMDriver(state) {
-          const driver = new RecheckOutageIAM(state, {
-            id: "native-iam",
-            implementation: "native",
-          });
-          outageDrivers.push(driver);
-          return driver;
-        },
-        computeDriver: {
-          ...f.computeDriver,
-          capability: "compute",
-          async stopRevision() {
-            assert.fail("Deletion retires the revision");
-          },
-          async retireRevision(revision) {
-            assert.ok(
-              [agent.id, selfDeleted.agent.id, revoked.agent.id, unavailable.agent.id].includes(
-                revision.agentId,
-              ),
-            );
-            await duringRetire.get(revision.agentId)?.();
-          },
-        },
-      });
+      new ControllerWorker({ pool: new pg.Pool({ connectionString: databaseUrl }), computeDriver });
     // The bootstrap also queues creation of the default Namespace. Finish it normally so
     // the controlled claims below can name our exact deletion, even on a fresh file database.
     const bootstrapWorker = createWorker();
@@ -348,9 +358,42 @@ test(
     // An IAM Driver failure during the finalize recheck rolls the finalizing transaction back and
     // retries the work as DEPENDENCY_UNAVAILABLE, like the check before teardown. Teardown arms
     // one throw for the next delete check of this Agent, which is the finalize recheck. The
-    // second teardown is held so the state between the attempts can be read.
-    const workerIAM = outageDrivers.at(-1);
-    assert.ok(workerIAM, "the running worker's IAM Driver");
+    // second teardown is held so the state between the attempts can be read. This worker gets
+    // its IAM Driver the way startup composes one: from the Installation's runtime Drivers.
+    await worker.stop();
+    const iamDrivers: RecheckOutageIAM[] = [];
+    const configurationDriver = createTestConfigurationDriver({
+      id: "agent-deletion-status-pg-config",
+    });
+    const drivers: InstallationRuntimeDrivers = {
+      installation: {
+        occ: { cluster: "agent-deletion-status" },
+        logging: DEFAULT_LOGGING_CONFIGURATION,
+        backend: [],
+        drivers: {
+          iam: selected({ id: "native-iam", implementation: "native" }, NativeIAMDriver),
+          compute: selected(computeDriver),
+          configuration: selected(configurationDriver),
+          secret: selected(secretDriver),
+        },
+      },
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      createIAMDriver(state) {
+        const driver = new RecheckOutageIAM(state, { id: "native-iam", implementation: "native" });
+        iamDrivers.push(driver);
+        return driver;
+      },
+    };
+    const recheckWorker = new ControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl }),
+      drivers,
+    });
+    t.after(() => recheckWorker.stop());
+    const [workerIAM] = iamDrivers;
+    assert.ok(workerIAM, "the worker composed its IAM Driver from the Installation");
+    await recheckWorker.start();
     let teardowns = 0;
     const secondTeardown = Promise.withResolvers<void>();
     const resumeTeardown = Promise.withResolvers<void>();
@@ -429,7 +472,7 @@ test(
     // records AGENT_DELETED for its actor but no recheck row. That actor still holds Namespace
     // read, yet gets the same denial as for an Agent that never existed; a Namespace-wide
     // reader still sees `deleted`.
-    await worker.stop();
+    await recheckWorker.stop();
     const legacyActor = await reader(legacy);
     const legacyPaths = paths(legacy);
     await legacyActor.request();
