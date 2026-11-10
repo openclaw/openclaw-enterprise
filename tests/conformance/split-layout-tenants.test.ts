@@ -338,6 +338,13 @@ test("export reads every tenant resource the import needs, without Secret values
       { property: "subjectId", value: null },
       { property: "roleId", value: 42 },
       { property: "resourceId", value: "" },
+      // The wire contract counts Unicode code points, not UTF-16 code units.
+      ...["subjectId", "roleId", "resourceId"].flatMap((property) =>
+        ["x".repeat(201), "😀".repeat(201), "bad\u0000id", "bad\ud800id"].map((value) => ({
+          property,
+          value,
+        })),
+      ),
     ].map(({ property, value }) => ({
       field: "accessBindings" as const,
       property,
@@ -412,6 +419,22 @@ test("export reads every tenant resource the import needs, without Secret values
       diagnostic,
     );
     assert.equal(calls, 0);
+  }
+
+  // These are valid wire-contract bundle inputs; NativeIAM need not generate these IDs.
+  for (const opaqueId of [" ", "😀".repeat(200), "percent%2e/slash?#\\name"]) {
+    const compatible = structuredClone(bundle);
+    const tenant = compatible.namespaces.find(({ id }) => id === seeded.namespace.id)!;
+    const role = tenant.roles[0]!;
+    const binding = tenant.accessBindings.find(({ id }) => id === seeded.binding.id)!;
+    const agent = tenant.agents.find(({ id }) => id === seeded.agent.id)!;
+    role.id = opaqueId;
+    binding.id = opaqueId;
+    binding.roleId = opaqueId;
+    binding.subjectId = opaqueId;
+    binding.resourceId = opaqueId;
+    agent.servicePrincipalId = opaqueId;
+    assert.deepEqual(checkImport(compatible, { "team-a": { "model-key": "synthetic" } }), []);
   }
 
   // Empty successful deletes and accepted missing resources are valid on the
@@ -1117,7 +1140,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
 
   // Persisted IDs must be checked before any request: an array containing an ID
   // has a different Map identity but becomes the same destination in a URL.
-  for (const invalidId of [[target.id], {}, null, 42, "", " "]) {
+  for (const invalidId of [[target.id], {}, null, 42, "", " ", "x".repeat(201)]) {
     const invalidState = {
       ids: Object.fromEntries([
         [sources[0]!.id, target.id],
@@ -1136,7 +1159,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
     });
     await assert.rejects(
       importTenants(api, bundle, {}, { ...options, state: invalidState, names: {} }),
-      /ID map \(--map\)\.ids: expected nonempty string values/u,
+      /ID map \(--map\)\.ids: (expected nonempty string values|invalid resource ID)/u,
     );
     assert.equal(requests, 0);
     assert.equal(saves, 0);
@@ -1269,7 +1292,7 @@ test("import requires own object mappings and restores literal names or explicit
   for (const [name, names] of renameCases) {
     const target = await created(destination, "/namespaces", { name });
     await markReady(destination, target.id);
-    const restored: SavedState = { ids: {}, deployed: [] };
+    const restored: SavedState = { ids: { "unused-opaque-source": " " }, deployed: [] };
     const result = await importTenants(destination.api, bundle, values, {
       ...options,
       state: restored,
@@ -1277,6 +1300,7 @@ test("import requires own object mappings and restores literal names or explicit
     });
     assert.equal(result.complete, true);
     assert.equal(restored.ids[namespace.id], target.id);
+    assert.equal(restored.ids["unused-opaque-source"], " ");
     const secrets = resources(
       (await destination.api.expect("GET", `/namespaces/${target.id}/secrets`)).data,
     );
@@ -1469,6 +1493,50 @@ test("import refuses non-array destination inventories before adopting a populat
     assert.deepEqual((await fixture.api.expect("GET", `${base}/agents`)).data, before);
   }
 
+  // A stale child mapping does not mean this source Namespace has already been
+  // adopted. Its exact-name destination still needs the population check.
+  const childOnlyState: SavedState = {
+    ids: { [seeded.role.id]: destination.id },
+    deployed: [],
+  };
+  const childOnlyBefore = structuredClone(childOnlyState);
+  let childOnlySaves = 0;
+  let childOnlyWrites = 0;
+  const childOnlyApi = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl(url, init) {
+      if (init.method !== "GET") {
+        childOnlyWrites += 1;
+      }
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  await assert.rejects(
+    importTenants(
+      childOnlyApi,
+      bundle,
+      { "team-a": { "model-key": "synthetic-value" } },
+      {
+        state: childOnlyState,
+        save: () => {
+          childOnlySaves += 1;
+        },
+        deploy: false,
+        names: { "team-a": string(destination.name) },
+      },
+    ),
+    (error: unknown) => {
+      assert.equal(childOnlyWrites, 0);
+      assert.equal(childOnlySaves, 0);
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /already exists and holds Agents or Secrets/u);
+      return true;
+    },
+  );
+  assert.deepEqual(childOnlyState, childOnlyBefore);
+  assert.deepEqual((await fixture.api.expect("GET", `${base}/agents`)).data, before);
+  assert.deepEqual((await fixture.api.expect("GET", `${base}/secrets`)).data, []);
+
   // A genuinely empty, ready destination still follows the normal import path.
   const empty = await created(fixture, "/namespaces", { name: "empty-destination" });
   await markReady(fixture, empty.id);
@@ -1519,6 +1587,14 @@ test("discard validates every tenant's late collections before deleting any Agen
     { field: "presets", value: {}, diagnostic: /presets; expected an array/u },
     { field: "roles", value: [null], diagnostic: /roles\[0\].*expected an object/u },
     { field: "roles", value: [{ ...seeded.role, id: 42 }], diagnostic: /roles\[\]\.id/u },
+    // These satisfy the opaque length bound, but cannot retain their exact ID
+    // through URI encoding and WHATWG URL construction. Catch every tenant's
+    // failure before deleting the first tenant's Agent.
+    ...[".", "..", "\ud800", "\udc00"].map((id) => ({
+      field: "roles",
+      value: [{ ...seeded.role, namespaceId: laterNamespace.id, id }],
+      diagnostic: /roles\[\]\.id/u,
+    })),
     // Nonblank IDs must still satisfy the Configuration DELETE route's format.
     ...[
       "not-a-configuration-id",
@@ -1785,5 +1861,124 @@ test("Namespace write refusals require the OCC error envelope before offering re
   assert.equal(
     object((await fixture.api.expect("GET", `/namespaces/${namespace.id}`)).data).status,
     "ready",
+  );
+});
+
+test("credentialed writes stop before following a cross-origin HTTP redirect", async (t) => {
+  const destinationRequests: string[] = [];
+  const destination = createServer((request, response) => {
+    destinationRequests.push(`${request.method} ${request.url}`);
+    response.writeHead(201, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        data: {
+          id: "ns_00000000-0000-4000-8000-000000000001",
+          name: "redirect-probe",
+          status: "provisioning",
+          createdAt: "2026-11-10T00:00:00.000Z",
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      }),
+    );
+  });
+  await listen(t, destination);
+  const destinationAddress = destination.address();
+  assert.ok(destinationAddress && typeof destinationAddress !== "string");
+
+  const originRequests: {
+    method: string | undefined;
+    path: string | undefined;
+    key: string | string[] | undefined;
+    body: string;
+  }[] = [];
+  const origin = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) {
+      body += String(chunk);
+    }
+    originRequests.push({
+      method: request.method,
+      path: request.url,
+      key: request.headers["x-api-key"],
+      body,
+    });
+    response
+      .writeHead(307, {
+        location: `http://127.0.0.1:${destinationAddress.port}/namespaces`,
+      })
+      .end();
+  });
+  await listen(t, origin);
+  const originAddress = origin.address();
+  assert.ok(originAddress && typeof originAddress !== "string");
+
+  // Use native fetch against both listeners: a mocked fetch would not exercise
+  // Node's redirect replay of the POST body and custom credential header.
+  const key = "synthetic-redirect-service-key";
+  const body = { name: "redirect-probe" };
+  const api = createOccApi({
+    baseUrl: `http://127.0.0.1:${originAddress.port}`,
+    headers: { "x-api-key": key },
+  });
+  const failure: unknown = await api.expect("POST", "/namespaces", body).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.deepEqual(destinationRequests, []);
+  assert.deepEqual(originRequests, [
+    {
+      method: "POST",
+      path: "/namespaces",
+      key,
+      body: JSON.stringify(body),
+    },
+  ]);
+  assert.ok(failure instanceof Error);
+  assert.match(failure.message, /redirect|ambiguous HTTP 307/u);
+  assert.match(failure.message, /reconcil/iu);
+});
+
+test("discard preserves encoded opaque Role IDs through real HTTP deletion", async () => {
+  const fixture = await createFixture();
+  const namespace = await created(fixture, "/namespaces", { name: "opaque-deletion" });
+  await markReady(fixture, namespace.id);
+  const ids = [
+    "role/with/slashes",
+    "role%2e",
+    "role?#fragment",
+    "role\\backslash",
+    "😀".repeat(200),
+  ];
+  await fixture.controller.transact(async (unit: PlatformUnitOfWork) => {
+    for (const [index, id] of ids.entries()) {
+      await unit.iamPolicy.createRole({
+        id,
+        namespaceId: namespace.id,
+        name: `Encoded role ${index}`,
+        permissions: [{ action: "read", resourceKind: "configuration" }],
+      });
+    }
+  });
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === namespace.id);
+  const removed: string[] = [];
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl(url, init) {
+      if (init.method === "DELETE" && new URL(url).pathname.includes("/iam/roles/")) {
+        removed.push(decodeURIComponent(new URL(url).pathname.split("/").at(-1)!));
+      }
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  // This fixture has no Namespace deletion worker. Child deletion succeeds;
+  // the command truthfully reports the still-deleting Namespace at its deadline.
+  await assert.rejects(
+    discardTenants(api, bundle, { timeoutMs: 0, intervalMs: 0, sleep: noSleep }),
+    /Namespaces still present/u,
+  );
+  assert.deepEqual([...removed].sort(), [...ids].sort());
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${namespace.id}/iam/roles`)).data,
+    [],
   );
 });

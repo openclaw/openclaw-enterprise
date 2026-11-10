@@ -50,7 +50,8 @@ graph TD
 `scripts/split-layout-tenants.ts:importTenants`
 
 Successful responses require the OCC `data` and request metadata envelope without
-an `error` field. Collection reads must return an array in `data`. A successful HTTP status with
+an `error` field. The client does not follow HTTP redirects, so a redirect cannot
+replay a credentialed request. Collection reads must return an array in `data`. A successful HTTP status with
 a non-array collection stops the import at that read; it is not an empty
 Namespace inventory. The error reports a bounded request path, not response content.
 Keep the original bundle and map, if present. Correct the OCC endpoint and
@@ -62,8 +63,10 @@ need permissions. OCC still validates the submitted configuration and grants.
 Workspace export accepts only the requested file's validated response. Only a
 verified OCC `404 NOT_FOUND` means absent; all other unreadable responses remain
 recorded so discard requires the explicit unread-workspace override.
-Discard validates every collection and deletion ID against its route format
-before its first DELETE, preserving opaque IAM identifiers. Invalid private JSON is reported by input
+Discard validates every collection and deletion ID before its first DELETE,
+then uses the precomputed paths. Each ID must survive URL encoding as one exact
+segment; dot segments and unencodable text are refused. Opaque IAM IDs retain
+their 1–200-code-point contract, without trimming whitespace. Invalid private JSON is reported by input
 name without quoting its contents.
 
 The importer rejects duplicate source Namespace IDs across the whole bundle,
@@ -149,3 +152,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 - 2026-10-28 22:27: Record tenant restore ordering and remap Preset authentication after service-account IDs exist. (authoring-run/a5ca040d-695b-43c5-b18c-d6b1938aa6c5 - 478e0cfcda4849e519a3224f5d05b2a4fb6a5bca)
 
 - 2026-11-10 17:32: Validate successful OCC envelopes and preserve unverified workspace reads as unread. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 9fac3e11786d23b9ebb73cf2eece61a0257157dc)
+
+- 2026-11-10 17:43: Preserve exact IAM identifiers, preflight destructive URLs and stop credentialed redirects. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 03e992cea59ddd82b0f0bf1ecbb3a70c5a45f596)

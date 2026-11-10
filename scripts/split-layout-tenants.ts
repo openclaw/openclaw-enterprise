@@ -257,6 +257,10 @@ const resourcePrefixes: Record<string, string> = {
   revisions: "rev_",
 };
 
+function validOpaqueId(value: unknown): value is string {
+  return boundedString(value, 1, 200) && !value.includes("\0") && !/\p{Cs}/u.test(value);
+}
+
 function requireResourceId(
   value: unknown,
   kind: string,
@@ -267,7 +271,7 @@ function requireResourceId(
   const valid =
     typeof value === "string" &&
     (prefix === undefined
-      ? Array.from(value).length > 0 && Array.from(value).length <= 200
+      ? validOpaqueId(value)
       : new RegExp(`^${prefix}${uuidV4}$`, "u").test(value));
   if (!valid) {
     throw new InvalidMigrationDataError(`${location}: invalid resource ID. ${recovery}`);
@@ -330,6 +334,13 @@ function validateTenant(namespace: Resource) {
           "configurations",
           `${location}.configurationId`,
         );
+        if (resource.servicePrincipalId !== undefined) {
+          requireResourceId(
+            resource.servicePrincipalId,
+            "servicePrincipalId",
+            `${location}.servicePrincipalId`,
+          );
+        }
       } else if (field === "configurations") {
         requireString(resource.kind, `${location}.kind`);
         requireRecord(resource.values, `${location}.values`);
@@ -351,11 +362,15 @@ function validateTenant(namespace: Resource) {
           requireString(permission.resourceKind, `${permissionLocation}.resourceKind`);
         }
       } else if (field === "accessBindings") {
-        for (const key of ["subjectKind", "subjectId", "roleId"]) {
-          requireString(resource[key], `${location}.${key}`);
+        requireString(resource.subjectKind, `${location}.subjectKind`);
+        for (const key of ["subjectId", "roleId"]) {
+          requireResourceId(resource[key], key, `${location}.${key}`);
         }
-        if (BINDING_RESOURCE_KINDS.includes(resource.resourceKind)) {
-          requireString(resource.resourceId, `${location}.resourceId`);
+        if (
+          resource.resourceId !== undefined ||
+          BINDING_RESOURCE_KINDS.includes(resource.resourceKind)
+        ) {
+          requireResourceId(resource.resourceId, "resourceId", `${location}.resourceId`);
         }
       }
     }
@@ -449,6 +464,7 @@ export function createOccApi({
   async function call(method: string, path: string, body?: unknown): Promise<ApiResult> {
     const init: RequestInit & { headers: Record<string, string> } = {
       method,
+      redirect: "manual",
       headers: { ...headers },
     };
     if (body !== undefined) {
@@ -586,7 +602,7 @@ async function readOccResource(api: Api, method: "GET" | "POST", path: string, b
 
 function responseId(resource: Resource, location: string, field = "id"): string {
   const value = resource[field];
-  if (typeof value !== "string" || value.trim() === "") {
+  if (typeof value !== "string" || value.length === 0) {
     throw new InvalidMigrationDataError(
       `${location.slice(0, 240)}: invalid OCC response data; expected a nonempty string in ${field}. ${recoverOcc}`,
     );
@@ -765,6 +781,29 @@ async function waitUntil(
 
 const defaultSleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function deletionPath(base: string, route: string, id: unknown, location: string): string {
+  let path: string | undefined;
+  try {
+    const encoded = encodeURIComponent(String(id));
+    const candidate = `${base}/${route}/${encoded}`;
+    const url = new URL(candidate, "http://127.0.0.1");
+    if (
+      url.pathname === candidate &&
+      decodeURIComponent(url.pathname.split("/").at(-1) ?? "") === id
+    ) {
+      path = candidate;
+    }
+  } catch {
+    // Malformed Unicode cannot be addressed; never include the private ID in diagnostics.
+  }
+  if (path === undefined) {
+    throw new InvalidMigrationDataError(
+      `${location}: resource ID cannot be addressed as one URL segment. ${recoverInput}`,
+    );
+  }
+  return path;
+}
+
 /**
  * Deletes the bundle's tenants on the old release: Agents first, then the Namespace children,
  * then the Namespaces. Refuses when a Namespace holds an Agent or Secret the bundle lacks.
@@ -781,9 +820,30 @@ export async function discardTenants(
   }: DiscardOptions = {},
 ) {
   const namespaces = readNamespaces(bundle);
-  for (const namespace of namespaces) {
+  const childRoutes = [
+    ["iam/access-bindings", "accessBindings"],
+    ["service-accounts", "serviceAccounts"],
+    ["presets", "presets"],
+    ["configurations", "configurations"],
+    ["credential-sources", "credentialSources"],
+    ["secrets", "secrets"],
+    ["iam/roles", "roles"],
+  ] as const;
+  const deletionPlans = namespaces.map((namespace) => {
     validateTenant(namespace);
-  }
+    const base = ns(namespace.id);
+    const paths = (route: string, field: string) =>
+      Array.from(bundleRecords(namespace, field), (resource) => ({
+        resource,
+        path: deletionPath(base, route, resource.id, `bundle namespaces[].${field}[].id`),
+      }));
+    return {
+      namespace,
+      base,
+      agents: paths("agents", "agents"),
+      children: childRoutes.flatMap(([route, field]) => paths(route, field)),
+    };
+  });
   const unread = namespaces.flatMap((namespace) =>
     Array.from(bundleRecords(namespace, "agents"))
       .filter(
@@ -816,15 +876,9 @@ export async function discardTenants(
       );
     }
   }
-  for (const namespace of namespaces) {
-    const base = ns(namespace.id);
-    for (const agent of bundleRecords(namespace, "agents")) {
-      await api.expect(
-        "DELETE",
-        `${base}/agents/${encodeURIComponent(String(agent.id))}`,
-        undefined,
-        [202, 404],
-      );
+  for (const { namespace, base, agents, children } of deletionPlans) {
+    for (const { resource: agent, path } of agents) {
+      await api.expect("DELETE", path, undefined, [202, 404]);
       log(`deleting Agent ${agent.name} (${agent.id})`);
     }
     const gone = await waitUntil(async () => (await list(api, `${base}/agents`)).length === 0, {
@@ -835,24 +889,8 @@ export async function discardTenants(
     if (!gone) {
       throw new SplitLayoutError(`${namespace.name}: Agents still present after ${timeoutMs} ms`);
     }
-    const children = [
-      ["iam/access-bindings", "accessBindings"],
-      ["service-accounts", "serviceAccounts"],
-      ["presets", "presets"],
-      ["configurations", "configurations"],
-      ["credential-sources", "credentialSources"],
-      ["secrets", "secrets"],
-      ["iam/roles", "roles"],
-    ] as const;
-    for (const [kind, field] of children) {
-      for (const { id } of bundleRecords(namespace, field)) {
-        await api.expect(
-          "DELETE",
-          `${base}/${kind}/${encodeURIComponent(String(id))}`,
-          undefined,
-          [204, 404],
-        );
-      }
+    for (const { path } of children) {
+      await api.expect("DELETE", path, undefined, [204, 404]);
     }
     try {
       await api.expect("DELETE", base, undefined, [202, 404]);
@@ -974,10 +1012,37 @@ export async function importTenants(
   }
   const importState = requireRecord(state, "ID map (--map)");
   const savedIds = requireRecord(importState.ids, "ID map (--map).ids");
-  if (Object.values(savedIds).some((value) => typeof value !== "string" || value.trim() === "")) {
+  if (
+    Object.entries(savedIds).some(([key, value]) => !validOpaqueId(key) || !validOpaqueId(value))
+  ) {
     throw new InvalidMigrationDataError(
-      `ID map (--map).ids: expected nonempty string values. ${recoverInput}`,
+      `ID map (--map).ids: expected nonempty string values and keys of at most 200 code points. ${recoverInput}`,
     );
+  }
+  const mappedKinds = new Map<unknown, string>(
+    allNamespaces.map((namespace) => [namespace.id, "namespaces"]),
+  );
+  for (const namespace of namespaces) {
+    for (const field of [
+      "agents",
+      "configurations",
+      "presets",
+      "secrets",
+      "credentialSources",
+      "serviceAccounts",
+      "roles",
+      "accessBindings",
+    ]) {
+      for (const resource of bundleRecords(namespace, field)) {
+        mappedKinds.set(resource.id, field);
+        if (field === "agents" && resource.servicePrincipalId !== undefined) {
+          mappedKinds.set(resource.servicePrincipalId, "servicePrincipalId");
+        }
+      }
+    }
+  }
+  for (const [key, value] of Object.entries(savedIds)) {
+    requireResourceId(value, mappedKinds.get(key) ?? "opaque", "ID map (--map).ids");
   }
   const ids = new Map<unknown, unknown>(Object.entries(savedIds));
   // Each source tenant must keep a separate destination, including on a resumed import.
@@ -1035,10 +1100,7 @@ export async function importTenants(
     }
     const name = targetName(namespace);
     const same = existing.find((live) => live.name === name);
-    if (
-      same !== undefined &&
-      !Object.values(requireRecord(importState.ids, "ID map (--map).ids")).includes(same.id)
-    ) {
+    if (same !== undefined) {
       // Only an empty live Namespace is safe to fill: adopting a populated one would merge
       // the bundle into someone else's Secrets and Agents.
       const base = ns(same.id);
