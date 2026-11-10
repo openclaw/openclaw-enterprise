@@ -208,7 +208,7 @@ export async function ensureBootstrap(t: TestContext) {
     email: adminEmail,
     password: adminPassword,
     authSecret,
-    authBaseURL: "http://127.0.0.1",
+    authBaseURL: "https://console.oce.localhost",
     installationName: "Native admin PostgreSQL session test",
   });
 }
