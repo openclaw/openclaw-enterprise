@@ -872,8 +872,24 @@ test("run finishes file accounting and cleanup after a reporter pipe read error"
   const state = join(root, "state/pipe.jsonl");
   const resultPath = join(root, "results/pipe.json");
   await writeSingleLaneManifest(root, "pipe", [{ path: file }], {});
-  await writeFile(join(root, file), 'import test from "node:test"; test("case", () => {});\n');
   const injected = join(root, "injected");
+  // Hold the real child until its reporter pipe closes so the fault precedes completion.
+  await writeFile(
+    join(root, file),
+    `import test from "node:test";
+import { watch } from "node:fs";
+import { emitOpenShellProgress } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+test("case", async () => {
+  const released = new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "injected") { watcher.close(); resolve(); }
+    });
+  });
+  emitOpenShellProgress("installation", "started");
+  await released;
+});
+`,
+  );
   const preload = join(root, "pipe-error.mjs");
   // Fault the real child pipe; spawning, reporting, result accounting and cleanup stay real.
   await writeFile(
@@ -886,7 +902,7 @@ cp.spawn = (...args) => {
   const child = spawn(...args);
   if (args[1]?.includes("--test-reporter")) {
     child.stdout.once("data", () => {
-      writeFileSync(${JSON.stringify(injected)}, "faulted");
+      child.stdout.once("close", () => writeFileSync(${JSON.stringify(injected)}, "faulted"));
       child.stdout.destroy(Object.assign(new Error("private-pipe-canary"), { code: "EIO" }));
     });
   }
@@ -909,7 +925,8 @@ syncBuiltinESMExports();
   const summary = JSON.parse(await readFile(resultPath, "utf8"));
   assert.equal(summary.files[0].cleanup.status, "passed");
   assert.equal(await readFile(state, "utf8"), `${file}\n`);
-  assert.equal(result.status, summary.status === "passed" ? 0 : 1);
+  // The runner preserves native child exit codes, including failures other than 1.
+  assert.equal(result.status, summary.exitCode);
   assert.doesNotMatch(result.stderr, /private-pipe-canary|Unhandled.*error/);
 });
 
