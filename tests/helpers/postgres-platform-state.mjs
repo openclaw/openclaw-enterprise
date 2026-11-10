@@ -418,14 +418,16 @@ function admitted(values) {
   return admittedConfiguration(values);
 }
 
-async function startController(context, { kubernetesDrivers = false } = {}) {
+async function startController(
+  context,
+  { kubernetesDrivers = false, databaseUrl: occDatabaseUrl = contextDatabaseUrl(context) } = {},
+) {
   // Hold the private loopback transport port until the child binds it.
   const reservation = await reservePort();
   context.after(reservation.release);
   const { port } = reservation;
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
   const configurationRoot = await temporaryDirectory(context, "openclaw-postgres-configurations-");
-  const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
     databaseUrl: occDatabaseUrl,
     email: adminEmail,

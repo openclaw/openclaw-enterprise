@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-11-09
-last_updated_session: authoring-run/f324ad31-8ab0-4bf3-aaa2-0df9af461d0a
+updated: 2026-11-10
+last_updated_session: authoring-run/bac7470a-fbc4-403a-999f-c19334ecbc3a
 ---
 
 # CLI Agent metadata browsing flow
@@ -72,7 +72,12 @@ endpoints.
 ### 2. Mark the active version in version history
 
 Version history pages hold summaries, newest first (`--limit`, `--cursor`).
-They carry no saved settings and so no `configurationReadError`.
+`revisionSummaryFromRow` in `packages/occ/src/state/postgres-state.ts` keeps the
+recorded Harness identity, version and mode. It includes overrides and resolved
+configuration only when they were recorded, without inventing defaults. Summaries
+have no `configurationReadError`. For revision detail, `revisionForBrowsingFromRow`
+returns that typed error with metadata when either Harness settings object is
+missing; it does not expose the incomplete saved payload.
 `packages/occ/src/index.ts:listRevisions` adds each version's
 `deploymentStatus` and `deploymentErrorCode` from its deployment work record in
 the same read, so a version or Agent with unreadable saved settings keeps its
@@ -160,6 +165,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 04:53: Describe retained Harness settings in summaries and metadata-only revision detail. (authoring-run/bac7470a-fbc4-403a-999f-c19334ecbc3a - 2dcb04358876be5a95e1c578d542dbbbb101587a)
 
 - 2026-11-09 18:25: Return revision continuation delivery errors. (authoring-run/f324ad31-8ab0-4bf3-aaa2-0df9af461d0a - 2b8973f478478cc9f426daeb4e9de932207544cf)
 
