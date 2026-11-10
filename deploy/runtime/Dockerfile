@@ -228,7 +228,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '6336dbcc941d082a52860099bf0e77e915fbf24efa46ac3c1af6ef0a51af64f7  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '31dc052f466b580f57533d5aec5549f2ecfcce87055d4f5d44e3cd6a63630e25  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Broad source verification is an explicit target, separate from image assembly.

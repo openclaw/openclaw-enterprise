@@ -6031,6 +6031,17 @@
    });
  
    it.each([
+--- a/src/cli/node-cli/daemon.test.ts
++++ b/src/cli/node-cli/daemon.test.ts
+@@ -1,7 +1,7 @@
+ import path from "node:path";
+ import { Command } from "commander";
+ import type { DaemonRuntimePinSnapshot } from "../../daemon/runtime-pin-types.js";
+-import { resolveNodeGatewayOptions } from "./gateway-options.js";
++import { resolveNodeGatewayOptions } from "../../node-host/gateway-options.js";
+ const pinSnapshotMock = vi.hoisted(() =>
+   vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
+ );
 --- a/src/cli/node-cli/daemon.ts
 +++ b/src/cli/node-cli/daemon.ts
 @@ -40,7 +40,16 @@
