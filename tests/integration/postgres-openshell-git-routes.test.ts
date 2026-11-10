@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import pg from "pg";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  EgressInstallation,
+  ProxyPlan,
+} from "../../packages/contracts/src/index.ts";
 import {
   type OpenShellGitRouteSnapshot,
   PostgresOpenShellGitRouteStore,
@@ -600,6 +604,236 @@ function retainedGitWithdrawal(removal: boolean) {
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), true);
   };
 }
+
+test(
+  "v9 Git-only withdrawal retains the exact active grant-ready delivery without material",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const pool = testPool(t, { connectionString: databaseUrl });
+    const state = new PostgresPlatformState(pool);
+    const { repositoryBinding, repositoryCredentials } =
+      await import("../fixtures/repository-credentials/session-state.mjs");
+    const credentials = repositoryCredentials({
+      bindings: [repositoryBinding({ profile: "github-repository" })],
+      deadlineWallMs: Date.now() + 120_000,
+    });
+    const { revision: seed } = await seedSessionRevision(state, credentials, {
+      createdAt: new Date().toISOString(),
+      executionMode: "dedicated",
+    });
+    const initial = await state.read((unit) =>
+      unit.revisions.findRevision(seed.namespaceId, seed.agentId, seed.id),
+    );
+    assert.ok(initial);
+    const { namespaceId, agentId, servicePrincipalId } = initial;
+    const id = `rev_${randomUUID()}`;
+    const executionId = randomUUID().replaceAll("-", "");
+    const execution = {
+      namespaceId,
+      agentId,
+      servicePrincipalId,
+      revisionId: id,
+      executionId,
+      installationId: "git-withdrawal-fixture",
+    };
+    const driver = {
+      id: "selected-openshell",
+      implementation: "openshell",
+      configurationId: "a".repeat(64),
+    };
+    const model = { id: "required-model", generation: 1 };
+    const plan: ProxyPlan = {
+      id: "mixed-online-git-and-model",
+      generation: 1,
+      execution,
+      sandboxDriverId: driver.id,
+      egressDriverId: driver.id,
+      driver,
+      authorization: "online-request",
+      repositoryGitAuthorization: "online-request",
+      repositoryGit: credentials,
+      routes: [
+        {
+          route: model,
+          binding: {
+            binding: model,
+            execution,
+            source: {
+              installationId: execution.installationId,
+              namespaceId,
+              source: model,
+              backend: model,
+              provider: model,
+            },
+            grant: { kind: "inference", models: ["gpt-fixture"], providerTools: "none" },
+            grantHash: "b".repeat(64),
+            isolationId: "model-isolation",
+          },
+          origin: "https://model.example.test",
+          path: "/v1/responses",
+          method: "POST",
+          operationPolicy: model,
+          responsePolicy: model,
+          deadlineMs: 5000,
+        },
+      ],
+    };
+    const revision: AgentRevision = {
+      ...initial,
+      id,
+      revision: 2,
+      executionAdmission: { mode: "protected", version: 9 },
+      egressPlan: plan,
+    };
+    const owner = { namespaceId, agentId, revisionId: id };
+    const activation = await state.transactWithQueue(async (unit, queue) => {
+      await unit.revisions.createRevision(revision);
+      assert.ok(await unit.agents.compareAndSetActiveRevision(namespaceId, agentId, undefined, id));
+      const key = `agent_revision:${id}:reconcile`;
+      await queue.enqueue({
+        ...owner,
+        idempotencyKey: key,
+        actorId: servicePrincipalId,
+        availableAt: new Date(),
+      });
+      const work = await queue.claim();
+      assert.equal(work?.idempotencyKey, key);
+      assert.ok(work);
+      return work;
+    });
+    const store = new PostgresOpenShellGitRouteStore(pool);
+    const original = {
+      ...observed,
+      executionId: id,
+      provider: "oce-github-installation-" + "c".repeat(32),
+    };
+    const {
+      workspace,
+      sandbox,
+      sandboxId,
+      providerId,
+      attachmentEpoch,
+      processInstanceId,
+      networkInstanceId,
+      policyHash,
+    } = original;
+    const retainedLaunchHash = "d".repeat(64);
+    const snapshot: OpenShellGitRouteSnapshot = {
+      retainedLaunchHash,
+      observed: original,
+      generation: {
+        credentialState: "active",
+        providerId,
+        profileVersion: original.profileVersion,
+        resourceVersion: original.providerResourceVersion,
+        expiresAt: new Date(credentials.deadlineWallMs).toISOString(),
+      },
+      material: undefined,
+    };
+    await store.open({ ...owner, workspace, sandbox, bindingId: executionId }, randomUUID());
+    await store.record(id, 1, {
+      generation: { ...snapshot.generation, credentialState: "bootstrap", expiresAt: "" },
+      material: undefined,
+      observed: undefined,
+    });
+    assert.equal(await store.record(id, 1, snapshot), true);
+    const installation: EgressInstallation = {
+      plan,
+      sandboxId,
+      sender: { id: driver.id, generation: 1 },
+      installedAt: revision.createdAt,
+      enforcement: {
+        authorityScope: "execution",
+        instanceId: "same-execution",
+        configurationId: "same-policy",
+        policyHash,
+        repositoryGitRecipient: {
+          providerId,
+          attachmentEpoch,
+          processInstanceId,
+          networkInstanceId,
+          deliveryProfile: "github_repository",
+          authorization: "online-request",
+        },
+      },
+    };
+    const expire = (grant: boolean, candidate = revision) =>
+      store.expire(candidate, workspace, sandbox, false, grant);
+    assert.equal(await expire(true), undefined, "retention requires an authorized removal");
+    await state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(namespaceId);
+      await unit.agents.lockAgent(namespaceId, agentId);
+      await unit.agents.updateConfiguration(
+        namespaceId,
+        agentId,
+        revision.configurationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+      );
+      await unit.repositorySessions.withdrawFinite(owner, new Date().toISOString());
+    });
+    assert.equal(await expire(true), undefined, "retention requires the protected installation");
+    await state.transact((unit) => unit.credentialSources.recordEgressInstallation(installation));
+    assert.equal(await expire(true), undefined, "the original activation must have completed");
+    await new PostgresWorkQueue(pool).complete(activation, { code: "REVISION_ACTIVATED" });
+    assert.equal(
+      await store.record(id, 1, {
+        ...snapshot,
+        observed: { ...original, attachmentEpoch: "different-attachment" },
+      }),
+      true,
+    );
+    assert.equal(await expire(true), undefined, "a different recipient cannot retain this route");
+    assert.equal(await store.record(id, 1, snapshot), true);
+    assert.equal(
+      await expire(false),
+      undefined,
+      "a prepared runtime cannot retain absent material",
+    );
+    assert.equal(await store.owns(id, 1), true, "refused attempts leave the original fence open");
+    const retained = { observed: original, retainedLaunchHash, onlineWithdrawalFence: 1 };
+    assert.deepEqual(await expire(true), retained);
+    assert.deepEqual(await expire(true), retained, "repeat withdrawal keeps the original receipt");
+    assert.equal(await store.owns(id, 1), "withdrawn");
+    const adopted = await store.adopt(id, randomUUID());
+    assert.equal(adopted?.fence, 1, "a replacement holder cannot move the withdrawal fence");
+    assert.equal(adopted?.blocked, "withdrawn");
+    assert.equal(await store.record(id, 1, snapshot), false, "the old holder cannot reopen Git");
+    assert.equal(await store.beginDetach(id, retainedLaunchHash, randomUUID(), "13"), false);
+    assert.deepEqual(
+      (
+        await pool.query(
+          `SELECT a.active_revision_id, a.desired_runtime_state, r.preparation_attempt_id,
+        r.material_version, p.installation
+       FROM occ.agents a JOIN occ.credential_deliveries r ON r.revision_id=a.active_revision_id
+       JOIN occ.egress_installations p USING (revision_id) WHERE r.revision_id=$1`,
+          [id],
+        )
+      ).rows,
+      [
+        {
+          active_revision_id: id,
+          desired_runtime_state: "running",
+          preparation_attempt_id: null,
+          material_version: null,
+          installation,
+        },
+      ],
+    );
+    assert.equal(
+      (
+        await pool.query("SELECT 1 FROM occ.credential_delivery_reductions WHERE revision_id=$1", [
+          id,
+        ])
+      ).rowCount,
+      0,
+      "online withdrawal creates no provider-detach work",
+    );
+  },
+);
 
 test(
   "delivery obligations survive Agent cleanup without reopening use",
