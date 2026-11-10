@@ -484,8 +484,11 @@ function exerciseRequestTransport(gatewayGrant: boolean) {
     t.after(() => pending.destroy());
     await new Promise<void>((resolve, reject) => {
       pending.write("client_assertion=", (error) => {
-        if (error) reject(error);
-        else resolve();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
       });
     });
     const capacityInput = fixture.request();
