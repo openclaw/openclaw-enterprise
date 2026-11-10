@@ -719,13 +719,14 @@ test("full integration workflow carries QA and installation outcomes into select
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
-  const aggregate = loadYaml(workflow).jobs["full-aggregate"].steps.find(
+  const aggregateJob = loadYaml(workflow).jobs["full-aggregate"];
+  const aggregate = aggregateJob.steps.find(
     (item) => item.name === "Aggregate targeted runtime results",
   );
   // A rejected reusable-workflow string still reaches failure aggregation.
   // It must remain data even when it contains shell command substitution.
   const context = {
-    needs: { preflight: { outputs: { selected_lane: "" } } },
+    needs: { preflight: { result: "failure", outputs: { selected_lane: "" } } },
     inputs: { lane: '$(touch "$RUNNER_TEMP/rejected-lane-command")' },
   };
   await assert.rejects(
@@ -738,6 +739,21 @@ test("full integration workflow carries QA and installation outcomes into select
     }),
     /Unknown lane/,
   );
+  const requireSelection = aggregateJob.steps.find(
+    (item) => item.name === "Require validated selection",
+  );
+  assert.equal(workflowCondition(requireSelection.if, context), true);
+  const refusal = spawnSync("/bin/sh", ["-c", requireSelection.run], {
+    env: {},
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(refusal.error, undefined);
+  assert.equal(refusal.status, 1, refusal.stderr);
+  assert.match(refusal.stdout, /Preflight did not provide a validated selection/);
+  // Independently keep the shell boundary safe even if an invalid string is
+  // supplied as the selected value; validation must not be its only defense.
+  context.needs.preflight.outputs.selected_lane = context.inputs.lane;
   const result = spawnSync(
     "/bin/sh",
     [
@@ -1360,7 +1376,10 @@ test("verified docs pushes omit runtime lanes while keeping environment policy c
   const execution = await readWorkflow("full-integration-execution");
   const execute = dispatcher.jobs.execute;
   assert.equal(execution.concurrency, undefined);
-  assert.deepEqual(Object.keys(dispatcher.jobs), ["manual-approval", "preflight", "execute"]);
+  assert.deepEqual(
+    new Set(Object.keys(dispatcher.jobs)),
+    new Set(["manual-approval", "preflight", "execute", "reject-selection"]),
+  );
   assert.equal(dispatcher.jobs.preflight.concurrency, undefined);
   assert.equal(dispatcher.jobs["manual-approval"].concurrency, undefined);
   assert.equal(execute.needs, "preflight");
@@ -1431,39 +1450,50 @@ test("verified docs pushes omit runtime lanes while keeping environment policy c
       false,
     );
   }
-  assert.equal(
-    workflowCondition(execute.if, {
-      github,
-      needs: { preflight: { result: "success", outputs: { selected_lane: "" } } },
-    }),
-    false,
-    "Missing selection cannot take the execution lock",
-  );
-  const validate = dispatcher.jobs.preflight.steps.find(
-    (step) => step.name === "Validate selected lane",
-  );
-  // Run the shipped output check: missing/unknown selections must fail the
-  // preflight job, while docs and every supported manual selection stay valid.
-  for (const selectedLane of [
-    "",
-    "unknown-lane",
-    "docs",
-    ...dispatcher.on.workflow_dispatch.inputs.lane.options,
-  ]) {
-    const result = spawnSync("/bin/sh", ["-c", validate.run], {
-      cwd: fileURLToPath(new URL("../../", import.meta.url)),
-      env: {
-        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
-        SELECTED_LANE: workflowCondition(validate.env.SELECTED_LANE, {
-          steps: { select: { outputs: { selected_lane: selectedLane } } },
-        }),
-      },
-      encoding: "utf8",
-      timeout: 30_000,
-    });
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, ["", "unknown-lane"].includes(selectedLane) ? 1 : 0, result.stderr);
+  const reject = dispatcher.jobs["reject-selection"];
+  assert.deepEqual(reject.permissions, {});
+  assert.doesNotMatch(JSON.stringify(reject), /secrets\.|actions\/checkout/);
+  // Model completed-job output loss or inconsistency. A valid docs decision
+  // succeeds without the lock; every invalid decision reports failure outside it.
+  for (const eventName of ["push", "workflow_dispatch"]) {
+    for (const selectedLane of ["", "unknown-lane", "docs", "all", "gateway-routing"]) {
+      const context = {
+        github: { ...github, event_name: eventName },
+        inputs: { lane: "gateway-routing" },
+        needs: { preflight: { result: "success", outputs: { selected_lane: selectedLane } } },
+      };
+      const admitted =
+        eventName === "push" ? selectedLane === "all" : selectedLane === "gateway-routing";
+      const docs = eventName === "push" && selectedLane === "docs";
+      assert.equal(
+        workflowCondition(execute.if, context),
+        admitted,
+        `${eventName}: ${selectedLane}`,
+      );
+      assert.equal(
+        workflowCondition(reject.if, context),
+        !admitted && !docs,
+        `${eventName}: ${selectedLane}`,
+      );
+      if (!admitted && !docs) {
+        const result = spawnSync("/bin/sh", ["-c", reject.steps[0].run], {
+          encoding: "utf8",
+          timeout: 30_000,
+          env: {},
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stdout, /Preflight did not publish a matching supported lane/);
+      }
+    }
   }
+  const manualDocs = {
+    github: { ...github, event_name: "workflow_dispatch" },
+    inputs: { lane: "docs" },
+    needs: { preflight: { result: "success", outputs: { selected_lane: "docs" } } },
+  };
+  assert.equal(workflowCondition(execute.if, manualDocs), false);
+  assert.equal(workflowCondition(reject.if, manualDocs), true);
 });
 
 test("main pushes and retries require no manual approval or team credential", async () => {
@@ -1702,7 +1732,8 @@ test("workflow permits main push retries and refuses approval reuse on manual re
     ),
   );
   const jobs = [...Object.entries(workflow.jobs), ...Object.entries(execution.jobs)].filter(
-    ([name]) => !["manual-approval", "preflight", "full-aggregate"].includes(name),
+    ([name]) =>
+      !["manual-approval", "preflight", "full-aggregate", "reject-selection"].includes(name),
   );
   assert.ok(jobs.length > 0);
   for (const [name, job] of jobs) {
@@ -1722,9 +1753,14 @@ test("workflow permits main push retries and refuses approval reuse on manual re
         slack: { result: "success" },
         "runtime-artifact": { result: "success" },
       };
-      assert.equal(workflowCondition(job.if, { github, needs }), true, `${name}: first attempt`);
+      const inputs = { lane: needs.preflight.outputs.selected_lane };
       assert.equal(
-        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs }),
+        workflowCondition(job.if, { github, needs, inputs }),
+        true,
+        `${name}: first attempt`,
+      );
+      assert.equal(
+        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs, inputs }),
         event_name === "push",
         `${name}: only main pushes can retry`,
       );
@@ -1734,7 +1770,7 @@ test("workflow permits main push retries and refuses approval reuse on manual re
         { event_name: "pull_request" },
       ]) {
         assert.equal(
-          workflowCondition(job.if, { github: { ...github, ...patch }, needs }),
+          workflowCondition(job.if, { github: { ...github, ...patch }, needs, inputs }),
           false,
           `${name}: ${JSON.stringify(patch)}`,
         );

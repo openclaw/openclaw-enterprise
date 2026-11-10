@@ -68,21 +68,11 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.mjs
-      - name: Validate selected lane
-        env:
-          SELECTED_LANE: ${{ steps.select.outputs.selected_lane }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { fullIntegrationLanes } from './scripts/ci/full-integration-preflight.mjs';
-          if (!['docs', ...fullIntegrationLanes].includes(process.env.SELECTED_LANE)) {
-            throw new Error('Preflight did not select a supported lane.');
-          }
-          NODE
 
   execute:
     name: Execute
     needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && needs.preflight.result == 'success' && ((github.event_name == 'push' && needs.preflight.outputs.selected_lane == 'all') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
     concurrency:
       # Only authorized non-doc work can replace a pending automatic run.
       group: ${{ github.event_name == 'workflow_dispatch' && format('full-integration-manual-{0}', github.run_id) || 'full-integration' }}
@@ -91,3 +81,16 @@ jobs:
     with:
       lane: ${{ inputs.lane || '' }}
     secrets: inherit
+
+  reject-selection:
+    name: Reject missing or inconsistent selection
+    needs: preflight
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && !((github.event_name == 'push' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docs')) || (github.event_name == 'workflow_dispatch' && needs.preflight.outputs.selected_lane != '' && needs.preflight.outputs.selected_lane != 'docs' && needs.preflight.outputs.selected_lane == inputs.lane)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Report invalid admission
+        run: |
+          echo "::error::Preflight did not publish a matching supported lane. Start a new workflow run."
+          exit 1

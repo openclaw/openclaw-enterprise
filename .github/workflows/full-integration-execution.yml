@@ -625,6 +625,11 @@ jobs:
       - skipper-prepared-git-installed
     if: ${{ always() && needs.preflight.outputs.selected_lane != 'docs' }}
     steps:
+      - name: Require validated selection
+        if: needs.preflight.result != 'success' || needs.preflight.outputs.selected_lane == ''
+        run: |
+          echo "::error::Preflight did not provide a validated selection."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -679,7 +684,7 @@ jobs:
       - name: Aggregate targeted runtime results
         if: needs.preflight.outputs.run_all != 'true'
         env:
-          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || inputs.lane }}
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
         run: node scripts/ci/run-tests.mjs aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
       - name: Aggregate full suite
         id: aggregate-full
