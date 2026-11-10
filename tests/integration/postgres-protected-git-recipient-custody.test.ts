@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
+import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import test, { type TestContext } from "node:test";
 import {
   selectBundledRepositoryGitCustody,
@@ -17,7 +17,7 @@ import type {
   PreparedGitHubUseRequest,
   RepositoryGitSendDecision,
 } from "../../packages/contracts/src/index.ts";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";

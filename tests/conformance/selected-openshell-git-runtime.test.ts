@@ -16,7 +16,7 @@ import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import type { AgentRevision, SandboxDriver } from "../../packages/contracts/src/index.ts";
 import {

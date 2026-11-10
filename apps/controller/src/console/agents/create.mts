@@ -2350,7 +2350,7 @@ function renderAgentForm(
   const nativeAdminField = element(
     "div",
     { className: "field" },
-    element("label", {}, nativeAdmin, " Enable Native admin UI"),
+    element("label", {}, nativeAdmin, " Enable browser chat"),
     nativeAdminHelp,
   );
   const channelEditor = element("div", { className: "create-channels" });
@@ -2929,24 +2929,17 @@ function renderAgentForm(
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
-    nativeAdmin.disabled ||=
-      Boolean(savedConfiguration) || !nativeAdminAvailable || !shouldProvision();
+    nativeAdmin.disabled ||= Boolean(savedConfiguration) || !nativeAdminAvailable;
     let nativeAdminHint =
-      "Chat with this Agent through its OCE URL after deployment. Requires Agent administer permission; enables native administration and trusted-proxy device approval.";
+      "Open this Agent in the browser after deployment. Agent operate permission allows chat; Agent administer permission also allows native administration.";
     if (!capabilityDiscoveryDone) {
-      nativeAdminHint = "Native admin UI availability depends on installation capabilities.";
-    } else if (!nativeAdminAvailable && capabilitiesUnreadable) {
-      // Native admin is set up by guided provisioning, which needs Installation administration.
-      nativeAdminHint =
-        "Native admin UI setup needs guided provisioning, which only an Installation administrator can use.";
+      nativeAdminHint = "Browser chat availability depends on installation capabilities.";
     } else if (!nativeAdminAvailable) {
       nativeAdminHint =
-        "Native admin UI access is not enabled on this installation. Ask an Installation administrator to enable it.";
-    } else if (!shouldProvision()) {
-      nativeAdminHint = "Native admin UI setup requires Dedicated provisioning.";
+        "Browser chat is not enabled on this installation. Ask an Installation administrator to enable it.";
     }
     setText(nativeAdminHelp, nativeAdminHint);
-    if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
+    if (!planLocked && capabilityDiscoveryDone && !nativeAdminAvailable) {
       nativeAdmin.checked = false;
     }
     if (pluginHarness !== harness.value) {
@@ -4148,6 +4141,9 @@ function renderAgentForm(
               harnessAuth,
               credentialSources,
               configurationId: savedConfiguration.id,
+              ...(nativeAdmin.checked && nativeAdminAvailable
+                ? { nativeAdmin: true, expectedConfigurationGeneration: 1 }
+                : {}),
             },
           }),
         );

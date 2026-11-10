@@ -307,7 +307,13 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId, signal) {
         );
         if (ready.length > 0) {
           ready.sort((left, right) => left.metadata.name.localeCompare(right.metadata.name));
-          return { namespace, pod: ready[0].metadata.name };
+          return {
+            namespace,
+            pod: ready[0].metadata.name,
+            uid: ready[0].metadata.uid,
+            restartCount: ready[0].status.containerStatuses?.find(({ name }) => name === "gateway")
+              ?.restartCount,
+          };
         }
         state = pods.length === 0 ? "pod" : matching.length === 0 ? "revision" : "ready";
       } catch {
@@ -493,7 +499,8 @@ export const gatewayProbeCommand = Object.freeze([
 /**
  * @param {{ namespaceId: string, agentId: string, revisionId: string,
  *   prompt?: string | undefined, apiKey?: string | undefined, expectProviderKey?: boolean | undefined,
- *   sessionKey?: string | undefined, signal?: AbortSignal | undefined }} options
+ *   sessionKey?: string | undefined, signal?: AbortSignal | undefined,
+ *   onGatewaySelected?: (gateway: { pod: string, uid?: string, restartCount?: number }) => void }} options
  */
 export async function verifyFirstAgentModel(kubectl, options) {
   const {
@@ -536,7 +543,9 @@ export async function verifyFirstAgentModel(kubectl, options) {
     );
   }
 
-  const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
+  const gateway = await findGateway(kubectl, namespaceId, agentId, revisionId, signal);
+  const { namespace, pod } = gateway;
+  options.onGatewaySelected?.({ pod, uid: gateway.uid, restartCount: gateway.restartCount });
   const nonce = `FIRST_AGENT_${randomUUID()}`;
   let output;
   try {

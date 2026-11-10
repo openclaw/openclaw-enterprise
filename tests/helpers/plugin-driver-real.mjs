@@ -27,7 +27,7 @@ import {
 } from "./kubernetes-real.mjs";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
 
 export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
@@ -2821,6 +2821,7 @@ export async function createPluginDriverRealFixture(
       installationId: existing.id,
       secret: authSecret,
       baseURL: authBaseURL,
+      agentDomain: "agents.oce.localhost",
       pool,
     });
     const servicePrincipal = installationAdministratorServicePrincipal(
@@ -2852,6 +2853,7 @@ export async function createPluginDriverRealFixture(
     databaseUrl: selectedDatabaseUrl,
     authSecret,
     authBaseURL,
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers: apiDrivers,
     ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
   });

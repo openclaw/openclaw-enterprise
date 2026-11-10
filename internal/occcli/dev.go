@@ -106,6 +106,27 @@ func developmentCommand() *cobra.Command {
 			return occdev.CheckDevelopmentProfile()
 		},
 	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",

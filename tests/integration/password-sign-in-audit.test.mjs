@@ -19,7 +19,7 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
 const { APIError } = await import(require.resolve("better-auth"));
 
-const baseURL = "http://127.0.0.1";
+const baseURL = "https://console.oce.localhost";
 const email = "audited@example.test";
 const password = "audited-account-password";
 
@@ -53,8 +53,8 @@ function controller(audit, extra = {}) {
     mode: "development",
     installationId: "ins_sign_in_audit",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     memoryDatabase,
     passwordSignInAudit: audit,
     ...extra,
@@ -268,8 +268,8 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     mode: "development",
     installationId: "ins_sign_in_audit_guarded",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret: "password-sign-in-audit-secret-at-least-32-bytes",
-    secureCookies: false,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     onOperationalEvent: (event) => events.push(event),
@@ -312,8 +312,8 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
     mode: "development",
     installationId: "ins_sign_in_audit_provider_limit",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
   });
@@ -365,10 +365,10 @@ test("a password reset during a sign-in revokes the known-device entry that sign
   const response = await signIn(auth, { email, password });
   assert.equal(response.status, 200, JSON.stringify(response.payload));
   const cookies = [response.headers["set-cookie"]].flat();
-  const name = knownDeviceCookieName(false);
+  const name = knownDeviceCookieName(true);
   const entry = cookies.find((value) => value.startsWith(`${name}=`));
   assert.ok(entry, "a successful sign-in marks the browser");
-  const value = knownDeviceFromCookieHeader(entry.split(";", 1)[0], false);
+  const value = knownDeviceFromCookieHeader(entry.split(";", 1)[0], true);
   assert.deepEqual(reads, [email], "the state is read once per attempt");
   assert.equal(
     await verifyKnownDevice(secret, email, value, Date.now(), knownDeviceState),
@@ -417,8 +417,8 @@ test("an email no account can hold is a 400 that spends the password budget", as
     mode: "development",
     installationId: "ins_sign_in_audit_unstorable",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     database: nulRefusingDatabase(memoryDatabase),
     passwordSignInAudit: {
       accepted: async (userId) => outcomes.push(["accepted", userId]),
@@ -491,8 +491,8 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
     mode: "development",
     installationId: "ins_sign_in_audit_guarded_unstorable",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     passwordSlowLaneFloors: { floorMs: 1, maxFloorMs: 1 },
@@ -558,8 +558,8 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       mode: "development",
       installationId: "ins_invalid_email_known_device",
       baseURL,
+      agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: false,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       ...(humanLogin
         ? { humanLogin }
@@ -576,7 +576,7 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       "test-password-state",
       Date.now(),
     );
-    const headers = { cookie: `${knownDeviceCookieName(false)}=${cookie}` };
+    const headers = { cookie: `${knownDeviceCookieName(true)}=${cookie}` };
     assertUnstorableEmail(
       await signIn(auth, { email: malformed, password }, headers),
       "an unpaired UTF-16 surrogate",
@@ -659,8 +659,8 @@ for (const passwordSignIn of ["all", "recovery-only"]) {
       mode: "development",
       installationId: "ins_literal_email_guarded",
       baseURL,
+      agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: false,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       humanLogin,
     });

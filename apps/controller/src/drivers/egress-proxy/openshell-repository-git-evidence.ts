@@ -9,7 +9,7 @@ import {
   selectedGitAdoption,
   protectedGitAdoption,
   type RepositoryGitRecipientEvidence,
-} from "../repo/credentials/protected-repository-git-installation.ts";
+} from "../repo/access/protected-repository-git-installation.ts";
 
 // The route stores the observed provider name, id, resource and profile versions. Its owner
 // verifies the complete profile, not just this name. Keep the installed observation schema and
