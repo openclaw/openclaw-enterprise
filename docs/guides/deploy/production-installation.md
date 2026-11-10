@@ -540,6 +540,11 @@ binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.
 and retains failed Pods. If policy forbids the Pod, have the storage administrator
 prepare the same root state.
 
+On failure, run the printed `Inspect claim` command to see the claim's phase,
+StorageClass and bound volume. For a Pending claim, ask the storage administrator
+to check that class, provisioning and node placement. `WaitForFirstConsumer`
+claims can remain Pending until their consuming Pod is scheduled.
+
 ### Install the control plane
 
 Exclude competing installs, upgrades and Job replacements. Use the [OCC CLI](../cli.md#connect-to-your-installation)
