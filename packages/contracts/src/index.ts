@@ -424,6 +424,8 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
+  InferencePrivatePeer,
+  InferencePrivatePeerInput,
   StaticKeyGrant,
 } from "./model-providers.ts";
 export { inferenceKeyDestination, normalizeInferenceBaseUrl } from "./model-providers.ts";
@@ -1137,6 +1139,8 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
+  /** Approved private receiver frozen at admission for this revision's trusted sender. */
+  readonly privateInferencePeer?: import("./model-providers.ts").InferencePrivatePeer;
   /** Catalog identity at admission; execution uses the saved settings below. */
   readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;

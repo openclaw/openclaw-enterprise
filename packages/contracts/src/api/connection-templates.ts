@@ -1,6 +1,12 @@
 import { Type } from "typebox";
 import { oauthScopeTokenPattern } from "../connection-templates.ts";
-import { RequestId, NamespaceId, ConnectionTemplateId } from "./common.ts";
+import {
+  RequestId,
+  NamespaceId,
+  ConnectionTemplateId,
+  InferencePrivatePeerInputSchema,
+  InferencePrivatePeerSchema,
+} from "./common.ts";
 
 export { ConnectionTemplateId } from "./common.ts";
 import { InferenceProtocolSchema } from "./model-providers.ts";
@@ -76,13 +82,19 @@ const strict = { additionalProperties: false };
 const create = { displayName: DisplayName, namespaceId: Type.Optional(NamespaceId) };
 const rename = { displayName: Type.Optional(DisplayName) };
 export const CreateConnectionTemplateBody = Type.Union([
-  Type.Object({ ...create, ...staticBearer }, strict),
+  Type.Object(
+    { ...create, ...staticBearer, privatePeer: Type.Optional(InferencePrivatePeerInputSchema) },
+    strict,
+  ),
   Type.Object({ ...create, ...fields, ...manual }, strict),
   Type.Object({ ...create, ...fields, ...mcp }, strict),
 ]);
 export const UpdateConnectionTemplateBody = Type.Union([
   Type.Object({ displayName: DisplayName }, strict),
-  Type.Object({ ...rename, ...staticBearer }, strict),
+  Type.Object(
+    { ...rename, ...staticBearer, privatePeer: Type.Optional(InferencePrivatePeerInputSchema) },
+    strict,
+  ),
   Type.Object({ ...rename, ...fields, ...manual }, strict),
   Type.Object({ ...rename, ...fields, ...mcp }, strict),
 ]);
@@ -167,6 +179,7 @@ export const ConnectionTemplateSchema = Type.Object(
       Type.Object(
         {
           ...staticBearer,
+          privatePeer: Type.Optional(InferencePrivatePeerSchema),
           templateId: ConnectionTemplateId,
           version: Type.Integer({ minimum: 1 }),
           createdAt: Type.String(),
