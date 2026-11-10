@@ -347,10 +347,10 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-Preparation preserves the serving predecessor. `apps/controller/src/worker.ts:finalizeRevision`
-publishes the active selection before activation rechecks the Harness. A permanent
-activation refusal fails deployment without rolling back that published selection;
-it does not replace the Gateway or retire the predecessor.
+For dedicated replacements the worker stops earlier runtimes before preparing the candidate.
+`apps/controller/src/worker.ts:finalizeRevision` publishes the active selection before
+activation rechecks the Harness. Permanent activation refusal fails deployment without
+reverting that selection, replacing the Gateway or retiring the predecessor.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
