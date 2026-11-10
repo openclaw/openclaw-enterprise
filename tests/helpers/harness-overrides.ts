@@ -301,14 +301,15 @@ export async function exerciseNamedProvider(
   assert.deepEqual(saved?.harness.privateInferencePeer, approved);
   assert.ok(saved?.egressPlan);
   // Round-trip the admitted route through the stock protobuf to catch SDK fields lost on the wire.
-  const config = openShellEgressConfiguration(
+  const egressConfiguration = openShellEgressConfiguration(
     saved.egressPlan,
     { middlewareName: "oce-authority", authorityScope: "execution" },
     saved,
   );
   const wire = loadGatewayDefinition()["openshell.v1.SandboxPolicy"];
-  const received = wire.deserialize(wire.serialize(config)).network_policies["oce-egress-0"]
-    .endpoints;
+  const received = wire.deserialize(wire.serialize(egressConfiguration)).network_policies[
+    "oce-egress-0"
+  ].endpoints;
   const dest = new URL(values.baseUrl);
   assert.deepEqual(received, [
     {

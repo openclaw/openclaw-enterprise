@@ -8,6 +8,7 @@ import {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
+import { asRecord } from "@openclaw-enterprise/utils";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -196,7 +197,9 @@ test("startup composes both OpenShell members from one Backend for static source
     },
     async createSandbox(request) {
       calls.push(["createSandbox", structuredClone(request)]);
-      sourcePolicy = structuredClone(request.spec.policy);
+      const policy = asRecord(request.spec.policy);
+      assert.ok(policy);
+      sourcePolicy = structuredClone(policy);
       observed.sandbox = {
         ...request,
         resourceVersion: "1",
