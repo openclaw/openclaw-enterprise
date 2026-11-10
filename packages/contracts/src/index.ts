@@ -1559,6 +1559,11 @@ export {
   OAuthConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
 export * from "./api/resources.ts";
+export { isValidAgentControlUiBookmarkUrl } from "./control-ui-bookmark.ts";
+export type {
+  AgentControlUiBookmark,
+  UpdateAgentControlUiBookmark,
+} from "./control-ui-bookmark.ts";
 export * from "./api/routes.ts";
 
 export {

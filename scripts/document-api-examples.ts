@@ -142,6 +142,9 @@ export function documentApiExamples<T>(document: T): T {
               value: { error: { code: failure[0], message: failure[1] }, meta },
             };
             content.examples = { example: { $ref: `#/components/examples/${failure[0]}` } };
+          } else if (record(content.schema ?? {}, name + " response schema").format === "binary") {
+            // Binary responses contain raw bytes, not a JSON data/meta envelope.
+            continue;
           } else if (mediaType === "text/plain") {
             content.examples = example(
               "2026-10-01T12:00:00.000Z Agent ready\n",

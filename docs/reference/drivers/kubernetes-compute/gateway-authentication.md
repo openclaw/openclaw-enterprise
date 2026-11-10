@@ -66,7 +66,10 @@ Configuration without it ([Compute admission](../compute-admission.md#kubernetes
 ## Human ingress
 
 Human ingress is operator-managed; OCE deploys neither the route nor its
-identity provider. Humans need no OCE account. The ingress must authenticate
+identity provider. After configuring it, an operator can save the direct entry
+address as an optional [Agent bookmark](../../agents/gateway-people.md#operator-maintained-bookmark)
+in the OCC Console. This stores only the link; it does not configure or verify
+the ingress. Humans need no OCE account. The ingress must authenticate
 humans, authorize access to the exact Gateway, and overwrite client-supplied
 identity and authority headers. Use stable, namespaced human identities, such
 as an issuer-qualified OIDC subject. Reserve `occ-workspace-files` for OCC:

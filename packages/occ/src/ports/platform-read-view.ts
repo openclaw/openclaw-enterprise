@@ -70,6 +70,7 @@ export function createPlatformReadView(
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, ["find"]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findControlUiBookmark",
       "findAgent",
       "listAgents",
       "hasAgentNamed",

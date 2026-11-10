@@ -272,6 +272,37 @@ export async function createQaBrowser(f, { themed }) {
         await page.locator(".sidebar .brand img").getAttribute("src"),
         "/console/theme/logo.png",
       );
+      // These are separate access paths: ordinary OCC sharing must remain available
+      // while the production roster reads the serving Gateway's explicit configuration.
+      await page.goto(
+        f.consoleUrl +
+          "/console/agents/" +
+          encodeURIComponent(agent.id) +
+          "?namespace=" +
+          encodeURIComponent(agent.namespaceId) +
+          "&revision=" +
+          encodeURIComponent(agent.revision.id) +
+          "&tab=configuration",
+      );
+      assert.equal(await page.locator(".gateway-people").count(), 0, "no overview roster");
+      const peoplePath =
+        "/namespaces/" + agent.namespaceId + "/agents/" + agent.id + "/gateway/people";
+      const rosterRead = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === peoplePath && response.request().method() === "GET",
+      );
+      await page.getByRole("tab", { name: "Access", exact: true }).click();
+      const response = await rosterRead;
+      assert.equal(response.status(), 200);
+      assert.deepEqual(
+        (await response.json()).data.people,
+        [],
+        "default Gateway config admits only the machine identity",
+      );
+      const direct = page.getByRole("region", { name: "Direct Control UI access", exact: true });
+      await direct.waitFor({ state: "hidden" });
+      assert.equal(await direct.getByRole("listitem").count(), 0);
+      await page.getByRole("heading", { name: "Share Agent through OCC", exact: true }).waitFor();
       const gateway = await f.gatewayUrl(agent);
       let origin = nativeOrigin;
       if (f.controlPlane === "compose") {

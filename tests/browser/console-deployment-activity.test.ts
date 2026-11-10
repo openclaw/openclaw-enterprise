@@ -9,6 +9,7 @@ import type {
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
+  fetchFixtureRoute,
   AGENT_READ,
   detailUrl,
   denyRevisionRead,
@@ -190,12 +191,16 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
             return;
           }
           held = true;
-          const response = await request.fetch();
-          assert.equal(response.status(), 200);
-          assert.equal((await response.json()).data.activeRevisionId, undefined);
+          const response = await fetchFixtureRoute(request, fixture.fetch);
+          assert.equal(response.status, 200);
+          assert.equal((await response.clone().json()).data.activeRevisionId, undefined);
           ready.resolve();
           await release.promise;
-          await request.fulfill({ response });
+          await request.fulfill({
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+            body: Buffer.from(await response.arrayBuffer()),
+          });
         });
         // The full refresh already owns an overview read. Its captured old Agent response
         // must be discarded, then one fresh pair must establish the new current version.
@@ -327,12 +332,16 @@ test(
         await route.abort("connectionfailed");
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.activeRevisionId, revisionId);
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, 200);
+      assert.equal((await response.clone().json()).data.activeRevisionId, revisionId);
       held.resolve();
       await release.promise;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
     control.succeeded = true;
@@ -659,14 +668,18 @@ for (const viewport of [
         let requests = 0;
         await page.route(url, async (route) => {
           requests++;
-          const response = await route.fetch();
-          assert.equal(response.status(), 200);
-          const body = await response.json();
+          const response = await fetchFixtureRoute(route, fixture.fetch);
+          assert.equal(response.status, 200);
+          const body = await response.clone().json();
           assert.equal(body.data.deploymentId, revisionId);
           assert.equal(body.data.status, "succeeded");
           verified();
           await held;
-          await route.fulfill({ response });
+          await route.fulfill({
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+            body: Buffer.from(await response.arrayBuffer()),
+          });
         });
         await refresh.hover();
         await refresh.focus();
@@ -814,12 +827,16 @@ for (const refusal of [403, 404] as const) {
         return;
       }
       holdNext = false;
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.deploymentId, revisionId);
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, 200);
+      assert.equal((await response.clone().json()).data.deploymentId, revisionId);
       captured.resolve();
       await delivery.promise;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     await card.getByRole("button", { name: "Refresh record", exact: true }).click();
     await captured.promise;
@@ -941,15 +958,19 @@ for (const refusal of [403, 404] as const) {
           first = false;
           // A late success was fetched before revocation. A transient response is
           // fetched after revocation is lifted, without any successful record read.
-          const response = delayed === 200 ? await route.fetch() : null;
+          const response = delayed === 200 ? await fetchFixtureRoute(route, fixture.fetch) : null;
           if (response) {
-            assert.equal(response.status(), 200);
-            assert.equal((await response.json()).data.deploymentId, revisionId);
+            assert.equal(response.status, 200);
+            assert.equal((await response.clone().json()).data.deploymentId, revisionId);
           }
           held.resolve();
           await release.promise;
           if (response) {
-            await route.fulfill({ response });
+            await route.fulfill({
+              status: response.status,
+              headers: Object.fromEntries(response.headers),
+              body: Buffer.from(await response.arrayBuffer()),
+            });
           } else {
             await route.continue();
           }
@@ -1093,9 +1114,9 @@ for (const refusal of [403, 404] as const) {
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), index === 0 ? 200 : refusal);
-      const body = await response.json();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, index === 0 ? 200 : refusal);
+      const body = await response.clone().json();
       if (index === 0) {
         assert.equal(body.data.deploymentId, revisionId);
       } else {
@@ -1104,7 +1125,11 @@ for (const refusal of [403, 404] as const) {
       }
       captured[index].resolve();
       await release[index].promise;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
     await captured[0].promise;
@@ -1179,9 +1204,9 @@ for (const delayed of [200, 403] as const) {
         return;
       }
       first = false;
-      const response = await route.fetch();
-      assert.equal(response.status(), delayed);
-      const body = await response.json();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, delayed);
+      const body = await response.clone().json();
       if (delayed === 200) {
         assert.equal(body.data.deploymentId, revisionId);
         assert.equal(body.data.status, "queued");
@@ -1190,7 +1215,11 @@ for (const delayed of [200, 403] as const) {
       }
       held.resolve();
       await release.promise;
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     });
     const replies: number[] = [];
     page.on("response", (response) => {
@@ -1340,9 +1369,9 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
     for (const [index, target] of [url, agentUrl, `${agentUrl}/revisions*`].entries()) {
       let first = true;
       await page.route(target, async (route) => {
-        const response = await route.fetch();
-        assert.equal(response.status(), 200);
-        const body = (await response.json()).data;
+        const response = await fetchFixtureRoute(route, fixture.fetch);
+        assert.equal(response.status, 200);
+        const body = (await response.clone().json()).data;
         if (!first) {
           assert.equal(index, 0, "overview must not be reread to resolve an overlap");
           assert.equal(body.cleanup.status, "succeeded");
@@ -1350,7 +1379,11 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
           if (scenario === "overview first") {
             await selectedRelease.promise;
           }
-          await route.fulfill({ response });
+          await route.fulfill({
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+            body: Buffer.from(await response.arrayBuffer()),
+          });
           return;
         }
         first = false;
@@ -1365,7 +1398,11 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
         }
         captured[index]!.resolve();
         await release.promise;
-        await route.fulfill({ response });
+        await route.fulfill({
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: Buffer.from(await response.arrayBuffer()),
+        });
       });
     }
     await refresh.click();
@@ -1488,15 +1525,15 @@ for (const scenario of [
           await captured[0]!.promise;
           expireSessions(fixture);
         }
-        const response = await route.fetch();
+        const response = await fetchFixtureRoute(route, fixture.fetch);
         let expected = 200;
         if (index === 0 && oldRefusal) {
           expected = refusalStatus;
         } else if (scenario === "mixed 401" && index !== 0) {
           expected = 401;
         }
-        assert.equal(response.status(), expected);
-        const body = await response.json();
+        assert.equal(response.status, expected);
+        const body = await response.clone().json();
         if (expected !== 200) {
           assert.ok(body.error.code);
         } else if (index === 0) {
@@ -1504,7 +1541,11 @@ for (const scenario of [
         }
         captured[index]!.resolve();
         await release.promise;
-        await route.fulfill({ response });
+        await route.fulfill({
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: Buffer.from(await response.arrayBuffer()),
+        });
       });
     }
     await activity.getByRole("button", { name: "Refresh deployment" }).click();

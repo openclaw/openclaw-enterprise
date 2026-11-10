@@ -2,6 +2,8 @@ import { createConnectionTemplateFixture } from "./connection-template-fixture.m
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
+  AgentControlUiBookmark,
+  AgentGatewayPerson,
   AgentPluginCredentialSlot,
   CredentialSourceMetadata,
   CredentialSourceReference,
@@ -110,6 +112,10 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     runtimeLogDownloadNoPod?: boolean;
     denySecretCreate?: boolean;
     emptySecrets?: boolean;
+    controlUiBookmarkUrl?: string | null;
+    bookmarkConflictOnce?: boolean;
+    bookmarkUncertainOnce?: boolean;
+    gatewayPeople?: readonly AgentGatewayPerson[] | null;
   };
 
 type FixtureEvidence = Parameters<typeof serveChannelDirectory>[2] & {
@@ -218,6 +224,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
   const { configs } = configurationStore;
+  const controlUiBookmarks = new Map<string, AgentControlUiBookmark>();
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
   let credentialRegistrationFailed = false;
@@ -886,6 +893,58 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         ) {
           return error(503, "DEPENDENCY_UNAVAILABLE");
         }
+
+        if (suffix === "/control-ui-bookmark" && (method === "GET" || method === "PUT")) {
+          let bookmark = controlUiBookmarks.get(id);
+          if (!bookmark) {
+            bookmark = { url: scenario.controlUiBookmarkUrl ?? null, version: 0 };
+            controlUiBookmarks.set(id, bookmark);
+          }
+          if (method === "GET") {
+            return response(bookmark);
+          }
+          if (
+            !body ||
+            typeof body !== "object" ||
+            !("url" in body) ||
+            (body.url !== null && typeof body.url !== "string") ||
+            !("expectedVersion" in body) ||
+            typeof body.expectedVersion !== "number" ||
+            !Number.isSafeInteger(body.expectedVersion) ||
+            body.expectedVersion < 0
+          ) {
+            return error(400);
+          }
+          // Simulated UI scenarios only; real controller browser tests prove authorization
+          // and sharing. A competing writer advances the resource before this edit lands.
+          if (scenario.bookmarkConflictOnce && bookmark.version === 0) {
+            bookmark = {
+              url: "https://other.example.com/control-ui",
+              version: bookmark.version + 1,
+            };
+            controlUiBookmarks.set(id, bookmark);
+          }
+          if (body.expectedVersion !== bookmark.version) {
+            return response(null, 409, "CONFLICT", {}, "The bookmark changed elsewhere.");
+          }
+          bookmark = { url: body.url, version: bookmark.version + 1 };
+          controlUiBookmarks.set(id, bookmark);
+          if (scenario.bookmarkUncertainOnce && bookmark.version === 1) {
+            return response(
+              null,
+              503,
+              "DEPENDENCY_UNAVAILABLE",
+              {},
+              "The response could not be confirmed.",
+            );
+          }
+          return response(bookmark);
+        }
+        if (suffix === "/gateway/people" && method === "GET") {
+          return response({
+            people: scenario.gatewayPeople === undefined ? [] : scenario.gatewayPeople,
+          });
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
@@ -897,6 +956,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
           });
+        }
+        if (/^\/gateway\/people\/[^/]+\/avatar$/.test(suffix) && method === "GET") {
+          // The avatar story intentionally exercises the initials fallback, not a private image.
+          return error(404);
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.

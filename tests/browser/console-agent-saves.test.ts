@@ -836,7 +836,7 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access").href);
   await page.getByRole("heading", { name: "Kept Focus" }).waitFor();
 
-  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const sharing = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await sharing.getByText("Current policy loaded.", { exact: false }).waitFor();
   await sharing.getByRole("button", { name: "Refresh sharing" }).focus();
   await page.keyboard.press("Enter");

@@ -76,7 +76,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import { chromium, request as playwrightRequest } from "playwright";
+import { chromium } from "playwright";
 
 import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
 
@@ -253,17 +253,25 @@ export function grantSecretOperate(
 // The caller-permissions answer is advisory. Report Configuration update as granted, as a page
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
-export async function grantStaleConfigurationUpdate(page: Page) {
+export async function grantStaleConfigurationUpdate(
+  page: Page,
+  fetchRequest?: FixtureRequestFetch,
+) {
   await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
-    fulfillPatchedJson(route, AgentCallerPermissionsResponse, (body) => ({
-      ...body,
-      data: {
-        ...body.data,
-        configurationUpdate: true,
-        configurationSecretsOperate: true,
-        configurationSecretsOperateDeniedBindings: [],
-      },
-    })),
+    fulfillPatchedJson(
+      route,
+      AgentCallerPermissionsResponse,
+      (body) => ({
+        ...body,
+        data: {
+          ...body.data,
+          configurationUpdate: true,
+          configurationSecretsOperate: true,
+          configurationSecretsOperateDeniedBindings: [],
+        },
+      }),
+      fetchRequest,
+    ),
   );
 }
 
@@ -438,17 +446,10 @@ function assertCredentials(credentials: unknown): asserts credentials is Credent
   );
 }
 
-// Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
-// Better Auth password request the form sends, made in the page's own browser context so the
-// browser stores the session cookie the API set, and then loads `path` already signed in: one
-// page load instead of a sign-in page plus the destination, and no form to fill. A fresh tab on
-// a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
-// instead, so the file makes one password sign-in rather than one a test. A tab that has
-// already loaded a page signs in through the form, so a test that signs in again on the same tab
-// keeps that tab's session storage and history across the sign-in. A fixture under a custom
-// host also uses the form, for tests of its cookie boundary. Tests about the sign-in page
-// itself use the form directly or loginThroughForm.
-
+// Fresh tabs start at an authenticated destination, as the original login helper did.
+// Prepare the real browser session separately so target-page routes observe only the
+// authenticated load, not sign-in discovery or its anonymous session read. Tests of
+// sign-in itself use loginThroughForm; already-loaded tabs preserve that path too.
 export async function login(
   page: Page,
   fixture: LoginFixture,
@@ -458,62 +459,51 @@ export async function login(
   assertCredentials(credentials);
   const origin = new URL(fixture.origin);
   if (
-    page.url() !== "about:blank" ||
     origin.protocol !== "https:" ||
-    origin.hostname !== "console.oce.localhost"
+    origin.hostname !== "console.oce.localhost" ||
+    page.url() !== "about:blank"
   ) {
     await loginForm(page, fixture, path, credentials);
     return;
   }
-  if (fixture.sharedByFile && credentials === fixture.credentials) {
-    await page.context().addCookies(await fileSessionCookies(fixture));
-    // An earlier test that ended this session would otherwise leave this test on the sign-in
-    // page, which waitForURL below cannot tell apart from the console. This test fails and says
-    // so; the next one signs in again, so one such test fails at most one other.
-    const session = await page.request.get(new URL("/api/auth/session", origin).href);
-    const body: unknown = await session.json().catch(() => null);
+  const sharedSession = fixture.sharedByFile && credentials === fixture.credentials;
+  await page
+    .context()
+    .addCookies(
+      await (sharedSession
+        ? fileSessionCookies(page, fixture)
+        : browserSessionCookies(page, fixture, credentials)),
+    );
+  await page.goto(new URL(path, fixture.origin).href);
+  if (sharedSession) {
+    // An ended file session is a fixture ownership error, not a reason to sign in again.
+    const body: unknown = await page
+      .evaluate(async () => {
+        const response = await fetch("/api/auth/session");
+        return response.json();
+      })
+      .catch(() => null);
     if (!(isRecord(body) && isRecord(body.data) && body.data.authenticated === true)) {
       fileSessions.delete(fixture);
       assert.fail(
         "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
       );
     }
-  } else {
-    const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
-      data: { email: credentials.email, password: credentials.password },
-      headers: { origin: origin.origin },
-    });
-    assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
   }
-  await page.goto(new URL(path, fixture.origin).href);
   await page.waitForURL(signedInPath);
 }
 
-// The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
-// the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
-// that share it must not end the session (see fileConsoleApp); login() checks it is still live.
+// Cache only a real browser's server-issued cookies. APIRequestContext does not use
+// Chromium's fixture host resolver, so it cannot establish this public-origin session.
 const fileSessions = new WeakMap<
   LoginFixture,
   Promise<Awaited<ReturnType<BrowserContext["storageState"]>>["cookies"]>
 >();
 
-function fileSessionCookies(fixture: LoginFixture) {
+function fileSessionCookies(page: Page, fixture: LoginFixture) {
   let cookies = fileSessions.get(fixture);
   if (cookies === undefined) {
-    cookies = (async () => {
-      const origin = new URL(fixture.origin).origin;
-      const context = await playwrightRequest.newContext();
-      try {
-        const response = await context.post(new URL("/api/auth/sign-in/email", origin).href, {
-          data: { email: fixture.credentials.email, password: fixture.credentials.password },
-          headers: { origin },
-        });
-        assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
-        return (await context.storageState()).cookies;
-      } finally {
-        await context.dispose();
-      }
-    })();
+    cookies = browserSessionCookies(page, fixture, fixture.credentials);
     cookies.catch(() => {
       if (fileSessions.get(fixture) === cookies) {
         fileSessions.delete(fixture);
@@ -522,6 +512,19 @@ function fileSessionCookies(fixture: LoginFixture) {
     fileSessions.set(fixture, cookies);
   }
   return cookies;
+}
+
+async function browserSessionCookies(page: Page, fixture: LoginFixture, credentials: Credentials) {
+  const browser = page.context().browser();
+  assert.ok(browser, "session setup requires the fixture's owned browser");
+  const context = await browser.newContext();
+  try {
+    const loginPage = await context.newPage();
+    await loginForm(loginPage, fixture, "/console/agents", credentials);
+    return (await context.storageState()).cookies;
+  } finally {
+    await context.close();
+  }
 }
 
 // Signs in through the console's sign-in form, the way a person does: open `path`, which shows
@@ -910,6 +913,47 @@ export function repositoryCheckbox(page: Page, name: string) {
 // request fails on release although the server applied it. With `fulfill`, the held request
 // gets that response.
 
+type HoldRequestOptions = {
+  once?: boolean;
+  method?: string;
+  afterServer?: boolean;
+  loseResponse?: boolean;
+  fulfill?: Parameters<Route["fulfill"]>[0] | null;
+  timeout?: number;
+};
+type FixtureRequestFetch = (request: globalThis.Request) => Promise<Response>;
+
+// Forward the intercepted browser request through the fixture’s real HTTP transport.
+// Keep its method, cookies and binding headers; do not replace it with an administrator read.
+export async function fetchFixtureRoute(route: Route, fetchRequest: FixtureRequestFetch) {
+  const original = route.request();
+  const body = original.postData();
+  return fetchRequest(
+    new globalThis.Request(original.url(), {
+      method: original.method(),
+      headers: await original.allHeaders(),
+      ...(body === null ? {} : { body }),
+    }),
+  );
+}
+type HeldRequests<T> = {
+  readonly requested: Promise<T | undefined>;
+  release(): void;
+  wasRequested(): boolean;
+};
+
+export function holdRequests(
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
+  options: HoldRequestOptions & { fetchRequest: FixtureRequestFetch },
+): Promise<HeldRequests<Response>>;
+export function holdRequests(
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
+  options?: HoldRequestOptions & { fetchRequest?: undefined },
+): Promise<HeldRequests<APIResponse>>;
 export async function holdRequests(
   t: TestContext,
   page: Page,
@@ -918,25 +962,23 @@ export async function holdRequests(
     once = false,
     method,
     afterServer = false,
+    fetchRequest,
     loseResponse = false,
     fulfill = null,
     timeout = 10_000,
-  }: {
-    once?: boolean;
-    method?: string;
-    afterServer?: boolean;
-    loseResponse?: boolean;
-    fulfill?: Parameters<Route["fulfill"]>[0] | null;
-    timeout?: number;
-  } = {},
-) {
+  }: HoldRequestOptions & { fetchRequest?: FixtureRequestFetch | undefined } = {},
+): Promise<HeldRequests<APIResponse | Response>> {
   if (loseResponse && !afterServer) {
     throw new Error("loseResponse needs afterServer: only a server answer can be lost");
   }
   const { promise: held, resolve: release } = Promise.withResolvers<void>();
-  const { promise: requested, resolve, reject } = Promise.withResolvers<APIResponse | undefined>();
+  const {
+    promise: requested,
+    resolve,
+    reject,
+  } = Promise.withResolvers<APIResponse | Response | undefined>();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const markRequested = (response: APIResponse | undefined) => {
+  const markRequested = (response: APIResponse | Response | undefined) => {
     clearTimeout(timer);
     resolve(response);
   };
@@ -952,10 +994,28 @@ export async function holdRequests(
       return;
     }
     taken = true;
-    let response: APIResponse | null = null;
+    let response: APIResponse | Response | null = null;
+    let forwarded: Parameters<Route["fulfill"]>[0] | null = null;
     if (afterServer) {
       try {
-        response = await route.fetch();
+        if (fetchRequest) {
+          const original = route.request();
+          const body = original.postData();
+          response = await fetchRequest(
+            new globalThis.Request(original.url(), {
+              method: original.method(),
+              headers: await original.allHeaders(),
+              ...(body === null ? {} : { body }),
+            }),
+          );
+          forwarded = {
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+            body: Buffer.from(await response.clone().arrayBuffer()),
+          };
+        } else {
+          response = await route.fetch();
+        }
       } catch (error) {
         // The server may have applied a write before its answer was lost. Never send it again:
         // `requested` rejects with the failure and the page's request fails.
@@ -972,7 +1032,11 @@ export async function holdRequests(
     }
     await (
       response || fulfill
-        ? route.fulfill(fulfill ?? (response ? { response } : {}))
+        ? route.fulfill(
+            fulfill ??
+              forwarded ??
+              (response && !(response instanceof Response) ? { response } : {}),
+          )
         : route.continue()
     ).catch(() => {});
   });
@@ -1169,7 +1233,7 @@ export const consoleViewports = Object.freeze([
 // `olderRead`, when given, is told of each older-page request and answers when it resolves.
 export function routeOneVersionPerPage(
   page: Page,
-  fixture: Pick<Fixture, "origin">,
+  fixture: Pick<Fixture, "origin" | "fetch">,
   namespace: Pick<Namespace, "id">,
   agent: Pick<Agent, "id">,
   olderRead?: () => unknown,
@@ -1182,11 +1246,16 @@ export function routeOneVersionPerPage(
       if (cursor === "older-page") {
         await olderRead?.();
       }
-      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const response = await fixture.fetch(
+        new globalThis.Request(`${fixture.origin}${revisionsPath}`, {
+          headers: await route.request().allHeaders(),
+        }),
+      );
       const body: unknown = await response.json();
       assert.ok(isRecord(body) && Array.isArray(body.data) && isRecord(body.meta));
       await route.fulfill({
-        response,
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
         json: {
           ...body,
           data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),

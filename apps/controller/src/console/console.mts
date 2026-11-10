@@ -2434,10 +2434,17 @@ async function loadPage({
       namespacePermissions().then((permissions) => permissions?.secrets?.create);
     const agentsCreateAllowed = () =>
       namespacePermissions().then((permissions) => permissions?.agents?.create);
+    const deniedReads = deniedReadsFor(owner);
+    if (fromRefresh && current.agentId && namespaceId !== null) {
+      // Retry roster authorization after a grant without repeating audited denials on visits.
+      deniedReads.forget(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}/gateway/people`,
+      );
+    }
     const agentContext: ConsolePageContext & Pick<NamespacePageContext, "holdWhileWriting"> = {
       operatorId: session.user.id,
       installationAdmin,
-      deniedReads: deniedReadsFor(owner),
+      deniedReads,
       drafts: drafts.scope(namespaceId, current.agentId ?? "create"),
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
@@ -3109,7 +3116,12 @@ async function revalidateMountedAgent(current: Route) {
       return;
     }
     shellUI.updateNamespaces(namespaces);
-    if (current.url.searchParams.get("tab") !== "workspace") {
+    // Agent-wide Access metadata, like workspace files, does not require the selected Configuration.
+    // Agent detail reauthorizes parked snapshot-backed controls before restoring them.
+    if (
+      current.url.searchParams.get("tab") !== "workspace" &&
+      current.url.searchParams.get("tab") !== "access"
+    ) {
       const selected =
         current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
       const snapshotPath =

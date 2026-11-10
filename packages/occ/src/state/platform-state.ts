@@ -1,4 +1,5 @@
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
+import type { AgentControlUiBookmark } from "@openclaw-enterprise/contracts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
@@ -206,6 +207,10 @@ export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
 }
 
 export interface AgentReadRepository {
+  findControlUiBookmark(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentControlUiBookmark> | undefined>;
   findAgentForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -226,6 +231,12 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
+  updateControlUiBookmark(
+    namespaceId: string,
+    agentId: string,
+    url: string | null,
+    expectedVersion: number,
+  ): Promise<Readonly<AgentControlUiBookmark> | undefined>;
   createAgent(
     agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
   ): Promise<Readonly<Agent>>;
@@ -1271,6 +1282,7 @@ interface PlatformSnapshot {
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
+  readonly agentControlUiBookmarks: Map<string, Readonly<AgentControlUiBookmark>>;
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
@@ -1411,6 +1423,12 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, storedCopy(account)]),
     ),
     agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, storedCopy(agent)])),
+    agentControlUiBookmarks: new Map(
+      Array.from(snapshot.agentControlUiBookmarks, ([key, bookmark]) => [
+        key,
+        storedCopy(bookmark),
+      ]),
+    ),
     sandboxPolicies: new Map(
       Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, storedCopy(policy)]),
     ),
@@ -3376,6 +3394,27 @@ function repositories(
   };
 
   const agents: AgentRepository = {
+    findControlUiBookmark: async (namespaceId, agentId) => {
+      const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
+      if (agent?.namespaceId !== namespaceId) {
+        return undefined;
+      }
+      return (
+        snapshot.agentControlUiBookmarks.get(agentKey(namespaceId, agentId)) ?? {
+          url: null,
+          version: 0,
+        }
+      );
+    },
+    updateControlUiBookmark: async (namespaceId, agentId, url, expectedVersion) => {
+      const current = await agents.findControlUiBookmark(namespaceId, agentId);
+      if (!current || current.version !== expectedVersion) {
+        return undefined;
+      }
+      const updated = storedCopy({ url, version: current.version + 1 });
+      snapshot.agentControlUiBookmarks.set(agentKey(namespaceId, agentId), updated);
+      return updated;
+    },
     findAgentForBrowsing: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     listAgentsForBrowsing: async (namespaceId) => agents.listAgents(namespaceId),
     findAgent: async (namespaceId, agentId) => {
@@ -4491,6 +4530,7 @@ function finalizeAgentDeletion(
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
+  snapshot.agentControlUiBookmarks.delete(key);
 
   snapshot.audit.push(
     immutableCopy({
@@ -4544,6 +4584,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
+    agentControlUiBookmarks: new Map(),
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),

@@ -265,6 +265,10 @@ export const agents = occSchema.table(
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
     configurationId: text("configuration_id").notNull(),
+    controlUiBookmarkUrl: text("control_ui_bookmark_url"),
+    controlUiBookmarkVersion: bigint("control_ui_bookmark_version", { mode: "number" })
+      .notNull()
+      .default(0),
     backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
@@ -301,6 +305,14 @@ export const agents = occSchema.table(
       table.namespaceId,
       table.id,
       table.servicePrincipalId,
+    ),
+    check(
+      "agents_control_ui_bookmark_url_length",
+      sql`${table.controlUiBookmarkUrl} IS NULL OR char_length(${table.controlUiBookmarkUrl}) BETWEEN 1 AND 2048`,
+    ),
+    check(
+      "agents_control_ui_bookmark_version",
+      sql`${table.controlUiBookmarkVersion} BETWEEN 0 AND 9007199254740991`,
     ),
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),

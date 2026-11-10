@@ -19,6 +19,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  fetchFixtureRoute,
   deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
@@ -220,15 +221,20 @@ test("Refresh record retains keyboard focus without duplicate reads or stealing 
 
   for (const moveFocus of [false, true]) {
     const reads = pathRequests(requests, "GET", path).length;
-    const held = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    const held = await holdRequests(t, page, url, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+      fetchRequest: fixture.fetch,
+    });
     await refresh.focus();
     assert.equal(await hasFocus(refresh), true);
     await page.keyboard.press("Enter");
     // Hold a genuine successful Controller answer, not a synthetic deployment response.
     const answer = await held.requested;
     assert.ok(answer);
-    assert.equal(answer.status(), 200);
-    const data = asObject(asObject(await answer.json()).data);
+    assert.equal(answer.status, 200);
+    const data = asObject(asObject(await answer.clone().json()).data);
     assert.equal(data.deploymentId, revision.id);
     assert.equal(data.status, "queued");
     await refreshing.waitFor();
@@ -649,12 +655,16 @@ for (const unreadable of ["draft", "revision"]) {
       ? [agentsPath, agentPath]
       : [revisionsPath, revisionPath]) {
       await page.route(`${fixture.origin}${path}`, async (route: Route) => {
-        const response = await route.fetch();
-        const payload = asObject(await response.json());
+        const response = await fetchFixtureRoute(route, fixture.fetch);
+        const payload = asObject(await response.clone().json());
         payload.data = Array.isArray(payload.data)
           ? list(payload.data).map(unreadableProjection)
           : unreadableProjection(payload.data);
-        await route.fulfill({ response, json: payload });
+        await route.fulfill({
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          json: payload,
+        });
       });
     }
 
@@ -747,8 +757,8 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
     async (route: Route) => {
-      const response = await route.fetch();
-      const payload = asObject(await response.json());
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      const payload = asObject(await response.clone().json());
       for (const field of ["harnessAuth", "plugins", "pluginApprovers", "repositoryBindings"]) {
         delete asObject(payload.data)[field];
       }
@@ -756,7 +766,11 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
         code: "SAVED_CONFIGURATION_UNREADABLE",
         field: "plugins",
       };
-      await route.fulfill({ response, json: payload });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        json: payload,
+      });
     },
   );
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
@@ -766,7 +780,9 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
   // that Agent is not preflight for saving this one, even when the generation still matches.
   const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
   await page.unroute(agentUrl);
-  await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
+  await page.route(agentUrl, (route) =>
+    replyWithDifferentAgentId(route, agent.id, 200, fixture.fetch),
+  );
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   const refused = page.getByText(READ_UNAVAILABLE, {
     exact: true,
@@ -1025,9 +1041,9 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      const body = asObject(await response.json());
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, 200);
+      const body = asObject(await response.clone().json());
       const dataBody = asObject(body.data);
       assert.equal(dataBody.id, agent.id);
       assert.deepEqual(dataBody.plugins ?? {}, expected);
@@ -1038,7 +1054,11 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
             plugins: { [pluginId]: { enabled: true, toolDefaults: policy.toolDefaults } },
           }
         : await replyData(dataBody);
-      await route.fulfill({ response, json: { ...body, data } });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        json: { ...body, data },
+      });
     });
     await editor.fill(JSON.stringify(edits));
     const previous = await editor.elementHandle();
@@ -1108,7 +1128,7 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
     });
   };
   assert.ok(fixture.provisionedAccounts[0]);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel
     .getByLabel("Existing person’s Principal ID")
     .fill(fixture.provisionedAccounts[0].principal.id);

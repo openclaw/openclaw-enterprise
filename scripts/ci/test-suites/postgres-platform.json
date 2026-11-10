@@ -654,6 +654,12 @@
       "expectedTests": [
         "PostgreSQL preserves Harness destinations across restart and default replacement"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-control-ui-bookmark.test.ts",
+      "expectedTests": [
+        "shared Agent Control UI bookmarks enforce exact authority, CAS, clearing, and atomic audit without runtime changes"
+      ]
     }
   ]
 }
