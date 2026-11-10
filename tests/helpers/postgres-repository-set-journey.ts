@@ -1161,19 +1161,26 @@ async function repositoryGitJourney(
           v.repositorySessions.findStandingApproval(revision.namespaceId, revision.agentId, "A"),
         );
         assert.ok(approval);
-        if (podContinuity) {
-          // Neither the worker nor its in-process Git writer runs across the deadline.
-          await bound.close();
-          assert.ok(
-            Date.now() < credentials.deadlineWallMs,
-            "both owners stopped before the real session deadline",
-          );
-          await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
-          if (pendingSuccessor === "expired-replaced-supervisor") {
-            pods[0]!.metadata.uid = randomUUID();
+        // Keep parallel fixtures from claiming the authority port while both
+        // owners are stopped. The reservation serves no Git or worker requests.
+        const stoppedPort = podContinuity ? await reservePort({ port }) : undefined;
+        try {
+          if (podContinuity) {
+            // Neither the worker nor its in-process Git writer runs across the deadline.
+            await bound.close();
+            assert.ok(
+              Date.now() < credentials.deadlineWallMs,
+              "both owners stopped before the real session deadline",
+            );
+            await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
+            if (pendingSuccessor === "expired-replaced-supervisor") {
+              pods[0]!.metadata.uid = randomUUID();
+            }
           }
+          await replaceRuntime();
+        } finally {
+          await stoppedPort?.release();
         }
-        await replaceRuntime();
         assert.deepEqual(await readRoute(), route);
         assert.equal(Date.now() >= credentials.deadlineWallMs, podContinuity);
         assert.deepEqual(
