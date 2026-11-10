@@ -14,5 +14,5 @@ export const DeletionUnknown = { ...story("deletionUnknown"), name: "Outcome unk
 
 export const WaitingForCleanup = story("deletionWaiting");
 export const RetryFailedCleanup = story("deletionRetryConfirm");
-export const StatusAccessEnded = story("deletionStatusUnavailable");
+export const AgentNotVisible = story("deletionStatusUnavailable");
 export const PermissionDuringConfirmation = story("deletionPermissionDuringConfirmation");

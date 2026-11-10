@@ -1,7 +1,4 @@
-import type {
-  AgentDeletionAcceptedResponse,
-  AgentDeletionStatusResponse,
-} from "@openclaw-enterprise/contracts";
+import type { AgentDeletionStatusResponse, AgentResponse } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setHidden, setText } from "../dom.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
@@ -23,33 +20,17 @@ type StatusContext = Pick<
 > & { namespaceId: string };
 type Identity = { namespaceId: string; id: string };
 
-// Requests are tied to the signed-in session. The receipt identifies a request; it grants no access.
+// Status follows the Agent: the controller answers only while the caller can still read it, and
+// reports completion only to a caller it can confirm finished the deletion or reads every Agent in
+// the Namespace. A denial never means the Agent was deleted.
 export const DELETION_POLL_MS = 3000;
 
-// Let this tab reopen a deletion it requested from the Agents list. Never persist these links
-// or remember a status result; session loss and account changes discard the entire collection.
-const receipts = new Map<string, string>();
-export function clearDeletionReceipts() {
-  receipts.clear();
-}
+export const NOT_VISIBLE_TITLE = "Agent not visible";
+export const NOT_VISIBLE_DETAIL =
+  "This Agent is no longer visible to you. It may have been deleted, or your access may have changed.";
 
-export function deletionStatusPage(agent: Identity, receiptId?: string) {
-  const key = `${agent.namespaceId}/${agent.id}`;
-  if (receiptId !== undefined) {
-    receipts.set(key, receiptId);
-    if (receipts.size > 16) {
-      receipts.delete(receipts.keys().next().value!);
-    }
-  }
-  const receipt = receipts.get(key);
-  return `agents/${agent.id}/deletion${receipt ? `?receiptId=${encodeURIComponent(receipt)}` : ""}`;
-}
-
-export function isDeletionReceiptId(id: unknown): id is string {
-  return (
-    typeof id === "string" &&
-    /^aud_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)
-  );
+export function deletionStatusPage(agent: Identity) {
+  return `agents/${encodeURIComponent(agent.id)}/deletion`;
 }
 
 export async function requestAgentDeletion(
@@ -57,21 +38,18 @@ export async function requestAgentDeletion(
   path: string,
   agent: Identity,
 ) {
-  const { data, meta } = (await context.request(path, {
+  const data = (await context.request(path, {
     method: "DELETE",
     expectedStatus: 202,
-    includeMeta: true,
-  })) as AgentDeletionAcceptedResponse;
+  })) as AgentResponse["data"];
   if (
     data?.id !== agent.id ||
     data.namespaceId !== agent.namespaceId ||
-    data.status !== "deleting" ||
-    !isDeletionReceiptId(meta?.deletionReceiptId)
+    data.status !== "deleting"
   ) {
     // The controller may already have accepted this write. Its caller reconciles with a read.
     throw new Error("The response did not identify this deletion request.");
   }
-  return meta.deletionReceiptId;
 }
 
 const stages = {
@@ -102,17 +80,10 @@ const stages = {
   ],
 } satisfies Record<Deletion["status"], [string, string, string]>;
 
-export function renderDeletionStatus(
-  context: StatusContext,
-  agentId: string,
-  receiptId: string | null,
-) {
+export function renderDeletionStatus(context: StatusContext, agentId: string) {
   const { namespaceId, request, isCurrent } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
-  const statusPath =
-    path +
-    "/deletion-status" +
-    (receiptId === null ? "" : `?receiptId=${encodeURIComponent(receiptId)}`);
+  const statusPath = `${path}/deletion-status`;
   const readOptions = { expectedStatus: 200, revalidate: false } as const;
   // Only a changed result enters the live region. Quiet polls never replace a focused control.
   const heading = element("h2", { id: "deletion-status-title" }, "Checking deletion status…");
@@ -198,9 +169,7 @@ export function renderDeletionStatus(
     if (
       data?.agentId !== agentId ||
       data.namespaceId !== namespaceId ||
-      data.receiptId !== (receiptId ?? undefined) ||
       !Object.hasOwn(stages, data.status) ||
-      (data.status === "deleted" && !receiptId) ||
       (data.nextAttemptAt !== undefined &&
         (data.status !== "waiting" ||
           typeof data.nextAttemptAt !== "string" ||
@@ -217,13 +186,17 @@ export function renderDeletionStatus(
       context.onExpired();
       return;
     }
-    const detail =
-      status === 403
-        ? "Your current access doesn’t include this deletion status. We can’t confirm whether the Agent was deleted."
-        : status === 404
-          ? "This deletion status is no longer available to you. We can’t confirm whether the Agent was deleted."
-          : "We couldn’t confirm the current status. Refresh to check again; this won’t send another deletion request.";
-    show("Deletion status unavailable", detail + (requestId ? ` Request ID: ${requestId}` : ""));
+    const reference = requestId ? ` Request ID: ${requestId}` : "";
+    // A denial and a missing deletion record look the same. Never infer "Deleted" from either.
+    if (status === 403 || status === 404) {
+      show(NOT_VISIBLE_TITLE, NOT_VISIBLE_DETAIL + reference);
+      return;
+    }
+    show(
+      "Deletion status unavailable",
+      "We couldn’t confirm the current status. Refresh to check again; this won’t send another deletion request." +
+        reference,
+    );
   }
 
   async function permitted() {
@@ -314,14 +287,10 @@ export function renderDeletionStatus(
           cancel.disabled = true;
           setText(confirm, "Requesting cleanup…");
           confirm.setAttribute("aria-busy", "true");
-          const receipt = await requestAgentDeletion(context, path, { namespaceId, id: agentId });
+          await requestAgentDeletion(context, path, { namespaceId, id: agentId });
           if (isCurrent()) {
             current.close();
-            context.navigate(
-              deletionStatusPage({ namespaceId, id: agentId }, receipt),
-              namespaceId,
-              true,
-            );
+            context.navigate(deletionStatusPage({ namespaceId, id: agentId }), namespaceId, true);
           }
         } catch (cause) {
           if (!isCurrent() || !current.open) {
@@ -384,10 +353,5 @@ export function renderDeletionStatus(
   context.view.replaceChildren(card);
   context.setWriteInFlight(() => writing);
   context.setLeaveGuard(() => writing);
-  if (receiptId !== null && !isDeletionReceiptId(receiptId)) {
-    show("Deletion link unavailable", "Open the deletion status link from the original request.");
-    setHidden(refresh, true);
-  } else {
-    void check();
-  }
+  void check();
 }

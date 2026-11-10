@@ -253,8 +253,9 @@ once their references are cleared; Configuration cleanup uses the CLI. Exact Age
 
 After you confirm, the status page shows whether cleanup is queued, running or
 waiting to retry. You can reload the page or leave while cleanup continues.
-**Agent deleted** means the controller confirmed deletion. If you lose access or
-the status is unavailable, completion stays unconfirmed. Repository cleanup runs
+**Agent deleted** means the controller confirmed deletion. **Agent not visible**
+means it may have been deleted or your access may have changed, so completion
+stays unconfirmed. Repository cleanup runs
 separately. Use **Retry cleanup** only after fixing a failure that stopped automatic
 attempts. It requires a new confirmation, and the browser never sends it automatically.
 

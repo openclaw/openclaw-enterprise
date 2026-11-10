@@ -1742,7 +1742,7 @@ const authoredScenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     steps: [
       "Follow Deletion queued, Deleting Agent, then Agent deleted. Refresh reads status without sending another deletion.",
-      "Choose Back to Agents when you’re ready. Losing access or a missing receipt would not confirm deletion.",
+      "Choose Back to Agents when you’re ready. A denied or missing status never confirms deletion.",
     ],
     description:
       "The Console follows an accepted deletion. The fixture simulates the worker and its final result.",
@@ -1766,12 +1766,12 @@ const authoredScenarios = {
   } satisfies LocalScenario,
   deletionStatusUnavailable: {
     group: "Components/Deletion",
-    name: "Status access ends",
+    name: "Agent no longer visible",
     path: draft,
     deleting: true,
     rules: [{ suffix: "/deletion-status", status: 403 }],
     description:
-      "Access ended. The Console cannot confirm deletion and offers no destructive action.",
+      "The status read is denied. The Console says the Agent may have been deleted or access may have changed, never reports it deleted, and offers no destructive action.",
   } satisfies LocalScenario,
   deletionDenied: {
     group: "Components/Deletion",

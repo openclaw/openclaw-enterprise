@@ -1318,12 +1318,9 @@ export async function renderAgentDetail(
       deletion.section,
     ),
   );
-  function showDeleting({
-    receiptId,
-    focus = false,
-  }: { receiptId?: string; focus?: boolean } = {}) {
+  function showDeleting({ focus = false }: { focus?: boolean } = {}) {
     deleting = true;
-    const target = deletionStatusPage(agent, receiptId);
+    const target = deletionStatusPage(agent);
     if (!sharingWrite && !draftWriteInFlight({ rereads: false })) {
       context.navigate(
         target,
@@ -1334,7 +1331,7 @@ export async function renderAgentDetail(
       return;
     }
     // Another write still owns this page. Keep its navigation guard and outcome, and let the
-    // operator open the receipt once that write settles without repeating the deletion request.
+    // operator open the progress page once that write settles without repeating the deletion request.
     headerActions.replaceChildren();
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     const progress = button("View deletion progress", () => {

@@ -728,7 +728,7 @@ export function renderAgentList(context: AgentListContext) {
 
   async function deleteAgent(item: AgentRead) {
     try {
-      const receipt = await requestAgentDeletion(context, agentRequestPath(item.id), item);
+      await requestAgentDeletion(context, agentRequestPath(item.id), item);
       if (context.isCurrent()) {
         if (notReady?.missing) {
           showOutcome({
@@ -736,7 +736,7 @@ export function renderAgentList(context: AgentListContext) {
           });
           return;
         }
-        context.navigate(deletionStatusPage(item, receipt));
+        context.navigate(deletionStatusPage(item));
       }
     } catch (error) {
       reportFailure(item, error, "delete");

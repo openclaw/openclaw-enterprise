@@ -248,8 +248,8 @@ Resume by deploying a new version; disabling Slack does not stop an Agent. See
 Open **Delete Agent** to inspect, cancel or confirm permanent deletion. In
 **Components/Deletion → Cleanup in progress**, follow the simulated request from
 queued to running to **Agent deleted**. Choose **Back to Agents** when ready.
-Compare waiting, failed cleanup and status access ending. Neither a missing Agent
-nor lost access confirms completion. Namespace Configurations and Secrets remain.
+Compare waiting, failed cleanup and **Agent no longer visible**. Neither a missing
+Agent nor lost access confirms completion. Namespace Configurations and Secrets remain.
 See [Agent deletion](../reference/agents.md#deletion).
 
 Serving health, routing cutover, real shutdown, channel delivery, and model

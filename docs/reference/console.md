@@ -178,8 +178,8 @@ Namespace Configurations and Secrets remain; see
 
 The Console opens a deletion status page and updates it automatically. You can
 reload it or choose **Back to Agents** while cleanup continues. **Agent deleted**
-means the controller confirmed deletion; lost access or an unavailable status
-does not. Repository cleanup continues separately.
+means the controller confirmed deletion. **Agent not visible** means the Agent
+may have been deleted or your access may have changed; it never confirms deletion. Repository cleanup continues separately.
 
 A deleting row offers **View deletion progress**. If automatic attempts stop,
 **Retry cleanup** requires confirmation and current delete permission. The

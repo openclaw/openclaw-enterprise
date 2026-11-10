@@ -35,13 +35,13 @@ graph TD
     S --> T["POST exact Agent stop"]
     T -->|accepted or uncertain| U["Refresh desired state and selected version"]
     T -->|denied| I
-    G -->|accepted| H["Follow the deletion receipt"]
+    G -->|accepted| H["Follow the Agent deletion status"]
     G -->|uncertain| X["Read the Agent without repeating deletion"]
     G -->|denied| I["Show access denied"]
     H -->|queued, running or waiting| J["Show progress and check again"]
     H -->|failed| F["Offer a confirmed retry with current delete permission"]
     H -->|deleted| K["Show Agent deleted and a link back to Agents"]
-    H -->|unavailable| N["Leave the outcome unconfirmed"]
+    H -->|not visible or unavailable| N["Leave the outcome unconfirmed"]
   end
 ```
 
@@ -108,22 +108,23 @@ If the response is lost or names
 a different Agent, the Console offers a read to find out what happened without
 sending another deletion.
 
-A `202` includes a deletion receipt. The Console opens
-`/console/agents/:agentId/deletion` with the Namespace and receipt ID in the URL.
-`agents/deletion-status.mts:renderDeletionStatus` reads only the status endpoint,
-so reload and browser history work after the Agent and its grants are removed.
-The receipt identifies the request; the controller still checks the signed-in
-identity and current Namespace read access. Opening this link while signed out
-preserves only that read destination through sign-in. A different person cannot
-use the receipt, and signing out clears the page and its remembered receipts.
+After a `202`, the Console opens `/console/agents/:agentId/deletion` with the
+Namespace in the URL. `agents/deletion-status.mts:renderDeletionStatus` reads only
+the status endpoint. Status follows the Agent: the controller answers while the
+signed-in identity can read that Agent. After the Agent and its grants are removed,
+it reports completion only to the actor whose delete permission the worker
+rechecked when it finalized the deletion, while that actor reads the Namespace, or
+to a Namespace-wide Agent reader. Opening this link while signed out preserves
+only that read destination through sign-in.
 When Stop discovers deletion, its explicit focus handoff travels through navigation
 to **Refresh deletion status**; ordinary links keep the normal page focus behavior.
 
 The page follows queued, running and waiting work automatically. **Refresh deletion
-status** checks now. Only `deleted` confirms completion; a missing result, access
-denial or read failure stops polling and leaves the outcome unknown. **Back to
-Agents** is available throughout. A reader who opens an already deleting Agent
-without its receipt can follow cleanup only while the Agent remains readable.
+status** checks now. Only `deleted` confirms completion. A `403` or `404` shows
+**Agent not visible**: the Agent may have been deleted, or access may have changed.
+The controller answers both cases identically, so the Console never infers
+deletion from them. A read failure stops polling and leaves the outcome unknown.
+**Back to Agents** is available throughout.
 
 Only failed cleanup with current delete permission offers **Retry cleanup**.
 Confirmation rechecks both the failure and permission before sending a new request.
@@ -143,11 +144,10 @@ like its deployment, and reads it again when a retained list resumes.
 Refusal disables the action and explains why; in an open confirmation, it also
 disables confirmation and focuses Cancel. A stopped Agent without a selected
 version has no Stop action. An accepted Stop updates its row without polling; an
-accepted Delete opens its receipt. If the Console already observed Namespace access
+accepted Delete opens its status page. If the Console already observed Namespace access
 loss, a late accepted Delete leaves the cleared list and Search focus in place with
-a generic acknowledgement; it neither remembers nor opens the receipt.
-**View deletion progress** opens status from a deleting row, using the receipt only
-if this session requested the deletion. If the response names a different Agent, the list reports an
+a generic acknowledgement; it does not open the status page.
+**View deletion progress** opens status from a deleting row. If the response names a different Agent, the list reports an
 unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
 uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
 After a `403` about grants, the refused icon stays unavailable and the row's note names the grant
@@ -164,8 +164,8 @@ the row is gone.
 - On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
   denials, check `delete` on the exact Agent; Agent `read` and
   `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
-- Match the Namespace, Agent and receipt in the status response. A missing Agent
-  or a failed status check does not establish whether cleanup finished.
+- Match the Namespace and Agent in the status response. A missing Agent, a
+  `403`/`404`, or a failed status check does not establish whether cleanup finished.
 
 ## Related docs
 

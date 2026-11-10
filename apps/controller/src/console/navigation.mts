@@ -1,4 +1,3 @@
-import { isDeletionReceiptId } from "./agents/deletion-status.mjs";
 export const connectionTemplatesPage = "credentials/connection-templates";
 
 export const oauthClientsPage = "credentials/oauth-clients";
@@ -19,7 +18,6 @@ interface LoginIntent {
   namespaceId: string | null;
   revision: string | null;
   tab: string | null;
-  receiptId?: string;
   /** A Secrets page link's Secret, opened once the page shows (finding 2645). */
   secret?: string | null;
 }
@@ -110,8 +108,8 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
       return false;
     }
     const detail = intent.feature.startsWith("agents/") && agentId.test(intent.feature.slice(7));
-    // Resume only a structured same-origin status link. The receipt identifies the deletion;
-    // the controller checks the newly signed-in subject and current Namespace access.
+    // Resume only a structured same-origin status link. The controller checks the newly
+    // signed-in subject's current access to that Agent.
     const deletion =
       intent.feature.startsWith("agents/") &&
       intent.feature.endsWith("/deletion") &&
@@ -123,7 +121,6 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
         deletion) &&
       ((!deletion && intent.namespaceId === null) ||
         (typeof intent.namespaceId === "string" && namespaceId.test(intent.namespaceId))) &&
-      (intent.receiptId === undefined || (deletion && isDeletionReceiptId(intent.receiptId))) &&
       (intent.revision === null ||
         (detail &&
           typeof intent.revision === "string" &&
@@ -149,9 +146,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     const feature = url.pathname.slice("/console/".length);
     // Only a well-formed Secret ID on the Secrets page goes through sign-in; anything else drops.
     const secret = url.searchParams.get("secret");
-    const receiptId = url.searchParams.get("receiptId");
     const intent = {
-      ...(receiptId === null ? {} : { receiptId }),
       kind: "console",
       feature,
       namespaceId: url.searchParams.get("namespace"),
@@ -175,9 +170,6 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     }
     if (intent.tab !== null) {
       query.set("tab", intent.tab);
-    }
-    if (intent.receiptId !== undefined) {
-      query.set("receiptId", intent.receiptId);
     }
     if (typeof intent.secret === "string") {
       query.set("secret", intent.secret);

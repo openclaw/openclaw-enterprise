@@ -219,7 +219,6 @@ export function createAgentLifecycle(
   const files = new Map<string, unknown>();
   const stagedWorkspaceFiles = new Map<string, Record<string, string>>();
   const deleted = new Set<string>();
-  const deletionReceipts = new Map<string, string>();
   const deletionReads = new Map<string, number>();
   const clearRevisionOnRead = new Set<string>();
   let runtimeStatusReads = 0;
@@ -532,11 +531,9 @@ export function createAgentLifecycle(
     const id = agentMatch[1] ?? "";
     const suffix = agentMatch[2] ?? "";
     if (suffix === "/deletion-status" && method === "GET") {
-      const receiptId = url.searchParams.get("receiptId");
-      if (
-        (receiptId !== null && deletionReceipts.get(receiptId) !== id) ||
-        (!deleted.has(id) && agents.get(id)?.status !== "deleting")
-      ) {
+      // The signed-in fixture user requested and finished every deletion here, so completion
+      // stays visible to them. Anything else is the same not-visible answer.
+      if (!deleted.has(id) && agents.get(id)?.status !== "deleting") {
         return error(404);
       }
       const reads = deletionReads.get(id);
@@ -565,10 +562,7 @@ export function createAgentLifecycle(
           }
         }
       }
-      if (status === "deleted" && !receiptId) {
-        return error(404);
-      }
-      return response({ agentId: id, namespaceId, status, ...(receiptId ? { receiptId } : {}) });
+      return response({ agentId: id, namespaceId, status });
     }
     const saved = agents.get(id);
     if (!saved) {
@@ -625,10 +619,8 @@ export function createAgentLifecycle(
       if (method === "DELETE") {
         saved.status = "deleting";
         saved.desiredRuntimeState = "stopped";
-        const deletionReceiptId = nextId("aud");
-        deletionReceipts.set(deletionReceiptId, id);
         deletionReads.set(id, 0);
-        return response(saved, 202, undefined, { deletionReceiptId });
+        return response(saved, 202);
       }
     }
     if (suffix === "/stop" && method === "POST") {

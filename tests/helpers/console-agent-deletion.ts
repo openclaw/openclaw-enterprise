@@ -36,9 +36,7 @@ export async function verifyConsoleAgentDeletion(
     assert.equal(response.status(), 200);
     assert.equal(response.headers()["cache-control"], "no-store");
     const data: AgentDeletionStatusResponse["data"] = (await response.json()).data;
-    const receipt = new URL(response.url()).searchParams.get("receiptId");
-    assert.ok(receipt);
-    assert.equal(data.receiptId, receipt);
+    assert.equal(new URL(response.url()).search, "", "status follows the Agent, not a token");
     assert.equal(data.namespaceId, agent.namespaceId);
     assert.equal(data.agentId, agent.id);
 
@@ -57,7 +55,6 @@ export async function verifyConsoleAgentDeletion(
     assert.deepEqual((await result.json()).data, {
       agentId: agent.id,
       namespaceId: agent.namespaceId,
-      receiptId: receipt,
       status: "deleted",
     });
     await deleted.waitFor();
@@ -65,16 +62,16 @@ export async function verifyConsoleAgentDeletion(
     assert.deepEqual(
       [...new Set(reads)],
       [statusPath],
-      "following a receipt must not read the Agent or its settings",
+      "following a deletion must not read the Agent or its settings",
     );
-    const receiptUrl = page.url();
+    const statusUrl = page.url();
     await page.getByRole("link", { name: "Back to Agents", exact: true }).click();
     await page.waitForURL(
       (url) =>
         url.pathname === "/console/agents" &&
         url.searchParams.get("namespace") === agent.namespaceId,
     );
-    return receiptUrl;
+    return statusUrl;
   } finally {
     await page.close();
   }

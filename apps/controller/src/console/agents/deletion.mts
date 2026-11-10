@@ -15,7 +15,7 @@ export function createAgentDeletion(
   context: AgentLifecycleContext,
   path: string,
   agent: AgentRead,
-  onDeleting: (options?: { receiptId?: string }) => void,
+  onDeleting: () => void,
   allowed?: Promise<boolean | undefined>,
   permissionReadsStarted: () => number = () => 0,
 ) {
@@ -56,7 +56,7 @@ export function createAgentDeletion(
   );
 
   // Only an uncertain or conflicting initial write needs to reread the Agent itself. If it
-  // did enter deletion, follow the status endpoint without inventing the receipt we did not get.
+  // did enter deletion, follow the status endpoint.
   async function refreshStatus() {
     if (state.pending || !context.isCurrent()) {
       return;
@@ -166,10 +166,10 @@ export function createAgentDeletion(
     showSending(cancel, confirm);
     render();
     try {
-      const receiptId = await requestAgentDeletion(context, path, agent);
+      await requestAgentDeletion(context, path, agent);
       if (context.isCurrent()) {
         dialog.close();
-        onDeleting({ receiptId });
+        onDeleting();
       }
     } catch (cause) {
       if (!context.isCurrent()) {

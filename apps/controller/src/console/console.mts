@@ -30,7 +30,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import { clearDeletionReceipts, renderDeletionStatus } from "./agents/deletion-status.mjs";
+import { renderDeletionStatus } from "./agents/deletion-status.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -1336,7 +1336,6 @@ function clearPrivate() {
   installationAdmin = null;
   clearRetainedViews();
   clearResolvedSecretNames();
-  clearDeletionReceipts();
   clearRuntimeDenials();
 }
 
@@ -1944,7 +1943,6 @@ async function loadPage({
     }
     if (!owner || previousOwner !== owner || draftUserId !== owner) {
       clearRetainedViews();
-      clearDeletionReceipts();
       observabilityUrl = null;
       observabilityOwner = null;
       installationAdmin = null;
@@ -2589,14 +2587,10 @@ async function loadPage({
       return;
     }
     if (current.deletion && current.agentId && namespaceId !== null) {
-      // The receipt can outlive Agent access. Read only deletion status, and never reuse a
-      // previous result after navigation, account changes, or a failed access recheck.
+      // Read only deletion status, and never reuse a previous result after navigation,
+      // account changes, or a failed access recheck.
       viewState.reusable = false;
-      renderDeletionStatus(
-        { ...agentContext, namespaceId },
-        current.agentId,
-        current.url.searchParams.get("receiptId"),
-      );
+      renderDeletionStatus({ ...agentContext, namespaceId }, current.agentId);
       markMountedRoute(current);
       return;
     }
