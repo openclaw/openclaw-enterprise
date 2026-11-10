@@ -235,10 +235,12 @@ const gitRemoteUrls: Validator = (value) => {
     remotes.length <= 16 &&
     remotes.every(
       ([remote, url]) =>
-        /^[a-z0-9_.-]{1,256}$/iu.test(remote) &&
+        /^[A-Za-z0-9_.-]{1,256}$/u.test(remote) &&
         typeof url === "string" &&
         url.length <= 2048 &&
-        ((/^https:\/\/[a-z0-9.-]+(?::[0-9]{1,5})?\/[a-z0-9._~/-]+$/iu.test(url) &&
+        ((/^[Hh][Tt][Tt][Pp][Ss]:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]+$/u.test(
+          url,
+        ) &&
           URL.canParse(url)) ||
           /^git@[a-zA-Z0-9.-]+:[a-zA-Z0-9._~/-]+$/u.test(url)),
     )

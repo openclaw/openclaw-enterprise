@@ -1493,6 +1493,9 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       ...[
         [],
         {},
+        { "up\u017ftream": workspace.associated_remote_urls.origin },
+        { origin: "https://\u212A.example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
         { origin: "https://fixture-user@example.invalid/owner/repository.git" },
         { origin: "https://example.invalid/owner/repository.git?query=value" },
         { origin: "https://example.invalid/owner/repository.git#fragment" },
