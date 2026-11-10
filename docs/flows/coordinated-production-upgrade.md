@@ -81,14 +81,14 @@ evidence/baseline aliases are rejected. Other edits and image provenance remain 
 
 Resume binds evidence path, device and inode. Aliases share its lock. Runtime upgrades separately lock their sibling dispatch journal.
 
-`matches_yaml` compares ordered candidate mappings, including images, against the
-[baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration).
-Invalid inputs or unwritable evidence cause `Cannot compare upgrade YAML`.
-Projections then allow Slack directory proxy, curated Codex PluginDriver selection,
-and wrapping one registration in an array. Explicit removal of empty
+`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+and live mappings, then validates candidates. Invalid input or unwritable
+evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
+protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
+and wrapping one registration in an array. Removing empty
 `agentNativeAdmin.sharedCookieDomain` changes only the baseline projection;
-the live-values comparison stays exact. Immutable reference switches require
-string keys. Startup validates the controller; broker checks compare references,
+the live comparison remains exact. Immutable reference switches require
+string keys. Startup validates the controller; broker checks references,
 not contents.
 
 Runtime upgrades require complete authorized inventory and baseline versions.

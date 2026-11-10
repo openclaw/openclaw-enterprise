@@ -39,7 +39,7 @@ import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
-import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const executeFile = promisify(execFile);
@@ -3595,6 +3595,7 @@ test("a nonaccepted Helm submission retries the same successor after checked his
 test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
   for (const mode of [
     "remove empty",
+    "remove aliased empty",
     "remove nonempty",
     "change domain",
     "add empty",
@@ -3608,8 +3609,20 @@ test("controller upgrades remove only an explicitly omitted empty cookie overrid
         baseline.agentNativeAdmin.sharedCookieDomain =
           mode === "remove nonempty" ? "example.test" : "";
       }
+      if (mode === "remove aliased empty") {
+        baseline.api ??= {};
+        baseline.api.channelDirectoryProxyUrl = "";
+      }
       for (const file of ["values.json", "live-values"]) {
         await writeFile(join(f.directory, file), JSON.stringify(baseline));
+      }
+      if (mode === "remove aliased empty") {
+        // A saved YAML alias and Helm's resolved value describe the same baseline.
+        const { agentNativeAdmin, ...settings } = baseline;
+        const saved = dumpYaml({ ...settings, agentNativeAdmin })
+          .replace(/channelDirectoryProxyUrl: (?:''|"")/, 'channelDirectoryProxyUrl: &empty ""')
+          .replace(/sharedCookieDomain: (?:''|"")/, "sharedCookieDomain: *empty");
+        await writeFile(join(f.directory, "values.json"), saved);
       }
       const candidate = structuredClone(baseline);
       delete candidate.agentNativeAdmin.sharedCookieDomain;
@@ -3623,7 +3636,7 @@ test("controller upgrades remove only an explicitly omitted empty cookie overrid
       }
       const path = join(f.directory, "cookie-candidate.json");
       await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
-      if (mode === "remove empty") {
+      if (mode === "remove empty" || mode === "remove aliased empty") {
         // Exercise the normal helper through Helm submission; the retained baseline
         // must remain attributable while the submitted candidate drops the invalid field.
         await f.run("--candidate-values", path);
