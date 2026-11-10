@@ -1,25 +1,129 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as httpServer, request } from "node:http";
+import type { ClientRequest, IncomingHttpHeaders } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { connect } from "node:net";
 import { gzipSync } from "node:zlib";
+import type {
+  RequestPlan,
+  HeaderFields,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { ExchangeOutcome } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 import {
-  gatewayRequest,
+  gatewayRequest as untypedGatewayRequest,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
-const { inspectRequestHead } = await appModule("drivers/repo/access/transport/request");
-const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
-const { sendError } = await appModule("drivers/repo/access/transport/errors");
-const { createSystemClock } = await appModule("drivers/repo/access/clock");
+type RuntimeExports = Pick<
+  typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),
+  "inspectRequestHead"
+> &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/upstream.ts"),
+    "createUpstreamSender"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/transport/errors.ts"),
+    "sendError"
+  > &
+  Pick<
+    typeof import("../../apps/controller/src/drivers/repo/access/clock.ts"),
+    "createSystemClock"
+  >;
 
-const exchange = (port, path, body = Buffer.alloc(0), headers = {}) =>
-  new Promise((resolve, reject) => {
+function assertRuntimeExport<K extends keyof RuntimeExports>(
+  value: unknown,
+  name: K,
+): asserts value is Pick<RuntimeExports, K> {
+  assert.equal(typeof jsonObject(value)[name], "function");
+}
+
+async function runtimeExport<K extends keyof RuntimeExports>(
+  path: string,
+  name: K,
+): Promise<RuntimeExports[K]> {
+  const loaded: unknown = await appModule(path);
+  assertRuntimeExport(loaded, name);
+  return loaded[name];
+}
+
+const inspectRequestHead = await runtimeExport(
+  "drivers/repo/access/transport/request",
+  "inspectRequestHead",
+);
+const createUpstreamSender = await runtimeExport(
+  "drivers/repo/access/transport/upstream",
+  "createUpstreamSender",
+);
+const sendError = await runtimeExport("drivers/repo/access/transport/errors", "sendError");
+const createSystemClock = await runtimeExport("drivers/repo/access/clock", "createSystemClock");
+
+type GatewayFixture = NonNullable<Awaited<ReturnType<typeof startCredentialServiceFixture>>>;
+type GatewayOptions = { method?: string; headers?: Record<string, string>; body?: unknown };
+type GatewayResponse = { status: number | undefined; headers: IncomingHttpHeaders; body: string };
+type ExchangeResponse = { status: number | undefined; headers: IncomingHttpHeaders; body: Buffer };
+type PrivateCase = {
+  headers?: object;
+  trustedOrigins?: string[];
+  addOriginAfterConstruction?: boolean;
+  headerBytes?: number;
+  headerPairs?: number;
+};
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function assertGatewayResponse(value: unknown): asserts value is GatewayResponse {
+  const response = jsonObject(value);
+  assert.ok(response.status === undefined || typeof response.status === "number");
+  assert.ok(typeof response.body === "string");
+  const headers = jsonObject(response.headers);
+  assert.ok(
+    Object.values(headers).every(
+      (header) =>
+        header === undefined ||
+        typeof header === "string" ||
+        (Array.isArray(header) && header.every((item: unknown) => typeof item === "string")),
+    ),
+  );
+}
+
+async function gatewayRequest(
+  fixture: GatewayFixture,
+  target: string,
+  options?: GatewayOptions,
+): Promise<GatewayResponse> {
+  const response: unknown = await untypedGatewayRequest(fixture, target, options);
+  assertGatewayResponse(response);
+  return response;
+}
+
+function numericField(body: string, key: string): number {
+  const value = jsonObject(JSON.parse(body))[key];
+  assert.ok(typeof value === "number");
+  return value;
+}
+
+function appendChunk(chunks: Buffer[], chunk: unknown): void {
+  assert.ok(Buffer.isBuffer(chunk));
+  chunks.push(chunk);
+}
+
+const exchange = (
+  port: number,
+  path: string,
+  body = Buffer.alloc(0),
+  headers: Record<string, string> = {},
+) =>
+  new Promise<ExchangeResponse>((resolve, reject) => {
     const outgoing = request(
       {
         host: "127.0.0.1",
@@ -30,8 +134,8 @@ const exchange = (port, path, body = Buffer.alloc(0), headers = {}) =>
         agent: false,
       },
       (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: unknown) => appendChunk(chunks, chunk));
         response.on("end", () =>
           resolve({
             status: response.statusCode,
@@ -54,6 +158,7 @@ test(
       profile: "git-write",
       gateway: { listen: "127.0.0.1:0" },
     });
+    assert.ok(fixture);
     const reader = {
       ...fixture,
       opened: fixture.service.open({ durationSeconds: 3600, profile: "git-read" }),
@@ -73,7 +178,7 @@ test(
       [`${path}/issues`, { method: "POST", body: { title: "refused" } }],
       [`${path}/issues/1/comments`, { method: "POST", body: { body: "refused" } }],
       ["/repos/other/repository", {}],
-    ]) {
+    ] as const) {
       assert.equal((await gatewayRequest(reader, target, options)).status, 400);
     }
     assert.deepEqual(fixture.github.trace, []);
@@ -81,7 +186,7 @@ test(
 
     const metadata = await gatewayRequest(reader, path);
     assert.equal(metadata.status, 200);
-    assert.equal(JSON.parse(metadata.body).full_name, "fixture/repository");
+    assert.equal(jsonObject(JSON.parse(metadata.body)).full_name, "fixture/repository");
     const readme = await gatewayRequest(reader, `${path}/readme`, {
       headers: { accept: "application/vnd.github.v3.raw+json" },
     });
@@ -101,8 +206,8 @@ test(
       body: { title: "Contributor change", head: "topic", base: "main" },
     });
     assert.equal(pull.status, 201);
-    const number = JSON.parse(pull.body).number;
-    assert.equal(fixture.github.pulls.get(number).title, "Contributor change");
+    const number = numericField(pull.body, "number");
+    assert.equal(jsonObject(fixture.github.pulls.get(number)).title, "Contributor change");
     assert.equal(
       (
         await gatewayRequest(fixture, `${path}/pulls/${number}`, {
@@ -124,7 +229,7 @@ test(
       });
       assert.equal(diff.status, 200);
       assert.match(diff.body, /diff --git a\/README.md b\/README.md/);
-      assert.equal(fixture.github.trace.at(-1).accept, media);
+      assert.equal(jsonObject(fixture.github.trace.at(-1)).accept, media);
     }
 
     const created = await gatewayRequest(collaborator, `${path}/issues`, {
@@ -132,16 +237,16 @@ test(
       body: { title: "Collaborator issue" },
     });
     assert.equal(created.status, 201);
-    const issue = JSON.parse(created.body).number;
+    const issue = numericField(created.body, "number");
     const before = fixture.github.trace.length;
     for (const [target, options] of [
       [`${path}/issues`, { method: "POST", body: { title: "refused" } }],
       [`${path}/issues/${issue}`, { method: "PATCH", body: { title: "refused" } }],
-    ]) {
+    ] as const) {
       assert.equal((await gatewayRequest(fixture, target, options)).status, 400);
     }
     assert.equal(fixture.github.trace.length, before);
-    assert.equal(fixture.github.issues.get(issue).title, "Collaborator issue");
+    assert.equal(jsonObject(fixture.github.issues.get(issue)).title, "Collaborator issue");
 
     assert.equal(
       (
@@ -166,6 +271,7 @@ test(
       configuration: { allowGraphql: true },
       gateway: { listen: "127.0.0.1:0" },
     });
+    assert.ok(fixture);
     const repository = 'repository(owner: "fixture", name: "repository")';
     for (const [target, query] of [
       ["/graphql", `query { ${repository} { tempCloneToken } }`],
@@ -175,7 +281,7 @@ test(
         `query { ${repository} { ...Clone } } fragment Clone on Repository { tempCloneToken }`,
       ],
       ["/graphql?", `query { ${repository} { tempCloneToken } }`],
-    ]) {
+    ] as const) {
       const refused = await gatewayRequest(fixture, target, {
         method: "POST",
         body: { query },
@@ -191,9 +297,14 @@ test(
       body: { query: `query { ${repository} { nameWithOwner } }` },
     });
     assert.equal(allowed.status, 200);
-    assert.equal(JSON.parse(allowed.body).data.repository.nameWithOwner, "fixture/repository");
+    assert.equal(
+      jsonObject(jsonObject(jsonObject(JSON.parse(allowed.body)).data).repository).nameWithOwner,
+      "fixture/repository",
+    );
     assert.deepEqual(
-      fixture.github.trace.filter((entry) => entry.target === "/graphql").map((e) => e.query),
+      fixture.github.trace
+        .filter((entry: unknown) => jsonObject(entry).target === "/graphql")
+        .map((entry: unknown) => jsonObject(entry).query),
       [`query { ${repository} { nameWithOwner } }`],
     );
     assert.deepEqual(fixture.github.errors, []);
@@ -209,13 +320,17 @@ test(
       gateway: { listen: "127.0.0.1:0" },
       limits: { apiResponseBytes: 16 },
     });
+    assert.ok(fixture);
     const response = await gatewayRequest(fixture, "/repos/fixture/repository/readme", {
       headers: { accept: "application/vnd.github.v3.raw+json" },
     });
     assert.equal(response.status, 502);
     assert.doesNotMatch(response.body, /Fixture README/);
     assert.equal(
-      fixture.github.trace.filter((entry) => entry.target.endsWith("/readme")).length,
+      fixture.github.trace.filter((entry: unknown) => {
+        const target = jsonObject(entry).target;
+        return typeof target === "string" && target.endsWith("/readme");
+      }).length,
       1,
     );
     assert.deepEqual(fixture.github.errors, []);
@@ -231,20 +346,21 @@ test(
     const resources = createTestResourceScope(t);
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
-    const received = [];
-    const outcomes = [];
-    const privateCases = new Map();
+    const received: { path: string | undefined; headers: IncomingHttpHeaders; body: Buffer }[] = [];
+    const outcomes: { path: string | undefined; outcome: ExchangeOutcome }[] = [];
+    const privateCases = new Map<string, PrivateCase>();
     let dispatches = 0;
     let gateOpen = true;
-    let observeStreamingChunk;
+    let observeStreamingChunk: (() => void) | undefined;
     const upstream = httpsServer(tls, async (req, res) => {
-      const chunks = [];
+      const chunks: Buffer[] = [];
       try {
-        for await (const chunk of req) {
+        const incoming: AsyncIterable<unknown> = req;
+        for await (const chunk of incoming) {
           if (req.url === "/stream") {
             observeStreamingChunk?.();
           }
-          chunks.push(chunk);
+          appendChunk(chunks, chunk);
         }
       } catch {
         return;
@@ -292,6 +408,8 @@ test(
       }
       assert.equal(parsed.head.headers.authorization, undefined);
       assert.equal(parsed.head.headers.cookie, undefined);
+      assert.ok(req.url);
+      assert.ok(req.method);
       const plan = {
         origin: req.url === "/untrusted" ? "https://unexpected.example" : origin,
         target: req.url,
@@ -311,14 +429,17 @@ test(
         },
         responsePolicy: {
           body: req.url === "/rewrite" ? "bounded-json" : "stream",
-          headers: (_status, headers) => headers,
+          headers: (_status: number, headers: HeaderFields) => headers,
           rewriteJson:
             req.url === "/rewrite"
-              ? (value) => ({ ...value, url: "rewritten-machine-url" })
+              ? (value: JsonValue) => {
+                  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+                  return { ...value, url: "rewritten-machine-url" };
+                }
               : undefined,
         },
-      };
-      const tracked = [];
+      } satisfies Pick<RequestPlan, Extract<keyof RequestPlan, string>>;
+      const tracked: Promise<void>[] = [];
       const privateCase = privateCases.get(req.url);
       const trustedOrigins = new Set(privateCase?.trustedOrigins ?? [origin]);
       const sender = createUpstreamSender({
@@ -336,11 +457,13 @@ test(
       }
       const outcome = await sender(
         {
-          plan,
-          headers: privateCase?.headers ?? {
+          // The transport fixture supplies every plan field; only the backend-owned identity brand is absent.
+          plan: plan as RequestPlan,
+          // Malformed header objects must reach the sender unchanged so it can reject them.
+          headers: (privateCase?.headers ?? {
             authorization: "Bearer fixture-provider-only",
             "content-type": "application/octet-stream",
-          },
+          }) as HeaderFields,
         },
         {
           signal: new AbortController().signal,
@@ -367,7 +490,9 @@ test(
     });
     gateway.on("clientError", (_error, socket) => socket.destroy());
     await listen(resources, gateway);
-    const port = gateway.address().port;
+    const address = gateway.address();
+    assert.ok(address && typeof address === "object");
+    const port = address.port;
 
     await t.test(
       "gzip input is decoded incrementally and upstream authentication is reconstructed",
@@ -381,6 +506,7 @@ test(
         assert.equal(response.status, 200);
         assert.deepEqual(response.body, input);
         const observed = received.at(-1);
+        assert.ok(observed);
         assert.deepEqual(observed.body, input);
         assert.equal(observed.headers["content-encoding"], undefined);
         assert.equal(observed.headers["content-length"], undefined);
@@ -389,12 +515,12 @@ test(
       },
     );
     await t.test("input reaches upstream before the client finishes its body", async () => {
-      const observed = new Promise((resolve) => {
+      const observed = new Promise<void>((resolve) => {
         observeStreamingChunk = resolve;
       });
       const payload = Buffer.alloc(32768, 42);
-      let outgoing;
-      const complete = new Promise((resolve, reject) => {
+      let outgoing: ClientRequest | undefined;
+      const complete = new Promise<Buffer>((resolve, reject) => {
         outgoing = request(
           {
             host: "127.0.0.1",
@@ -405,14 +531,15 @@ test(
             agent: false,
           },
           (incoming) => {
-            const chunks = [];
-            incoming.on("data", (chunk) => chunks.push(chunk));
+            const chunks: Buffer[] = [];
+            incoming.on("data", (chunk: unknown) => appendChunk(chunks, chunk));
             incoming.once("error", reject);
             incoming.once("end", () => resolve(Buffer.concat(chunks)));
           },
         );
         outgoing.once("error", reject);
       });
+      assert.ok(outgoing);
       outgoing.write(payload.subarray(0, 16384));
       await Promise.race([observed, complete]);
       outgoing.end(payload.subarray(16384));
@@ -433,7 +560,7 @@ test(
       "structured response rewriting recomputes framing and discards stale integrity",
       async () => {
         const response = await exchange(port, "/rewrite");
-        assert.deepEqual(JSON.parse(response.body), {
+        assert.deepEqual(JSON.parse(response.body.toString()), {
           url: "rewritten-machine-url",
           body: "human content",
         });
@@ -458,9 +585,12 @@ test(
           return "Bearer fixture-provider-only";
         },
       });
-      const inherited = Object.assign(Object.create({ authorization: "Bearer inherited" }), {
-        accept: "*/*",
-      });
+      const inherited: object = Object.assign(
+        Object.create({ authorization: "Bearer inherited" }),
+        {
+          accept: "*/*",
+        },
+      );
       const invalid = [
         {
           name: "duplicate authorization casing",
@@ -503,7 +633,7 @@ test(
           privateCases.set(target, value);
           const before = dispatches;
           assert.equal((await exchange(port, target)).status, 502);
-          assert.equal(outcomes.at(-1).outcome.kind, "not-dispatched");
+          assert.equal(outcomes.at(-1)?.outcome.kind, "not-dispatched");
           assert.equal(dispatches, before);
           privateCases.delete(target);
         });
@@ -534,7 +664,9 @@ test(
         },
       });
       assert.equal((await exchange(port, "/canonical-headers", Buffer.from("body"))).status, 200);
-      const headers = received.at(-1).headers;
+      const lastReceived = received.at(-1);
+      assert.ok(lastReceived);
+      const headers = lastReceived.headers;
       assert.equal(headers.authorization, "Bearer fixture-provider-only");
       assert.equal(headers["x-repository-key"], "fixture-alternate-only");
       assert.equal(headers.host, new URL(origin).host);
@@ -561,7 +693,7 @@ test(
       const before = dispatches;
       privateCases.set("/later-trusted", { trustedOrigins: [], addOriginAfterConstruction: true });
       assert.equal((await exchange(port, "/later-trusted")).status, 502);
-      assert.equal(outcomes.at(-1).outcome.kind, "not-dispatched");
+      assert.equal(outcomes.at(-1)?.outcome.kind, "not-dispatched");
       assert.equal(dispatches, before);
       assert.equal((await exchange(port, "/echo")).status, 200);
       assert.equal(dispatches, before + 1);
@@ -570,7 +702,9 @@ test(
       const before = received.length;
       const response = await exchange(port, "/disconnect", Buffer.from("write"));
       assert.equal(response.status, 502);
-      assert.deepEqual(JSON.parse(response.body), { error: { code: "exchange-failed" } });
+      assert.deepEqual(JSON.parse(response.body.toString()), {
+        error: { code: "exchange-failed" },
+      });
       await waitUntil(
         "the /disconnect outcome",
         () => outcomes.some((entry) => entry.path === "/disconnect"),
@@ -597,7 +731,9 @@ test(
         assert.equal(received.length, before, "the oversized body must not reach the upstream");
         const response = await exchange(port, "/encoded-response");
         assert.equal(response.status, 502);
-        assert.deepEqual(JSON.parse(response.body), { error: { code: "exchange-failed" } });
+        assert.deepEqual(JSON.parse(response.body.toString()), {
+          error: { code: "exchange-failed" },
+        });
       },
     );
     await t.test(
@@ -621,11 +757,14 @@ test(
         ];
         for (const { name, head } of invalidHeads) {
           await t.test(name, async () => {
-            const raw = await new Promise((resolve, reject) => {
+            const raw = await new Promise<string>((resolve, reject) => {
               const socket = connect(port, "127.0.0.1");
               let output = "";
               socket.on("connect", () => socket.end(`${head}\r\nConnection: close\r\n\r\n`));
-              socket.on("data", (chunk) => (output += chunk));
+              socket.on("data", (chunk: unknown) => {
+                assert.ok(Buffer.isBuffer(chunk));
+                output += chunk.toString();
+              });
               socket.on("error", reject);
               socket.on("close", () => resolve(output));
             });
