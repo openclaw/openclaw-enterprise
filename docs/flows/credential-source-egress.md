@@ -63,10 +63,9 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-The bundled OpenShell owner rejects new static OpenAI source admission, adoption
-and revisions through `InstalledDriver.assertNewStaticProviderUse`, before
-credential preparation. It retains the provider for previously admitted revisions,
-including their request authorization, withdrawal and cleanup.
+The bundled OpenShell owner rejects new static OpenAI sources, adoption and revisions
+via `InstalledDriver.assertNewStaticProviderUse`, before credential preparation.
+Existing revisions retain their provider, request authorization, withdrawal and cleanup.
 
 OCC checks source and Secret permissions; existing sources need opt-in. Version 3
 binds Sandbox and Proxy to one registered Driver.
