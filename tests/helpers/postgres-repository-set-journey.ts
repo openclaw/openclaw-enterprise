@@ -38,7 +38,7 @@ import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/sr
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
+import { preparedStandingGitPeer, type ObserveGitApproval } from "./prepared-standing-git-peer.ts";
 import {
   repositoryRestartInventory,
   repositoryRestartState,
@@ -118,7 +118,7 @@ export type SelectedReadJourney = Pick<
     readonly keys: { readonly publicKey: KeyObject; readonly privateKey: KeyObject };
     readonly ca: string;
   };
-  evaluateRequest: (input: object) => ReturnType<typeof invoke>;
+  evaluateRequest: (input: object, timeoutMs?: number) => ReturnType<typeof invoke>;
   waitForIssuance: () => Promise<unknown>;
   finishIssuance: () => void;
 };
@@ -151,6 +151,7 @@ export async function selectedReadGitTwoWorkerJourney(
   t: TestContext,
   testUrl: string,
   exercise: (first: SelectedReadJourney, second: SelectedReadJourney) => Promise<void>,
+  observeGitApproval?: ObserveGitApproval,
 ) {
   const run = (
     selectedRead: (journey: SelectedWorkerJourney) => Promise<void>,
@@ -168,6 +169,7 @@ export async function selectedReadGitTwoWorkerJourney(
       selectedRead,
       true,
       previousWorker,
+      observeGitApproval,
     );
 
   await run(async (first) => {
@@ -286,6 +288,7 @@ async function repositoryGitJourney(
   selectedRead?: (journey: SelectedWorkerJourney) => Promise<void>,
   sharedGitIssuance?: true,
   previousWorker?: SelectedWorkerJourney,
+  observeGitApproval?: ObserveGitApproval,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
@@ -521,6 +524,7 @@ async function repositoryGitJourney(
     }
     return preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
       prepareGitOnDemand: !!selectedRead,
+      ...(observeGitApproval && { observeGitApproval }),
       ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
       driver: owner.ref,
       tokenLifetimeMs: 600_000,
@@ -1329,12 +1333,13 @@ async function repositoryGitJourney(
             keys: grantKeys,
             ca: tls.caBundle,
           },
-          evaluateRequest: (input) =>
+          evaluateRequest: (input, timeoutMs) =>
             invoke(
               middleware,
               "EvaluateHttpRequest",
               input,
               token(keys, "supervisor", wire.world.id, "repository-set"),
+              timeoutMs,
             ),
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),

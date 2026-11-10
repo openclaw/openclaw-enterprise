@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID, sign } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { buffer } from "node:stream/consumers";
+import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import {
   narrowOnlineGitJourney,
@@ -322,7 +323,24 @@ test(
   "two independently bound Git Workers share one mint without sharing request authority",
   { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
-    await selectedReadGitTwoWorkerJourney(t, import.meta.url, async (first, second) => {
+    const contentions = new Map<string, () => void>();
+    const expectContention = (requestId: string) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      contentions.set(requestId, resolve);
+      return async () => {
+        try {
+          await Promise.race([
+            promise,
+            delay(1500, undefined, { ref: false }).then(() => {
+              throw new Error("The signed request did not observe PostgreSQL quota contention.");
+            }),
+          ]);
+        } finally {
+          contentions.delete(requestId);
+        }
+      };
+    };
+    const exercise = async (first: SelectedReadJourney, second: SelectedReadJourney) => {
       async function client(journey: SelectedReadJourney) {
         const { pool, peer, revision, runtime, sandboxId, workspace } = journey;
         const bindingId = revision.egressPlan!.execution.executionId;
@@ -361,24 +379,76 @@ test(
       assert.equal(first.revision.namespaceId, second.revision.namespaceId);
       assert.equal(first.peer.gh.issuesOfTokens.length, 0);
 
-      const requestA = await a.approval();
-      const contended = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
-      const quotaOwner = await first.pool.connect();
-      try {
-        await quotaOwner.query("BEGIN");
-        await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
-        const decision = await second.evaluateRequest(contended);
-        assert.equal(decision.decision, 2);
-        assert.equal(decision.reason_code, "route_not_ready");
-      } finally {
-        quotaOwner.release(true);
+      async function holdQuota<T>(exercise: () => Promise<T>) {
+        const owner = await first.pool.connect();
+        try {
+          await owner.query("BEGIN");
+          await owner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+          return await exercise();
+        } finally {
+          try {
+            await owner.query("ROLLBACK");
+          } finally {
+            owner.release(true);
+          }
+        }
       }
-      assert.deepEqual(await b.grant(contended.context.request_id, b.assertion()), {
+      const approvals = async (...ids: string[]) =>
+        (
+          await first.pool.query<{ request_id: string; recipient_id: string; consumed: boolean }>(
+            `SELECT request_id, recipient_id, consumed FROM occ.request_credential_approvals
+         WHERE request_id = ANY($1::text[]) ORDER BY request_id`,
+            [ids],
+          )
+        ).rows;
+      const expired = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      await holdQuota(async () => {
+        const sawContention = expectContention(expired.context.request_id);
+        const refusal = second.evaluateRequest(expired, 300).then(
+          ({ decision }) => assert.equal(decision, 2),
+          (error: { code: number }) =>
+            assert.equal(error.code, 4, "original gRPC deadline elapsed"),
+        );
+        await sawContention();
+        await refusal;
+      });
+      assert.deepEqual(await approvals(expired.context.request_id), []);
+      assert.deepEqual(await b.grant(expired.context.request_id, b.assertion()), {
         status: 403,
         value: undefined,
       });
-      // Quota contention ends the inspected request. A fresh signed request can proceed.
-      const requestB = await b.approval();
+
+      const inputA = first.peer.input(a.bindingId, first.sandboxId, false, first.workspace);
+      const inputB = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      const requestA = inputA.context.request_id;
+      const requestB = inputB.context.request_id;
+      const waiting = await holdQuota(async () => {
+        const sawA = expectContention(requestA);
+        const sawB = expectContention(requestB);
+        const decisions = [first.evaluateRequest(inputA), second.evaluateRequest(inputB)];
+        await Promise.all([sawA(), sawB()]);
+        assert.deepEqual(await approvals(requestA, requestB), [], "contention precedes any write");
+        return decisions;
+      });
+      const [decisionA, decisionB] = await Promise.all(waiting);
+      assert.equal(decisionA!.decision, 1, decisionA!.reason_code);
+      assert.equal(decisionB!.decision, 1, decisionB!.reason_code);
+      const committed = await approvals(requestA, requestB);
+      assert.deepEqual(
+        new Map(committed.map((row) => [row.request_id, row.recipient_id])),
+        new Map([
+          [requestA, first.sandboxId],
+          [requestB, second.sandboxId],
+        ]),
+      );
+      assert.equal(committed.length, 2);
+      assert.ok(committed.every((row) => !row.consumed));
+      assert.equal(
+        (await first.evaluateRequest(inputA)).decision,
+        2,
+        "duplicate request stays denied",
+      );
+      assert.deepEqual(await approvals(requestA, requestB), committed);
       // Use the trusted fixture signer's JWT for B's exact endpoint. A's recipient,
       // binding and request ID are otherwise correct. B cannot redeem A's approval.
       const wrongOwner = b.assertion(first.sandboxId, a.providerId);
@@ -414,10 +484,10 @@ test(
         family_id: string;
       }>(
         `SELECT s.revision_id, s.admission_id, u.material_version, m.family_id
-         FROM occ.prepared_repository_git_uses u
-         JOIN occ.repository_session_attempts s USING (admission_id)
-         JOIN occ.prepared_github_shared_members m USING (admission_id)
-         WHERE s.revision_id = ANY($1::text[])`,
+       FROM occ.prepared_repository_git_uses u
+       JOIN occ.repository_session_attempts s USING (admission_id)
+       JOIN occ.prepared_github_shared_members m USING (admission_id)
+       WHERE s.revision_id = ANY($1::text[])`,
         [[first.revision.id, second.revision.id]],
       );
       assert.deepEqual(
@@ -431,7 +501,28 @@ test(
 
       assert.deepEqual(await a.delivery(), originalA);
       const withdrawnRequest = await a.approval();
-      await first.removeBinding();
+      const withdrawing = first.peer.input(a.bindingId, first.sandboxId, true, first.workspace);
+      const withdrawingId = withdrawing.context.request_id;
+      const withdrawal = await holdQuota(async () => {
+        const sawContention = expectContention(withdrawingId);
+        let answered = false;
+        const decision = first.evaluateRequest(withdrawing).finally(() => (answered = true));
+        await sawContention();
+        // Withdrawal commits while the original authorization waits outside its transaction.
+        await first.removeBinding();
+        assert.equal(
+          answered,
+          false,
+          "withdrawal commits while the original request is still live",
+        );
+        return { decision };
+      });
+      assert.equal((await withdrawal.decision).decision, 2);
+      assert.deepEqual(await approvals(withdrawingId), [], "retry rereads the withdrawn grant");
+      assert.deepEqual(await a.grant(withdrawingId, a.assertion()), {
+        status: 403,
+        value: undefined,
+      });
       assert.deepEqual(await a.grant(withdrawnRequest, a.assertion()), {
         status: 403,
         value: undefined,
@@ -445,6 +536,11 @@ test(
       assert.ok(fetch.bytes.includes("PACK"));
       assert.equal(first.peer.gh.issuesOfTokens.length, 1);
       assert.deepEqual(await b.delivery(), originalB);
+    };
+    await selectedReadGitTwoWorkerJourney(t, import.meta.url, exercise, (id, outcome) => {
+      if (outcome === "contended") {
+        contentions.get(id)?.();
+      }
     });
   },
 );
