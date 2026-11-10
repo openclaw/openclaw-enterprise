@@ -240,11 +240,11 @@ Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 response-only null local-tool metadata and the optional effective image policy.
 Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
 joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
-refuse. Reasoning summary parts open only at the next index. A summary delta for an
-unopened or skipped index withholds the response. Reasoning text has no part event,
-so its next content index opens on the first delta, and a later gap still withholds
-the response. Each index is scanned on its own, so selected material split across
-one part is withheld when another part's delta arrives between the halves.
+refuse. A reasoning summary part opens only at the next index; an unopened or
+skipped summary delta withholds the response. Reasoning text has no part event:
+its next content index opens on the first delta, and a gap still withholds it.
+Each index is scanned alone, so material split across one part is withheld when
+another part's delta arrives between the halves.
 Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin already received the credential.
@@ -336,6 +336,8 @@ None.
 
 ## Changelog
 
+- 2026-11-10 02:40: Withhold selected material split across one reasoning part.
+
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 
 - 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
@@ -345,21 +347,5 @@ None.
 - 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
-
-- 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
-
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
-
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
-
-- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
-
-- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
-
-- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.
