@@ -1027,6 +1027,106 @@ test(
 );
 
 test(
+  "OpenShell reports safe failure metadata before blocked cleanup",
+  { timeout: 20_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const file = join(root, "tests/integration/stage-failure.test.mjs");
+    const moduleUrl = pathToFileURL(join(repositoryRoot, "tests/helpers/openshell-stage.mjs")).href;
+    const teardownUrl = pathToFileURL(
+      join(repositoryRoot, "tests/helpers/bounded-teardown.ts"),
+    ).href;
+    const canary = "generated-credential-must-stay-private";
+    await writeFile(
+      file,
+      `
+import assert from "node:assert/strict";
+import { watch } from "node:fs";
+import test from "node:test";
+import { runOpenShellStage } from ${JSON.stringify(moduleUrl)};
+import { boundedTeardown } from ${JSON.stringify(teardownUrl)};
+test("failed operation retains its original error", async (t) => {
+  const { context } = boundedTeardown(t);
+  context.after(() => new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "release") { watcher.close(); resolve(); }
+    });
+    process.stderr.write("cleanup waiting\\n");
+  }));
+  assert.equal(await runOpenShellStage(t, "installation", async () => 42, "installation"), 42);
+  const unknown = Object.assign(new Error(${JSON.stringify(canary)}), {
+    name: ${JSON.stringify(canary)}, code: ${JSON.stringify(canary)},
+    stack: ${JSON.stringify(canary)},
+  });
+  await assert.rejects(runOpenShellStage(t, "installation", async () => { throw unknown; }),
+    (error) => error === unknown);
+  let original;
+  await assert.rejects(runOpenShellStage(t, "installation", async () => {
+    try { assert.equal(${JSON.stringify(canary)}, "expected"); }
+    catch (error) { original = error; throw error; }
+  }, "installation"), (error) => error === original);
+  throw original;
+});
+`,
+    );
+    const child = spawn(process.execPath, ["--test-reporter=tap", file], {
+      cwd: repositoryRoot,
+      env: { PATH: process.env.PATH },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    let releaseWaiting;
+    const waiting = new Promise((resolve) => {
+      releaseWaiting = resolve;
+    });
+    const collect = (chunk) => {
+      output += chunk;
+      if (output.includes("cleanup waiting")) {
+        releaseWaiting(true);
+      }
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.once("close", () => releaseWaiting(false));
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      await closed;
+    });
+    assert.equal(await waiting, true, output);
+    // The hook is still blocked: the record must arrive without node:test's final error report.
+    assert.equal(child.exitCode, null);
+    assert.equal(output.includes(canary), false, output);
+    const failures = [...output.matchAll(/OpenShell stage failure (\{[^\n]+\})/g)].map((match) =>
+      JSON.parse(match[1]),
+    );
+    assert.deepEqual(failures[0], { category: "unknown", code: null, location: null });
+    assert.equal(failures.length, 2);
+    assert.deepEqual(Object.keys(failures[1]).sort(), ["category", "code", "location"]);
+    assert.equal(failures[1].category, "AssertionError");
+    assert.equal(failures[1].code, "ERR_ASSERTION");
+    assert.match(failures[1].location, /^tests\/helpers\/openshell-stage\.mjs:\d+:\d+$/);
+    assert.ok(output.indexOf("OpenShell stage failure") < output.indexOf("cleanup waiting"));
+    await writeFile(join(root, "release"), "release cleanup");
+    assert.deepEqual(await closed, { code: 1, signal: null });
+    assert.match(output, /# fail 1/);
+    assert.match(
+      output,
+      /"kind":"openshell-sandbox-phase","stage":"installation","outcome":"passed"/,
+    );
+    assert.match(
+      output,
+      /"kind":"openshell-sandbox-phase","stage":"installation","outcome":"failed"/,
+    );
+  },
+);
+
+test(
   "run reports bounded OpenShell progress before the test file finishes",
   { timeout: 30_000 },
   async (t) => {

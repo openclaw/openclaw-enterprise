@@ -129,6 +129,12 @@ emits one workspace-entry marker that sets `truncated` if received; later
 invocations still run but emit no installation records. These intervals do not
 establish model execution or whole-file success.
 
+Before cleanup, failed Sandbox stages write an `OpenShell stage failure` record
+in the test output. The [stage helper](../../../tests/helpers/openshell-stage.mjs)
+includes only a recognized error category/code and an available repository-relative
+source location. Unknown fields are `null` or `unknown`; messages, assertion values,
+and raw stacks are excluded. Final test results still wait for cleanup.
+
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.
