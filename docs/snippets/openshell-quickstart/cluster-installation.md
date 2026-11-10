@@ -4,18 +4,15 @@ published: false
 
 ## 2. Install OpenShell and bootstrap OCC
 
-The templates use release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`. Keep these names; they match the staged policies.
+The staged policies require releases `oce` and `openshell-gateway`, namespaces `oce-system` and `envoy-gateway-system`, and GatewayClass `eg`.
 
 Exclude other install, upgrade and Job writers. Use a local chart and the matching CLI. Keep the new
 `$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
 After an interrupted install, reconcile that receipt before any further writes.
 
-The template selects public network egress for a new installation. Set
-`NETWORK_EGRESS_MODE=restricted` before rendering to require explicit allowlists.
-Public mode requires a compatible OpenShell release; see
-[OpenShell Sandbox](../../reference/drivers/openshell-sandbox.md).
+The template defaults to public egress, which requires a [qualified OpenShell Gateway and supervisor](/reference/drivers/openshell-sandbox/). For allowlists, set `NETWORK_EGRESS_MODE=restricted`.
 
-For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
+Confirm `CLUSTER_DOMAIN` with CoreDNS below or ask your DNS administrator.
 
 ```bash
 CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |

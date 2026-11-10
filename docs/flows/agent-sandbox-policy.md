@@ -139,8 +139,9 @@ execution and rejects public embedded Secret bindings. Dedicated channel binding
 remain in the separate Gateway.
 
 Admission freezes `networkEgressMode` independently of `sandboxPolicy`.
-PostgreSQL's immutable `admitted_spec` constrains the value; retries use that
-snapshot, not changed Installation settings. Omitted values stay restricted.
+PostgreSQL constrains the mode in the immutable `admitted_spec`. When an older
+snapshot omits it, `revisionFromRow` supplies `restricted` so replay checks the
+loaded OpenShell policy even after the Installation selects public egress.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`

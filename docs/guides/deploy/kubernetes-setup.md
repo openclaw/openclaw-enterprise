@@ -6,7 +6,7 @@ last_verified: "2026-11-02"
 
 # Set up OCE on Kubernetes
 
-Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes cluster for development and evaluation. [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+Install OpenClaw Enterprise with OpenShell on a development or evaluation cluster. [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 ## Before you start
 
@@ -39,9 +39,8 @@ export CLUSTER_NAME='<lowercase cluster name>'
 export STORAGE_CLASS='<encrypted RWO StorageClass>'
 export KUBECONFIG="$RUN_DIR/kubeconfig"
 export CONTEXT='<approved cluster context>'
-# Copy your administrator-provided kubeconfig, not the default kubeconfig.
+# Use the administrator-provided kubeconfig.
 install -m 600 /secure/oce/kubeconfig "$KUBECONFIG"
-# Select the context only in this private copy.
 kubectl --kubeconfig "$KUBECONFIG" config use-context "$CONTEXT"
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get nodes -L oce-role
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORAGE_CLASS"
@@ -50,13 +49,13 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORA
 | Input                                    | Value                                                                          |
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
-| `OPENSHELL_CHART`                        | Stock 0.1.6.                                                                   |
+| `OPENSHELL_CHART`                        | Stock 0.1.6 with `NETWORK_EGRESS_MODE=restricted`.                             |
 | `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
 | `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
 | `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
 | `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Set `NETWORK_EGRESS_MODE=restricted` with the stock OpenShell 0.1.6 images and Codex 0.164.0. Public egress requires a qualified OpenShell chart and images whose Gateway and supervisor report that the public TCP policy is active.
+Use Codex 0.164.0.
 
 Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 
