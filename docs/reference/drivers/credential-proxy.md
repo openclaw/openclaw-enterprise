@@ -95,8 +95,12 @@ Git delivery. Neither version changes existing strict admissions. The Driver's
 optional `requestTimeCredentials` capability verifies availability and the
 current recipient before use.
 
-IAM grant revocation denies the affected path while the other authorized path
-remains usable in the same Sandbox. Version 9 does not admit `policyReduction`.
+Revoking the model source's IAM grant denies model requests while independently
+authorized Git remains usable. Git authority comes from its repository binding,
+approval, session and registry. Removing [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
+denies fresh Git requests but may retire the entire runtime in version 9;
+inference continuity after that removal is not guaranteed. Version 9 does not
+admit `policyReduction`.
 Removing a model or Git binding follows the existing lifecycle and may stop or
 redeploy the execution; it does not promise uninterrupted use of the other path.
 

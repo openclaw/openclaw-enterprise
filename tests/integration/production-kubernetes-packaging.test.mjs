@@ -7033,6 +7033,124 @@ test(
         ),
       );
     }
+    // Model requests terminate on the API; protected Git keeps its independent worker owner.
+    // Exercise the combined upgrade, where preflight must inspect configuration without either key.
+    const combinedValues = {
+      ...selected,
+      "backend.openshell.clientSecretName": "dedicated-openshell-admin",
+      "egressAuthority.enabled": "true",
+      "egressAuthority.tlsSecretName": "authority-server-tls",
+      "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+      "egressAuthority.tokenGrant.enabled": "true",
+      "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+      "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "egressAuthority.clients[0].podSelector.matchLabels.app": "model-supervisor",
+    };
+    const combined = await resources((await render(combinedValues, { isUpgrade: true })).stdout);
+    const find = (kind, name) =>
+      combined.find((item) => item.kind === kind && item.metadata.name === name);
+    assert.deepEqual(find("Service", service.metadata.name), service);
+    assert.deepEqual(find("NetworkPolicy", policy.metadata.name), policy);
+    const modelService = find("Service", "openclaw-enterprise-egress-authority");
+    assert.equal(modelService.spec.selector["app.kubernetes.io/component"], "api");
+    assert.deepEqual(modelService.spec.ports, [
+      { name: "egress-tls", port: 9444, targetPort: "egress-tls" },
+      { name: "token-grant", port: 9445, targetPort: "token-grant" },
+    ]);
+    const modelIngress = find("NetworkPolicy", "openclaw-enterprise-egress-authority-ingress");
+    assert.equal(modelIngress.spec.podSelector.matchLabels["app.kubernetes.io/component"], "api");
+    assert.deepEqual(modelIngress.spec.ingress, [
+      {
+        from: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+            },
+            podSelector: { matchLabels: { app: "model-supervisor" } },
+          },
+        ],
+        ports: [
+          { protocol: "TCP", port: 9444 },
+          { protocol: "TCP", port: 9445 },
+        ],
+      },
+    ]);
+    const protectedVolume = ({ name }) =>
+      [
+        "egress-authority-tls",
+        "egress-authority-issuer",
+        "token-grant-bundle",
+        "openshell-git",
+        "prepared-repository-owner",
+      ].includes(name);
+    for (const object of combined.filter(({ kind }) => ["Deployment", "Job"].includes(kind))) {
+      const pod = object.spec.template.spec;
+      const component = object.metadata.name.replace("openclaw-enterprise-", "");
+      const owned = pod.volumes?.filter(protectedVolume) ?? [];
+      if (component === "api") {
+        assert.deepEqual(owned, [
+          {
+            name: "egress-authority-tls",
+            secret: {
+              secretName: "authority-server-tls",
+              items: [
+                { key: "tls.crt", path: "tls.crt" },
+                { key: "tls.key", path: "tls.key" },
+              ],
+            },
+          },
+          {
+            name: "egress-authority-issuer",
+            secret: {
+              secretName: "gateway-jwt-keys",
+              items: [{ key: "public.pem", path: "issuer.pub" }],
+            },
+          },
+          {
+            name: "token-grant-bundle",
+            configMap: {
+              name: "supervisor-jwt-bundle",
+              items: [{ key: "bundle.json", path: "bundle.json" }],
+            },
+          },
+        ]);
+      } else if (component === "worker") {
+        const original = objects.find(
+          ({ kind, metadata }) => kind === "Deployment" && metadata.name === object.metadata.name,
+        );
+        assert.deepEqual(owned, original.spec.template.spec.volumes.filter(protectedVolume));
+      } else {
+        assert.deepEqual(owned, []);
+      }
+      for (const container of [...(pod.initContainers ?? []), ...pod.containers]) {
+        const ports = (container.ports ?? []).filter(({ name }) =>
+          ["egress-tls", "token-grant", "openshell-git"].includes(name),
+        );
+        const listeners = {
+          api: [
+            { name: "egress-tls", containerPort: 9444 },
+            { name: "token-grant", containerPort: 9445 },
+          ],
+          worker: [{ name: "openshell-git", containerPort: 8445 }],
+        };
+        assert.deepEqual(ports, listeners[container.name] ?? []);
+        if (!["api", "worker"].includes(container.name)) {
+          assert.deepEqual(container.volumeMounts?.filter(protectedVolume) ?? [], []);
+        }
+      }
+    }
+    await assert.rejects(
+      render({ ...combinedValues, "egressAuthority.tokenGrant.enabled": "false" }),
+      /openshellGit cannot be combined with egressAuthority/,
+    );
+    for (const secret of ["openshell-git-tls", "repository-app-key"]) {
+      await assert.rejects(
+        render({ ...combinedValues, "egressAuthority.tlsSecretName": secret }),
+        /must name a dedicated Secret/,
+      );
+    }
+
     const upgrade = await render(selected, { isUpgrade: true });
     assert.doesNotMatch(upgrade.stdout, /8443|repository-public-ca|repository-control/);
     const job = (await resources(upgrade.stdout)).find(({ kind }) => kind === "Job");

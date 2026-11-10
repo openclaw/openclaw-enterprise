@@ -125,10 +125,14 @@ or response material while collecting these errors.
 Follow the [operator checks](../../guides/credential-proxy/model-requests.md#verify-the-installed-path).
 Local source and controlled-origin proof do not replace an installed test of
 actual Codex HTTPS/SSE traffic, isolated supervisor identity, required middleware,
-zero-cache grants, source withdrawal and absence of a direct route. Independently
-revoke each path's IAM grant to check that the denied path cannot reach its origin
-while the other authorized path remains usable in the same Sandbox. This check
-does not remove bindings or establish continuity during binding removal.
+zero-cache grants, source withdrawal and absence of a direct route. Revoke the
+model source's IAM grant and verify that model requests cannot reach their origin
+while authorized Git remains usable. Separately, remove Git
+[standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
+with its current generation and verify that fresh Git requests do not reach
+the origin. Version 9 may retire the entire runtime on Git removal; record that
+outcome instead of claiming continued inference. These checks do not establish
+continuity during binding removal.
 
 ## Related docs
 
@@ -143,6 +147,6 @@ None.
 
 ## Changelog
 
-- 2026-11-10 02:57: Distinguish independent IAM denial from binding-removal lifecycle. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
+- 2026-11-10 02:57: Distinguish model IAM denial, Repo authority and binding-removal lifecycle. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
 
 - 2026-11-10 02:54: Trace explicit model approval and single-use credential release in the accompanying implementation. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)

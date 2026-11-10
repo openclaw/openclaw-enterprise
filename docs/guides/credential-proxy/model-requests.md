@@ -68,6 +68,29 @@ protected Git. The Driver refuses missing mandatory bindings, overlapping model
 routes, mismatched provider configuration and token grants without explicit
 `cache_ttl: 0`.
 
+## Apply to an existing installation
+
+Roll out the image and configuration in two phases:
+
+1. Complete the normal [image upgrade](../deploy/production-upgrade.md), keeping
+   existing non-image Installation settings unchanged.
+2. From a checkout of the newly installed source revision, apply a separate
+   reviewed [Installation configuration change](../deploy/production-installation-changes.md).
+   Keep every image reference unchanged and set `database.upgradeMigration: separate`
+   during this phase. Preserve the
+   Installation Secret's `openclaw.dev/installation-id` annotation, recompute
+   `controlPlane.installationChecksum`, and apply the matching `egressAuthority`
+   and `egressAuthority.tokenGrant` Helm values with the configuration.
+
+The image-upgrade helper intentionally refuses these configuration changes;
+its candidate inputs do not authorize combining the two phases. The separate
+configuration change restarts the API and worker with the new settings.
+
+For an immutable Installation Secret, follow the separate
+[same-image successor procedure](../deploy/production-installation-changes.md#change-an-immutable-installation-secret).
+It requires an explicit identity comparison with live OCC and retains the
+original Secret for recovery; ordinary Helm does not perform that comparison.
+
 ## Create and bind the model source
 
 Use the built CLI, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE` and a protected
@@ -120,11 +143,14 @@ Run these checks against the exact images and configuration selected for rollout
    fail; a subsequent authorized request must use the new version. The short
    token-grant `expires_in` is a release lease, not the API key's provider expiry.
 5. In the same Sandbox, verify both inference and native Git. Revoke only the
-   model IAM grant and confirm that model requests cannot reach their origin
-   while authorized Git still works. Restore that grant, then revoke only the
-   Git IAM grant: Git must be denied while authorized inference still works.
+   model source's IAM grant and confirm that model requests cannot reach their
+   origin while authorized Git still works. Restore that grant, then remove
+   Git [standing approval](../repository-credentials.md#keep-git-access-on-the-same-running-agent)
+   with its current generation. Verify that fresh Git requests are denied with
+   no new origin request. Version 9 may retire the entire runtime on Git removal;
+   record that outcome. Continued inference after this removal is not guaranteed.
 
-Keep the saved bindings unchanged during the IAM checks. Removing a model or
+Keep the saved bindings unchanged during these checks. Removing a model or
 Git binding may stop or redeploy the execution; version 9 does not support live
 policy reduction that keeps the other path running.
 
