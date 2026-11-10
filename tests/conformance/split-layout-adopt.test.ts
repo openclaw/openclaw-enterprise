@@ -1139,7 +1139,7 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
           "openclaw.dev/namespace-lifecycle"
         ] = "external";
       },
-      /split-layout-tenants\.mjs/,
+      /split-layout-tenants\.ts/,
     ],
     [
       "an object OCE does not manage",
