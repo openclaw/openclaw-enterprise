@@ -9,8 +9,8 @@ import {
   changeAccount,
   consoleOrigin as origin,
   currentSession,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   passwordSignIn,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
@@ -28,33 +28,34 @@ const memberSubject = 7_000_001;
 // the production values.
 const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
-// GitHub is optional: when it errors or stalls, GitHub sign-in fails closed and password
+// OIDC is optional: when it errors or stalls, OIDC sign-in fails closed and password
 // sign-in keeps working; strangers can slow the recovery administrator's password but never
 // refuse it.
-// The provider fixture replaces only remote HTTP to github.com and api.github.com.
+// The provider fixture replaces only remote HTTP to oidc.com and api.oidc.com.
 test(
-  "a GitHub outage fails GitHub sign-in closed while password sign-in keeps working",
+  "a OIDC outage fails OIDC sign-in closed while password sign-in keeps working",
   requiresPostgres,
   async (t) => {
     let app;
-    // In "hang" mode the GitHub provider never answers; the controller's shared provider
+    // In "hang" mode the OIDC provider never answers; the controller's shared provider
     // deadline must end the wait.
     const {
       pool,
-      github: provider,
+      oidc: provider,
       onboard,
       composeApp,
     } = await preparePostgresSignInInstallation(t, () => [app], {
+      oidc: true,
       email: "outage-recovery@example.test",
       password: "outage-member-password",
       secrets: {
         "occ-auth/secret": "outage-auth-test-secret-at-least-32-bytes",
-        "occ-github-login/client-id": "outage-client-id",
-        "occ-github-login/client-secret": "outage-client-secret",
+        "occ-oidc-login/client-id": "outage-client-id",
+        "occ-oidc-login/client-secret": "outage-client-secret",
       },
     });
 
-    // Password onboarding on the default install, then the GitHub upgrade. Members read the
+    // Password onboarding on the default install, then the OIDC upgrade. Members read the
     // Installation but do not administer it, so a spent email refuses them.
     const { admin, accounts } = await onboard({
       accounts: {
@@ -65,32 +66,33 @@ test(
       },
     });
     const { member, other, resetMember, disabledMember } = accounts;
-    app = await composeApp(githubUpgradeSettings(admin.id), { passwordSlowLaneFloors: slowLane });
+    app = await composeApp(oidcUpgradeSettings(admin.id), { passwordSlowLaneFloors: slowLane });
     const adminHeaders = await signedInHeaders(app, origin, admin);
-    await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
+    await assertProviderAttached(app, adminHeaders, member.id, "oidc", String(memberSubject));
 
-    const memberGitHubSignIn = async (remoteAddress) =>
-      (await githubSignIn(app, origin, memberSubject, remoteAddress)).callback;
+    const memberOIDCSignIn = async (remoteAddress) =>
+      (await oidcSignIn(app, origin, provider, { subject: String(memberSubject) }, remoteAddress))
+        .callback;
     const sessionCount = async () => (await authRowCounts(pool)).sessions;
     async function assertFailedClosed(callback, sessionsBefore) {
       assert.equal(callback.statusCode, 302);
       assert.equal(
         callback.headers.location,
-        "/console/?authError=github&authReason=provider-unavailable",
+        "/console/?authError=oidc&authReason=provider-unavailable",
       );
       assert.equal(callback.headers["set-cookie"], undefined);
       assert.equal(await sessionCount(), sessionsBefore, "no session is issued");
     }
 
     await t.test("the fixture provider signs the attached account in while up", async () => {
-      const callback = await memberGitHubSignIn();
+      const callback = await memberOIDCSignIn();
       await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("provider 5xx fails closed; password sign-in keeps working", async () => {
       provider.mode = "error";
       const before = await sessionCount();
-      await assertFailedClosed(await memberGitHubSignIn(), before);
+      await assertFailedClosed(await memberOIDCSignIn(), before);
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const cookie = await assertSessionUser(app, signedIn, member.id);
@@ -107,7 +109,7 @@ test(
         provider.mode = "hang";
         const before = await sessionCount();
         const started = performance.now();
-        const pending = memberGitHubSignIn();
+        const pending = memberOIDCSignIn();
         // Password sign-in proceeds while the provider exchange is stalled.
         const signedIn = await passwordSignIn(app, origin, member, "192.0.2.51");
         assert.equal(signedIn.statusCode, 200, signedIn.body);
@@ -129,8 +131,8 @@ test(
         assert.equal(signedIn.statusCode, 200, signedIn.body);
       }
       assert.equal(
-        (await memberGitHubSignIn("203.0.113.10")).headers.location,
-        "/console/?authError=github&authReason=provider-unavailable",
+        (await memberOIDCSignIn("203.0.113.10")).headers.location,
+        "/console/?authError=oidc&authReason=provider-unavailable",
       );
     });
 
@@ -155,7 +157,7 @@ test(
         // browser's attempt cookie spend only their own key, never a real browser's.
         provider.mode = "up";
         for (let index = 0; index < 35; index += 1) {
-          const start = await injectLocalhost(app, "POST", "/api/auth/providers/github/start", {
+          const start = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/start", {
             remoteAddress: ingress,
             headers: { origin },
           });
@@ -163,12 +165,12 @@ test(
         }
         for (let index = 0; index < 35; index += 1) {
           const junk = await app.inject({
-            url: `/api/auth/providers/github/callback?state=${"j".repeat(43)}&code=junk`,
+            url: `/api/auth/providers/oidc/callback?state=${"j".repeat(43)}&code=junk`,
             remoteAddress: ingress,
           });
-          assert.equal(junk.headers.location, "/console/?authError=github");
+          assert.equal(junk.headers.location, "/console/?authError=oidc");
         }
-        const callback = await memberGitHubSignIn(ingress);
+        const callback = await memberOIDCSignIn(ingress);
         assert.equal(callback.headers.location, "/console/", callback.body);
       },
     );
@@ -187,19 +189,16 @@ test(
           return recordDenied.apply(this, args);
         });
         const before = await sessionCount();
-        const callback = await memberGitHubSignIn("192.0.2.59");
+        const callback = await memberOIDCSignIn("192.0.2.59");
         assert.equal(callback.statusCode, 302);
-        assert.equal(
-          callback.headers.location,
-          "/console/?authError=github&authReason=unavailable",
-        );
+        assert.equal(callback.headers.location, "/console/?authError=oidc&authReason=unavailable");
         assert.equal(callback.headers["set-cookie"], undefined);
         assert.equal(await sessionCount(), before, "no session is issued");
       },
     );
 
     // A State failure while consuming the attempt or capturing the identity reaches the
-    // controller unchanged (github-login-transport), which reports an outage, not a refusal.
+    // controller unchanged (oidc-login-transport), which reports an outage, not a refusal.
     for (const [method, remoteAddress] of [
       ["consumeAttempt", "192.0.2.61"],
       ["snapshotExternal", "192.0.2.62"],
@@ -210,20 +209,17 @@ test(
           Promise.reject(new Error("fixture State outage")),
         );
         const before = await sessionCount();
-        const callback = await memberGitHubSignIn(remoteAddress);
+        const callback = await memberOIDCSignIn(remoteAddress);
         assert.equal(callback.statusCode, 302);
-        assert.equal(
-          callback.headers.location,
-          "/console/?authError=github&authReason=unavailable",
-        );
+        assert.equal(callback.headers.location, "/console/?authError=oidc&authReason=unavailable");
         assert.equal(callback.headers["set-cookie"], undefined);
         assert.equal(await sessionCount(), before, "no session is issued");
       });
     }
 
-    await t.test("GitHub sign-in recovers without a restart", async () => {
+    await t.test("OIDC sign-in recovers without a restart", async () => {
       provider.mode = "up";
-      const callback = await memberGitHubSignIn("192.0.2.60");
+      const callback = await memberOIDCSignIn("192.0.2.60");
       assert.equal(callback.headers.location, "/console/", callback.body);
     });
 
@@ -241,9 +237,9 @@ test(
         headers: { origin, cookie },
         body: { email: account.email, password: account.password },
       });
-    await t.test("a GitHub sign-in marks the browser for password fallback", async () => {
+    await t.test("a OIDC sign-in marks the browser for password fallback", async () => {
       provider.mode = "up";
-      const callback = await memberGitHubSignIn("192.0.2.61");
+      const callback = await memberOIDCSignIn("192.0.2.61");
       assert.equal(callback.headers.location, "/console/", callback.body);
       const setCookie = [callback.headers["set-cookie"]]
         .flat()

@@ -57,7 +57,7 @@ function input(controlPlane) {
         scraperPodLabels: { app: "prometheus" },
       },
       recoveryUserId: "recovery-admin_1",
-      github: { egressCidrs: ["140.82.112.0/20"] },
+      google: { egressCidrs: ["192.0.2.20/32"] },
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
       ...controlPlane,
     },
@@ -780,20 +780,20 @@ test(
       [{ clientIdKey: "client-secret" }, false],
       [{ clientSecretKey: "client-id" }, false],
     ];
-    const cases = ["github", "google", "oidc"].flatMap((provider) =>
+    const cases = ["google", "oidc"].flatMap((provider) =>
       keyCases.map(([keys, accepted]) => [provider, keys, accepted]),
     );
     return each(cases, ([provider, keys, accepted]) => {
       const settings = { ...(provider === "oidc" ? oidcEndpoints : {}), ...keys };
       return assertParity({
         label: `${provider}: ${JSON.stringify(keys)}`,
-        controlPlane: { github: undefined, [provider]: settings },
+        controlPlane: { google: undefined, [provider]: settings },
         values: {
-          auth: { github: { enabled: false }, [provider]: { enabled: true, ...settings } },
+          auth: { google: { enabled: false }, [provider]: { enabled: true, ...settings } },
         },
         accepted,
         chartError:
-          /auth\.(github|google|oidc) client ID and client secret must use different Secret keys/,
+          /auth\.(google|oidc) client ID and client secret must use different Secret keys/,
       });
     });
   },
@@ -1206,46 +1206,39 @@ test(
     // [label, controlPlane providers, accepted]. The chart compares each enabled provider's
     // Secret, default or explicit, with the platform Secrets and each provider before it.
     const cases = [
-      ["defaults", { github: {}, google: {}, oidc: oidcEndpoints }, true],
+      ["defaults", { google: {}, oidc: oidcEndpoints }, true],
       [
         "distinct custom names",
-        {
-          github: { secretName: "login-a" },
-          google: { secretName: "login-b" },
-          oidc: { ...oidcEndpoints, secretName: "login-c" },
-        },
+        { google: { secretName: "login-a" }, oidc: { ...oidcEndpoints, secretName: "login-b" } },
         true,
       ],
-      // GitHub is disabled, so Google may use GitHub's default name.
-      ["google alone", { github: undefined, google: { secretName: "occ-github-login" } }, true],
-      ["gateway API key", { github: { secretName: "occ-private-gateway-key" } }, false],
-      // cert-manager writes the Gateway Secrets the chart generates (finding 1046).
-      ["generated Gateway TLS", { github: { secretName: "oce-agent-gateways-tls" } }, false],
+      ["google alone", { google: { secretName: "custom-login" } }, true],
+      ["gateway API key", { google: { secretName: "occ-private-gateway-key" } }, false],
+      ["generated Gateway TLS", { google: { secretName: "oce-agent-gateways-tls" } }, false],
       ["generated Gateway root CA", { google: { secretName: gatewayRootSecret } }, false],
-      ["installation", { github: { secretName: "occ-installation-startup" } }, false],
+      ["installation", { google: { secretName: "occ-installation-startup" } }, false],
       ["database", { google: { secretName: "occ-database" } }, false],
-      ["auth", { oidc: { ...oidcEndpoints, secretName: "occ-auth" } }, false],
+      ["auth", { google: undefined, oidc: { ...oidcEndpoints, secretName: "occ-auth" } }, false],
       [
-        "github and google share",
-        { github: { secretName: "shared" }, google: { secretName: "shared" } },
+        "google and oidc share",
+        { google: { secretName: "shared" }, oidc: { ...oidcEndpoints, secretName: "shared" } },
         false,
       ],
-      ["google default taken", { github: { secretName: "occ-google-login" }, google: {} }, false],
       [
-        "oidc matches github",
-        { github: {}, oidc: { ...oidcEndpoints, secretName: "occ-github-login" } },
+        "google default taken",
+        { google: {}, oidc: { ...oidcEndpoints, secretName: "occ-google-login" } },
         false,
       ],
       [
         "oidc default taken",
-        { github: undefined, google: { secretName: "occ-oidc-login" }, oidc: oidcEndpoints },
+        { google: { secretName: "occ-oidc-login" }, oidc: oidcEndpoints },
         false,
       ],
     ];
     return each(cases, ([label, providers, accepted]) => {
       const auth = {};
-      for (const name of ["github", "google", "oidc"]) {
-        const settings = name in providers ? providers[name] : name === "github" ? {} : undefined;
+      for (const name of ["google", "oidc"]) {
+        const settings = name in providers ? providers[name] : name === "google" ? {} : undefined;
         auth[name] = settings === undefined ? { enabled: false } : { enabled: true, ...settings };
       }
       return assertParity({
@@ -1253,7 +1246,7 @@ test(
         controlPlane: providers,
         values: { auth },
         accepted,
-        chartError: /auth\.(github|google|oidc)\.secretName must name a dedicated Secret/,
+        chartError: /auth\.(google|oidc)\.secretName must name a dedicated Secret/,
       });
     });
   },
@@ -1511,8 +1504,8 @@ test(
         "gatewayRouting.apiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also database.caSecretName",
       ],
       [
-        "occ-github-login",
-        "auth.github.secretName must name a dedicated Secret; occ-github-login is also database.caSecretName",
+        "occ-google-login",
+        "auth.google.secretName must name a dedicated Secret; occ-google-login is also database.caSecretName",
       ],
       [
         "occ-database",
@@ -1614,10 +1607,10 @@ for (const [field, chartField, controlPlane, values] of [
     (gatewayClassName) => ({ gatewayRouting: { gatewayClassName } }),
   ],
   [
-    "controlPlane.github.secretName",
-    "auth.github.secretName",
-    (secretName) => ({ github: { egressCidrs: ["140.82.112.0/20"], secretName } }),
-    (secretName) => ({ auth: { github: { secretName } } }),
+    "controlPlane.google.secretName",
+    "auth.google.secretName",
+    (secretName) => ({ google: { egressCidrs: ["192.0.2.20/32"], secretName } }),
+    (secretName) => ({ auth: { google: { secretName } } }),
   ],
 ]) {
   test(`${field} and ${chartField} refuse the same malformed names`, { skip: helmSkip }, () =>

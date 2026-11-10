@@ -241,7 +241,7 @@
                       },
                       {
                         "page": "reference/authentication/team-enrollment",
-                        "label": "GitHub Team Enrollment"
+                        "label": "OIDC Account Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -798,6 +798,7 @@
             ],
             "hidden": [
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",

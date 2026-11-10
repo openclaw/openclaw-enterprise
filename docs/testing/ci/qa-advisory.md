@@ -61,18 +61,18 @@ Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. Before
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 
-| Scenario                | In advisory          | Presets         | Checks                                                                                                                                                     |
-| ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
-| `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
-| `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
-| `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | Existing-account Keycloak sign-in, owner creation and deployment, browser reply, administrative and sibling-Agent denial.                                  |
-| `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
-| `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                |
-| `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
-| `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
-| `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
-| `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
+| Scenario                | In advisory          | Presets         | Checks                                                                                                                                                               |
+| ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                             |
+| `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                 |
+| `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                                         |
+| `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | Explicitly attached Default users, signed admission claims, Keycloak sign-in, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
+| `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.           |
+| `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                          |
+| `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                           |
+| `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                 |
+| `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                        |
+| `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                      |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
 these selections; [scenario selection](../../../tests/helpers/qa-selection.mjs)

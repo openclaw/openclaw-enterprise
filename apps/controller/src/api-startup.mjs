@@ -62,7 +62,6 @@ function startupFailureCode(error) {
   // Production composition refuses the combination before any database work; the auth
   // composer's host-only cookie check is the backstop.
   if (
-    message === "GitHub sign-in requires host-only-exchange for native administration." ||
     /sign-in (does not support|supports host-only cookies without shared) native admin/.test(
       message,
     )
@@ -261,7 +260,7 @@ function configuration(env) {
 
   deriveSharedCookieDomain(authBaseURL, nativeAdminDomain);
 
-  // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
+  // { google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
   const clientAddress = clientAddressConfiguration(env);
   if (mode === "production") {

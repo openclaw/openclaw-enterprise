@@ -640,7 +640,7 @@ test(
       // The API's `listening` line reports these, so an operator can see which phase was slow.
       assert.deepEqual(
         startupPhases.map(({ phase }) => phase),
-        ["database", "authentication", "identity", "computePreflight", "controller", "routes"],
+        ["database", "identity", "computePreflight", "authentication", "controller", "routes"],
       );
       assert.ok(startupPhases.every(({ durationMs }) => Number.isSafeInteger(durationMs)));
       endpoint = await app.listen({ port: 0, host: "127.0.0.1" });

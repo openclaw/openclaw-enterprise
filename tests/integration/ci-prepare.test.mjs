@@ -1912,7 +1912,7 @@ assert.equal(commands, 0);
   test("CI installs browsers for the PostgreSQL sign-in suite's owning lane", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     const owners = Object.entries(manifest.lanes).filter(([, lane]) =>
-      lane.files.some((file) => file.path === "tests/integration/postgres-github-sign-in.test.mjs"),
+      lane.files.some((file) => file.path === "tests/integration/postgres-oidc-sign-in.test.mjs"),
     );
     assert.equal(owners.length, 1);
     const [lane] = owners[0];

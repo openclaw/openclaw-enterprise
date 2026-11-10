@@ -631,7 +631,9 @@ test(
         assert.equal(external.proof.principalId, seed.principal.id);
         assert.equal(external.user.email, person.email);
         assert.equal(external.proof.passwordHash, undefined);
-        assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "missing"), {
+          missing: true,
+        });
       },
     );
 
@@ -1187,10 +1189,9 @@ test(
           disabled: true,
           userId: person.id,
         });
-        assert.equal(
-          await persistence.snapshotExternal(providerId, "unattached-subject"),
-          undefined,
-        );
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "unattached-subject"), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(proof, sessionRecord(person.id)),
           /no longer current/,
@@ -1546,7 +1547,9 @@ test(
           ).rows[0].count,
           0,
         );
-        assert.equal(await persistence.snapshotExternal(providerId, subject), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, subject), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(external.proof, sessionRecord(person.id)),
           /no longer current/,
