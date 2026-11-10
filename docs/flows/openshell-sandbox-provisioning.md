@@ -1,16 +1,14 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/aa226ff5-0d11-418a-8d1f-1b2ca03c7f78
+last_updated_session: authoring-run/945a0b17-a21b-40c4-b605-12e18d0d29de
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions Codex/OpenClaw Harnesses through OpenShell.
-
-[Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions Codex/OpenClaw through OpenShell.
 
 ## Entry Points
 
@@ -19,8 +17,8 @@ Kubernetes Compute provisions Codex/OpenClaw Harnesses through OpenShell.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: shared `openshell` Backend, Namespace isolation and ready
-  operator-mode Gateway.
+- Assumptions: `openshell` Backend; ready operator-mode Gateway; Namespace isolation
+  [excludes Gateway authority](../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
 
 ## Flow
 
@@ -293,8 +291,7 @@ For `credential_source`/`codex_pat`, the same connection then reads `getAuthStat
 with `includeToken:false` and `refreshToken:false`, requiring `personalAccessToken`,
 null `authToken` and `requiresOpenaiAuth:true` before serving. Native OpenClaw
 retains its authenticated handshake. See [Harness observation](../reference/drivers/openshell-sandbox/harness-providers.md#harness-observation)
-for exact limits, errors and held-failure behavior. These checks do not change
-policy or prove inference.
+for exact limits, errors and held-failure behavior. `worker.completed.failure` records fixed refusals, including deferred stops. Checks do not change policy or prove inference.
 
 Provider files require reported absolute paths. Failed Gateways block readiness; uncertain creates retain providers. Cleanup deletes Sandbox first.
 
@@ -393,4 +390,4 @@ See [test prerequisites and proof](../testing/openshell.md). Compose needs the p
 
 [Earlier changes](openshell-sandbox-provisioning/history.md).
 
-- 2026-11-10 07:32: Integrate Codex requirements with Namespace cleanup. (authoring-run/aa226ff5-0d11-418a-8d1f-1b2ca03c7f78 - 6b90d2cc4a3f88e6e1a375921e11cbc1b3d5924d)
+- 2026-11-10 12:03: Preserve cleanup authority and current diagnostics. (authoring-run/945a0b17-a21b-40c4-b605-12e18d0d29de - 2564bdbd99e2d29313951d2548960c480a64cc0e)

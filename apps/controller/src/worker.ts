@@ -375,6 +375,7 @@ function loggedErrorClass(error: unknown): string {
 function revisionFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -401,6 +402,7 @@ function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: stri
 function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
+  readonly failure?: string;
   readonly status?: number;
   readonly reason?: string;
   readonly method?: string;
@@ -412,6 +414,9 @@ function primaryFailureLogFields(error: unknown): {
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
   const errorClass = loggedErrorClass(error);
+  if (error instanceof ActivationFailedError && error.permissionDenials !== undefined) {
+    return { cause: errorClass, failure: error.permissionDenials.join("_") };
+  }
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -5089,7 +5094,14 @@ export class ControllerWorker {
         throw error;
       }
       const pending = error.pending();
-      await this.finalizeRevision(claim, pending.result, pending.logFields);
+      const permissionDenials =
+        result.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+          ? failureLogFields?.failure
+          : undefined;
+      await this.finalizeRevision(claim, pending.result, {
+        ...pending.logFields,
+        ...(permissionDenials === undefined ? {} : { failure: permissionDenials }),
+      });
     }
   }
 

@@ -1984,12 +1984,20 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
-    const alert = page.getByText(reason, { exact: true });
+    const alert = page.getByRole("alert").filter({ hasText: reason });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The deployment note says it once and stays refused until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
+
+    // Keyboard users can return to Deploy and get the same refusal as its description.
     assert.equal(await deploy.isDisabled(), true);
+    const alertId = await alert.getAttribute("id");
+    assert.ok(alertId);
+    assert.equal(await deploy.getAttribute("aria-describedby"), alertId);
+    assert.equal(await deploy.evaluate((button) => button.tabIndex), 0);
+    await deploy.focus();
+    assert.equal(await hasFocus(deploy), true);
+    assert.equal(await focusedDescription(page), reason);
   }
 
   // With Secret operate on the model Secret, the gate never holds less than the API allows: the

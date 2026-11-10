@@ -108,7 +108,7 @@ sweep covers Agent revisions without a current reconciliation pass and failed ca
 Dedicated Codex readiness initializes the exact bearer-authenticated WebSocket
 and reads `configRequirements/read` for every login mode. Requirements must allow
 the required sandbox mode, named profile and human reviewer. Refusal produces
-`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; missing or malformed replies stay
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; the worker records fixed denial categories in `worker.completed.failure`, including deferred candidate stops. Missing or malformed replies stay
 `starting`. Explicit null means the server reports no managed requirements.
 
 Requirements replies have a 1 MiB limit; other replies and notifications share

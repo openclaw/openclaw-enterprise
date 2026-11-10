@@ -18,3 +18,17 @@ After the install succeeds, continue with the CLI build in [local k3d setup](../
 ## Helm warns that api.trustedProxy is unset
 
 For local password sign-in without a reverse proxy, leave this setting unset. Failed attempts are limited per email. If an HTTP proxy sits in front of the API, [configure proxy trust](../../reference/settings/production.md#external-sign-in-and-trusted-proxies) before using it.
+
+## First-Agent deployment fails
+
+Inspect the failed deployment in the Console and retain the error code printed by
+the helper. `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` means managed Codex
+policy refuses the configured runtime permissions. Review the configured sandbox,
+permission profile, and approval reviewer with your policy administrator before
+deploying again. Replacing the model key is not a demonstrated fix for this error.
+
+For `RUNTIME_AUTHENTICATION_FAILED`, check the model credential and model access;
+when replacing that credential, supply the replacement and rerun your original
+first-Agent helper command for the same Agent, adding `--replace-key`. Run
+`node scripts/first-agent.mjs --help` for supported options. For other codes,
+inspect the deployment and controller worker logs before choosing a recovery action.

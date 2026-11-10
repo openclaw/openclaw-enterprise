@@ -12651,6 +12651,11 @@
                                 "type": "object"
                               },
                               "type": "array"
+                            },
+                            "repositoryAccessRequired": {
+                              "const": true,
+                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -13075,6 +13080,11 @@
                                 "type": "object"
                               },
                               "type": "array"
+                            },
+                            "repositoryAccessRequired": {
+                              "const": true,
+                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+                              "type": "boolean"
                             }
                           },
                           "type": "object"
@@ -14645,6 +14655,11 @@
                                 "type": "object"
                               },
                               "type": "array"
+                            },
+                            "repositoryAccessRequired": {
+                              "const": true,
+                              "description": "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+                              "type": "boolean"
                             }
                           },
                           "type": "object"

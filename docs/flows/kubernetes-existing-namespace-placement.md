@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-09
-last_updated_session: authoring-run/572319b5-83e7-41d1-842a-a58a2a85e399
+updated: 2026-11-10
+last_updated_session: authoring-run/945a0b17-a21b-40c4-b605-12e18d0d29de
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -28,6 +28,12 @@ state fails explicitly.
   restricted Pod Security labels, and tenant-local RoleBindings before the API
   request. The worker cannot verify foreign-Pod absence. The caller holds both
   Namespace-create and Installation-`administer` authorization.
+
+Before this flow starts, API and worker startup load the Installation YAML and
+Kubernetes Compute validates `resources.namespace.quota`. Counted resources
+must pass the native integer-precision rule: `pods: "1.5"` is refused with a
+quota diagnostic before persistence or namespace operations. CPU `"500m"` and
+whole-count suffixes retain their values. See the [configuration reference](../reference/drivers/kubernetes-compute/configuration.md#images-and-resources).
 
 ## Flow
 
@@ -103,6 +109,12 @@ metadata. Missing targets, termination, foreign ownership or additive policies,
 ambiguous identity, and revoked authorization fail closed without managed
 fallback. A missing worker RoleBinding keeps provisioning pending; a missing
 API RoleBinding instead makes subsequent Configuration operations return `503`.
+`KubernetesComputeDriver.validateConfiguration` checks counted quota precision
+through `resource-quantities.ts:hasIntegerQuotaPrecision` during startup, before
+`ensureNamespace` can copy these values into the ResourceQuota. Invalid counts
+therefore do not enter this adoption phase. This does not validate quota capacity
+or establish that a cluster is reachable.
+
 Compute reconciles its owned quota, limit range, and isolation policies; no
 worker pause, restart, or Installation setting is needed.
 
@@ -278,6 +290,10 @@ path exists for missing original identity or permanently lost provider evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:05: Preserve journal ownership and quota admission. (authoring-run/945a0b17-a21b-40c4-b605-12e18d0d29de - 2564bdbd99e2d29313951d2548960c480a64cc0e)
+
+- 2026-11-07 22:02: Trace the startup quota precision prerequisite before namespace placement. (authoring-run/0e565cf9-f7ee-4e08-8c3f-e680ea2b0b94 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
 
 - 2026-11-09 06:55: Preserve journal authority after repository-withdrawal and sign-in-result schema integration. (authoring-run/572319b5-83e7-41d1-842a-a58a2a85e399 - bd9a9a4e8405f08167139632fd468fbcedac4608)
 

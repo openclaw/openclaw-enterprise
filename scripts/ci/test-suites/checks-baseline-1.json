@@ -32,9 +32,9 @@
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
-    "tests/conformance/kubernetes-preflight.test.mjs",
+    "tests/conformance/kubernetes-preflight.test.ts",
     "tests/conformance/kubernetes-client.test.mjs",
-    "tests/conformance/kubernetes-api-read.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
@@ -77,8 +77,8 @@
     "tests/integration/controller-lifecycle.test.mjs",
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
-    "tests/conformance/kubernetes-real-kubectl.test.mjs",
-    "tests/conformance/k3d-failure-diagnostics.test.mjs",
+    "tests/conformance/kubernetes-real-kubectl.test.ts",
+    "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.mjs",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
@@ -223,7 +223,7 @@
       "path": "tests/conformance/node-enrollment-client.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-preflight.test.mjs"
+      "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-client.test.mjs"
@@ -232,13 +232,13 @@
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+      "path": "tests/conformance/kubernetes-real-kubectl.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-api-read.test.mjs"
+      "path": "tests/conformance/kubernetes-api-read.test.ts"
     },
     {
-      "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
+      "path": "tests/conformance/k3d-failure-diagnostics.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"

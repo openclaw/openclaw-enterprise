@@ -1152,9 +1152,14 @@ async function main(options) {
         const code = /^[A-Z0-9_]+$/.test(deployment.error?.code ?? "")
           ? ` (${deployment.error.code})`
           : "";
-        throw new Error(
-          `The Agent deployment failed${code}. Check the model key and access to ${model}; use --replace-key to store a new key and deploy again.`,
-        );
+        let advice = "Inspect the deployment in the Console and the controller worker logs.";
+        if (deployment.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
+          advice = `Check the model key and access to ${model}; use --replace-key to store a new key and deploy again.`;
+        } else if (deployment.error?.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+          advice =
+            "The Codex runtime's managed permission policy is incompatible with this deployment. Review the configured sandbox, permission profile, and approval reviewer with your policy administrator before deploying again.";
+        }
+        throw new Error(`The Agent deployment failed${code}. ${advice}`);
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });

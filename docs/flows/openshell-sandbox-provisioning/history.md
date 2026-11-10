@@ -8,6 +8,12 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-10 07:32: Integrate Codex requirements with Namespace cleanup. (authoring-run/aa226ff5-0d11-418a-8d1f-1b2ca03c7f78 - 6b90d2cc4a3f88e6e1a375921e11cbc1b3d5924d)
+
+- 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
+
+- 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
+
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
 
 - 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)

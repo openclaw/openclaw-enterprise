@@ -2,13 +2,48 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const gate = resolve("scripts/ci/impact-gate.mjs");
 
-function runGate(t, mode, needs, extra = []) {
+type JobState = { result: string; outputs: Record<string, string> };
+type GateNeeds = Record<string, JobState> & {
+  impact: JobState;
+  "static-checks": JobState;
+  "pr-safe": JobState;
+  "image-lanes": JobState;
+  "runtime-artifact": JobState;
+  "runtime-image-fixture": JobState;
+};
+type ExpandedGate = Record<string, { result: string; lanes?: string[] }>;
+
+function assertExpandedGate(expanded: unknown): asserts expanded is ExpandedGate {
+  assert.ok(typeof expanded === "object" && expanded !== null && !Array.isArray(expanded));
+  const values: unknown[] = Object.values(expanded);
+  for (const value of values) {
+    assert.ok(
+      typeof value === "object" &&
+        value !== null &&
+        "result" in value &&
+        typeof value.result === "string",
+    );
+    assert.ok(
+      !("lanes" in value) ||
+        (Array.isArray(value.lanes) &&
+          value.lanes.every((lane: unknown) => typeof lane === "string")),
+    );
+  }
+}
+
+function parseExpandedGate(text: string): ExpandedGate {
+  const expanded: unknown = JSON.parse(text);
+  assertExpandedGate(expanded);
+  return expanded;
+}
+
+function runGate(t: TestContext, mode: string, needs: GateNeeds | string, extra: string[] = []) {
   const dir = temporaryDirectorySync(t, "ci-impact-gate-");
   const input = join(dir, "needs.json");
   const output = join(dir, "expanded.json");
@@ -20,11 +55,11 @@ function runGate(t, mode, needs, extra = []) {
       encoding: "utf8",
     },
   );
-  let expanded;
+  let expanded: ExpandedGate | undefined;
   try {
-    expanded = JSON.parse(readFileSync(output, "utf8"));
+    expanded = parseExpandedGate(readFileSync(output, "utf8"));
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
   }
@@ -40,6 +75,7 @@ test("gate accepts only the selected jobs and preserves full-mode matrix ownersh
   }
   const full = runGate(t, "full", passingGateNeeds("full"));
   assert.equal(full.status, 0, full.stderr);
+  assert.ok(full.expanded);
   assert.deepEqual(
     Object.keys(full.expanded).sort(),
     [
@@ -52,13 +88,13 @@ test("gate accepts only the selected jobs and preserves full-mode matrix ownersh
     ].sort(),
   );
   assert.deepEqual(
-    full.expanded["pr-safe"].lanes,
+    full.expanded["pr-safe"]?.lanes,
     expectedFullLanes.filter(
       (lane) => lane !== "runtime-image-fixture" && !lane.startsWith("images-"),
     ),
   );
   assert.deepEqual(
-    full.expanded["image-lanes"].lanes,
+    full.expanded["image-lanes"]?.lanes,
     expectedFullLanes.filter((lane) => lane.startsWith("images-")),
   );
   for (const state of Object.values(full.expanded)) {
@@ -75,11 +111,13 @@ test("gate rejects failed, cancelled, missing, and unexpectedly run or skipped j
         "missing",
         state.result === "success" ? "skipped" : "success",
       ]) {
-        const needs = passingGateNeeds(mode);
+        const needs: GateNeeds = passingGateNeeds(mode);
         if (bad === "missing") {
           delete needs[job];
         } else {
-          needs[job].result = bad;
+          const selected = needs[job];
+          assert.ok(selected);
+          selected.result = bad;
         }
         const result = runGate(t, mode, needs);
         assert.notEqual(result.status, 0, `${mode}: ${job} ${bad}`);
@@ -103,7 +141,7 @@ test("gate rejects failed, cancelled, missing, and unexpectedly run or skipped j
                 undefined,
                 "matrix result is not a lane result",
               );
-              assert.ok(result.expanded?.[source]?.lanes.includes(lane));
+              assert.ok(result.expanded?.[source]?.lanes?.includes(lane));
             }
           }
         }
@@ -116,10 +154,10 @@ test("gate fails closed for invalid selection and malformed dependencies", (t) =
   const mismatch = passingGateNeeds("docs");
   mismatch.impact.outputs.mode = "full";
   assert.notEqual(runGate(t, "docs", mismatch).status, 0);
-  const missingMode = passingGateNeeds("docs");
+  const missingMode: GateNeeds = passingGateNeeds("docs");
   delete missingMode.impact.outputs.mode;
   assert.notEqual(runGate(t, "docs", missingMode).status, 0);
-  const unexpected = passingGateNeeds("full");
+  const unexpected: GateNeeds = passingGateNeeds("full");
   unexpected.newJob = { result: "failure", outputs: {} };
   assert.notEqual(runGate(t, "full", unexpected).status, 0);
   assert.notEqual(runGate(t, "unknown", passingGateNeeds("full")).status, 0);
@@ -128,7 +166,7 @@ test("gate fails closed for invalid selection and malformed dependencies", (t) =
   assert.notEqual(spawnSync(process.execPath, [gate], { encoding: "utf8" }).status, 0);
 });
 
-function testNeeds(lanes) {
+function testNeeds(lanes: string[]): GateNeeds {
   const json = JSON.stringify(lanes);
   return {
     impact: { result: "success", outputs: { mode: "tests", lanes: json } },
@@ -154,7 +192,11 @@ function testNeeds(lanes) {
   };
 }
 
-function runTestsGate(t, lanes, needs = testNeeds(lanes)) {
+function runTestsGate(t: TestContext, lanes: string[] | string, needs?: GateNeeds) {
+  if (needs === undefined) {
+    assert.ok(Array.isArray(lanes));
+    needs = testNeeds(lanes);
+  }
   return runGate(t, "tests", needs, [
     "--lanes",
     typeof lanes === "string" ? lanes : JSON.stringify(lanes),
@@ -181,10 +223,11 @@ test("tests mode records only the selected lanes under their actual parents", (t
   keycloakFailed["pr-safe"].result = "failure";
   const keycloakResult = runTestsGate(t, ["keycloak-oidc"], keycloakFailed);
   assert.notEqual(keycloakResult.status, 0);
-  assert.equal(keycloakResult.expanded["pr-safe"].result, "failure");
-  assert.equal(keycloakResult.expanded["keycloak-oidc"], undefined);
+  assert.equal(keycloakResult.expanded?.["pr-safe"]?.result, "failure");
+  assert.equal(keycloakResult.expanded?.["keycloak-oidc"], undefined);
   const fixture = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"]);
   assert.equal(fixture.status, 0, fixture.stderr);
+  assert.ok(fixture.expanded);
   assert.deepEqual(Object.keys(fixture.expanded).sort(), [
     "impact",
     "pr-safe",
@@ -196,7 +239,7 @@ test("tests mode records only the selected lanes under their actual parents", (t
   failed["runtime-image-fixture"].result = "failure";
   const result = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"], failed);
   assert.notEqual(result.status, 0);
-  assert.equal(result.expanded["runtime-image-fixture"].result, "failure");
+  assert.equal(result.expanded?.["runtime-image-fixture"]?.result, "failure");
 });
 
 test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
@@ -217,7 +260,9 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
         if (bad === "missing") {
           delete needs[job];
         } else {
-          needs[job].result = bad;
+          const selected = needs[job];
+          assert.ok(selected);
+          selected.result = bad;
         }
         const result = runTestsGate(t, lanes, needs);
         assert.notEqual(result.status, 0, `${job} ${bad}`);
@@ -236,7 +281,7 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
           );
           if (lane !== source) {
             assert.equal(result.expanded?.[lane], undefined, "matrix result is not a lane result");
-            assert.ok(result.expanded?.[source]?.lanes.includes(lane));
+            assert.ok(result.expanded?.[source]?.lanes?.includes(lane));
           }
         }
       }
@@ -291,7 +336,7 @@ test("image-only selection requires its producer and does not require unrelated 
   needs["image-lanes"].result = "skipped";
   const failed = runTestsGate(t, lanes, needs);
   assert.notEqual(failed.status, 0);
-  assert.equal(failed.expanded["runtime-artifact"].result, "failure");
-  assert.equal(failed.expanded["image-lanes"].result, "skipped");
-  assert.equal(failed.expanded["images-runtime-startup-2"], undefined);
+  assert.equal(failed.expanded?.["runtime-artifact"]?.result, "failure");
+  assert.equal(failed.expanded?.["image-lanes"]?.result, "skipped");
+  assert.equal(failed.expanded?.["images-runtime-startup-2"], undefined);
 });
