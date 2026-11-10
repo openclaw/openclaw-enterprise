@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PostgresNativeBrowserAccess } from "./native-browser-access.ts";
 import {
   CallerStateDeniedError,
   ResourceConflictError,
@@ -220,6 +221,7 @@ export interface PostgresHumanAuthenticationOptions {
 
 /** Authentication persistence shares the original State transaction and audit writer. */
 export class PostgresHumanAuthentication {
+  readonly nativeBrowser: PostgresNativeBrowserAccess;
   private readonly state: PostgresPlatformState;
   private readonly installationId: string;
   private readonly issuer: string;
@@ -231,6 +233,33 @@ export class PostgresHumanAuthentication {
     issuer: string,
     options: PostgresHumanAuthenticationOptions = {},
   ) {
+    this.nativeBrowser = new PostgresNativeBrowserAccess(
+      state,
+      installationId,
+      async (unit, id) => {
+        // Match logout and account mutations: user, session, then dependent
+        // browser rows. These parents protect the immutable session binding.
+        // Reread authority only after the locks hold.
+        const [found] = await this.query(unit, "SELECT user_id FROM occ.session WHERE id = $1", [
+          id,
+        ]);
+        if (!found) {
+          return undefined;
+        }
+        await this.lockUser(unit, found.user_id as string);
+        await this.query(unit, "SELECT id FROM occ.session WHERE id = $1 FOR UPDATE", [id]);
+        const row = await this.currentSessionRow(unit, "id", id);
+        if (!row) {
+          return undefined;
+        }
+        return {
+          id: row.id as string,
+          userId: row.user_id as string,
+          expiresAt: row.expires_at as Date,
+          principalId: row.session_principal_id as string,
+        };
+      },
+    );
     this.state = state;
     this.installationId = installationId;
     this.issuer = issuer;
@@ -942,14 +971,22 @@ export class PostgresHumanAuthentication {
     token: string,
   ): Promise<(HumanAuthenticationSession & { user: HumanAuthenticationUser }) | undefined> {
     return this.state.transact(async (unit) => {
-      const row = await this.currentSessionRow(unit, token);
-      return row === undefined ? undefined : { ...sessionFromRow(row), user: userFromRow(row) };
+      const row = await this.currentSessionRow(unit, "token", token);
+      if (!row) {
+        return undefined;
+      }
+      return {
+        ...sessionFromRow(row),
+        user: userFromRow(row),
+        principalId: row.session_principal_id as string,
+      };
     });
   }
 
   private async currentSessionRow(
     unit: PlatformUnitOfWork,
-    token: string,
+    key: "token" | "id",
+    value: string,
   ): Promise<Row | undefined> {
     const [row] = await this.query(
       unit,
@@ -962,9 +999,9 @@ export class PostgresHumanAuthentication {
          JOIN occ.account m ON m.id = b.method_id AND m.user_id = s.user_id AND m.authentication_version = b.method_version
          JOIN occ."user" u ON u.id = s.user_id
          JOIN occ.iam_identities p ON p.id = h.principal_id AND p.kind = 'principal' AND p.issuer = $2 AND p.subject = s.user_id
-         WHERE s.token = $1 AND s.expires_at > clock_timestamp() AND NOT h.disabled AND h.installation_id = $3
+         WHERE s.${key} = $1 AND s.expires_at > clock_timestamp() AND NOT h.disabled AND h.installation_id = $3
          AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '') OR m.identity_only)`,
-      [token, this.issuer, this.installationId, this.externalProviderIds],
+      [value, this.issuer, this.installationId, this.externalProviderIds],
     );
     if (row === undefined) {
       return undefined;
@@ -997,7 +1034,7 @@ export class PostgresHumanAuthentication {
       if (!owner) {
         return false;
       }
-      const current = await this.currentSessionRow(unit, token);
+      const current = await this.currentSessionRow(unit, "token", token);
       if (
         !current ||
         current.id !== receipt.sessionId ||

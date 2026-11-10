@@ -397,6 +397,22 @@ function safeMeasurement(value) {
     }
     return result;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-manifest-failure") {
+    if (
+      ![
+        "selected-input",
+        "http-status",
+        "transport",
+        "deadline",
+        "canceled",
+        "integrity",
+        "local-io",
+      ].includes(value.reason)
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, reason: value.reason };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||

@@ -1075,10 +1075,12 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 		name          string
 		sandboxDriver string
 		browserPort   int
+		routing       bool
 		origin        string
 	}{
-		{"OpenShell loopback HTTP", "openshell", 0, "http://127.0.0.1:3100"},
-		{"HTTPS without Sandbox", "none", 8444, "https://console.occ-dev-owned.oce.localhost:8444"},
+		{"HTTPS with OpenShell", "openshell", 8444, true, "https://console.occ-dev-owned.oce.localhost:8444"},
+		{"HTTPS without Sandbox", "none", 8444, true, "https://console.occ-dev-owned.oce.localhost:8444"},
+		{"HTTPS without native routing", "none", 8444, false, "https://console.occ-dev-owned.oce.localhost:8444"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := kubernetesOnlyOpenShellState(t)
@@ -1101,7 +1103,7 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			})
 			r := newRunner(Options{Repository: state.Repository})
 			r.engine = "docker"
-			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, true, time.Minute); err != nil {
+			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, test.routing, time.Minute); err != nil {
 				t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
 			}
 			values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
@@ -1114,38 +1116,31 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			if test.sandboxDriver == "openshell" && field(t, values, "backend", "openshell", "clientSecretName") != "openshell-client-tls" {
 				t.Fatal("default OpenShell must project its administrative client identity")
 			}
-			gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
-			if test.sandboxDriver == "openshell" {
-				gatewayRouting["hostname"] = developmentGatewayServiceName("oce-system") + ".envoy-gateway-system.svc.cluster.local"
+			if test.routing {
+				gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
+				if test.sandboxDriver == "openshell" {
+					gatewayRouting["hostname"] = developmentGatewayServiceName("oce-system") + ".envoy-gateway-system.svc.cluster.local"
+				}
+				if !reflect.DeepEqual(values["gatewayRouting"], gatewayRouting) {
+					t.Fatalf("private Agent routing must remain enabled: %#v", values["gatewayRouting"])
+				}
+				gatewayKey := readJSONFile(t, filepath.Join(state.directory, "gateway-api-key.json"))
+				key, keyPresent := gatewayKey["stringData"].(map[string]any)["occ"].(string)
+				if gatewayKey["metadata"].(map[string]any)["name"] != "occ-private-gateway-key" ||
+					!keyPresent || key == "" {
+					t.Fatal("private Agent routing must retain its key")
+				}
+			} else if !reflect.DeepEqual(values["gatewayRouting"], map[string]any{"enabled": false}) {
+				t.Fatalf("unexpected gateway routing: %#v", values["gatewayRouting"])
 			}
-			if !reflect.DeepEqual(values["gatewayRouting"], gatewayRouting) {
-				t.Fatalf("private Agent routing must remain enabled: %#v", values["gatewayRouting"])
+			if !reflect.DeepEqual(values["agentNativeAdmin"], jsonValue(t, map[string]any{
+				"enabled": test.routing, "domain": "agents.occ-dev-owned.oce.localhost",
+			})) {
+				t.Fatalf("HTTPS Console must retain native administration: %#v", values["agentNativeAdmin"])
 			}
-			gatewayKey := readJSONFile(t, filepath.Join(state.directory, "gateway-api-key.json"))
-			key, keyPresent := gatewayKey["stringData"].(map[string]any)["occ"].(string)
-			if gatewayKey["metadata"].(map[string]any)["name"] != "occ-private-gateway-key" ||
-				!keyPresent || key == "" {
-				t.Fatal("private Agent routing must retain its key")
-			}
-			if test.browserPort == 0 {
-				if _, exists := values["agentNativeAdmin"]; exists {
-					t.Fatal("OpenShell must not enable native administration")
-				}
-				for _, name := range []string{"browser-ca.crt", "browser-ca.key", "browser-tls.crt", "browser-tls.key", "browser-tls.json"} {
-					if _, err := os.Lstat(filepath.Join(state.directory, name)); !os.IsNotExist(err) {
-						t.Fatalf("HTTP-only Console must not create %s: %v", name, err)
-					}
-				}
-			} else {
-				if !reflect.DeepEqual(values["agentNativeAdmin"], jsonValue(t, map[string]any{
-					"enabled": true, "domain": "agents.occ-dev-owned.oce.localhost", "sharedCookieDomain": "occ-dev-owned.oce.localhost",
-				})) {
-					t.Fatalf("HTTPS Console must retain native administration: %#v", values["agentNativeAdmin"])
-				}
-				browserTLS := readJSONFile(t, filepath.Join(state.directory, "browser-tls.json"))
-				if browserTLS["metadata"].(map[string]any)["name"] != "occ-development-browser-tls" {
-					t.Fatal("HTTPS Console must retain its TLS Secret")
-				}
+			browserTLS := readJSONFile(t, filepath.Join(state.directory, "browser-tls.json"))
+			if browserTLS["metadata"].(map[string]any)["name"] != "occ-development-browser-tls" {
+				t.Fatal("HTTPS Console must retain its TLS Secret")
 			}
 			if helmErr != nil {
 				t.Log("helm is not installed; skipping chart rendering of the generated values")

@@ -9,9 +9,9 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import type { Clock } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {

@@ -26,6 +26,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { chromiumTrustArg, startHttpsIngress } from "../helpers/console-app.mjs";
 
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";
@@ -43,9 +44,11 @@ test(
     const state = new PostgresPlatformState(pool);
     const apps = [];
     let browser;
+    let ingress;
     const provider = createServer();
     t.after(async () => {
       await browser?.close();
+      await ingress?.close();
       for (const app of apps.reverse()) {
         await app.close();
       }
@@ -57,7 +60,8 @@ test(
       email,
       password,
       authSecret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       installationName: "GitHub browser proof",
     });
     const installation = await state.loadInstallation();
@@ -80,13 +84,23 @@ test(
     let reservation = await reservePort();
     t.after(() => reservation.release());
     const { port, reusePort } = reservation;
-    const origin = `http://127.0.0.1:${port}`;
+    const transportOrigin = `http://127.0.0.1:${port}`;
+    const browserReservation = await reservePort();
+    t.after(() => browserReservation.release());
+    const origin = `https://console.oce.localhost:${browserReservation.port}`;
+    function inject(target, options) {
+      return target.inject({
+        ...options,
+        headers: { host: new URL(origin).host, ...options.headers },
+      });
+    }
     const base = {
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
       authSecret,
       authBaseURL: origin,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
     const unconfigured = await composePostgresDevelopment(base, drivers());
     apps.push(unconfigured);
@@ -102,17 +116,17 @@ test(
     await unconfigured.listen({ host: "127.0.0.1", port, reusePort });
     await reservation.release();
     assert.equal(
-      (await unconfigured.inject({ url: "/api/auth/providers" })).json().data.github,
+      (await inject(unconfigured, { url: "/api/auth/providers" })).json().data.github,
       false,
     );
-    const legacy = await unconfigured.inject({
+    const legacy = await inject(unconfigured, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       payload: { email, password },
     });
     assert.equal(legacy.statusCode, 200);
     const legacyCookie = cookieHeaderFromSetCookie(legacy.headers["set-cookie"]);
-    const legacyHeaders = { cookie: legacyCookie, origin };
+    const legacyHeaders = { host: new URL(origin).host, cookie: legacyCookie, origin };
     const role = bootstrapPolicy.roles.find((candidate) =>
       candidate.permissions.some(
         (permission) => permission.action === "read" && permission.resourceKind === "installation",
@@ -120,7 +134,7 @@ test(
     );
     assert.equal(
       (
-        await unconfigured.inject({
+        await inject(unconfigured, {
           method: "POST",
           url: "/api/auth/accounts",
           headers: legacyHeaders,
@@ -135,7 +149,7 @@ test(
       409,
       "a GitHub subject needs GitHub sign-in",
     );
-    const created = await unconfigured.inject({
+    const created = await inject(unconfigured, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: legacyHeaders,
@@ -144,16 +158,16 @@ test(
     assert.equal(created.statusCode, 201, created.body);
     const limited = created.json().data;
     const namespaceId = (
-      await unconfigured.inject({ url: "/namespaces", headers: legacyHeaders })
+      await inject(unconfigured, { url: "/namespaces", headers: legacyHeaders })
     ).json().data[0].id;
-    const configuration = await unconfigured.inject({
+    const configuration = await inject(unconfigured, {
       method: "POST",
       url: `/namespaces/${namespaceId}/configurations`,
       headers: legacyHeaders,
       payload: { kind: "agent", values: {} },
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
-    const createdAgent = await unconfigured.inject({
+    const createdAgent = await inject(unconfigured, {
       method: "POST",
       url: `/namespaces/${namespaceId}/agents`,
       headers: legacyHeaders,
@@ -171,7 +185,7 @@ test(
     // Fastify. The hook controls timing only; app.close owns stop and drain. The
     // drained response closes its keep-alive socket, so close() does not then wait
     // for the client's idle timeout (about 70 s against Fastify's 72 s keep-alive).
-    const drainingRequest = fetch(`${origin}/api/auth/session?maintenance-drain`, {
+    const drainingRequest = fetch(`${transportOrigin}/api/auth/session?maintenance-drain`, {
       headers: { cookie: legacyCookie },
     });
     await admitted.promise;
@@ -186,7 +200,7 @@ test(
       }
       assert.equal(unconfigured.server.listening, false);
       assert.equal(closed, false, "shutdown waits for admitted work");
-      await assert.rejects(fetch(`${origin}/api/auth/session`), /fetch failed/);
+      await assert.rejects(fetch(`${transportOrigin}/api/auth/session`), /fetch failed/);
       assert.equal(
         (await pool.query("SELECT count(*)::int AS count FROM occ.human_authentication_recovery"))
           .rows[0].count,
@@ -203,6 +217,7 @@ test(
     const config = {
       ...base,
       authBaseURL: origin,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       github: {
         clientId: "composed-client",
         clientSecret: "composed-secret",
@@ -251,6 +266,7 @@ test(
       ...config,
       mode: "production",
       authBaseURL: "https://console.example.test",
+      nativeAdmin: { enabled: false, domain: "agents.example.test" },
       drivers: {
         ...drivers(),
         installation: productionRuntime.installation,
@@ -310,29 +326,33 @@ test(
     await app.listen({ host: "127.0.0.1", port, reusePort });
     await reservation.release();
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: legacyCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: legacyCookie } })).json()
         .data,
       null,
     );
     async function passwordLogin() {
-      const result = await app.inject({
+      const result = await inject(app, {
         method: "POST",
         url: "/api/auth/sign-in/email",
         headers: { origin },
         payload: { email, password },
       });
       assert.equal(result.statusCode, 200, result.body);
-      return { cookie: cookieHeaderFromSetCookie(result.headers["set-cookie"]), origin };
+      return {
+        host: new URL(origin).host,
+        cookie: cookieHeaderFromSetCookie(result.headers["set-cookie"]),
+        origin,
+      };
     }
     async function readAccount(userId, requestHeaders) {
-      const result = await app.inject({
+      const result = await inject(app, {
         url: `/api/auth/accounts/${userId}`,
         headers: requestHeaders,
       });
       assert.equal(result.statusCode, 200, result.body);
       return result.json().data;
     }
-    const local = await app.inject({
+    const local = await inject(app, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: { origin },
@@ -340,17 +360,18 @@ test(
     });
     assert.equal(local.statusCode, 200, local.body);
     const adminCookie = cookieHeaderFromSetCookie(local.headers["set-cookie"]);
-    let headers = { cookie: adminCookie, origin };
+    let headers = { host: new URL(origin).host, cookie: adminCookie, origin };
     const serviceKey = JSON.parse(
       await readFile(join(bootstrap.directory, "initial-admin-service-key.json"), "utf8"),
     ).data.key;
     assert.equal(
-      (await app.inject({ url: "/installation", headers: { "x-api-key": serviceKey } })).statusCode,
+      (await inject(app, { url: "/installation", headers: { "x-api-key": serviceKey } }))
+        .statusCode,
       200,
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: "/installation",
           headers: { ...headers, "x-api-key": "invalid-key" },
         })
@@ -359,7 +380,7 @@ test(
     );
 
     // A GitHub-only profile refuses Google attachment and Google browser routes.
-    assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
+    assert.deepEqual((await inject(app, { url: "/api/auth/providers" })).json().data, {
       github: true,
       google: false,
       oidc: false,
@@ -377,7 +398,7 @@ test(
     assert.match(googleAttach.json().error.message, /Google sign-in is not configured/);
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: "/api/auth/providers/google/start",
           headers: { origin },
@@ -387,7 +408,7 @@ test(
     );
     await assertProviderAttached(app, headers, recovery, "github", "12345678");
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers })).json().data,
+      (await inject(app, { url: "/api/auth/session", headers })).json().data,
       null,
       "attachment invalidates old target sessions",
     );
@@ -476,7 +497,7 @@ test(
       ["same-site fetch", { origin, "sec-fetch-site": "same-site" }],
       ["cross-site fetch", { origin, "sec-fetch-site": "cross-site" }],
     ]) {
-      const refused = await app.inject({
+      const refused = await inject(app, {
         method: "POST",
         url: "/api/auth/providers/github/start",
         headers: requestHeaders,
@@ -496,7 +517,7 @@ test(
     // code presented later for the same state cannot redeem it.
     const providerErrorAttempt = await start();
     const sessionsBeforeProviderError = await countRows("session");
-    const providerError = await app.inject({
+    const providerError = await inject(app, {
       url:
         `/api/auth/providers/github/callback?state=${providerErrorAttempt.state}` +
         "&error=access_denied&error_description=The+user+has+denied+your+application+access.",
@@ -506,7 +527,7 @@ test(
     assert.equal(providerError.headers.location, "/console/?authError=github");
     assert.equal(providerError.headers["set-cookie"], undefined);
     assert.equal(await countRows("session"), sessionsBeforeProviderError);
-    const redeemAfterProviderError = await app.inject({
+    const redeemAfterProviderError = await inject(app, {
       url: `/api/auth/providers/github/callback?state=${providerErrorAttempt.state}&code=fixture-code`,
       headers: { cookie: providerErrorAttempt.cookie },
     });
@@ -545,7 +566,7 @@ test(
         payload: rejectedEnrollment,
       },
     ]) {
-      const rejected = await app.inject({
+      const rejected = await inject(app, {
         ...request,
         headers: { ...headers, cookie: `${headers.cookie}; ${attempt.cookie}` },
       });
@@ -557,19 +578,19 @@ test(
     assert.deepEqual(await readAccount(limited.id, headers), accountBeforeRejectedRoutes);
 
     const callbackPath = `/api/auth/providers/github/callback?state=${attempt.state}&code=fixture-code`;
-    const callback = await app.inject({
+    const callback = await inject(app, {
       url: callbackPath,
       headers: { cookie: attempt.cookie },
     });
     assert.equal(callback.statusCode, 302);
     assert.equal(callback.headers.location, "/console/", callback.body);
     const githubCookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-    const session = await app.inject({
+    const session = await inject(app, {
       url: "/api/auth/session",
       headers: { cookie: githubCookie },
     });
     assert.equal(session.json().data.user.id, recovery);
-    const namespaces = await app.inject({
+    const namespaces = await inject(app, {
       url: "/namespaces",
       headers: { cookie: githubCookie },
     });
@@ -578,7 +599,7 @@ test(
     assert.ok(namespaces.json().data.some((namespace) => namespace.id === namespaceId));
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/namespaces/${namespaceId}`,
           headers: { cookie: githubCookie },
         })
@@ -586,7 +607,7 @@ test(
       200,
     );
     assert.equal(exchangeCount, 1);
-    const consumed = await app.inject({
+    const consumed = await inject(app, {
       url: callbackPath,
       headers: { cookie: attempt.cookie },
     });
@@ -597,7 +618,7 @@ test(
     // the starting tab which session its attempt created.
     const receipt = [callback.headers["set-cookie"]]
       .flat()
-      .find((value) => value.startsWith("occ_login_receipt="));
+      .find((value) => value.startsWith("__Host-occ_login_receipt="));
     assert.ok(receipt);
     assert.match(receipt, /HttpOnly/i);
     assert.match(receipt, /SameSite=Strict/i);
@@ -605,10 +626,10 @@ test(
     const receiptCookie = receipt.split(";", 1)[0];
     const githubSessionCookie = githubCookie
       .split("; ")
-      .filter((cookie) => !cookie.startsWith("occ_login_receipt="))
+      .filter((cookie) => !cookie.startsWith("__Host-occ_login_receipt="))
       .join("; ");
     async function result(attemptId, cookie, requestHeaders = { origin }) {
-      return app.inject({
+      return inject(app, {
         method: "POST",
         url: "/api/auth/providers/github/result",
         headers: { ...requestHeaders, cookie },
@@ -648,7 +669,7 @@ test(
     assert.equal(confirmed.headers["cache-control"], "no-store");
     const { sessionKey } = confirmed.json().data;
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: githubCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: githubCookie } })).json()
         .data.sessionKey,
       sessionKey,
       "the result key names the session the callback issued",
@@ -672,7 +693,7 @@ test(
     // a matching key admits, and a foreign, malformed or duplicated key rejects.
     // A key without the cookie never selects a session.
     const foreignKey = (
-      await app.inject({ url: "/api/auth/session", headers: { cookie: headers.cookie } })
+      await inject(app, { url: "/api/auth/session", headers: { cookie: headers.cookie } })
     ).json().data.sessionKey;
     for (const [requestHeaders, status] of [
       [{ cookie: githubSessionCookie }, 200],
@@ -682,21 +703,21 @@ test(
       [{ cookie: githubSessionCookie, "x-occ-session-key": [sessionKey, sessionKey] }, 401],
       [{ "x-occ-session-key": sessionKey }, 401],
     ]) {
-      const narrowed = await app.inject({ url: "/namespaces", headers: requestHeaders });
+      const narrowed = await inject(app, { url: "/namespaces", headers: requestHeaders });
       assert.equal(narrowed.statusCode, status, narrowed.body);
     }
 
     // Unknown provider identities cannot create accounts, even when local account data exists.
     providerSubject = 87654321;
     const unknown = await start();
-    const denied = await app.inject({
+    const denied = await inject(app, {
       url: `/api/auth/providers/github/callback?state=${unknown.state}&code=unknown`,
       headers: { cookie: unknown.cookie },
     });
     assert.equal(denied.headers.location, "/console/?authError=github");
     assert.equal(denied.headers["set-cookie"], undefined);
     providerSubject = 12345678;
-    const recoveryDisable = await app.inject({
+    const recoveryDisable = await inject(app, {
       method: "POST",
       url: `/api/auth/accounts/${recovery}/disable`,
       headers,
@@ -709,7 +730,7 @@ test(
     const stale = await start();
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: `/api/auth/accounts/${recovery}/revoke`,
           headers,
@@ -719,13 +740,13 @@ test(
       200,
     );
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: githubCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: githubCookie } })).json()
         .data,
       null,
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/api/auth/providers/github/callback?state=${stale.state}&code=stale`,
           headers: { cookie: stale.cookie },
         })
@@ -734,7 +755,7 @@ test(
     );
     providerAvailable = false;
     const unavailableAttempt = await start();
-    const unavailable = await app.inject({
+    const unavailable = await inject(app, {
       url: `/api/auth/providers/github/callback?state=${unavailableAttempt.state}&code=provider-unavailable`,
       headers: { cookie: unavailableAttempt.cookie },
     });
@@ -743,7 +764,7 @@ test(
       "/console/?authError=github&authReason=provider-unavailable",
     );
     assert.equal(unavailable.headers["set-cookie"], undefined);
-    const offlinePassword = await app.inject({
+    const offlinePassword = await inject(app, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: { origin },
@@ -753,7 +774,7 @@ test(
     const passwordCookie = cookieHeaderFromSetCookie(offlinePassword.headers["set-cookie"]);
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: "/api/auth/sign-out",
           headers: { cookie: passwordCookie, origin },
@@ -762,15 +783,23 @@ test(
       200,
     );
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: passwordCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: passwordCookie } })).json()
         .data,
       null,
     );
     providerAvailable = true;
 
+    ingress = await startHttpsIngress({
+      port: browserReservation.port,
+      reusePort: browserReservation.reusePort,
+      upstreamPort: port,
+      originHost: "console.oce.localhost",
+    });
+    await browserReservation.release();
     browser = await chromium.launch({
       chromiumSandbox: true,
       headless: true,
+      args: [chromiumTrustArg([ingress.cert])],
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
         : {}),
@@ -865,9 +894,9 @@ test(
     const browserCookies = (await page.context().cookies(origin))
       .map(({ name, value }) => `${name}=${value}`)
       .join("; ");
-    const adminHeaders = { cookie: browserCookies, origin };
+    const adminHeaders = { host: new URL(origin).host, cookie: browserCookies, origin };
     // A failed provisioning (unknown Role) leaves no user, method or Principal behind.
-    const badRole = await app.inject({
+    const badRole = await inject(app, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: adminHeaders,
@@ -880,7 +909,7 @@ test(
     );
     assert.deepEqual(await state.loadNativeIAMState(installation.id), before);
     // Account creation stays available with GitHub sign-in activated.
-    const opened = await app.inject({
+    const opened = await inject(app, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: adminHeaders,
@@ -892,21 +921,21 @@ test(
       (await pool.query('SELECT count(*)::int AS count FROM occ."user"')).rows[0].count,
       3,
     );
-    const duplicate = await app.inject({
+    const duplicate = await inject(app, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: adminHeaders,
       payload: { email: "after-activation@example.test", password, roleId: role.id },
     });
     assert.equal(duplicate.statusCode, 409, duplicate.body);
-    const createdLogin = await app.inject({
+    const createdLogin = await inject(app, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: { origin },
       payload: { email: "after-activation@example.test", password },
     });
     assert.equal(createdLogin.statusCode, 200, createdLogin.body);
-    const createdSession = await app.inject({
+    const createdSession = await inject(app, {
       url: "/api/auth/session",
       headers: { cookie: cookieHeaderFromSetCookie(createdLogin.headers["set-cookie"]) },
     });
@@ -925,7 +954,7 @@ test(
     const userCount = async () =>
       (await pool.query('SELECT count(*)::int AS count FROM occ."user"')).rows[0].count;
     const usersBefore = await userCount();
-    const takenSubject = await app.inject({
+    const takenSubject = await inject(app, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: adminHeaders,
@@ -940,7 +969,7 @@ test(
     assert.equal(await userCount(), usersBefore);
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: "/api/auth/accounts",
           headers: adminHeaders,
@@ -954,7 +983,7 @@ test(
       ).statusCode,
       400,
     );
-    const createdGitHub = await app.inject({
+    const createdGitHub = await inject(app, {
       method: "POST",
       url: "/api/auth/accounts",
       headers: adminHeaders,
@@ -986,29 +1015,29 @@ test(
     const limitedBefore = await state.loadNativeIAMState(installation.id);
     providerSubject = 22222222;
     const limitedAttempt = await start();
-    const limitedCallback = await app.inject({
+    const limitedCallback = await inject(app, {
       url: `/api/auth/providers/github/callback?state=${limitedAttempt.state}&code=limited`,
       headers: { cookie: limitedAttempt.cookie },
     });
     assert.equal(limitedCallback.headers.location, "/console/");
     const limitedCookie = cookieHeaderFromSetCookie(limitedCallback.headers["set-cookie"]);
     assert.equal(
-      (await app.inject({ url: "/installation", headers: { cookie: limitedCookie } })).statusCode,
+      (await inject(app, { url: "/installation", headers: { cookie: limitedCookie } })).statusCode,
       200,
     );
     assert.equal(
-      (await app.inject({ url: `/namespaces/${namespaceId}`, headers: { cookie: limitedCookie } }))
+      (await inject(app, { url: `/namespaces/${namespaceId}`, headers: { cookie: limitedCookie } }))
         .statusCode,
       403,
     );
     assert.deepEqual(
-      (await app.inject({ url: "/namespaces", headers: { cookie: limitedCookie } })).json().data,
+      (await inject(app, { url: "/namespaces", headers: { cookie: limitedCookie } })).json().data,
       [],
     );
     assert.deepEqual(await state.loadNativeIAMState(installation.id), limitedBefore);
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/namespaces/${namespaceId}/agents/${agent.id}`,
           headers: { cookie: limitedCookie },
         })
@@ -1017,7 +1046,7 @@ test(
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/api/auth/accounts/${recovery}`,
           headers: { cookie: limitedCookie, origin },
         })
@@ -1027,7 +1056,7 @@ test(
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/api/auth/accounts/${recovery}`,
           headers: { "x-api-key": serviceKey, origin },
         })
@@ -1036,7 +1065,7 @@ test(
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: `/api/auth/accounts/${recovery}`,
           headers: { cookie: browserCookies },
         })
@@ -1045,13 +1074,13 @@ test(
     );
     // Recovery replacement: read, guarded move, seed-only startup, and move back.
     async function readRecovery(requestHeaders) {
-      const result = await app.inject({ url: "/api/auth/recovery", headers: requestHeaders });
+      const result = await inject(app, { url: "/api/auth/recovery", headers: requestHeaders });
       assert.equal(result.statusCode, 200, result.body);
       assert.equal(result.headers["cache-control"], "no-store");
       return result.json().data;
     }
     async function replaceRecovery(body, requestHeaders = adminHeaders) {
-      return app.inject({
+      return inject(app, {
         method: "POST",
         url: "/api/auth/recovery",
         headers: requestHeaders,
@@ -1072,7 +1101,7 @@ test(
     }
     assert.equal((await readRecovery(adminHeaders)).userId, recovery);
     assert.equal(
-      (await app.inject({ url: "/api/auth/recovery", headers: { cookie: browserCookies } }))
+      (await inject(app, { url: "/api/auth/recovery", headers: { cookie: browserCookies } }))
         .statusCode,
       403,
       "a trusted Origin is required",
@@ -1081,7 +1110,7 @@ test(
     // a foreign or malformed key is refused before any read or change, and the
     // matching key admits.
     const sessionKeyOf = async (cookie) =>
-      (await app.inject({ url: "/api/auth/session", headers: { cookie } })).json().data.sessionKey;
+      (await inject(app, { url: "/api/auth/session", headers: { cookie } })).json().data.sessionKey;
     const adminKey = await sessionKeyOf(browserCookies);
     const limitedKey = await sessionKeyOf(limitedCookie);
     assert.notEqual(adminKey, limitedKey);
@@ -1090,14 +1119,14 @@ test(
     ).rows;
     for (const key of [limitedKey, "malformed"]) {
       const narrowedHeaders = { ...adminHeaders, "x-occ-session-key": key };
-      const read = await app.inject({ url: "/api/auth/recovery", headers: narrowedHeaders });
+      const read = await inject(app, { url: "/api/auth/recovery", headers: narrowedHeaders });
       assert.equal(read.statusCode, 401, read.body);
       const move = await replaceRecovery(
         { userId: limited.id, expectedCurrentUserId: recovery, expectedVersion: 1 },
         narrowedHeaders,
       );
       assert.equal(move.statusCode, 401, move.body);
-      const enrol = await app.inject({
+      const enrol = await inject(app, {
         method: "POST",
         url: `/api/auth/accounts/${limited.id}/enrol`,
         headers: narrowedHeaders,
@@ -1116,14 +1145,14 @@ test(
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           url: "/api/auth/recovery",
           headers: { "x-api-key": serviceKey, origin },
         })
       ).statusCode,
       403,
     );
-    const enrolled = await app.inject({
+    const enrolled = await inject(app, {
       method: "POST",
       url: `/api/auth/accounts/${limited.id}/enrol`,
       headers: adminHeaders,
@@ -1139,7 +1168,7 @@ test(
     ).rows[0].id;
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: `/api/auth/accounts/${unprovisioned}/enrol`,
           headers: adminHeaders,
@@ -1203,7 +1232,7 @@ test(
     await assertRecoveryLane(app, "github-limited@example.test", email, "replaced");
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: `/api/auth/accounts/${limited.id}/disable`,
           headers: adminHeaders,
@@ -1270,7 +1299,7 @@ test(
     );
     assert.equal(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: `/api/auth/accounts/${limited.id}/disable`,
           headers: adminHeaders,
@@ -1280,14 +1309,14 @@ test(
       200,
     );
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: limitedCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: limitedCookie } })).json()
         .data,
       null,
     );
     // The recovery-lane checks above spent this email's budget. A disabled account's
     // known-device entries verify nothing, so the browser's cookie from its GitHub sign-in
     // no longer gives it its own lane: the attempt is slowed and refused like any other.
-    const disabledPassword = await app.inject({
+    const disabledPassword = await inject(app, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: { origin, cookie: limitedCookie },
@@ -1296,7 +1325,7 @@ test(
     assert.equal(disabledPassword.statusCode, 429, disabledPassword.body);
     assert.equal(disabledPassword.headers["set-cookie"], undefined);
     async function accountAction(path, expectedVersion) {
-      return app.inject({
+      return inject(app, {
         method: "POST",
         url: path,
         headers: adminHeaders,
@@ -1325,7 +1354,7 @@ test(
       409,
       "enabling an enabled account is a conflict",
     );
-    const reenabledPassword = await app.inject({
+    const reenabledPassword = await inject(app, {
       method: "POST",
       url: "/api/auth/sign-in/email",
       headers: { origin },
@@ -1341,7 +1370,7 @@ test(
     assert.ok(credentialMethod && githubMethod);
     const createdCookie = cookieHeaderFromSetCookie(
       (
-        await app.inject({
+        await inject(app, {
           method: "POST",
           url: "/api/auth/sign-in/email",
           headers: { origin },
@@ -1379,7 +1408,7 @@ test(
       [credentialMethod.methodId],
     );
     assert.equal(
-      (await app.inject({ url: "/api/auth/session", headers: { cookie: createdCookie } })).json()
+      (await inject(app, { url: "/api/auth/session", headers: { cookie: createdCookie } })).json()
         .data,
       null,
     );
@@ -1394,7 +1423,7 @@ test(
     await reservation.release();
     assert.equal(
       (
-        await restarted.inject({ url: "/api/auth/session", headers: { cookie: limitedCookie } })
+        await inject(restarted, { url: "/api/auth/session", headers: { cookie: limitedCookie } })
       ).json().data,
       null,
     );

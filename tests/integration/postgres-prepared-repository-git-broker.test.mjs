@@ -31,10 +31,10 @@ import {
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 
 async function startBroker(
   t,
@@ -223,7 +223,11 @@ async function withdrawRepositoryBinding(t, { state, agent, revision }) {
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
     auth: auth.auth,
-    development: { enabled: true, installationId: installation.id },
+    development: {
+      enabled: true,
+      installationId: installation.id,
+      browserOrigin: "https://console.oce.localhost",
+    },
   });
   t.after(() => app.close());
   const api = await createAuthenticatedControllerRequest(app, auth);
@@ -519,7 +523,7 @@ for (const mode of [
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
       const client = new URL(
-        "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
+        "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
         import.meta.url,
       ).href;
       const args = (operation = operationId, target = base) => [

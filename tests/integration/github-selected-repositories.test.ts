@@ -3,8 +3,8 @@ import test from "node:test";
 import {
   prepareProviderScope,
   providerRequestOptions,
-} from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 
 const grant = {
   id: "selected-grant",
@@ -46,16 +46,21 @@ test("selected repository response requires exact IDs, names and permissions and
     token: "ghs_" + "a".repeat(36),
     expires_at: new Date(now + 3600000).toISOString(),
     repositories: [
-      { id: 102, full_name: "team/b" },
+      { id: 102, full_name: "TEAM/B" },
       { id: 101, full_name: "team/a" },
     ],
     permissions: grant.permissions,
   };
+  const scope = prepareProviderScope("https://api.github.com", {
+    ...grant,
+    repositories: [...grant.repositories].reverse(),
+  });
+  assert.equal(
+    providerRequestOptions(scope, "issue", "fixture-jwt", undefined).body,
+    '{"repository_ids":[101,102],"permissions":{"metadata":"read","contents":"write","pull_requests":"write"}}',
+  );
   const check = (candidate: Record<string, unknown>) =>
-    validateInstallationTokenResponse(201, candidate, Buffer.from(packet.token), now, {
-      ...grant,
-      minimumValidityMs: 60000,
-    });
+    validateInstallationTokenResponse(201, candidate, Buffer.from(packet.token), now, scope, 60000);
   assert.equal(check(packet).kind, "validated");
   assert.equal(check({ ...packet, repository_selection: "selected" }).kind, "validated");
   for (const candidate of [
@@ -65,6 +70,7 @@ test("selected repository response requires exact IDs, names and permissions and
     { ...packet, repositories: [packet.repositories[0], packet.repositories[0]] },
     { ...packet, repositories: [...packet.repositories, { id: 103, full_name: "team/c" }] },
     { ...packet, repositories: [{ id: 101, full_name: "team/renamed" }, packet.repositories[0]] },
+    { ...packet, permissions: { ...packet.permissions, contents: "read" } },
     { ...packet, permissions: { ...packet.permissions, administration: "write" } },
   ]) {
     assert.equal(check(candidate).kind, "rejected");
@@ -75,7 +81,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import {
   validateGitHubRepositoryRegistry,
   resolveSelectedRepositoryGrant,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 
 test("ordinary fresh selections resolve one or N repositories without broadening explicit historical grants", () => {
   const createRegistry = (bPermissions = grant.permissions) =>

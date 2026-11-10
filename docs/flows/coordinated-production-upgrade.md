@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-09"
-last_updated_session: "authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d"
+last_updated_session: "authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f"
 ---
 
 # Production image upgrade flow
@@ -45,7 +45,10 @@ graph TD
     D -->|No| VQ{"Both writers valid?"}
     VQ -->|No| X
     VQ -->|Yes| E["Stop API and worker Pods"]
-    E --> F["Select Installation and run Helm migration"]
+    E --> DBP{"Separate database deployment?"}
+    DBP -->|Yes| PAUSE["Pause for migration and completed-history check"]
+    PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
+    DBP -->|No| F
     F --> G{"Helm completes?"}
     G -->|No| H["Inspect migration and release before retry"]
     H --> C
@@ -92,7 +95,7 @@ Stopped/deleting Agents are excluded; pending repository cleanup is allowed.
 `prepare_upgrade` copies the PostgreSQL `run` result;
 `validate_controller_compatibility` calls
 `scripts/upgrade-evidence.py:validate_compatibility` before preflight to check
-runner/file consistency, passing selected case and cleanup, and recorded incumbent
+runner/file consistency, both passing data and IAM cases, cleanup, and recorded incumbent
 release and selected candidate digests. Hashes freeze the copy for resume.
 Runner SHA cannot verify image source. This neither authenticates execution nor
 permits online migration or rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
@@ -213,7 +216,9 @@ remain operator attestations.
 Validate both Deployments before stopping either. Sequential JSON patches test
 UID, resource version and replicas; later conflicts can leave the API stopped.
 Pods must disappear and original Deployments remain at zero. Operators stop other
-writers/autoscalers and keep nodes reachable.
+writers/autoscalers and keep nodes reachable. With `database.upgradeMigration: separate`,
+the helper records stopped Deployment UIDs and generations, then exits 3. Resume requires
+those same stopped writers and checked history.
 
 Protected files adopt the candidate atomically. Mutable Secret updates use a resource-version
 precondition and preserve unrelated data. A reference switch retains both Secrets unchanged;
@@ -223,7 +228,10 @@ both OCC templates select the successor and its checksum.
 fresh `installation.upgradeAttemptId`, copied to hooks and the initializer Pod.
 `record_submission` saves intent and predecessor before publishing `helm-started`.
 Identical interrupted staging can finish; staged retries cannot replace published
-intent. Initialization checks Installation, migrates and bootstraps before rollout.
+intent. In separate mode,
+`scripts/migration-history.mjs:migrateWithHistory` verifies the completed candidate
+ledger, catalog and grants under the migration lock. Pending or unsupported history
+fails the hook. In hook mode the migrator applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
@@ -351,6 +359,8 @@ Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-09 23:49: Separate database deployment from service replacement under writer quiescence. (authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f - ef18e491453481577c607a4c78574cbbce594263)
+
 - 2026-11-09 07:05: Check named Secret update access before quiescence. (authoring-run/f98ccc9d-c174-4103-a385-d4d24950e54d - 09fe300b1ede4b59741b527a3b45199b435d7d6c)
 
 - 2026-11-09 05:02: Bind staged immutable Installation references through upgrade recovery. (authoring-run/cfc73629-f188-4fd0-8ff4-f3b3fbf6843f - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
@@ -374,17 +384,5 @@ Agents or Secrets.
 - 2026-11-06 23:24: Bind attempts and acknowledge same-candidate recovery. (authoring-run/9507f38c-1639-4152-a4ae-0de499d7ca5d - 1b6c65cc)
 
 - 2026-11-06 19:10: Bind resume to each submitted Helm revision. (authoring-run/9ac3c663-290c-4524-94bd-7157cbd44914 - f1c0865be4c523090af0dccc29c613ad1d47d542)
-
-- 2026-11-06 18:44: Bind writer quiescence to observed Deployment identity and version. (authoring-run/4f41f7ed-7c0b-484d-b6b3-85c39a31a8c6 - 5b8901213714a5b0d99f82af8eae1d425ee7cd18)
-- 2026-11-06 10:19: Bind startup results and logs to controller-owned Jobs; retain dependencies until cleanup is confirmed. (authoring-run/fd9ca628-3661-4fb1-927c-661ea85ae64d - 8e8035a0c073e2779aa7b32ece5dff449449f5b2)
-
-- 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
-
-- 2026-11-05 11:09: Allow an explicit canonical plugin registration candidate while preserving protected settings. (authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5 - 717e8bf2a3ef3fa4d4fa7e53cc6927500533ddbd)
-
-- 2026-11-04 07:28: Validate Console inputs. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
-- 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
-
-- 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

@@ -40,15 +40,17 @@ async function createFixture(t) {
 
 // Sends `text` as the exact request body, without re-encoding it.
 async function sendRaw(fixture, method, path, text, session) {
-  const response = await fetch(new URL(path, fixture.origin), {
-    method,
-    headers: {
-      ...authenticatedHeaders(session, { origin: fixture.origin }),
-      "content-type": "application/json",
-    },
-    body: text,
-    signal: AbortSignal.timeout(30_000),
-  });
+  const response = await fixture.fetch(
+    new Request(new URL(path, fixture.origin), {
+      method,
+      headers: {
+        ...authenticatedHeaders(session, { origin: fixture.origin }),
+        "content-type": "application/json",
+      },
+      body: text,
+      signal: AbortSignal.timeout(30_000),
+    }),
+  );
   return { status: response.status, body: await response.json() };
 }
 
@@ -163,6 +165,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
     const auditStart = fixture.auditSink.events.length;
     const refused = await partialWrite({
       origin: fixture.origin,
+      transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
       method,
       path,
       session,

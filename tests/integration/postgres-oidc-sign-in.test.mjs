@@ -198,7 +198,26 @@ test(
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(setCookies.some((cookie) => cookie.startsWith("__Host-occ_login_receipt=")));
+      const sessionCookie = setCookies.find(
+        (cookie) =>
+          cookie.startsWith("__Secure-openclaw_occ_shared.session_token=") &&
+          !/Max-Age=0(?:;|$)/i.test(cookie),
+      );
+      assert.ok(sessionCookie, "OIDC issues the shared OCE session cookie");
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      // Provider bindings and device hints stay on the Console origin, never Agent hosts.
+      const startCookies = [signIn.start.headers["set-cookie"]].flat();
+      for (const [cookies, name] of [
+        [startCookies, "__Host-occ_login_attempt"],
+        [setCookies, "__Host-occ_login_receipt"],
+        [setCookies, "__Host-occ_known_device"],
+      ]) {
+        const cookie = cookies.find(
+          (value) => value.startsWith(`${name}=`) && !/Max-Age=0(?:;|$)/i.test(value),
+        );
+        assert.ok(cookie, name);
+        assert.doesNotMatch(cookie, /; Domain=/i);
+      }
       const exchanged = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/result", {
         remoteAddress: address(),
         session: { cookie: signIn.cookie, origin },

@@ -14,8 +14,8 @@ import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import {
   startGitHubFixture,
   fixtureAppId,
@@ -48,7 +48,7 @@ export async function fixture(
     installationAccess = false,
     tokenLifetimeMs = /** @type {number | undefined} */ (undefined),
     /** The first owner's clock argument; undefined starts it as the worker does. */
-    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts").Clock | undefined} */ (
+    ownerClock = /** @type {import("../../apps/controller/src/drivers/repo/access/backend-contracts.ts").Clock | undefined} */ (
       undefined
     ),
   } = {},
