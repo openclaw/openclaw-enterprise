@@ -68,9 +68,9 @@ Pull requests compare the verified merge with its first parent using that parent
 policy; the second parent must match the event head. Canonical main pushes compare
 the complete `before` to verified `after` range using `before` policy. Missing history,
 forced pushes, and older policies retain full CI.
-Path decoding preserves leading UTF-8 BOMs.
+Decoding preserves leading UTF-8 BOMs.
 `scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
-changes to docs mode. Generated API references (including `docs/reference/api/`),
+to docs mode. Generated API references,
 executables and symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
@@ -263,6 +263,8 @@ awaits an approved resource ledger.
 ## Changelog
 
 - 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
+
+- 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
 
 - 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
 

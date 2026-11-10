@@ -237,12 +237,18 @@ URL. The console sign-in page loads. Stop the forward when you are done. Do
 not publish the console port on an address other than loopback. This name and
 certificate are for the private development installation.
 
+## Bootstrap volume preparation failed
+
+If `prepare-bootstrap-volume` reports a retained Pod, run its printed
+`Inspect claim` command for the phase, StorageClass and bound volume. Ask the
+storage administrator to check a Pending claim's class, provisioning and placement.
+`WaitForFirstConsumer` claims can remain Pending until the consumer is scheduled.
+
 ## The Helm installation did not complete
 
-Run production commands from an operator shell with Helm and `kubectl`, read
-access to the `openclaw-system` namespace, and `KUBECONFIG_FILE` and `CONTEXT`
-set to the affected cluster. The examples use the default release `oce`; replace
-it if you installed with another name.
+Use Helm and `kubectl` with read access to `openclaw-system`.
+Set `KUBECONFIG_FILE` and `CONTEXT` to the affected cluster. Replace the default
+release `oce` if needed.
 
 Start with the release and the initialization Job:
 
@@ -259,9 +265,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   describe "$INITIALIZATION_JOB"
 ```
 
-The lookup uses release labels because long release names have a shortened Job
-name. If it finds no Job, inspect the Helm error before running `describe` or
-`logs`; the hook may not have been created.
+Labels locate Jobs whose names were shortened for long releases. If no Job exists,
+inspect the Helm error before `describe` or `logs`; the hook may not exist.
 
 If the Job started, inspect the failing container:
 
@@ -274,17 +279,15 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-On an upgrade, `installation-check` runs first. It loads any Console theme
-bundle and the Installation as API startup does. It names the refused setting or
-file. The running API keeps serving. Migration runs before bootstrap; an
-unstarted container has no logs.
-For image, scheduling, or volume errors, use the Pod events reported by
-`kubectl describe pod <pod-name>` with the same context and namespace. Fix the
-specific image, scheduling, or storage error. For a bootstrap failure, follow
-[bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
-before retrying; do not delete the database or credential volume to force a
-rerun. The recovery check is a successful authenticated `occ installation get`,
-not only a completed Job.
+On upgrades, `installation-check` first loads any Console theme bundle and the
+Installation as API startup does, naming refused settings or files. The API keeps serving.
+Migration precedes bootstrap; unstarted containers have no logs.
+For image, scheduling or storage errors, run `kubectl describe pod <pod-name>`
+with the same context and namespace, and resolve the reported Pod events.
+Follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before retrying bootstrap failures. Do not delete the database or credential
+volume to force a rerun. Confirm recovery with a successful authenticated
+`occ installation get`; a completed Job alone is insufficient.
 
 ## The control plane is unavailable or Namespaces do not become ready
 
