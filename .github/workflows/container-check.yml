@@ -167,7 +167,7 @@ jobs:
         run: node scripts/ci/repository-platform-headroom.mjs
       - name: Set up persistent Blacksmith Buildx cache
         if: ${{ startsWith(matrix.runner, 'blacksmith-') }}
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        uses: useblacksmith/setup-docker-builder@06dd9c83a5d541274d2e3ac67625560979275267 # v2.3.0
         with:
           cache-key: openclaw-enterprise/${{ matrix.image }}-${{ matrix.arch }}
           max-parallelism: "2"
