@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
-import type { SafeConfigurationSummary } from "../../drivers/repo/credentials/service-contracts.ts";
+import type { SafeConfigurationSummary } from "../../drivers/repo/access/service-contracts.ts";
 import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 
 export async function checkConfiguration(
   path: string,

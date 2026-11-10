@@ -31,7 +31,7 @@ const authSecret = "password-default-auth-test-secret-at-least-32-bytes";
 // administrator's generated password, and the API Pod receives the example values'
 // settings, with no OCC_AUTH_GITHUB_* or trusted-proxy names. No provider is reachable.
 test(
-  "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
+  "a password-only install onboards, signs in and out, and refuses external sign-in",
   requiresPostgres,
   async (t) => {
     let app;
@@ -51,7 +51,6 @@ test(
     const providers = await app.inject({ url: "/api/auth/providers" });
     assert.equal(providers.statusCode, 200);
     assert.deepEqual(providers.json().data, {
-      github: false,
       google: false,
       oidc: false,
       password: true,
@@ -102,7 +101,7 @@ test(
           github: { subject: "55555555" },
         },
       });
-      assert.equal(withGitHub.statusCode, 409, "a GitHub subject needs GitHub sign-in");
+      assert.equal(withGitHub.statusCode, 400, "the retired GitHub account field is rejected");
     });
 
     await t.test("the new account signs in and signs out only with the exact Origin", async () => {
@@ -214,7 +213,7 @@ test(
       },
     );
 
-    await t.test("GitHub and Google routes refuse without contacting a provider", async () => {
+    await t.test("unconfigured external routes refuse without contacting a provider", async () => {
       let providerCalls = 0;
       const originalFetch = globalThis.fetch;
       t.mock.method(globalThis, "fetch", (input, init) => {
@@ -222,7 +221,7 @@ test(
         return originalFetch(input, init);
       });
       const { cookie } = await adminHeaders();
-      for (const provider of ["github", "google"]) {
+      for (const provider of ["google", "oidc"]) {
         const start = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
           headers: { origin },
         });
@@ -247,7 +246,7 @@ test(
         (await pool.query("SELECT count(*)::int AS count FROM occ.human_authentication_recovery"))
           .rows[0].count,
         0,
-        "the password-only profile never activates GitHub sign-in",
+        "the password-only profile never activates external sign-in",
       );
     });
 

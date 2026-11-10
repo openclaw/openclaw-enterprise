@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-06
-last_updated_session: authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f
+updated: 2026-11-08
+last_updated_session: authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2
 ---
 
 # Compose development flow
@@ -20,6 +20,14 @@ Compose-backed profiles perform host preflight, select Docker Engine or Podman,
 prepare runtime images, start Compose, and wait for PostgreSQL migration,
 Installation bootstrap, API health, and worker readiness. The Kubernetes-only
 profile performs the equivalent readiness checks inside its owned cluster.
+All profiles prepare HTTPS Console and Agent DNS hosts and use the existing
+loopback TLS proxy, even when Agent native access is disabled. Session cookie
+scope is derived from those hosts; no cookie-domain setting is accepted.
+For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
+`internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
+existing TLS generator and retains private per-checkout certificates under the
+system temporary directory across stop/start. The launcher prints the Console
+URL and CA certificate path. `occ dev down` reloads the same proxy settings.
 Startup proves authenticated Installation access with a protected local
 bootstrap service key; it does not create an Agent or prove model execution.
 
@@ -49,7 +57,7 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Checkout{"Nearest checkout uses LF?"}
+  A["./bin/occ dev up"] --> Checkout{"Valid checkout markers<br/>and LF module?"}
   Checkout -->|No| Refuse["Refuse before startup"]
   Checkout -->|Yes| Guard{"Development settings valid?"}
   Guard -->|No| Refuse
@@ -113,10 +121,12 @@ graph TD
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
 
 `internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
-checkout with an OCE module declaration and `compose.yaml`. A matching checkout
-with CRLF in `go.mod` stops both `up` and `down` with an LF repair error before
-profile dispatch. It cannot fall through to an outer checkout and target that
-checkout's stack or volumes.
+checkout with an OCE module declaration and a regular `compose.yaml` file,
+including a symlink to one. An absent Compose marker allows the ancestor search
+to continue. A present marker that is not a regular file or cannot be resolved
+stops both `up` and `down` with its exact path before profile dispatch. CRLF in
+`go.mod` also stops both commands with an LF repair error. These invalid markers
+cannot fall through to an outer checkout and target its stack or volumes.
 
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
@@ -328,6 +338,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
 
 - 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 

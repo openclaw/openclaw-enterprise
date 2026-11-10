@@ -3,7 +3,8 @@
 An Installation administrator can let people create Agents without other
 grants. The Installation configuration declares ordinary Roles, Groups, and
 Group bindings. Each account created through the accounts API joins the
-configured default Groups. A Group binding can let members create Agents,
+configured default Groups. [OIDC enrollment](../authentication/team-enrollment.md)
+also uses these Groups unless its policy supplies `groupIds`. A Group binding can let members create Agents,
 Configurations, Secrets, and credential sources in the shared `default`
 Namespace, or create Namespaces. Each creator owns what it creates. This page
 defines the `iam` configuration, how OCC applies it, the Owner bindings, and the

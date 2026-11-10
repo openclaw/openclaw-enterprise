@@ -1167,7 +1167,13 @@ test("Agent deployment snapshots its selected Configuration and Compute identity
   assert.equal(Object.isFrozen(configuration.values.models.providers.openai.apiKey), true);
   assert.equal(Object.isFrozen(revision.configuration.plugins.entries.example.regions), true);
   assert.equal(agent.executionMode, "embedded");
-  assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
+  assert.deepEqual(revision.harness, {
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   assert.deepEqual(revision.compute, { id: compute.id, implementation: compute.implementation });
 });
 
@@ -2323,6 +2329,8 @@ test("one installation admits embedded and dedicated revisions without rewriting
     id: "codex",
     version: "1.0.0",
     mode: "dedicated",
+    overrides: {},
+    configuration: {},
   });
   const updated = await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
@@ -2337,8 +2345,20 @@ test("one installation admits embedded and dedicated revisions without rewriting
     { namespaceId: namespace.id, agentId: agent.id },
     resolveApprovedDevelopmentHarness,
   );
-  assert.deepEqual(embedded.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
-  assert.deepEqual(dedicated.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+  assert.deepEqual(embedded.harness, {
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
+  assert.deepEqual(dedicated.harness, {
+    id: "codex",
+    version: "1.0.0",
+    mode: "dedicated",
+    overrides: {},
+    configuration: {},
+  });
   assert.equal(embedded.configurationId, configuration.id);
   assert.equal(dedicated.configurationId, codexConfiguration.id);
 
@@ -2438,7 +2458,13 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
         "info",
       ),
     );
-    assert.deepEqual(admitted.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+    assert.deepEqual(admitted.harness, {
+      id: "codex",
+      version: "1.0.0",
+      mode: "dedicated",
+      overrides: {},
+      configuration: {},
+    });
     assert.equal(admitted.compute.id, "configuration-occ-compute");
   });
 }
@@ -2836,7 +2862,12 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     { namespaceId: namespace.id, agentId: agent.id },
     resolveApprovedProductionHarness,
   );
-  assert.deepEqual(embedded.harness, { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" });
+  assert.deepEqual(embedded.harness, {
+    ...DEVELOPMENT_HARNESS_DESCRIPTOR,
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  });
   await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
     agentId: agent.id,
@@ -3077,6 +3108,8 @@ test("a dedicated Agent's runtime refusals offer only what the Installation runs
     id: "codex",
     version: "1.0.0",
     mode: "dedicated",
+    overrides: {},
+    configuration: {},
   });
   // openclaw, which the refusal no longer offers, gets the 409; Codex runs this model, so the
   // refusal names codex as the next step.
@@ -3185,6 +3218,8 @@ test("an embedded Agent's runtime refusals offer only what it runs, and name the
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
 
   // On a codex/<model> model neither runtime deploys an embedded Agent, so the refusal names the

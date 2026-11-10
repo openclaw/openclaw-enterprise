@@ -11,7 +11,7 @@ import {
   type GoogleRequestScope,
   type GoogleSchema,
 } from "./operations.ts";
-import { parseUnambiguousJson } from "../../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../../repo/access/json-members.ts";
 import type { OpenShellOnlineHttpRequest } from "../../egress-proxy/openshell-online-authority.ts";
 
 // OpenShell removes routing, framing and credential headers before this RPC. Only these

@@ -162,6 +162,8 @@ State commits local effects and audit together, not IAM reads, GitHub calls or b
 - **No migration.** Identities are `identity_only` account rows and attempts use the existing free-text provider id.
 - **Verification status.** Tested against a fake OIDC provider (`google-id-token`, `google-login-transport`, `postgres-google-sign-in`, chart parity). Not yet verified against a real Google client.
 
+**Proposed amendment:** [Collect a browser sign-in result through any compatible API instance](./sign-in-result.md).
+
 ## Milestones
 
 **M1, launch.** Landed in PR #305: the keyed limiter with the trusted-proxy presets; Helm values, `Recreate` and GitHub egress; migration 0037 with the session fence and the recovery `UPDATE` grant; atomic account creation with relaxed activation; detach and enable.

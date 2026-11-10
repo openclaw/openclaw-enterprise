@@ -1,3 +1,4 @@
+import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -9,16 +10,21 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { attachPostgresToK3d } from "./k3d-postgres-network.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
+import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
+import {
+  createNativeTopologyConfiguration,
+  createTopologyPresetTemplate,
+} from "./topology-launch-configuration.ts";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 import {
   assertGatewayModelTurn,
@@ -30,6 +36,7 @@ import {
   productionGatewayMemoryLimitGi,
   withBoundedTeardown,
   withinDiagnosticDeadline,
+  waitForDeploymentAvailable,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -41,6 +48,8 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
+import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
@@ -96,7 +105,7 @@ const requiresLiveSlack = {
 };
 const installationName = "OpenClaw Kubernetes harness topology integration";
 const authSecret = "kubernetes-harness-topology-auth-secret-32-bytes";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.test";
 const modelPrefix = "openclaw-agent-model";
 const secretRotationProbe = "SECRET_ROTATION_PROBE";
 const peerSecretRotationProbe = "SECRET_ROTATION_PEER_PROBE";
@@ -205,16 +214,20 @@ async function validatePrerequisites() {
 }
 
 async function createAuthenticatedControllerUrlRequest(origin, credentials, requestOrigin) {
+  const transport = createConsoleFixtureTransport(requestOrigin, origin);
   const session = await signInWithEmailPassword({
-    origin,
+    origin: requestOrigin,
+    fetch: transport.fetchThroughLoopback,
     email: credentials.email,
     password: credentials.password,
+    headers: { host: new URL(requestOrigin).host, origin: requestOrigin },
   });
   return async (method, pathname, payload) => {
-    const response = await fetch(new URL(pathname, origin), {
+    const response = await fetchLoopback(new URL(pathname, origin).href, {
       method,
       headers: {
         ...authenticatedHeaders(session),
+        host: new URL(requestOrigin).host,
         origin: requestOrigin,
         ...(payload === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -351,6 +364,22 @@ async function createScopedController(context, identifier, platformNamespace, ku
     "--verb=get,create,update,patch,delete",
     "--resource=secrets",
   );
+  // Match Helm's tenant-api role: credential creation verifies that this exact
+  // Agent has no existing Deployment before creating its runtime Secrets.
+  await kubectl(
+    "patch",
+    "clusterrole",
+    apiSecretRole,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
+      },
+    ]),
+  );
   await kubectl(
     "create",
     "clusterrole",
@@ -377,6 +406,87 @@ async function createScopedController(context, identifier, platformNamespace, ku
   };
 }
 
+// Keep the provider's public issuer unchanged. A namespace-local Service maps
+// its standard HTTPS port to the prepared container's private TLS listener.
+async function configureInClusterOidc({
+  oidc,
+  manifests,
+  apiPodSpec,
+  apiContainer,
+  platformNamespace,
+  workspaceGateway,
+}) {
+  const serviceName = "occ-test-keycloak";
+  await applyManifest(
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name: serviceName, namespace: platformNamespace },
+          spec: { ports: [{ name: "https", port: 443, targetPort: 8443 }] },
+        },
+        {
+          apiVersion: "v1",
+          kind: "Endpoints",
+          metadata: { name: serviceName, namespace: platformNamespace },
+          subsets: [{ addresses: [{ ip: oidc.address }], ports: [{ name: "https", port: 8443 }] }],
+        },
+      ],
+    }),
+  );
+  const service = await resource("service", serviceName, platformNamespace);
+  assert.equal(isIP(service.spec.clusterIP), 4, "OIDC Service must have an IPv4 address");
+  apiPodSpec.hostAliases = [
+    { ip: service.spec.clusterIP, hostnames: [new URL(oidc.issuer).hostname] },
+  ];
+  const secretName = "occ-test-oidc";
+  const gatewayCa = await resource("secret", workspaceGateway.caSecretName, platformNamespace);
+  const trustedCertificates = `${Buffer.from(gatewayCa.data["tls.crt"], "base64").toString("utf8")}\n${oidc.caCert}`;
+  manifests.items.push({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: secretName, namespace: platformNamespace },
+    stringData: { "client-secret": oidc.clientSecret, "ca.crt": trustedCertificates },
+  });
+  const values = {
+    OCC_AUTH_OIDC_ISSUER: oidc.issuer,
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: `${oidc.issuer}/protocol/openid-connect/auth`,
+    OCC_AUTH_OIDC_TOKEN_URL: `${oidc.issuer}/protocol/openid-connect/token`,
+    OCC_AUTH_OIDC_JWKS_URL: `${oidc.issuer}/protocol/openid-connect/certs`,
+    OCC_AUTH_OIDC_CLIENT_ID: oidc.clientId,
+    OCC_AUTH_OIDC_DISPLAY_NAME: "Keycloak",
+    ...(oidc.enrollment === undefined
+      ? {}
+      : { OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(oidc.enrollment) }),
+    OCC_AUTH_RECOVERY_USER_ID: oidc.recoveryUserId,
+  };
+  apiContainer.env.push(...Object.entries(values).map(([name, value]) => ({ name, value })), {
+    name: "OCC_AUTH_OIDC_CLIENT_SECRET",
+    valueFrom: { secretKeyRef: { name: secretName, key: "client-secret" } },
+  });
+  apiContainer.env = apiContainer.env.map((entry) =>
+    entry.name === "NODE_EXTRA_CA_CERTS" ? { ...entry, value: "/etc/openclaw/oidc/ca.crt" } : entry,
+  );
+  apiContainer.volumeMounts.push({
+    name: "oidc-ca",
+    mountPath: "/etc/openclaw/oidc",
+    readOnly: true,
+  });
+  apiPodSpec.volumes.push({
+    name: "oidc-ca",
+    secret: { secretName, items: [{ key: "ca.crt", path: "ca.crt" }] },
+  });
+  manifests.items
+    .find(({ kind }) => kind === "NetworkPolicy")
+    .spec.egress.push({
+      to: [{ ipBlock: { cidr: `${oidc.address}/32` } }],
+      ports: [{ protocol: "TCP", port: 8443 }],
+    });
+}
+
 async function startInClusterControllers(
   context,
   {
@@ -387,7 +497,8 @@ async function startInClusterControllers(
     databaseAddress,
     events,
     nativeAdminDomain,
-    nativeAdminSharedCookieDomain,
+    nativeAdminEnabled,
+    oidc,
     platformNamespace,
     workerOptions,
     workspaceGateway,
@@ -409,321 +520,31 @@ async function startInClusterControllers(
   const authSecretName = `${name}-auth`;
   const probeConfigMap = `${name}-gateway-probe`;
   const probeSource = await readFile("tests/fixtures/gateway-routing/probe.mjs", "utf8");
-  const manifests = {
-    apiVersion: "v1",
-    kind: "List",
-    items: [
-      {
-        apiVersion: "v1",
-        kind: "ConfigMap",
-        metadata: { name: probeConfigMap, namespace: platformNamespace },
-        data: { "gateway-probe.mjs": probeSource },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: configurationSecret, namespace: platformNamespace },
-        stringData: { "installation.yaml": JSON.stringify(apiConfiguration) },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: databaseSecret, namespace: platformNamespace },
-        stringData: { url: inClusterDatabaseUrl.toString() },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Secret",
-        metadata: { name: authSecretName, namespace: platformNamespace },
-        stringData: { secret: authSecret },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Service",
-        metadata: { name: databaseServiceName, namespace: platformNamespace },
-        spec: { ports: [{ name: "postgres", port: 5432, targetPort: 5432 }] },
-      },
-      {
-        apiVersion: "v1",
-        kind: "Endpoints",
-        metadata: { name: databaseServiceName, namespace: platformNamespace },
-        subsets: [
-          { addresses: [{ ip: databaseAddress }], ports: [{ name: "postgres", port: 5432 }] },
-        ],
-      },
-      {
-        apiVersion: "v1",
-        kind: "Service",
-        metadata: { name, namespace: platformNamespace },
-        spec: { selector: labels, ports: [{ name: "http", port: 8080, targetPort: "http" }] },
-      },
-      {
-        apiVersion: "apps/v1",
-        kind: "Deployment",
-        metadata: { name, namespace: platformNamespace },
-        spec: {
-          replicas: 1,
-          selector: { matchLabels: labels },
-          template: {
-            metadata: { labels },
-            spec: {
-              serviceAccountName: controller.apiAccount,
-              automountServiceAccountToken: true,
-              securityContext: {
-                runAsNonRoot: true,
-                runAsUser: 1000,
-                runAsGroup: 1000,
-                fsGroup: 1000,
-                seccompProfile: { type: "RuntimeDefault" },
-              },
-              containers: [
-                {
-                  name: "api",
-                  image: controllerImage,
-                  imagePullPolicy: "IfNotPresent",
-                  args: ["apps/controller/src/server.mjs"],
-                  securityContext: {
-                    allowPrivilegeEscalation: false,
-                    capabilities: { drop: ["ALL"] },
-                    readOnlyRootFilesystem: true,
-                  },
-                  resources: {
-                    requests: { cpu: "100m", memory: "128Mi" },
-                    limits: { cpu: "1", memory: "1Gi" },
-                  },
-                  env: [
-                    { name: "NODE_ENV", value: "production" },
-                    {
-                      name: "OCC_CONFIG_PATH",
-                      value: "/etc/openclaw/installation/installation.yaml",
-                    },
-                    {
-                      name: "OCC_DATABASE_URL",
-                      valueFrom: { secretKeyRef: { name: databaseSecret, key: "url" } },
-                    },
-                    {
-                      name: "OCC_AUTH_SECRET",
-                      valueFrom: { secretKeyRef: { name: authSecretName, key: "secret" } },
-                    },
-                    { name: "OCC_AUTH_BASE_URL", value: authBaseURL },
-                    {
-                      name: "OCC_AGENT_NATIVE_ADMIN_ENABLED",
-                      value: nativeAdminDomain === undefined ? "false" : "true",
-                    },
-                    ...(nativeAdminDomain === undefined
-                      ? []
-                      : [
-                          { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: nativeAdminDomain },
-                          ...(nativeAdminSharedCookieDomain === undefined
-                            ? []
-                            : [
-                                {
-                                  name: "OCC_AUTH_COOKIE_DOMAIN",
-                                  value: nativeAdminSharedCookieDomain,
-                                },
-                              ]),
-                        ]),
-                    {
-                      name: "OCC_HOST",
-                      valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
-                    },
-                    { name: "OCC_PORT", value: "8080" },
-                    {
-                      name: "OCC_GATEWAY_API_KEY_PATH",
-                      value: "/etc/openclaw/gateway-api-key/key",
-                    },
-                    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/gateway-ca/ca.crt" },
-                  ],
-                  volumeMounts: [
-                    {
-                      name: "installation",
-                      mountPath: "/etc/openclaw/installation",
-                      readOnly: true,
-                    },
-                    {
-                      name: "gateway-api-key",
-                      mountPath: "/etc/openclaw/gateway-api-key",
-                      readOnly: true,
-                    },
-                    { name: "gateway-ca", mountPath: "/etc/openclaw/gateway-ca", readOnly: true },
-                    {
-                      name: "gateway-probe",
-                      mountPath: "/app/apps/controller/gateway-probe.mjs",
-                      subPath: "gateway-probe.mjs",
-                      readOnly: true,
-                    },
-                  ],
-                  ports: [{ name: "http", containerPort: 8080 }],
-                  readinessProbe: { httpGet: { path: "/readyz", port: "http" } },
-                  livenessProbe: { httpGet: { path: "/healthz", port: "http" } },
-                },
-                {
-                  name: "loopback-forwarder",
-                  image: controllerImage,
-                  imagePullPolicy: "IfNotPresent",
-                  command: ["node", "-e"],
-                  args: [
-                    "const net=require('node:net');const host=process.env.POD_IP;net.createServer(client=>{const upstream=net.connect(8080,host);client.on('error',()=>upstream.destroy());upstream.on('error',()=>client.destroy());client.pipe(upstream);upstream.pipe(client)}).listen(18080,'0.0.0.0')",
-                  ],
-                  env: [{ name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } }],
-                  securityContext: {
-                    allowPrivilegeEscalation: false,
-                    capabilities: { drop: ["ALL"] },
-                    readOnlyRootFilesystem: true,
-                  },
-                  resources: {
-                    requests: { cpu: "10m", memory: "32Mi" },
-                    limits: { cpu: "100m", memory: "64Mi" },
-                  },
-                  ports: [{ name: "local-forward", containerPort: 18080 }],
-                },
-              ],
-              volumes: [
-                {
-                  name: "installation",
-                  secret: {
-                    secretName: configurationSecret,
-                    items: [{ key: "installation.yaml", path: "installation.yaml" }],
-                  },
-                },
-                {
-                  name: "gateway-api-key",
-                  secret: {
-                    secretName: workspaceGateway.apiKeySecretName,
-                    items: [{ key: "occ", path: "key" }],
-                  },
-                },
-                {
-                  name: "gateway-ca",
-                  secret: {
-                    secretName: workspaceGateway.caSecretName,
-                    items: [{ key: "tls.crt", path: "ca.crt" }],
-                  },
-                },
-                { name: "gateway-probe", configMap: { name: probeConfigMap } },
-              ],
-            },
-          },
-        },
-      },
-      {
-        apiVersion: "networking.k8s.io/v1",
-        kind: "NetworkPolicy",
-        metadata: { name: `${name}-isolation`, namespace: platformNamespace },
-        spec: {
-          podSelector: { matchLabels: labels },
-          policyTypes: ["Ingress", "Egress"],
-          ingress: [],
-          egress: [
-            {
-              to: [
-                {
-                  namespaceSelector: {
-                    matchLabels: { "kubernetes.io/metadata.name": "kube-system" },
-                  },
-                  podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
-                },
-              ],
-              ports: [
-                { protocol: "UDP", port: 53 },
-                { protocol: "TCP", port: 53 },
-              ],
-            },
-            {
-              to: [{ ipBlock: { cidr: `${databaseAddress}/32` } }],
-              ports: [{ protocol: "TCP", port: 5432 }],
-            },
-            {
-              to: [{ ipBlock: { cidr: `${kubernetesAddress}/32` } }],
-              ports: [{ protocol: "TCP", port: kubernetesPort }],
-            },
-          ],
-        },
-      },
-    ],
-  };
-  // Use the production worker entrypoint inside the same network as its private
-  // Gateway route, with the worker's own identity and only its required mounts.
-  const apiPodSpec = manifests.items.find(({ kind }) => kind === "Deployment").spec.template.spec;
-  const apiContainer = apiPodSpec.containers[0];
-  const workerName = "openclaw-enterprise-worker";
-  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
-  const workerVolumes = ["installation", "gateway-api-key", "gateway-ca"];
-  manifests.items.push({
-    apiVersion: "apps/v1",
-    kind: "Deployment",
-    metadata: { name: workerName, namespace: platformNamespace },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: workerLabels },
-      template: {
-        metadata: { labels: workerLabels },
-        spec: {
-          serviceAccountName: controller.account,
-          automountServiceAccountToken: true,
-          securityContext: apiPodSpec.securityContext,
-          containers: [
-            {
-              name: "worker",
-              image: controllerImage,
-              imagePullPolicy: "IfNotPresent",
-              args: ["apps/controller/src/worker.mjs"],
-              securityContext: apiContainer.securityContext,
-              resources: apiContainer.resources,
-              env: [
-                ...apiContainer.env.filter(({ name }) =>
-                  [
-                    "NODE_ENV",
-                    "OCC_CONFIG_PATH",
-                    "OCC_DATABASE_URL",
-                    "OCC_GATEWAY_API_KEY_PATH",
-                    "NODE_EXTRA_CA_CERTS",
-                  ].includes(name),
-                ),
-                { name: "OCC_WORKER_READINESS_PATH", value: "/var/run/openclaw/ready" },
-                { name: "OCC_WORKER_LIVENESS_PATH", value: "/var/run/openclaw/alive" },
-                {
-                  name: "OCC_WORKER_POLL_INTERVAL_MS",
-                  value: String(workerOptions.pollIntervalMs),
-                },
-                {
-                  name: "OCC_WORKER_LEASE_DURATION_MS",
-                  value: String(workerOptions.leaseDurationMs),
-                },
-                { name: "OCC_WORKER_MAX_ATTEMPTS", value: String(workerOptions.maxAttempts) },
-                {
-                  name: "OCC_WORKER_CONVERGENCE_TIMEOUT_MS",
-                  value: String(workerOptions.convergenceTimeoutMs),
-                },
-              ],
-              volumeMounts: [
-                ...apiContainer.volumeMounts.filter(({ name }) => workerVolumes.includes(name)),
-                { name: "worker-readiness", mountPath: "/var/run/openclaw" },
-              ],
-              readinessProbe: {
-                exec: {
-                  command: ["node", "scripts/production-healthcheck.mjs", "worker", "ready"],
-                },
-              },
-              livenessProbe: {
-                exec: { command: ["node", "scripts/production-healthcheck.mjs", "worker"] },
-              },
-            },
-          ],
-          volumes: [
-            ...apiPodSpec.volumes.filter(({ name }) => workerVolumes.includes(name)),
-            { name: "worker-readiness", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
-          ],
-        },
-      },
-    },
-  });
-  const workerIsolation = structuredClone(
-    manifests.items.find(({ kind }) => kind === "NetworkPolicy"),
-  );
-  workerIsolation.metadata.name = `${workerName}-isolation`;
-  workerIsolation.spec.podSelector.matchLabels = workerLabels;
-  manifests.items.push(workerIsolation);
+  const { manifests, apiPodSpec, apiContainer, workerName, workerLabels } =
+    buildControllerTopologyManifests({
+      apiConfiguration,
+      authBaseURL,
+      authSecret,
+      controller,
+      controllerImage,
+      databaseAddress,
+      databaseServiceName,
+      inClusterDatabaseUrl,
+      kubernetesAddress,
+      kubernetesPort,
+      labels,
+      name,
+      configurationSecret,
+      databaseSecret,
+      authSecretName,
+      probeConfigMap,
+      probeSource,
+      nativeAdminDomain,
+      nativeAdminEnabled,
+      platformNamespace,
+      workerOptions,
+      workspaceGateway,
+    });
   const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
   if (channels !== undefined) {
     assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
@@ -734,16 +555,28 @@ async function startInClusterControllers(
       { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
     );
   }
+  if (oidc !== undefined) {
+    await configureInClusterOidc({
+      oidc,
+      manifests,
+      apiPodSpec,
+      apiContainer,
+      platformNamespace,
+      workspaceGateway,
+    });
+  }
   await applyManifest(JSON.stringify(manifests), {
-    redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
+    redactions: [
+      databaseUrl,
+      authSecret,
+      workspaceGateway.apiKey,
+      ...(oidc ? [oidc.clientSecret] : []),
+    ],
   });
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${name}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    { namespace: platformNamespace, deployment: name, container: "api", labels },
   );
   const pods = await resources(
     "pods",
@@ -760,13 +593,15 @@ async function startInClusterControllers(
     `${controllerPort ?? 0}:18080`,
   );
   context.after(() => forwarding.stop());
-  await kubectl(
-    "wait",
-    "--namespace",
-    platformNamespace,
-    "--for=condition=Available",
-    `deployment/${workerName}`,
-    "--timeout=180s",
+  await waitForDeploymentAvailable(
+    context,
+    { kubeconfigPath, kubernetesContext },
+    {
+      namespace: platformNamespace,
+      deployment: workerName,
+      container: "worker",
+      labels: workerLabels,
+    },
   );
   const logs = spawn(
     "kubectl",
@@ -952,99 +787,6 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
       managedProxy: slack.managedProxy,
     };
   }
-  return configuration;
-}
-
-function nativeConfiguration(harnessId, slack, options = {}) {
-  const configuration = createHarnessConfiguration(harnessId, providerModel);
-  const provider = harnessId === "codex" ? "codex" : "openai";
-  configuration.models.providers[provider].models[0].input = ["text", "image"];
-  if (options.controlUi !== undefined) {
-    configuration.gateway.controlUi = options.controlUi;
-  }
-  if (options.gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: options.gatewayAuth.auth,
-      ...(options.gatewayAuth.allowRealIpFallback === undefined
-        ? {}
-        : { allowRealIpFallback: options.gatewayAuth.allowRealIpFallback }),
-      trustedProxies: options.gatewayAuth.trustedProxies,
-    };
-  }
-  if (harnessId === "openclaw") {
-    const modelEnvName = options.modelEnvName ?? "OPENAI_API_KEY";
-    configuration.secrets = {
-      providers: {
-        model: {
-          source: "env",
-          allowlist: Array.from(new Set(["OPENAI_API_KEY", modelEnvName])),
-        },
-      },
-    };
-    configuration.models.providers.openai.apiKey = {
-      source: "env",
-      provider: "model",
-      id: modelEnvName,
-    };
-  }
-  if (harnessId === "codex" && slack === undefined) {
-    // Native Codex file tools require a writable app-server sandbox plus an omitted or wildcard
-    // OpenClaw dynamic-tool allowlist; this case explicitly edits AGENTS.md in the workspace.
-    const appServer = configuration.plugins.entries.codex.config.appServer;
-    appServer.approvalPolicy = "never";
-    appServer.sandbox = "workspace-write";
-    configuration.tools = {
-      allow: ["*"],
-      fs: { workspaceOnly: true },
-    };
-    // Admission and slot selection are separate. Select the intended recall tool owner
-    // explicitly; provider status/search alone does not prove agent-tool registration.
-    configuration.plugins.allow.push("memory-core");
-    configuration.plugins.entries["memory-core"] = { enabled: true };
-    configuration.plugins.slots = { ...configuration.plugins.slots, memory: "memory-core" };
-    // Dedicated Gateways apply a second, concrete tool gate after plugin admission. Preserve
-    // the normal baseline and opt into only the Memory search used by this scenario.
-    const gatewayPolicy = managedGatewayConfiguration(configuration, configuration, true).tools
-      .gatewayPolicy;
-    configuration.tools.gatewayPolicy = {
-      ...gatewayPolicy,
-      allow: [...gatewayPolicy.allow, "memory_search"],
-    };
-    // Exercise remote file indexing without projecting the Harness model key into Gateway.
-    configuration.memory = {
-      search: {
-        enabled: true,
-        provider: "none",
-        sources: ["memory"],
-        store: { vector: { enabled: false } },
-      },
-    };
-  }
-  if (slack === undefined) {
-    return configuration;
-  }
-
-  configuration.plugins.allow.push("slack");
-  configuration.plugins.entries.slack = { enabled: true };
-  configuration.channels = {
-    slack: {
-      enabled: true,
-      mode: "socket",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      dmPolicy: "allowlist",
-      allowFrom: [slack.allowedUserId],
-      channels: {
-        [slack.channelId]: {
-          requireMention: true,
-          allowBots: "mentions",
-          users: [slack.allowedUserId],
-          replyToMode: "off",
-        },
-      },
-    },
-  };
   return configuration;
 }
 
@@ -1286,8 +1028,8 @@ async function createSecretAssignmentCallerRequest({
     installationId: installation.id,
     secret: authSecret,
     baseURL,
+    agentDomain: `agents.${new URL(baseURL).hostname}`,
     pool,
-    secureCookies: false,
   });
   const account = await auth.createAccount({
     email: credentials.email,
@@ -1353,8 +1095,8 @@ async function ensureHarnessAdminPrincipal(
     installationId: installation.id,
     secret: authSecret,
     baseURL,
+    agentDomain: `agents.${new URL(baseURL).hostname}`,
     pool,
-    secureCookies: false,
   });
   const existing = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [
     credentials.email.trim().toLowerCase(),
@@ -1462,7 +1204,10 @@ async function storedSecret(pool, namespaceId, secretId) {
 async function createUndeployedAgent(request, namespaceId, mode, name, secretBindings) {
   const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values: nativeConfiguration(mode === "dedicated" ? "codex" : "openclaw"),
+    values: createNativeTopologyConfiguration(
+      mode === "dedicated" ? "codex" : "openclaw",
+      providerModel,
+    ),
     ...(secretBindings === undefined ? {} : { secretBindings }),
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -1551,11 +1296,18 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       email: `admin-kubernetes-${hash(identifier)}@example.test`,
       password: `kubernetes-harness-${identifier}`,
     });
-  const bootstrapAuthBaseURL =
-    options.controllerPort === undefined
-      ? authBaseURL
-      : `http://127.0.0.1:${options.controllerPort}`;
-  const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
+  const controllerDefaultOrigin =
+    options.controllerPort === undefined ? authBaseURL : `${authBaseURL}:${options.controllerPort}`;
+  // Development bootstrap accepts only loopback DNS. The production API below
+  // keeps the browser ingress origin chosen by the scenario.
+  const bootstrapOrigin = new URL(controllerDefaultOrigin);
+  bootstrapOrigin.hostname = "console.oce.localhost";
+  const bootstrapAuthBaseURL = bootstrapOrigin.origin;
+  const controllerAuthBaseURL = options.publicOrigin ?? controllerDefaultOrigin;
+  const nativeAdmin = {
+    enabled: options.nativeAdmin?.enabled ?? false,
+    domain: options.nativeAdmin?.domain ?? `agents.${new URL(controllerAuthBaseURL).hostname}`,
+  };
   let gatewayPassword =
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
@@ -1678,10 +1430,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
-  if (options.defaultUser === true) {
-    // Default users create Agents in default and own what they create (RFC-0026).
-    workerConfiguration.iam = defaultUsersIAM();
-  }
+  // Cases share an Installation, so keep its policy after the Default user case
+  // creates durable Owner bindings. Kubernetes cleanup does not remove those grants.
+  workerConfiguration.iam = defaultUsersIAM();
   const publicGithubRead =
     options.publicGithubRead !== true
       ? undefined
@@ -1723,6 +1474,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const platformState = new PostgresPlatformState(observerPool);
   let detachPostgres;
+  let detachKeycloak;
+  let oidc;
   let databaseAddress;
   let workerPool;
   let worker;
@@ -1789,7 +1542,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     },
     productionApp: () => productionApp?.close(),
     observerPool: () => observerPool.end(),
-    postgresNetwork: () => detachPostgres?.(),
+    postgresNetwork: async () => {
+      try {
+        await detachPostgres?.();
+      } finally {
+        await detachKeycloak?.();
+      }
+    },
     gatewayRuntimeNamespace: async () => {
       if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
@@ -1818,6 +1577,16 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       detachPostgres = cleanup;
     });
   }
+  if (options.oidc !== undefined) {
+    assert.ok(
+      workspaceGateway,
+      "real OIDC browser proof requires the in-cluster routed controller",
+    );
+    const address = await attachKeycloakToK3d((cleanup) => {
+      detachKeycloak = cleanup;
+    }, options.oidc);
+    oidc = { ...options.oidc, address };
+  }
   let activeInstallation = await platformState.loadInstallation();
 
   let createdFreshInstallation = false;
@@ -1838,6 +1607,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       password: credentials.password,
       authSecret,
       authBaseURL: bootstrapAuthBaseURL,
+      agentDomain: `agents.${new URL(bootstrapAuthBaseURL).hostname}`,
       installationName,
     });
     activeInstallation = await platformState.loadInstallation();
@@ -1852,6 +1622,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     createdFreshInstallation = true;
   }
 
+  if (oidc !== undefined) {
+    // External sign-in activates the guarded profile with a real, existing recovery
+    // account. Its account ID is distinct from the IAM principal used for grants.
+    const recovery = await observerPool.query('SELECT id FROM occ."user" WHERE email = $1', [
+      credentials.email.trim().toLowerCase(),
+    ]);
+    assert.equal(recovery.rows.length, 1, "OIDC requires the exact bootstrap recovery account");
+    oidc = { ...oidc, recoveryUserId: recovery.rows[0].id };
+  }
   const events = [];
   let controllerUrl;
   let requestFactory;
@@ -1863,8 +1642,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseAddress,
       controllerPort: options.controllerPort,
       events,
-      nativeAdminDomain: options.nativeAdmin?.domain,
-      nativeAdminSharedCookieDomain: options.nativeAdmin?.sharedCookieDomain,
+      nativeAdminDomain: nativeAdmin.domain,
+      nativeAdminEnabled: nativeAdmin.enabled,
+      oidc,
       platformNamespace,
       workerOptions,
       workspaceGateway,
@@ -1886,10 +1666,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       authSecret,
       authBaseURL: controllerAuthBaseURL,
+      nativeAdmin,
       drivers,
     });
     requestFactory = (requestCredentials) =>
-      createAuthenticatedControllerRequest(productionApp, requestCredentials);
+      createAuthenticatedControllerRequest(
+        productionApp,
+        requestCredentials,
+        controllerAuthBaseURL,
+      );
   }
   if (workspaceGateway === undefined && options.controllerPort !== undefined) {
     await productionApp.listen({ host: "127.0.0.1", port: options.controllerPort ?? 0 });
@@ -2231,7 +2016,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         };
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
-  const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  const launchValues = createNativeTopologyConfiguration(
+    harnessId,
+    providerModel,
+    slack,
+    nativeOptions,
+  );
   if (publicGithubRead !== undefined) {
     launchValues.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
@@ -2247,34 +2037,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       id: "OPENCLAW_GATEWAY_PASSWORD",
     });
   }
-  const templateValues = structuredClone(launchValues);
-  const modelReference = templateValues.agents.defaults.model;
-  templateValues.agents.defaults.model = "{{ vars.model }}";
-  templateValues.agents.defaults.models = {
-    "{{ vars.model }}": templateValues.agents.defaults.models[modelReference],
-  };
+  const template = createTopologyPresetTemplate(
+    launchValues,
+    mode,
+    secretApi.model.ref,
+    secretBindings,
+  );
+  const modelReference = template.variables.model.default;
   const presetsPath = `/namespaces/${namespaceId}/presets`;
   const preset = await adminRequest("POST", presetsPath, {
     name: `production-${mode}-${randomUUID()}`,
-    template: {
-      variables: {
-        name: { type: "string" },
-        model: { type: "string", default: modelReference },
-        secretId: { type: "string" },
-      },
-      agent: {
-        name: "{{ vars.name }}",
-        executionMode: mode,
-        harnessAuth: {
-          method: "api_key",
-          source: { ...secretApi.model.ref, id: "{{ vars.secretId }}" },
-        },
-      },
-      configuration: {
-        values: templateValues,
-        ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
-      },
-    },
+    template,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.error));
   const presetPath = `${presetsPath}/${preset.data.id}`;
@@ -2384,7 +2157,26 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   }
   secretApi = { ...secretApi, configuration: configuration.data };
   const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  assert.deepEqual(deployed.data.harness, { id: harnessId, version: "1.0.0", mode });
+  const fixtureProvider = apiConfiguration.drivers.compute.configuration.runtime.modelProvider ?? {
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+  };
+  assert.ok(
+    isDeepStrictEqual(deployed.data.harness, {
+      id: harnessId,
+      version: "1.0.0",
+      mode,
+      overrides: {},
+      configuration: {
+        modelProvider: {
+          protocol: fixtureProvider.protocol,
+          baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
+          supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
+        },
+      },
+    }),
+    "deployed Harness descriptor must match the fixture's configured or default model provider",
+  );
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   assert.equal(Object.hasOwn(deployed.data, "serviceAccount"), false);
   for (const [description, response] of [
@@ -2560,9 +2352,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     "the admitted revision must retain its original model reference",
   );
   const expectedGatewayModel =
-    mode === "dedicated" &&
-    harnessId === "codex" &&
-    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+    mode === "dedicated" && harnessId === "codex"
       ? `codex/openai-compatible/${providerModel}`
       : modelReference;
   await assertGatewayEffectiveDefaultModel(
@@ -2611,6 +2401,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       authSecret,
       authBaseURL: controllerAuthBaseURL,
+      nativeAdmin,
       drivers,
     });
     if (previousUrl !== undefined) {
@@ -3576,9 +3367,9 @@ async function assertDedicatedSkillSources(topology) {
       ),
     );
   }
-  try {
+  const exercise = async () => {
     await deploy(enabled);
-    return await assertDedicatedSkillSourceLifecycle({
+    return assertDedicatedSkillSourceLifecycle({
       callGateway: (method, params) => gatewayCall(topology, method, params),
       readHarnessFile: (path) =>
         readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
@@ -3597,17 +3388,22 @@ async function assertDedicatedSkillSources(topology) {
         (transfer.config ??= {}).nodes = {
           "*": { ...structuredClone(policy), allowWritePaths: [] },
         };
-        try {
-          await deploy(denied);
-          await run();
-        } finally {
-          await deploy(enabled);
-        }
+        await withSkillPolicyRestore(
+          async () => {
+            await deploy(denied);
+            await run();
+          },
+          () => deploy(enabled),
+          "Denied node-write test failed and enabled Skill policy restoration failed.",
+        );
       },
     });
-  } finally {
-    await deploy(original.data.values);
-  }
+  };
+  return withSkillPolicyRestore(
+    exercise,
+    () => deploy(original.data.values),
+    "Skill source lifecycle failed and original Skill policy restoration failed.",
+  );
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
@@ -5084,7 +4880,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations`,
     {
       kind: "agent",
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
     },
   );
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -5099,7 +4895,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${configuration.data.id}`,
     {
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
       secretBindings: peerBindings,
     },
   );
@@ -5577,7 +5373,7 @@ async function assertNativeReferenceNegativeControl(context, topology) {
     "PATCH",
     configurationPath,
     {
-      values: nativeConfiguration("openclaw", undefined, {
+      values: createNativeTopologyConfiguration("openclaw", providerModel, undefined, {
         modelEnvName: "SECRET_API_DISABLED_OPENAI_KEY",
       }),
       secretBindings: topology.secretApi.configuration.secretBindings,
@@ -5644,7 +5440,7 @@ async function assertDedicatedToEmbeddedCutover(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
   );
   assert.equal(currentConfiguration.status, 200);
-  const values = nativeConfiguration("openclaw");
+  const values = createNativeTopologyConfiguration("openclaw", providerModel);
   values.gateway = currentConfiguration.data.values.gateway;
   // The successor uses the existing authenticated Envoy route. It does not need
   // the dedicated Gateway's optional direct-loopback password or transport token.
@@ -6298,10 +6094,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     await readFileInPod(topology.placement, harnessPod, workspaceFromGateway),
     ownerContent,
   );
-  const reconnected = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const reconnected = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(reconnected.file.content, ownerContent, "paired node must reconnect after restart");
 
   const secondRevision = await topology.request(
@@ -6356,10 +6151,9 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
   topology.gatewayPod = await waitForReadyGatewayPod(topology, secondRevision.data.id);
   topology.harnessPod = nextHarness;
   topology.revision = secondRevision.data;
-  const afterRevision = await gatewayCall(topology, "agents.files.get", {
-    agentId: "main",
-    name: "AGENTS.md",
-  });
+  const afterRevision = await waitForWorkspaceReconnect(() =>
+    gatewayCall(topology, "agents.files.get", { agentId: "main", name: "AGENTS.md" }, 10_000),
+  );
   assert.equal(
     afterRevision.file.content,
     ownerContent,
@@ -6396,7 +6190,10 @@ async function assertRoutedWorkspaceFileReads(topology, files) {
   const basePath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/workspace/files`;
   for (const [name, content] of files) {
     const observed = await topology.workspaceRequest("GET", `${basePath}/${name}`);
-    assert.equal(observed.status, 200, JSON.stringify(observed.error));
+    const { status } = observed;
+    const diagnosticStatus =
+      Number.isInteger(status) && status >= 100 && status <= 599 ? status : "unknown";
+    assert.equal(diagnosticStatus, 200, `workspace-file GET returned HTTP ${diagnosticStatus}`);
     assert.deepEqual(observed.data, { name, content });
   }
 }

@@ -1,0 +1,759 @@
+name: Full Integration Execution
+
+on:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  deployments: read
+
+env:
+  CI: "1"
+  NODE_VERSION: "24.22.1"
+
+jobs:
+  preflight:
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) }}
+    name: Dispatch Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run_all: ${{ steps.select.outputs.run_all }}
+      selected_lane: ${{ steps.select.outputs.selected_lane }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Validate lane and environment policy
+        id: select
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_LANE: ${{ inputs.lane }}
+        run: |
+          node scripts/ci/full-integration-preflight.mjs
+      - name: Prepare full admission marker
+        id: prepare-admission-marker
+        if: steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
+        continue-on-error: true
+        run: printf '1\n' > "$RUNNER_TEMP/full-integration-admitted"
+      - name: Upload full admission marker
+        id: admission-marker
+        if: steps.prepare-admission-marker.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-integration-admitted-v1
+          path: ${{ runner.temp }}/full-integration-admitted
+          if-no-files-found: error
+          retention-days: 1
+      - name: Confirm full admission marker
+        if: steps.admission-marker.outcome == 'success'
+        run: echo 'Recorded full admission.'
+
+  ci-reuse:
+    name: Reuse successful same-SHA CI
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && needs.preflight.outputs.run_all == 'true' }}
+    timeout-minutes: 16
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      lanes: ${{ steps.plan.outputs.lanes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Find successful CI producer
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/full-integration-reuse.mjs discover
+      - name: Download immutable CI results
+        id: download
+        if: steps.producer.outputs.artifact_ids != ''
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.producer.outputs.run_id }}
+          artifact-ids: ${{ steps.producer.outputs.artifact_ids }}
+          path: ${{ runner.temp }}/ci-reuse/download
+          merge-multiple: true
+      - name: Validate complete lane evidence
+        id: validate
+        if: steps.download.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/full-integration-reuse.mjs validate
+      - name: Retain validated results for full aggregation
+        id: upload
+        if: steps.validate.outputs.lanes != '[]' && steps.validate.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-results-reused
+          path: ${{ runner.temp }}/ci-reuse/accepted/*.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Select remaining fresh lanes
+        id: plan
+        if: always()
+        env:
+          REUSED_LANES: ${{ steps.validate.outputs.lanes }}
+          REUSE_UPLOADED: ${{ steps.upload.outcome }}
+        run: node scripts/ci/full-integration-reuse.mjs plan
+
+  pr-safe-same-sha:
+    name: Same-SHA ${{ matrix.title }}
+    # Match ordinary CI's physical capacities. Keep Blacksmith for the
+    # k3d kernel and PostgreSQL Authentication's Chromium sandbox.
+    runs-on: ${{ (startsWith(matrix.lane, 'checks-browser') || (startsWith(matrix.lane, 'k3d-fixture-') && matrix.lane != 'k3d-fixture-network' && matrix.lane != 'k3d-fixture-plugins' && matrix.lane != 'k3d-fixture-configuration') || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-')) && 'blacksmith-8vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || (matrix.lane == 'postgres-auth' || matrix.lane == 'k3d-fixture-network' || matrix.lane == 'k3d-fixture-plugins' || matrix.lane == 'k3d-fixture-configuration' || matrix.lane == 'images-packaging' || matrix.lane == 'k3d-observability') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    needs: [preflight, ci-reuse]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.ci-reuse.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: ${{ matrix.timeout }}
+      - name: Upload repository credential image identities
+        if: always() && matrix.lane == 'repository-credentials-container'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: full-repository-credentials-images
+          path: ${{ runner.temp }}/state/repository-credentials-images.json
+          if-no-files-found: error
+          retention-days: 7
+
+  runtime-artifact:
+    name: Shared Runtime Image
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    uses: ./.github/workflows/ci-runtime-artifact.yml
+
+  image-lanes-same-sha:
+    name: Same-SHA ${{ matrix.title }}
+    runs-on: ${{ matrix.lane == 'images-packaging' && 'blacksmith-4vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    needs: [preflight, runtime-artifact]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && needs.runtime-artifact.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: images-packaging
+            title: Images and Packaging
+            profile: full
+            timeout: 45
+          - lane: images-runtime-startup
+            title: Image Runtime Startup
+            profile: full
+            timeout: 30
+          - lane: images-runtime-startup-2
+            title: Image Runtime Startup 2
+            profile: images
+            timeout: 30
+          - lane: images-runtime-startup-3
+            title: Image Runtime Startup 3
+            profile: images
+            timeout: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: ${{ matrix.timeout }}
+          runtime-artifact-id: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.outputs.source-sha }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.outputs.producer-attempt }}
+
+  runtime-image-fixture:
+    name: Runtime Image Fixture
+    runs-on: ubuntu-22.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: runtime-image-fixture
+          profile: postgres
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 60
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
+
+  docker-model:
+    name: Docker Model Runtime
+    runs-on: ubuntu-24.04
+    needs: [preflight, runtime-artifact]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docker-model') }}
+    timeout-minutes: 40
+    environment: integration-main
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_DOCKER_RUNTIME_IMAGE: ${{ vars.OCC_DOCKER_RUNTIME_IMAGE }}
+      NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify successful runtime producer has an artifact
+        if: needs.runtime-artifact.result == 'success'
+        env:
+          RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
+        run: test -n "$RUNTIME_ARTIFACT_ID"
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: docker-model
+          profile: images
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 40
+          runtime-artifact-id: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.artifact-id || '' }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.archive-sha256 || '' }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.source-sha || '' }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.run-id || '' }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.producer-attempt || '' }}
+
+  k3d-model:
+    name: k3d Model Runtime
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-model') }}
+    timeout-minutes: 120
+    environment: integration-main
+    env:
+      CI_RUNNER_TEST_TIMEOUT_MS: "5400000"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: k3d-model
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 120
+
+  gateway-routing:
+    name: Gateway Routing
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing') }}
+    timeout-minutes: 35
+    environment: integration-main
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: gateway-routing
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 35
+
+  production-tui:
+    name: Production TUI
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui') }}
+    timeout-minutes: 50
+    environment: integration-main
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE }}
+      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_RUNTIME_IMAGE }}
+      OCC_TEST_PRODUCTION_POSTGRES_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_POSTGRES_IMAGE }}
+      OCC_TEST_PRODUCTION_NODE_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_NODE_IMAGE }}
+      NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: production-tui
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 50
+
+  slack:
+    name: Slack Live
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    concurrency:
+      group: full-integration-slack-live
+      cancel-in-progress: false
+      queue: max
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
+    timeout-minutes: 50
+    environment: integration-main
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
+      OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
+      SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: slack
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 50
+
+  openshell:
+    name: OpenShell (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') }}
+    timeout-minutes: 150
+    environment: integration-main
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [openshell-policy, openshell-installers]
+    env:
+      # The packaged browser has Ubuntu's AppArmor user-namespace permission.
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_OPENSHELL_SECRET_PROJECTION: ${{ vars.OCC_TEST_OPENSHELL_SECRET_PROJECTION || '1' }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_GATEWAY_IMAGE }}
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_SANDBOX_IMAGE }}
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          suite-view: full-integration
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 150
+
+  k3d-otel:
+    name: k3d OTEL
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-otel') }}
+    timeout-minutes: 65
+    environment: integration-main
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: k3d-otel
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 65
+
+  helper-timeout:
+    name: Helper Timeout
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'helper-timeout') }}
+    # Its one test spends 300 s; the lane deadline stops tests five minutes before this.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: helper-timeout
+          profile: baseline
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 15
+
+  logging-collector:
+    name: Logging Collector
+    runs-on: ubuntu-24.04
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'logging-collector') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: logging-collector
+          profile: images
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 30
+
+  dev-up-k3d:
+    name: Local Kubernetes Installation
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: full-integration-dev-up-k3d-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d') }}
+    timeout-minutes: 180
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: dev-up-k3d
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 180
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
+
+  skipper-prepared-git-installed:
+    name: Installed Skipper private Git and live withdrawal
+    concurrency:
+      group: full-integration-skipper-prepared-git-installed-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed') }}
+    # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
+    # Only synthetic, job-local model and private Git credentials enter this installation.
+    runs-on: ubuntu-22.04
+    # Cold runtime assembly has 180 min, followed by repository images and
+    # the installed proof. Ordinary artifact-backed smoke keeps its short job.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache-mode: restore
+      - run: pnpm install --frozen-lockfile
+      - name: Set up CI tools
+        run: bash scripts/ci/setup-tools.sh k3d
+      # Pull Docker Hub images through mirror.gcr.io without the runner's
+      # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
+      # before Buildx starts its builder container.
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          cleanup: false
+          # The builder container pulls base images itself, not through the engine.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Enable Kubernetes bridge packet filtering
+        run: |
+          if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+            sudo modprobe br_netfilter
+          fi
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Build OCC CLI
+        run: go build -trimpath -o bin/occ ./cmd/occ
+      - name: Expose image cache credentials
+        id: image-cache
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build checkout images
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/first-agent-smoke.mjs prepared-git-images
+      - name: Record independent checkout image selection
+        timeout-minutes: 1
+        run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
+      - name: Prove native private Git and withdrawal on the same installed Agent
+        env:
+          OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+        run: |
+          host=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+          OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
+            node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs
+          echo 'Private Git origin, synthetic issuer and credential inputs removed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Qualify installed Skipper image selection
+        timeout-minutes: 1
+        run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
+      # The runner writes only verified test metadata here, after checking proof and cleanup.
+      - name: Upload selected test and cleanup outcome
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-results-skipper-prepared-git-installed
+          path: ${{ runner.temp }}/results/skipper-prepared-git-installed.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  full-aggregate:
+    name: Full Integration Aggregate
+    env:
+      OCC_CI_SUITE_VIEW: full-integration
+    runs-on: ubuntu-24.04
+    needs:
+      - preflight
+      - pr-safe-same-sha
+      - ci-reuse
+      - image-lanes-same-sha
+      - runtime-artifact
+      - runtime-image-fixture
+      - docker-model
+      - k3d-model
+      - gateway-routing
+      - production-tui
+      - slack
+      - openshell
+      - k3d-otel
+      - helper-timeout
+      - logging-collector
+      - qa-matrix
+      - dev-up-k3d
+      - skipper-prepared-git-installed
+    if: ${{ always() && needs.preflight.outputs.selected_lane != 'docs' }}
+    steps:
+      - name: Require validated selection
+        if: needs.preflight.result != 'success' || needs.preflight.outputs.selected_lane == ''
+        run: |
+          echo "::error::Preflight did not provide a validated selection."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The action retries after a pause and says why.
+      - name: Download full integration results
+        uses: ./.github/actions/download-results
+        with:
+          pattern: full-results-*
+          path: ${{ runner.temp }}/results
+      - name: Write selected job state
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
+          REUSED_LANES: ${{ needs.ci-reuse.outputs.lanes }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const needs = JSON.parse(process.env.NEEDS_JSON);
+          const lane = process.env.SELECTED_LANE;
+          const out = { preflight: needs.preflight };
+          const reused = needs["ci-reuse"]?.result === "success" ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
+          if (lane === "all") {
+            out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
+            out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-network", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
+              if (reused.includes(name)) {
+                out[name] = { result: "success" };
+                continue;
+              }
+              const job = name.startsWith("images-") ? "image-lanes-same-sha" : "pr-safe-same-sha";
+              out[job] ??= { result: needs[job]?.result ?? "missing", lanes: [] };
+              out[job].lanes.push(name);
+            }
+          } else if (lane === "logging-collector") {
+            out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
+          }
+          for (const name of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "openshell", "helper-timeout", "k3d-otel"]) {
+            if (lane === "all" || lane === name) {
+              out[name] = needs[name] ?? { result: "missing" };
+            }
+          }
+          if (lane === "all" || lane === "openshell") {
+            out.openshell = { ...out.openshell, lanes: ["openshell-policy", "openshell-installers"] };
+          }
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/needs.json`, JSON.stringify(out));
+          NODE
+      - name: Aggregate targeted runtime results
+        if: needs.preflight.outputs.run_all != 'true'
+        env:
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
+        run: node scripts/ci/run-tests.mjs aggregate "$SELECTED_LANE" --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+      - name: Aggregate full suite
+        id: aggregate-full
+        if: needs.preflight.outputs.run_all == 'true'
+        run: >-
+          node scripts/ci/run-tests.mjs aggregate full
+          --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+          --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
+      - name: Upload full coverage marker
+        id: coverage-marker
+        if: ${{ !cancelled() && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-integration-exercised-v1-${{ github.sha }}
+          path: ${{ runner.temp }}/full-integration-exercised
+          if-no-files-found: error
+          retention-days: 7
+      - name: Confirm full coverage marker
+        if: ${{ !cancelled() && steps.coverage-marker.outcome == 'success' }}
+        run: echo 'Recorded complete full-suite coverage.'
+
+  qa-matrix:
+    name: Shipped Installation QA Matrix
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: [preflight, slack]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'qa-matrix') }}
+    timeout-minutes: 240
+    environment: integration-main
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
+      # in checks-baseline-1 asserts the +v1.35 default.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+      OCC_TEST_QA_INSTALLATION: all
+      # TODO: Restore native Codex turns when the CI account accepts custom permission profiles.
+      OCC_TEST_QA_CUSTOM_PERMISSION_PROFILES: "0"
+      OCC_TEST_QA_OPENAI_MODEL: ${{ vars.OCC_TEST_QA_OPENAI_MODEL }}
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Materialize selected QA credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          profile: full
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: 240
+      - name: Retain QA outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qa-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa-matrix-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove workflow credential inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"

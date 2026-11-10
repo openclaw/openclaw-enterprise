@@ -62,7 +62,7 @@ import {
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
-  ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   UserAlreadyExistsError,
@@ -110,6 +110,7 @@ import {
   type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
@@ -135,6 +136,9 @@ import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/jso
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
+  nativeAdminLaunchOperation,
+  nativeAdminConfirmOperation,
+  nativeAdminLaunchSchema,
   nativeAdminStatusSchema,
   nativeAdminReturnOperation,
   nativeAdminReturnSchema,
@@ -171,6 +175,17 @@ import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
+
+class AccountPrincipalAccessDeniedError extends AuthorizationDeniedError {
+  readonly userId: string;
+  readonly principalId: string;
+
+  constructor(userId: string, principalId: string, evidence: AuthorizationEvidence) {
+    super("The caller does not hold every grant of the target account's Principal.", evidence);
+    this.userId = userId;
+    this.principalId = principalId;
+  }
+}
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -1409,12 +1424,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password: { type: "string", minLength: 12, maxLength: 128 },
           name: { type: "string", minLength: 1, maxLength: 200 },
           roleId: { type: "string", minLength: 1, maxLength: 200 },
-          github: {
-            type: "object",
-            additionalProperties: false,
-            required: ["subject"],
-            properties: { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } },
-          },
         },
       },
     },
@@ -1939,6 +1948,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
       throw failure(
@@ -2424,10 +2434,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: await controller.getNamespaceAgentCapabilities(
-            context.actorId,
-            namespaceId,
-          ),
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
         },
         meta: { requestId: request.id },
       });
@@ -3561,9 +3571,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "google", "oidc", "password", "sessionBinding"],
+            required: ["google", "oidc", "password", "sessionBinding"],
             properties: {
-              github: { type: "boolean" },
               google: { type: "boolean" },
               oidc: { type: "boolean" },
               oidcSignIn: {
@@ -3589,20 +3598,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         reply.header("cache-control", "no-store");
-        const github = options.auth.githubEnabled === true;
         const google = options.auth.googleEnabled === true;
         const oidc = options.auth.oidcEnabled === true;
         const password = options.auth.passwordSignIn !== "recovery-only";
         return {
           data: {
-            github,
             google,
             oidc,
             ...(oidc && options.auth.oidcSignIn !== undefined
               ? { oidcSignIn: options.auth.oidcSignIn }
               : {}),
             password,
-            sessionBinding: github || google || oidc,
+            sessionBinding: google || oidc,
           },
           meta: { requestId: request.id },
         };
@@ -3610,7 +3617,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
     // Handlers resolve on each request, as before: options.auth is read lazily.
     const externalSignInProviders = [
-      { name: "github", label: "GitHub", article: "a", operation: "GitHub" },
       { name: "google", label: "Google", article: "a", operation: "Google" },
       { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
     ] as const;
@@ -3714,7 +3720,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return failure(
         409,
         "RESOURCE_CONFLICT",
-        "Account controls require GitHub, Google or OIDC sign-in; the password-only profile does not support them.",
+        "Account controls require Google or OIDC sign-in; the password-only profile does not support them.",
       );
     }
     async function humanAccountActor(
@@ -3785,6 +3791,80 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         userId: admitted.session.userId,
         sessionId: admitted.session.id,
         principalId: context.actorId,
+        authorize: async (scope: {
+          readonly targetPrincipalId?: string;
+          readonly successorPrincipalId?: string;
+        }) => {
+          // State invokes this after its locks, on the same transaction as the write.
+          // Throw evidence back to the HTTP error handler; auditing here opens another unit.
+          const resource: ResourceRef = { kind: "installation", id: installationId };
+          let current;
+          let covered = true;
+          let successor;
+          try {
+            current = await selected.authorize({
+              principalId: context.actorId,
+              action: "administer",
+              resource,
+            });
+            if (targetUserId !== undefined) {
+              covered =
+                scope.targetPrincipalId !== undefined &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: scope.targetPrincipalId,
+                })) === true;
+            }
+            if (scope.successorPrincipalId !== undefined) {
+              successor = await selected.authorize({
+                principalId: scope.successorPrincipalId,
+                action: "administer",
+                resource,
+              });
+            }
+          } catch {
+            throw dependencyUnavailable();
+          }
+          if (
+            typeof current.allowed !== "boolean" ||
+            typeof current.reason !== "string" ||
+            current.driverId !== selected.id ||
+            !validAuthorizationEvidence(current.evidence)
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (!current.allowed) {
+            throw new AuthorizationDeniedError(
+              current.reason,
+              current.evidence,
+              { action: "administer", resource },
+              context.actorId,
+            );
+          }
+          if (!covered) {
+            throw new AccountPrincipalAccessDeniedError(
+              targetUserId!,
+              scope.targetPrincipalId!,
+              current.evidence,
+            );
+          }
+          if (scope.successorPrincipalId !== undefined) {
+            if (
+              successor === undefined ||
+              typeof successor.allowed !== "boolean" ||
+              typeof successor.reason !== "string" ||
+              successor.driverId !== selected.id ||
+              !validAuthorizationEvidence(successor.evidence)
+            ) {
+              throw dependencyUnavailable();
+            }
+            if (!successor.allowed) {
+              throw new ResourceStateConflictError(
+                "The recovery account must administer the Installation.",
+              );
+            }
+          }
+        },
       };
     }
     routes.get(
@@ -3856,12 +3936,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
 
     const accountOperations = [
-      {
-        operationName: "github",
-        path: "/api/auth/accounts/:userId/providers/github",
-        operationId: "attachGitHubIdentity",
-        summary: "Attach an exact GitHub identity to an existing account",
-      },
       {
         operationName: "google",
         path: "/api/auth/accounts/:userId/providers/google",
@@ -3939,16 +4013,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" || operationName === "google" || operationName === "oidc"
+                operationName === "google" || operationName === "oidc"
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                ...(operationName === "github"
-                  ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : operationName === "google" || operationName === "oidc"
-                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
-                    : {}),
+                ...(operationName === "google" || operationName === "oidc"
+                  ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
+                  : {}),
               },
             },
             response: {
@@ -3982,13 +4054,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw accountControlsUnsupported();
           }
           const { expectedVersion } = request.body as { expectedVersion: number };
-          if (operationName === "github") {
-            if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
-              throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
-            }
-            const { subject } = request.body as { subject: string };
-            await options.auth.attachGitHub(userId, subject, actor, expectedVersion);
-          } else if (operationName === "google") {
+          if (operationName === "google") {
             if (!options.auth.attachGoogle || !options.auth.googleEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "Google sign-in is not configured.");
             }
@@ -4152,9 +4218,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw accountControlsUnsupported();
         }
         // The new holder must administer the Installation, as startup requires of the seed. This
-        // check runs before the State transaction. That is sound because Installation-scoped access
-        // bindings have no online revocation path (deleteAccessBinding is Namespace-scoped), and
-        // every controller start re-checks the current holder's authority.
+        // preflight gives an early refusal. State rechecks the exact locked successor's authority
+        // under its policy fence before committing the replacement.
         let principal;
         let decision;
         const selected = selectedIAMDriver();
@@ -4362,15 +4427,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.session(request, reply),
     );
-    routes.post(
+    routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       "/api/auth/accounts",
       {
+        config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
         schema: {
           ...createAuthAccountOperation.schema,
           operationId: createAuthAccountOperation.operationId,
           summary: createAuthAccountOperation.summary,
           description:
-            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled. An optional github.subject attaches that GitHub identity in the same transaction; it conflicts when GitHub sign-in is not configured or the identity is already assigned.",
+            "Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.",
           tags: [...createAuthAccountOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -4381,9 +4447,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            429: {
+              description: "Too many account creation requests; wait for Retry-After",
+              ...error,
+            },
             ...bodyErrors,
           },
-        },
+        } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4420,13 +4490,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const password = body?.password;
         const name = body?.name;
         const roleId = body?.roleId;
-        const github = body?.github as { subject?: unknown } | undefined;
         if (
           !isNonEmptyString(email) ||
           !isNonEmptyString(password) ||
           (roleId !== undefined && !isNonEmptyString(roleId)) ||
-          (name !== undefined && !isNonEmptyString(name)) ||
-          (github !== undefined && !isNonEmptyString(github.subject))
+          (name !== undefined && !isNonEmptyString(name))
         ) {
           throw failure(
             400,
@@ -4441,16 +4509,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
 
-        const githubProviderId = options.auth.githubEnabled
-          ? options.auth.githubProviderId
-          : undefined;
-        if (github !== undefined && githubProviderId === undefined) {
-          throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
+        // Charge the authorized Principal before hashing; new sessions and target
+        // email addresses must not reset an administrator's account-creation budget.
+        const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+        if (retryAfter !== undefined) {
+          reply.header("retry-after", String(retryAfter));
+          throw failure(
+            429,
+            "RATE_LIMITED",
+            "Too many account creation requests. Wait before retrying.",
+          );
         }
-        const external =
-          github === undefined
-            ? undefined
-            : { providerId: githubProviderId!, subject: github.subject as string };
+
         const prepared = await options.auth.prepareAccount({
           email,
           password,
@@ -4484,7 +4554,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         };
         try {
-          await options.provisionAuthAccount(seed, auditEvent, prepared, external);
+          await options.provisionAuthAccount(seed, auditEvent, prepared);
         } catch (error) {
           // The account, Principal and audit commit in one transaction, so nothing is
           // compensated here. Dependency errors keep their class: an unknown COMMIT
@@ -4493,20 +4563,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? error
             : error instanceof UserAlreadyExistsError
               ? failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.")
-              : external !== undefined && error instanceof ResourceConflictError
-                ? failure(409, "RESOURCE_CONFLICT", "The external identity is already assigned.")
-                : error instanceof AuthAccountRoleNotFoundError ||
-                    error instanceof AuthAccountRoleInvalidError
-                  ? failure(
-                      400,
-                      "INVALID_REQUEST",
-                      "The request does not match the operation contract.",
-                    )
-                  : Object.assign(
-                      new DependencyUnavailableError("Auth account provisioning failed."),
-                      // The API log names the cause's class and code, never its message.
-                      { cause: error },
-                    );
+              : error instanceof AuthAccountRoleNotFoundError ||
+                  error instanceof AuthAccountRoleInvalidError
+                ? failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "The request does not match the operation contract.",
+                  )
+                : Object.assign(
+                    new DependencyUnavailableError("Auth account provisioning failed."),
+                    // The API log names the cause's class and code, never its message.
+                    { cause: error },
+                  );
         }
         const account = prepared;
         reply.status(201).send({
@@ -4593,6 +4661,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
+    for (const [operation, handler, confirm] of [
+      [nativeAdminLaunchOperation, nativeAdmin.launch, false],
+      [nativeAdminConfirmOperation, nativeAdmin.confirm, true],
+    ] as const) {
+      routes.route({
+        method: "POST",
+        url: operation.path,
+        schema: nativeAdminLaunchSchema(confirm),
+        onRequest: async (request, reply) => {
+          reply.header("cache-control", "no-store");
+          reply.header("referrer-policy", "no-referrer");
+          await admit(request, operation);
+        },
+        preHandler: async (request) => resolveIdentity(request, operation),
+        handler,
+      });
+    }
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -4634,6 +4719,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             request.body !== undefined ||
             Number(request.headers["content-length"] ?? 0) > 0 ||
             request.headers["transfer-encoding"] !== undefined;
+          if (operation.operationId === "deployAgent" && !hasRequestBody) {
+            request.body = {};
+          }
           if (!Object.hasOwn(operation.schema, "body") && hasRequestBody) {
             throw failure(
               400,
@@ -4677,7 +4765,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
       reply.header("cache-control", "no-store");
     }
-    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    const nativeFormOrigin =
+      options.nativeAdmin?.enabled &&
+      options.nativeAdmin.sessionMode === "host-only-exchange" &&
+      publicOrigin
+        ? ` https://*.${normalizeNativeAdminDomain(options.nativeAdmin.domain)}${new URL(publicOrigin).port ? `:${new URL(publicOrigin).port}` : ""}`
+        : "";
+    reply.header(
+      "content-security-policy",
+      CONSOLE_CONTENT_SECURITY_POLICY.replace(
+        "form-action 'self'",
+        `form-action 'self'${nativeFormOrigin}`,
+      ),
+    );
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);
     if (asset.variesByEncoding) {
@@ -4849,6 +4949,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               },
             );
           } else {
+            let explanation: Parameters<typeof denial>[6];
+            if (error instanceof DeletionRetryOwnedError) {
+              explanation = {
+                decisionReason:
+                  "A deletion can be retried only by its initiating actor while it holds delete.",
+                details: { initiatingActorId: error.initiatingActorId },
+              };
+            }
+            if (error instanceof AccountPrincipalAccessDeniedError) {
+              explanation = {
+                decisionReason: error.message,
+                reasonCode: "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED",
+                details: { userId: error.userId, principalId: error.principalId },
+              };
+            }
             await denial(
               context.operation,
               request,
@@ -4856,13 +4971,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               context,
               error.evidence,
               error.authorization,
-              error instanceof DeletionRetryOwnedError
-                ? {
-                    decisionReason:
-                      "A deletion can be retried only by its initiating actor while it holds delete.",
-                    details: { initiatingActorId: error.initiatingActorId },
-                  }
-                : undefined,
+              explanation,
             );
           }
         } catch (auditError) {

@@ -2,7 +2,7 @@
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
 user sessions established through email/password sign-in or an enrolled
-GitHub, Google or OIDC identity. GitHub can use opt-in
+Google or OIDC identity. OIDC supports opt-in
 [team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
@@ -10,9 +10,9 @@ The selected IAM Driver resolves the authenticated account or service identity
 to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
-For a sign-in procedure, see
+See
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
-For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
+For automation, see the [service-key procedure](authentication/service-api-keys.md).
 The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
@@ -28,7 +28,7 @@ Fresh native-IAM bootstrap creates the first human administrator and one
 Installation-scoped, non-Agent ServicePrincipal. Both have separate bindings to
 the same [administrator Role](authorization.md#supported-policy-surface).
 The service identity has no email, password, session, Namespace, or Agent owner;
-its authority does not depend on the human account remaining present.
+its authority survives human account deletion.
 
 Fresh bootstrap also creates the initial [`default` Namespace](namespaces.md#initial-namespace)
 under the bootstrap Principal's ordinary Namespace creation permission.
@@ -97,11 +97,11 @@ not require Origin, and an invalid key never falls back to a session cookie.
 
 ## Session lifecycle
 
-| Operation                      | Supported behavior                                                                                                                                                                             |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication, and with GitHub enabled returns `sessionKey`, never a session token. |
-| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
-| `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
+| Operation                      | Supported behavior                                                                                                                                                                                       |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication, and with external sign-in enabled returns `sessionKey`, never a session token. |
+| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                                 |
+| `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                                        |
 
 Human-session Namespace IAM writes retain assigning authority through their transaction; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
@@ -118,7 +118,7 @@ storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie
 retry sign-out after storage recovers.
 
 Password-only sessions expire seven days after sign-in; use does not extend
-them. With GitHub, Google or OIDC sign-in enabled, every session expires after
+them. With Google or OIDC sign-in enabled, every session expires after
 eight hours ([session controls](authentication/external-sign-in.md#session-and-recovery-controls)).
 Password-only has no online way to end another account's session: removing its
 IAM bindings and Group memberships refuses permissioned requests from the next
@@ -138,7 +138,7 @@ credential checks can create a session and cookie, but HTTP session inspection
 returns `500 INTERNAL_ERROR`, not usable-session proof.
 
 In both profiles, after 10 failed sign-ins per minute per email, or 20
-per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
+per client address with [`api.trustedProxy`](settings/production.md#external-sign-in-and-trusted-proxies),
 attempts wait 1–8 s and return `429` with `Retry-After`, repeated in the message, whether
 or not the email exists; an Installation administrator's correct password still signs in, and so does
 the recovery account's with an external provider. Successful sign-ins spend nothing. Without
@@ -214,9 +214,9 @@ Protected requests resolve the current stored session with cookie caching
 disabled. A missing, expired, revoked, or forged session is rejected, as is an
 `Authorization` header even alongside a session cookie.
 
-## GitHub sign-in for existing accounts
+## External sign-in for existing accounts
 
-An Installation can let enrolled existing accounts sign in with GitHub, Google or one
+An Installation can let enrolled existing accounts sign in with Google or one
 generic OIDC issuer.
 [External sign-in and account controls](authentication/external-sign-in.md)
 defines the single-controller profile, provider flow, session binding, the
@@ -228,23 +228,29 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 
 ## Native admin shared sessions
 
-Agent native admin UI access starts from an ordinary controller browser session.
-With the trusted-operator pilot enabled, the session cookie is scoped to the
-explicit `nativeAdmin.sharedCookieDomain` parent so the console and derived Agent
-hosts share one human session. Service API keys cannot open native admin UI.
-When native admin is disabled, leftover shared-cookie-domain configuration is
-ignored and the host-only `openclaw_occ` cookie remains.
+By default, browser sessions use one shared cookie scope, including when native Agent
+access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
+OCC derives their longest common DNS-label suffix and rejects IP literals,
+missing or unrelated hosts, public suffixes, and malformed DNS names. For
+`console.oce.example.com` and `agents.oce.example.com`, the scope is
+`oce.example.com`. There is no cookie-domain override. Guarded OIDC can instead select the
+[host-only exchange](agent-native-admin.md#host-only-session-exchange): the
+Console cookie stays on its host, and the Agent receives a revocable handle
+bound to the parent session. The exchange creates no account or grant.
 
-The explicit parent domain is validated against the console origin and Agent host
-suffix on DNS-label boundaries. Public suffixes, malformed domains, and outside
-hosts are rejected; OCC never infers a broader parent. Because a domain cookie
-cannot use `__Host-`, the shared session uses prefix `openclaw_occ_shared`
-(`__Secure-openclaw_occ_shared.session_token` on HTTPS). Successful sign-in and
-sign-out clear prior host-only `openclaw_occ` and `openclaw_occ_shared` cookie
-names so browsers never choose between duplicates.
+Every host that receives this domain cookie must be a trusted OCE ingress
+endpoint. Public preview hosts must remain outside it. The cookie uses
+`__Secure-openclaw_occ_shared.session_token`, `Secure`, `HttpOnly`, `Path=/`,
+and the existing SameSite and CSRF protections. Password, OIDC and Google
+sign-in share this format. Duplicate session-cookie values are rejected.
 
-Native-host requests authenticate the shared OCE session, resolve the exact
-Agent represented by the requested host, authorize exact Agent `administer`, and
+Sign-out revokes the current session and expires its cookie. OCE does not
+clear obsolete cookie names or scopes. Remove stale OCE cookies in the browser
+if they cause duplicate-cookie refusals. External-provider attempt cookies
+remain host-only.
+
+Native-host requests authenticate the shared OCE session or host-only handle, resolve the exact
+Agent represented by the requested host, authorize exact Agent `operate` or `administer`, and
 validate the selected version and supported native configuration before
 proxying. OCC strips browser cookies, `Authorization`, API and session keys,
 forwarded identity, and native scope headers before forwarding upstream, so the native
@@ -254,9 +260,14 @@ activity does not renew the console session.
 ## Account provisioning
 
 `POST /api/auth/accounts` requires a human session and `administer` on the
-singleton Installation, and stays available with GitHub sign-in enabled. One
-transaction writes the account, Principal, grant, enrollment and an optional
-`"github":{"subject":"<numeric id>"}` identity (`409` if GitHub is off or taken).
+singleton Installation. One transaction writes the account, Principal, grant and
+enrollment. Attach an external identity explicitly after creation. Unknown
+identities can instead use [OIDC enrollment](authentication/team-enrollment.md).
+
+Each controller permits 10 account-creation attempts per administrator Principal,
+refilling one every six seconds, after authorization and before hashing.
+Exhaustion returns `429 RATE_LIMITED` with `Retry-After`.
+Changing sessions or target emails cannot reset this budget.
 
 An optional `roleId` binds an existing Installation Role (`400` if unknown,
 Namespace-scoped, or a configured `role_config_` Role); without one the account
@@ -266,12 +277,12 @@ the account to each
 Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
 Creation issues no session.
 
-Apart from configured Roles, the only Installation Role is the built-in
-Installation administrator (`role_admin_<uuid>`). No API creates another, and
-the Namespace policy API omits this one. Its Installation-scoped binding grants only
+The built-in Installation administrator (`role_admin_<uuid>`) is the only
+non-configured Installation Role. APIs cannot create others; the Namespace policy
+API omits it. Its Installation-scoped binding grants only
 `installation:administer` and `installation:read`; see
 [Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
-A representative provisioning body is:
+Example:
 
 ```json
 {
@@ -280,7 +291,7 @@ A representative provisioning body is:
 }
 ```
 
-Emails are normalized to lowercase. Passwords must contain 12–128 characters.
+Emails use lowercase. Passwords require 12–128 characters.
 Duplicates are rejected; there is no email verification.
 
 ## Authorization and failures

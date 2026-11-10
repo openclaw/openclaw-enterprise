@@ -2,12 +2,13 @@
 // scripts/bootstrap-installation.mjs reads them from process.env; tests call
 // bootstrapConfiguration in process with their own environment.
 import {
+  deriveSharedCookieDomain,
+  isDevelopmentBrowserOrigin,
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
   validHttpBaseURL,
 } from "../../apps/controller/src/auth/configuration.ts";
 
-const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 const DEFAULT_DEV_ADMIN_EMAIL = "admin@openclaw.local";
 
 export function required(env, name) {
@@ -42,28 +43,15 @@ function authBaseURL(raw, mode) {
     throw new Error("OCC_AUTH_BASE_URL must contain an absolute URL.");
   }
   refuseWrittenUserinfo("OCC_AUTH_BASE_URL", raw);
-  // Before the loopback exception: Node rewrites 127.1, 0177.0.0.1 and
-  // 192.168.010.001, and the rewritten host must not become the published origin.
   refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", raw, parsed);
-  if (
-    mode === "production" &&
-    parsed.protocol !== "https:" &&
-    !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname)
-  ) {
-    throw new Error("OCC_AUTH_BASE_URL must be HTTPS except for loopback development tests.");
-  }
-  if (
-    mode === "development" &&
-    ((parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-      !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname))
-  ) {
-    throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback HTTP(S) URL.");
-  }
   const baseURL = parsed.toString().replace(/\/$/, "");
   // The auth stack rejects the same values; check here so the already-bootstrapped path,
   // which never loads it, still fails the Job on them.
   if (!validHttpBaseURL(baseURL)) {
     throw new Error("OCC_AUTH_BASE_URL must be an absolute HTTP origin URL.");
+  }
+  if (mode === "development" && !isDevelopmentBrowserOrigin(baseURL)) {
+    throw new Error("Development OCC_AUTH_BASE_URL must identify an HTTPS localhost subdomain.");
   }
   return baseURL;
 }
@@ -76,7 +64,11 @@ export function bootstrapFailureCode(error) {
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";
   }
-  if (/OCC_AUTH_BASE_URL|loopback host|loopback HTTP\(S\) URL/.test(message)) {
+  if (
+    /OCC_AUTH_BASE_URL|OCC_AGENT_NATIVE_ADMIN_DOMAIN|OCC_AUTH_COOKIE_DOMAIN|OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN|Shared session cookies|Console and Agent hostnames|loopback host|loopback HTTP\(S\) URL/.test(
+      message,
+    )
+  ) {
     return "AUTH_BASE_URL_INVALID";
   }
   if (/OCC_DATABASE_URL|PostgreSQL database|PostgreSQL connection URL/.test(message)) {
@@ -99,15 +91,17 @@ export function bootstrapConfiguration(mode, env) {
       "OCC_AUTH_SECRET",
       mode === "development" ? "openclaw-development-auth-secret-minimum-32-bytes" : undefined,
     ),
-    baseURL: authBaseURL(
-      optional(
-        env,
-        "OCC_AUTH_BASE_URL",
-        mode === "development" ? DEFAULT_BETTER_AUTH_BASE_URL : undefined,
-      ),
-      mode,
-    ),
+    baseURL: authBaseURL(required(env, "OCC_AUTH_BASE_URL"), mode),
   };
+  for (const removed of ["OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"]) {
+    if (Object.hasOwn(env, removed)) {
+      throw new Error(
+        `${removed} has been removed; cookie scope is derived from Console and Agent hostnames.`,
+      );
+    }
+  }
+  authConfig.agentDomain = required(env, "OCC_AGENT_NATIVE_ADMIN_DOMAIN");
+  deriveSharedCookieDomain(authConfig.baseURL, authConfig.agentDomain);
   if (authConfig.secret.length < 32) {
     throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
   }

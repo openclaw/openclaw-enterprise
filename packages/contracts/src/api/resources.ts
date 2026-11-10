@@ -18,6 +18,7 @@ import {
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
+  RevisionHarnessSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -323,6 +324,12 @@ const InstallationPluginDiscoverySchema = Type.Object(
 const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
+    repositoryAccessRequired: Type.Optional(
+      Type.Literal(true, {
+        description:
+          "Present when the selected Credential Proxy confirms it serves only repository Git. Deployment then requires supported repository access. Absence does not guarantee that a deployment will be admitted.",
+      }),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -872,15 +879,11 @@ export const NamespaceAgentCapabilitiesResponse = Type.Object(
   {
     data: Type.Object(
       {
-        capabilities: Type.Omit(
-          InstallationCapabilitiesSchema,
-          ["nativeAdmin", "agentProvisioning"],
-          {
-            additionalProperties: false,
-            description:
-              "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration.",
-          },
-        ),
+        capabilities: Type.Omit(InstallationCapabilitiesSchema, ["agentProvisioning"], {
+          additionalProperties: false,
+          description:
+            "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
+        }),
       },
       { additionalProperties: false },
     ),
@@ -1110,6 +1113,14 @@ export const InstallationDeploymentInventorySchema = Type.Object(
                 executionMode: AgentSchema.properties.executionMode,
                 activeRevisionId: Type.Optional(RevisionId),
                 deploymentInProgress: Type.Boolean(),
+                repositoryWorkerRestart: Type.Optional(
+                  Type.Union([
+                    Type.Literal("original-worker-required"),
+                    Type.Literal("reverification-supported"),
+                    Type.Literal("not-applicable"),
+                    Type.Literal("unknown"),
+                  ]),
+                ),
               },
               { additionalProperties: false },
             ),
@@ -1383,14 +1394,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
-    harness: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        version: Type.String({ minLength: 1 }),
-        mode: HarnessExecutionModeSchema,
-      },
-      { additionalProperties: false },
-    ),
+    harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
@@ -1481,9 +1485,9 @@ export const AgentRevisionReadResponse = Type.Object(
   { additionalProperties: false },
 );
 
-// A list item names a revision without its saved settings, so a page stays a few hundred bytes
-// per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
-// the ones clients use to tell revisions apart; the database checks their shape on insert.
+// List items omit the native configuration document and other admitted snapshot payloads.
+// They retain the Harness descriptor and any recorded Harness settings; historical rows
+// may predate those settings. Detail reads report unreadable saved configuration.
 export const AgentRevisionSummarySchema = Type.Object(
   {
     ...Type.Pick(AgentRevisionSchema, [
@@ -1494,9 +1498,20 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
-      "harness",
       "createdAt",
     ]).properties,
+    harness: Type.Object(
+      {
+        ...RevisionHarnessSchema.properties,
+        overrides: Type.Optional(RevisionHarnessSchema.properties.overrides),
+        configuration: Type.Optional(RevisionHarnessSchema.properties.configuration),
+      },
+      {
+        additionalProperties: false,
+        description:
+          "Older revisions omit overrides and configuration when Harness settings were not recorded.",
+      },
+    ),
     // The outcome a Versions list marks beside each version (finding 2422).
     deploymentStatus: Type.Union(
       [
@@ -1518,7 +1533,7 @@ export const AgentRevisionSummarySchema = Type.Object(
   },
   {
     description:
-      "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
+      "Agent revision metadata with the Harness descriptor and any recorded Harness settings, without the native configuration document. Read this Agent revision for its full saved configuration or a `configurationReadError` when those settings are unreadable.",
   },
 );
 

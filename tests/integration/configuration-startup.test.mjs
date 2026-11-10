@@ -1,3 +1,4 @@
+import { reconcileNamespaceLifecycle } from "../../packages/occ/src/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import {
   createHash,
@@ -69,7 +70,8 @@ const productionServer = {
   OCC_HOST: "192.0.2.10",
   OCC_PORT: "8080",
   OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+  OCC_AUTH_BASE_URL: "https://console.example.test",
+  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
@@ -487,6 +489,7 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
       OCC_PORT: "8080",
       OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
       OCC_AUTH_BASE_URL: "https://console.example.test",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
     };
     // All three entrypoints reject before persistence. Ceiling errors must name
     // the Installation input, including its array index, rather than the Agent wrapper.
@@ -542,6 +545,7 @@ test("API and worker refuse a bad observability host or runtime image before ope
         OCC_PORT: "8080",
         OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
         OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
       },
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
@@ -869,21 +873,29 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repositoryPolicy.capability, "repo");
-  // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repositoryPolicy.id, "repository-credentials");
-  assert.equal(worker.repositoryPolicy.id, api.repositoryPolicy.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repositoryPolicy.id });
+  for (const runtime of [api, worker]) {
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
+    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+  }
+  const policy = api.repositoryAdmission.policy;
+  const workerPolicy = worker.repositoryAdmission.policy;
+  assert.equal(policy.capability, "repo");
+  // The capability name does not replace the operator's opaque policy identity.
+  assert.equal(policy.id, "repository-credentials");
+  assert.equal(workerPolicy.id, policy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.repository.implementation, api.repositoryPolicy.implementation);
+  assert.equal(api.installation.repository.implementation, policy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repositoryPolicy.resolve(selection);
-  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
+  const resolved = policy.resolveBindings(selection);
+  assert.deepEqual(workerPolicy.resolveBindings(selection), resolved);
   assert.equal(resolved.bindings[0].profile, "git-write");
   assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
   assert.equal(resolved.sessionDurationSeconds, 600);
   assert.throws(
-    () => api.repositoryPolicy.resolve({ ...selection, namespaceId: "ns_other" }),
+    () => policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),
     /permitted/,
   );
   const chatgpt = chatgptInstallation();
@@ -1445,6 +1457,13 @@ test("production embedded replacements preserve their active Service across fail
     servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
+  predecessor.harness = { ...harness, overrides: {} };
+  predecessor.harness.configuration = computeDriver.resolveHarnessConfiguration(
+    predecessor.harness,
+    predecessor.harnessAuth,
+    predecessor.configuration,
+  );
+  predecessor.compute.admission = computeDriver.admitRevision(predecessor);
   const candidate = {
     ...predecessor,
     id: `rev_production-${harness.mode}-candidate`,
@@ -1840,6 +1859,8 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
     boot("apps/controller/src/server.mjs", {
       PATH: process.env.PATH,
       NODE_ENV: "development",
+      OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_CONFIG_PATH: path,
       OCC_HOST: "127.0.0.1",
       OCC_PORT: "8080",
@@ -2923,7 +2944,16 @@ test("closed Installation observes only its operator-bound Namespace, including 
   policies = [workspacePolicy];
 
   account.automountServiceAccountToken = true;
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  // Sandbox validation now runs through the shared lifecycle after Compute observation.
+  const observation = await reconcileNamespaceLifecycle(
+    driver,
+    drivers.namespaceLifecycleBindings.map(({ owner, hooks }) => ({ id: owner.id, hooks })),
+    tenant,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
+  assert.equal(observation.namespaceReady, false);
   account.automountServiceAccountToken = false;
   writes.length = 0;
   const before = reads.length;
@@ -2956,4 +2986,42 @@ test("closed Installation observes only its operator-bound Namespace, including 
     message: /Kubernetes Secret namespace verification/,
   });
   assert.deepEqual(writes, []);
+});
+
+// The public startup processes must reject the quota before persistence, while a
+// valid mixed-unit control reaches the deliberately unavailable database.
+test("API and worker startup refuse fractional counted quotas before persistence", async (t) => {
+  for (const [quota, expectedCode] of [
+    [{ pods: "1.5" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ "count/deployments.apps": "1500m" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ pods: "1000m", "requests.cpu": "500m" }, "PERSISTENCE_UNAVAILABLE"],
+  ]) {
+    const configuration = installation();
+    configuration.drivers.compute.configuration.resources.namespace.quota = quota;
+    const path = await fixture(t, configuration);
+    for (const [script, event] of [
+      ["server", "startup-error"],
+      ["worker", "worker.startup-error"],
+    ]) {
+      const result = await boot(`apps/controller/src/${script}.mjs`, {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        ...productionServer,
+        OCC_CONFIG_PATH: path,
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      });
+      assert.equal(result.status, 1, result.stderr);
+      const diagnostic = startupDiagnostic(result.stderr, event);
+      assert.equal(diagnostic.code, expectedCode, result.stderr);
+      if (expectedCode === "DRIVER_CONFIGURATION_INVALID") {
+        assert.deepEqual(diagnostic.details, [
+          {
+            path: "/resources/namespace/quota",
+            code: "INVALID_FORMAT",
+            message: `Namespace quota resource ${Object.keys(quota)[0]} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
+          },
+        ]);
+      }
+    }
+  }
 });

@@ -48,6 +48,14 @@ The [installation profiles](../../../guides/deploy/installation-profiles.md) exp
 the measured memory defaults. Invalid resource pairs, quotas, and selector labels
 fail before resource creation.
 
+Object-count quotas, such as `pods`, `services`, and `count/deployments.apps`,
+must satisfy Kubernetes integer precision. Use whole counts such as `"4"`;
+quantity suffixes that represent a whole count, such as `"1000m"` or `"1.5Ki"`,
+remain valid. Fractional CPU and storage quotas retain their existing rules.
+Previously accepted counted quotas that Kubernetes refuses now stop API and
+worker startup with a diagnostic naming `resources.namespace.quota` and the
+resource. Correct that entry before restarting either process.
+
 ## Network
 
 A peer object has required `namespace` and `podLabels` fields. Use exact workload
@@ -87,14 +95,16 @@ Omission selects the verification runtime. Storage requirements are defined in
 | `runtime.gatewayNodeSelector`           | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
 | `runtime.nativeOpenClawSessionCapacity` | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
 | `runtime.codexSeccompProfile`           | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
-| `runtime.modelProvider`                 | object     | Optional    | Shared OpenAI-compatible provider for Codex and OpenClaw. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                             |
+| `runtime.modelProvider`                 | object     | Optional    | Default OpenAI-compatible provider for new revisions. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                                 |
 | `runtime.channels`                      | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
-against workload CPU and memory limits.
+against workload CPU and memory limits. See
+[workload capacity checks](../../../guides/topics/agent-troubleshoot.md#check-workload-capacity)
+before relying on totals reported inside the Sandbox.
 
-The [shared model provider](model-provider.md) owns endpoint selection and
+[Revision model settings](model-provider.md) own endpoint selection and
 validation. Credential Sources retain separate destination authorization.
 Only the Harness receives its key. For dedicated Codex, transport uses the
 authenticated app server and fail-closed HTTP; see
