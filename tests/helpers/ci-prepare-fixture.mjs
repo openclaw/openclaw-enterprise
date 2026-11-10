@@ -58,13 +58,14 @@ const hungCommandExitMs = watchdogMs + 30_000;
 // the timeout gets SIGTERM and an ETIMEDOUT error, and its output pipes are closed, as
 // spawnSync does. Unlike spawnSync, output is not capped at 1 MiB (these children write
 // a few kilobytes).
-export function spawnResult(command, args, { env, timeout = watchdogMs } = {}) {
+export function spawnResult(command, args, { env, timeout = watchdogMs, onSpawn } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: repositoryRoot,
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    onSpawn?.(child);
     const output = { stdout: "", stderr: "" };
     let error;
     for (const stream of ["stdout", "stderr"]) {
@@ -165,14 +166,17 @@ export async function fixtureImageCommands(
     OPENCLAW_CI_POSTGRES_SOCKET_DIR: postgresSockets,
     ...extraEnv,
   };
-  const run = (script, args) =>
-    spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], { env });
+  const run = (script, args, options) =>
+    spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
+      ...options,
+      env,
+    });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
   const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
   return {
     statePath,
     githubEnv,
-    prepare: (args = []) => run("prepare.mjs", [...prepareArgs, ...args]),
+    prepare: (args = [], options) => run("prepare.mjs", [...prepareArgs, ...args], options),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>

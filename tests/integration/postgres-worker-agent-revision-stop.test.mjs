@@ -13,7 +13,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -2818,6 +2818,116 @@ revisionTest(
     assert.deepEqual(stoppedRevisions, [[candidate.id, "succeeded"]]);
     assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_STOPPED"]);
   },
+);
+
+revisionTest(
+  "ordinary activation retains maintenance when a later failed deployment supersedes Stop",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-superseded-maintenance");
+    const first = await fixture.revision(owner, 1);
+    assert.equal(first.repositoryCredentials, undefined);
+    const replacementActor = `replacement-actor-${randomUUID()}`;
+    await fixture.copyActorGrants(replacementActor);
+    const activationStarted = Promise.withResolvers();
+    const releaseActivation = Promise.withResolvers();
+    const stopAuthorizationStarted = Promise.withResolvers();
+    const releaseStopAuthorization = Promise.withResolvers();
+    const prepared = [];
+    const stopped = [];
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, deploymentContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+      async activateRevision(revision) {
+        if (revision.id === first.id) {
+          activationStarted.resolve();
+          await releaseActivation.promise;
+        }
+      },
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+    };
+    assert.equal(compute.requiresStoppedPredecessors, undefined, "replacement is non-exclusive");
+    try {
+      await fixture.start(compute, {
+        transformDrivers: (drivers) => {
+          const createIAMDriver = drivers.createIAMDriver;
+          return {
+            ...drivers,
+            createIAMDriver(state) {
+              const iam = createIAMDriver(state);
+              return {
+                id: iam.id,
+                implementation: iam.implementation,
+                capability: iam.capability,
+                lookupIdentity: iam.lookupIdentity.bind(iam),
+                async authorize(request) {
+                  if (
+                    request.action === "operate" &&
+                    request.resource.kind === "agent" &&
+                    request.resource.id === owner.id
+                  ) {
+                    stopAuthorizationStarted.resolve();
+                    await releaseStopAuthorization.promise;
+                  }
+                  return iam.authorize(request);
+                },
+              };
+            },
+          };
+        },
+      });
+      await within(activationStarted.promise, "original activation to start");
+      const stop = await fixture.requestStop(owner);
+      // The original claim acknowledges while Stop intent is still committed. There
+      // is no repository-removal owner to replace its ordinary maintenance chain.
+      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+      releaseActivation.resolve();
+      await fixture.work(first, "succeeded");
+      await within(stopAuthorizationStarted.promise, "Stop authorization to start");
+      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+
+      // Existing admission storage changes intent and queues the replacement. Revoke
+      // only its actor before dispatch, so real IAM refuses it before any cutover.
+      const second = await fixture.revision(owner, 2, { actorId: replacementActor });
+      await removeAccessBindings(fixture, replacementActor);
+      releaseStopAuthorization.resolve();
+      await fixture.work(stop, "succeeded");
+      assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
+      await fixture.work(second, "failed_permanent");
+      assert.equal((await fixture.workResult(second)).rows[0].reason_code, "AUTHORIZATION_DENIED");
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.activeRevisionId, first.id);
+      assert.equal(current.desiredRuntimeState, "running");
+      assert.deepEqual(prepared, [first.id], "the refused replacement never reaches Compute");
+      assert.deepEqual(stopped, [], "the superseded Stop never shuts down the active revision");
+
+      const due = await fixture.advanceMaintenance(first);
+      assert.equal(due.rowCount, 1, "the still-running original retains one maintenance item");
+      assert.equal(due.rows[0].actor_id, fixture.actor.id, "maintenance keeps the original actor");
+      const maintenance = { ...first, idempotencyKey: due.rows[0].idempotency_key };
+      await fixture.work(maintenance, "succeeded");
+      assert.deepEqual(prepared, [first.id, first.id], "the original's real maintenance runs");
+      assert.deepEqual(stopped, []);
+      const next = await fixture.observerPool.query(
+        `SELECT actor_id FROM occ.controller_work
+         WHERE revision_id=$1 AND state='queued' AND idempotency_key LIKE $2`,
+        [first.id, `agent_revision:${first.id}:maintenance:%`],
+      );
+      assert.deepEqual(next.rows, [{ actor_id: fixture.actor.id }], "one next observation remains");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    } finally {
+      // Release worker calls before the fixture joins them during disposal.
+      releaseActivation.resolve();
+      releaseStopAuthorization.resolve();
+    }
+  },
+  { timeout: 60_000 },
 );
 
 revisionTest(

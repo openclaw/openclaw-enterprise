@@ -328,7 +328,9 @@ export interface ComputeDriver extends Driver {
     sources: readonly Readonly<import("../../index.ts").CredentialSource>[],
   ): void;
   /**
-   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Withdraw expired Git access or a durably withdrawn standing or finite grant.
+   * Finite withdrawal requires committed removal from the original admitted set, not merely
+   * changed configuration or unavailable Git evidence.
    * Observe that withdrawal again after a restart. Never grant
    * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
    * verifying Git is revoked and the same independently authorized inference runtime is ready.
@@ -380,6 +382,12 @@ export interface ComputeDriver extends Driver {
     readonly secretRef: ServiceAccountCredential["secretRef"];
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /**
+   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
+   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
+   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   */
+  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

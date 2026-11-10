@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-08
-last_updated_session: authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0
+updated: 2026-11-09
+last_updated_session: authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9
 ---
 
 # Container publication flow
@@ -34,7 +34,7 @@ graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
   B --> C["Pin timestamps to the source commit"]
   C --> D["Build controller and runtime on native AMD64 and ARM64"]
-  D --> E["Load and smoke each native config ID"]
+  D --> E["Verify each native image and run smoke"]
   E --> H["Canonicalize descriptors and assemble OCI indexes"]
   H -->|either fails| X["Stop before publication"]
   H -->|both pass| F["Seal and upload each archive"]
@@ -162,7 +162,9 @@ other than `:danger-full-access` report fixed request-source, selector-agreement
 response-comparison categories, without profile names or configuration. Missing metadata
 and a different returned ID remain refusals. The message directs the caller to ask
 the workspace administrator to verify profile availability and runtime compatibility
-before retrying.
+before retrying. Full-access refusals report a fixed sandbox or response-shape
+category so callers can distinguish a restricted grant from an incompatible
+response. The guard still requires `sandbox.type` to equal `dangerFullAccess`.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
@@ -185,8 +187,12 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 
 `scripts/ci/container-release.mjs:smoke` requires a native runner matching the
 selected platform. It binds the OCI export to the build output digest, loads it
-with Skopeo, checks Docker's config ID and architecture, and runs the existing
-startup suite with native deadlines. A success receipt binds the platform digest
+with Skopeo, checks the loaded config and architecture, and runs the existing
+startup suite by immutable image ID with native deadlines. For the containerd
+store, `scripts/upgrade-image-identity.py` exports and hash-verifies the selected
+manifest/config; its config digest must match the original OCI config, which
+binds configuration and ordered layer diff IDs. Docker's manifest/index ID is
+not a config digest. The legacy store retains its direct config-ID check. A success receipt binds the platform digest
 to the source, workflow, run/attempt, CI evidence, image, and build base. Failed
 smokes cannot upload platform artifacts. The temporary loaded image is removed.
 
@@ -202,7 +208,7 @@ Linux manifest with matching config and content digests. Publication still consu
 this sealed archive; registry access is not needed during assembly.
 
 Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
-the loaded config ID into a disposable k3d cluster. It reuses the Images and
+the verified loaded image ID into a disposable k3d cluster. It reuses the Images and
 Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
 the resulting profile and ownership state to the Docker tests. This preparation
 does not rebuild the runtime. Cleanup removes the owned cluster and temporary
@@ -212,8 +218,8 @@ interrupted smoke command.
 ### 3. Seal and enter publication
 
 `scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
-the archive hash, multi-platform index digest, platform list, source, workflow,
-run attempt, CI identity, and approved base. Both prepared artifacts must exist
+the archive hash, index digest, each platform’s manifest and config digests,
+source, workflow run and attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
 publish job runs only when the operator selected `publish: true`.
 
@@ -300,6 +306,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-09 05:23: Bind native smoke to the original OCI config with either Docker image store. (authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
 - 2026-11-08 11:56: Retry partial GitHub CLI downloads without weakening checksum verification. (authoring-run/47fd7930-a5df-419c-91d9-0d56b7476cc0 - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 

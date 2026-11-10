@@ -33,7 +33,7 @@ for (const { name, action, expectedDenial } of [
   {
     name: "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request",
     action: "removeBinding",
-    expectedDenial: "route_not_ready",
+    expectedDenial: "access_withdrawn",
   },
 ]) {
   test(name, { ...requiresPostgres, timeout: 90_000 }, async (t) => {

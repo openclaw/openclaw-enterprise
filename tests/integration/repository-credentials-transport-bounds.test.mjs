@@ -173,7 +173,7 @@ function assertRefused(result) {
 }
 
 async function closeSession(fixture, sessionId) {
-  const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+  const { callControl } = await appModule("drivers/repo/github/access/client/operator");
   return callControl(fixture.config.gateway.controlSocket, {
     method: "POST",
     path: `/v1/sessions/${sessionId}/close`,
