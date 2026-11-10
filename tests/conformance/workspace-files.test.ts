@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { ControllerWorkspaceFileUnknownOutcomeError } from "../../apps/controller/src/gateway/contracts.ts";
-import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import test, { type TestContext } from "node:test";
+import type { Permission, Principal } from "../../packages/contracts/src/index.ts";
+import { validateNativeIAMState, type NativeIAMState } from "../../packages/iam/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  ControllerWorkspaceFileUnknownOutcomeError,
+  type ControllerWorkspaceFileReadRequest,
+  type ControllerWorkspaceFileWriteRequest,
+  type ControllerWorkspaceFileWriteResult,
+  type ControllerWorkspaceFilesAccess,
+} from "../../apps/controller/src/gateway/contracts.ts";
+import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
+import { authenticatedHeaders, type signInToControllerApp } from "../helpers/auth-session.mjs";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import {
-  createTenantReaderFixture,
-  tenantRequest as request,
-} from "../helpers/tenant-reader-app.mjs";
+import { createTenantReaderFixture, tenantRequest } from "../helpers/tenant-reader-app.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import {
   workspaceVersionStarting,
@@ -19,7 +25,7 @@ import {
 const installationId = "ins_4033697e-6397-4cc6-9b04-8ec17af78cf1";
 const publicOrigin = "https://console.oce.localhost";
 
-const administratorPermissions = [
+const administratorPermissions: Permission[] = [
   { action: "administer", resourceKind: "installation" },
   { action: "read", resourceKind: "installation" },
   { action: "create", resourceKind: "namespace" },
@@ -36,15 +42,110 @@ const administratorPermissions = [
   { action: "read", resourceKind: "agent_revision" },
 ];
 
+type Session = Pick<Awaited<ReturnType<typeof signInToControllerApp>>, "cookie" | "origin">;
+// The failed-audit case simulates a provider that acknowledges the write without file metadata.
+type AcknowledgementOnlyAccess = Pick<ControllerWorkspaceFilesAccess, "read"> & {
+  write(
+    request: ControllerWorkspaceFileWriteRequest,
+  ): Promise<Pick<Extract<ControllerWorkspaceFileWriteResult, { status: "ok" }>, "status">>;
+};
+type FixtureAccess = ControllerWorkspaceFilesAccess | AcknowledgementOnlyAccess;
+type FixtureOverrides = {
+  workspaceFilesUnconfigured?: boolean;
+  workspaceFileRequestTimeoutMs?: number;
+};
+type FixtureOptions = {
+  workspaceFilesAccess: FixtureAccess | undefined;
+  workspaceFileRequestTimeoutMs?: number;
+};
+type RequestOptions = {
+  body?: unknown;
+  headers?: Record<string, string | null>;
+  method?: string;
+  session?: Session;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function assertResource(value: unknown): asserts value is Record<string, unknown> & { id: string } {
+  assert.equal(typeof record(value).id, "string");
+}
+
+function resourceOf(result: RequestResult): Record<string, unknown> & { id: string } {
+  const data = result.payload.data;
+  assertResource(data);
+  return data;
+}
+
+function errorOf(result: RequestResult) {
+  return record(result.payload.error);
+}
+
+async function request(app: ControllerApp, path: string, options: RequestOptions = {}) {
+  const result = await tenantRequest(app, path, options);
+  const response: unknown = result.response;
+  assert.ok(response instanceof Response);
+  const payload: unknown = result.payload;
+  return { response, payload: record(payload) };
+}
+
+type RequestResult = Awaited<ReturnType<typeof request>>;
+type BaseFixture = Awaited<ReturnType<typeof createTenantReaderFixture>>;
+type MutableNativeIAMState = {
+  -readonly [Key in keyof NativeIAMState]: NativeIAMState[Key] extends readonly (infer Entry)[]
+    ? Entry[]
+    : NativeIAMState[Key];
+};
+type SharedFixture = Pick<
+  BaseFixture,
+  "app" | "administrator" | "tenantAReader" | "auditSink" | "createApp"
+> & {
+  controller: OpenClawController;
+  state: MutableNativeIAMState;
+  session: (principal: Principal) => Session;
+};
+type Fixture = SharedFixture & { firstAuditEvent: number };
+
+function assertMutableNativeIAMState(value: unknown): asserts value is MutableNativeIAMState {
+  validateNativeIAMState(value as NativeIAMState);
+  for (const collection of Object.values(record(value))) {
+    assert.ok(Array.isArray(collection) && !Object.isFrozen(collection));
+  }
+}
+
+function assertSession(value: unknown): asserts value is Session {
+  const session = record(value);
+  assert.equal(typeof session.cookie, "string");
+  assert.equal(typeof session.origin, "string");
+}
+
+function isListeningApp(
+  value: unknown,
+): value is Pick<ReturnType<typeof createFastifyApp>, "listen" | "close"> {
+  return isRecord(value) && typeof value.listen === "function" && typeof value.close === "function";
+}
+
 // An app and two signed-in accounts cost far more than a case, so cases share one bootstrapped
 // app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
 // provider (the app's forwards to the running case's) and the audit events since it started.
 // An app with a shorter workspace file deadline is built once per deadline, on the same controller.
-const running = {};
-const deadlineApps = new Map();
-let shared;
+const running: { workspaceFilesAccess: FixtureAccess | undefined } = {
+  workspaceFilesAccess: undefined,
+};
+const deadlineApps = new Map<number, ControllerApp>();
+let shared: Promise<SharedFixture> | undefined;
 
-async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeoutMs: deadline }) {
+async function createFixture({
+  workspaceFilesAccess,
+  workspaceFileRequestTimeoutMs: deadline,
+}: FixtureOptions): Promise<Fixture> {
   shared ??= createTenantReaderFixture({
     installationId,
     label: "workspace-files",
@@ -57,14 +158,20 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
       implementation: "deterministic-test",
     },
     secretDriver: createTestSecretDriver(),
-    appOptions: (overrides) => ({
+    appOptions: (overrides: FixtureOverrides = {}) => ({
       // An app built with `workspaceFilesUnconfigured` has no workspace file access at all.
       ...(overrides.workspaceFilesUnconfigured === true
         ? {}
         : {
             workspaceFilesAccess: {
-              read: (read) => running.workspaceFilesAccess.read(read),
-              write: (write) => running.workspaceFilesAccess.write(write),
+              read: (read: ControllerWorkspaceFileReadRequest) => {
+                assert.ok(running.workspaceFilesAccess);
+                return running.workspaceFilesAccess.read(read);
+              },
+              write: (write: ControllerWorkspaceFileWriteRequest) => {
+                assert.ok(running.workspaceFilesAccess);
+                return running.workspaceFilesAccess.write(write);
+              },
             },
           }),
       ...(overrides.workspaceFileRequestTimeoutMs === undefined
@@ -77,7 +184,23 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
       body: { name: "Workspace file test installation" },
     });
     assert.equal(result.response.status, 201);
-    return fixture;
+    assert.ok(fixture.controller instanceof OpenClawController);
+    const state: unknown = fixture.state;
+    assertMutableNativeIAMState(state);
+    return {
+      app: fixture.app,
+      administrator: fixture.administrator,
+      tenantAReader: fixture.tenantAReader,
+      auditSink: fixture.auditSink,
+      createApp: fixture.createApp,
+      controller: fixture.controller,
+      state,
+      session(principal: Principal) {
+        const session: unknown = fixture.session(principal);
+        assertSession(session);
+        return session;
+      },
+    };
   });
   const fixture = await shared;
   running.workspaceFilesAccess = workspaceFilesAccess;
@@ -87,15 +210,20 @@ async function createFixture({ workspaceFilesAccess, workspaceFileRequestTimeout
     });
     deadlineApps.set(deadline, app);
   }
-  return Object.assign(Object.create(fixture), {
-    app: deadlineApps.get(deadline) ?? fixture.app,
+  return Object.assign(Object.create(fixture) as typeof fixture, {
+    app: deadline === undefined ? fixture.app : (deadlineApps.get(deadline) ?? fixture.app),
     firstAuditEvent: fixture.auditSink.events.length,
   });
 }
 
 // Replaces `object[key]` until the returned restore runs, at the latest when the case ends. An own
 // property gets its value back; an inherited one (a prototype method) is uncovered again.
-function replaceForCase(context, object, key, value) {
+function replaceForCase<ObjectType extends object, Key extends keyof ObjectType>(
+  context: TestContext,
+  object: ObjectType,
+  key: Key,
+  value: ObjectType[Key],
+) {
   const own = Object.getOwnPropertyDescriptor(object, key);
   object[key] = value;
   let restored = false;
@@ -117,21 +245,27 @@ function replaceForCase(context, object, key, value) {
 // Namespace names are unique in the shared app, so a case that runs again gets a new one.
 let namespaces = 0;
 
-async function createNamespace(fixture, name) {
+async function createNamespace(fixture: Fixture, name: string) {
   namespaces += 1;
   const result = await request(fixture.app, "/namespaces", {
     body: { name: `${name} ${namespaces}` },
   });
   assert.equal(result.response.status, 201);
+  const namespace = resourceOf(result);
   await fixture.controller.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(result.payload.data.id, "provisioning", "ready"),
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
-  return result.payload.data;
+  return namespace;
 }
 
 // `stage` is how far the Agent gets: "draft" (created, never deployed), "starting" (deploy
 // accepted, no version active yet) or "active" (the default).
-async function createAgent(fixture, namespace, name, { stage = "active" } = {}) {
+async function createAgent(
+  fixture: Fixture,
+  namespace: { id: string },
+  name: string,
+  { stage = "active" }: { stage?: "draft" | "starting" | "active" } = {},
+) {
   const configuration = await request(fixture.app, `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: {} },
   });
@@ -144,16 +278,17 @@ async function createAgent(fixture, namespace, name, { stage = "active" } = {}) 
   const created = await request(fixture.app, `/namespaces/${namespace.id}/agents`, {
     body: {
       name,
-      configurationId: configuration.payload.data.id,
+      configurationId: resourceOf(configuration).id,
       harnessAuth: { method: "api_key", source: secret.ref },
     },
   });
   assert.equal(created.response.status, 201);
+  const createdAgent = resourceOf(created);
   // Workspace routes require an admitted Agent, with its own exact credential grant.
   const agent = await fixture.controller.getAgent(
     fixture.administrator.id,
     namespace.id,
-    created.payload.data.id,
+    createdAgent.id,
   );
   fixture.state.identities.push({
     kind: "service_principal",
@@ -172,30 +307,31 @@ async function createAgent(fixture, namespace, name, { stage = "active" } = {}) 
     resource: { kind: "secret", id: secret.id },
   });
   if (stage === "draft") {
-    return { agent: created.payload.data };
+    return { agent: createdAgent };
   }
   const deployed = await request(
     fixture.app,
-    `/namespaces/${namespace.id}/agents/${created.payload.data.id}/deploy`,
+    `/namespaces/${namespace.id}/agents/${createdAgent.id}/deploy`,
     { method: "POST" },
   );
   assert.equal(deployed.response.status, 202);
+  const revision = resourceOf(deployed);
   if (stage === "starting") {
-    return { agent: created.payload.data, revision: deployed.payload.data };
+    return { agent: createdAgent, revision };
   }
   await fixture.controller.transact((unit) =>
-    unit.agents.compareAndSetActiveRevision(
-      namespace.id,
-      created.payload.data.id,
-      undefined,
-      deployed.payload.data.id,
-    ),
+    unit.agents.compareAndSetActiveRevision(namespace.id, createdAgent.id, undefined, revision.id),
   );
-  return { agent: created.payload.data, revision: deployed.payload.data };
+  return { agent: createdAgent, revision };
 }
 
 // A workspace file PUT from the public origin, with any other request options.
-function put(app, path, body, { headers = {}, ...options } = {}) {
+function put(
+  app: ControllerApp,
+  path: string,
+  body: unknown,
+  { headers = {}, ...options }: RequestOptions = {},
+) {
   return request(app, path, {
     ...options,
     method: "PUT",
@@ -204,16 +340,16 @@ function put(app, path, body, { headers = {}, ...options } = {}) {
   });
 }
 
-function fileAudits(fixture) {
+function fileAudits(fixture: Fixture) {
   return fixture.auditSink.events
     .slice(fixture.firstAuditEvent)
     .filter((event) => event.action.startsWith("openclaw.agents.workspace.files."));
 }
 
 test("Agent workspace file routes read and replace fixed files through the selected active Agent", async () => {
-  const reads = [];
-  const writes = [];
-  const workspaceFilesAccess = {
+  const reads: ControllerWorkspaceFileReadRequest[] = [];
+  const writes: ControllerWorkspaceFileWriteRequest[] = [];
+  const workspaceFilesAccess: ControllerWorkspaceFilesAccess = {
     async read(read) {
       reads.push(read);
       assert.equal(read.signal.aborted, false);
@@ -254,10 +390,13 @@ test("Agent workspace file routes read and replace fixed files through the selec
   assert.deepEqual(write.payload.data, { name: "SOUL.md", size: 9 });
 
   assert.equal(reads.length, 1);
+  assert.ok(reads[0]);
+  assert.ok(second.revision);
   assert.equal(reads[0].revision.id, second.revision.id);
   assert.equal(reads[0].revision.agentId, second.agent.id);
   assert.equal(reads[0].filename, "USER.md");
   assert.equal(writes.length, 1);
+  assert.ok(writes[0]);
   assert.equal(writes[0].revision.id, second.revision.id);
   assert.equal(writes[0].revision.agentId, second.agent.id);
   assert.equal(writes[0].filename, "SOUL.md");
@@ -271,8 +410,8 @@ test("Agent workspace file routes read and replace fixed files through the selec
       outcome,
       reasonCode,
       resource,
-      authorizationAction: authorization.action,
-      workspaceFileName: details.workspaceFileName,
+      authorizationAction: authorization?.action,
+      workspaceFileName: details?.workspaceFileName,
     })),
     [
       {
@@ -290,7 +429,7 @@ test("Agent workspace file routes read and replace fixed files through the selec
 });
 
 test("Agent workspace file routes enforce read and operate permissions separately", async (context) => {
-  const workspaceFilesAccess = {
+  const workspaceFilesAccess: ControllerWorkspaceFilesAccess = {
     async read(read) {
       return { status: "ok", file: { name: read.filename, content: "readable\n" } };
     },
@@ -325,10 +464,10 @@ test("Agent workspace file routes enforce read and operate permissions separatel
     { session },
   );
   assert.equal(denied.response.status, 403);
-  assert.equal(denied.payload.error.code, "FORBIDDEN");
-  assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
-  assert.equal(fixture.auditSink.events.at(-1).authorization.action, "operate");
-  assert.deepEqual(fixture.auditSink.events.at(-1).resource, {
+  assert.equal(errorOf(denied).code, "FORBIDDEN");
+  assert.equal(fixture.auditSink.events.at(-1)?.kind, "authorization_denial");
+  assert.equal(fixture.auditSink.events.at(-1)?.authorization?.action, "operate");
+  assert.deepEqual(fixture.auditSink.events.at(-1)?.resource, {
     kind: "agent",
     id: agent.id,
     namespaceId: namespace.id,
@@ -345,15 +484,15 @@ test("Agent workspace file routes authorize the caller before reporting unconfig
   });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
   const session = fixture.session(fixture.tenantAReader);
-  const assertDenied = (result, action) => {
+  const assertDenied = (result: RequestResult, action: "read" | "operate") => {
     assert.equal(result.response.status, 403);
-    assert.equal(result.payload.error.code, "FORBIDDEN");
-    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
-    assert.equal(fixture.auditSink.events.at(-1).authorization.action, action);
+    assert.equal(errorOf(result).code, "FORBIDDEN");
+    assert.equal(fixture.auditSink.events.at(-1)?.kind, "authorization_denial");
+    assert.equal(fixture.auditSink.events.at(-1)?.authorization?.action, action);
   };
-  const assertUnavailable = (result) => {
+  const assertUnavailable = (result: RequestResult) => {
     assert.equal(result.response.status, 503);
-    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(errorOf(result).code, "DEPENDENCY_UNAVAILABLE");
   };
 
   // A caller with no grant on this Agent gets the refusal it would get on a configured
@@ -383,7 +522,7 @@ test("Agent workspace file routes authorize the caller before reporting unconfig
 // change, so the answer names it and the next step instead of a retryable 503 (finding D768). It
 // comes after the Agent grant, as the 503 for unconfigured access does (finding 2584).
 test("Agent workspace file routes name an Agent with no running version after its grant", async (context) => {
-  const workspaceFilesAccess = {
+  const workspaceFilesAccess: ControllerWorkspaceFilesAccess = {
     async read() {
       throw new Error("an Agent with no running version must not reach workspace file read");
     },
@@ -400,18 +539,18 @@ test("Agent workspace file routes name an Agent with no running version after it
     stage: "starting",
   });
   const session = fixture.session(fixture.tenantAReader);
-  const path = (agent) =>
+  const path = (agent: { id: string }) =>
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`;
-  const assertConflict = (result, message) => {
+  const assertConflict = (result: RequestResult, message: string) => {
     assert.equal(result.response.status, 409);
-    assert.equal(result.payload.error.code, "RESOURCE_CONFLICT");
-    assert.equal(result.payload.error.message, message);
+    assert.equal(errorOf(result).code, "RESOURCE_CONFLICT");
+    assert.equal(errorOf(result).message, message);
   };
 
   // A caller with no grant on the draft gets its refusal, not the draft's state.
   const denied = await request(fixture.app, path(draft), { session });
   assert.equal(denied.response.status, 403);
-  assert.equal(denied.payload.error.code, "FORBIDDEN");
+  assert.equal(errorOf(denied).code, "FORBIDDEN");
   for (const grant of [...fixture.state.roles, ...fixture.state.bindings]) {
     if (["role-tenant-a-reader", "binding-tenant-a-reader"].includes(grant.id)) {
       replaceForCase(context, grant, "namespaceId", namespace.id);
@@ -444,7 +583,9 @@ test("Agent workspace file routes name an Agent with no running version after it
 });
 
 test("Agent workspace file routes reject invalid names, bodies, and cross-site writes before provider access", async () => {
-  const calls = [];
+  const calls: (
+    ["read", ControllerWorkspaceFileReadRequest] | ["write", ControllerWorkspaceFileWriteRequest]
+  )[] = [];
   const fixture = await createFixture({
     workspaceFilesAccess: {
       async read(read) {
@@ -463,7 +604,7 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
 
   const invalidName = await request(fixture.app, `${path}/README.md`);
   assert.equal(invalidName.response.status, 400);
-  assert.equal(invalidName.payload.error.code, "INVALID_REQUEST");
+  assert.equal(errorOf(invalidName).code, "INVALID_REQUEST");
 
   const crossSite = await put(
     fixture.app,
@@ -472,7 +613,7 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     { headers: { "sec-fetch-site": "cross-site" } },
   );
   assert.equal(crossSite.response.status, 403);
-  assert.equal(crossSite.payload.error.code, "FORBIDDEN");
+  assert.equal(errorOf(crossSite).code, "FORBIDDEN");
   // Session admission refuses cross-site writes too; for reads the route's own check is the
   // only one, so a cross-site page cannot read Agent files with the browser's credentials.
   for (const site of ["cross-site", "Cross-Site"]) {
@@ -480,7 +621,7 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
       headers: { "sec-fetch-site": site },
     });
     assert.equal(crossSiteRead.response.status, 403, site);
-    assert.equal(crossSiteRead.payload.error.code, "FORBIDDEN", site);
+    assert.equal(errorOf(crossSiteRead).code, "FORBIDDEN", site);
   }
 
   const missingContent = await put(fixture.app, `${path}/USER.md`, {});
@@ -494,7 +635,7 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
 
   const nul = await put(fixture.app, `${path}/USER.md`, { content: "bad\u0000value" });
   assert.equal(nul.response.status, 400);
-  assert.deepEqual(nul.payload.error.details, [{ path: "/content", code: "INVALID_FORMAT" }]);
+  assert.deepEqual(errorOf(nul).details, [{ path: "/content", code: "INVALID_FORMAT" }]);
 
   const unpairedSurrogate = await put(
     fixture.app,
@@ -502,14 +643,16 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     String.raw`{"content":"\ud800"}`,
   );
   assert.equal(unpairedSurrogate.response.status, 400);
-  assert.deepEqual(unpairedSurrogate.payload.error.details, [
+  assert.deepEqual(errorOf(unpairedSurrogate).details, [
     { path: "/content", code: "INVALID_VALUE" },
   ]);
 
   const tooLong = await put(fixture.app, `${path}/USER.md`, { content: "x".repeat(16 * 1024 + 1) });
   assert.equal(tooLong.response.status, 400);
+  const details = errorOf(tooLong).details;
+  assert.ok(Array.isArray(details));
   assert.equal(
-    tooLong.payload.error.details.some((detail) => detail.code === "TOO_LONG"),
+    details.some((detail: unknown) => record(detail).code === "TOO_LONG"),
     true,
   );
 
@@ -521,12 +664,12 @@ test("Agent workspace file routes reject invalid names, bodies, and cross-site w
     escapedMaximum + " ".repeat(6 * 16 * 1024 + 1024 + 1 - escapedMaximum.length),
   );
   assert.equal(encodedTooLarge.response.status, 413);
-  assert.equal(encodedTooLarge.payload.error.code, "PAYLOAD_TOO_LARGE");
+  assert.equal(errorOf(encodedTooLarge).code, "PAYLOAD_TOO_LARGE");
   assert.deepEqual(calls, []);
 });
 
 test("Agent workspace file PUT admits 16 KiB of content in any JSON encoding", async () => {
-  const writes = [];
+  const writes: string[] = [];
   const fixture = await createFixture({
     workspaceFilesAccess: {
       async read(read) {
@@ -541,8 +684,9 @@ test("Agent workspace file PUT admits 16 KiB of content in any JSON encoding", a
   const namespace = await createNamespace(fixture, "Encoded content tenant");
   const { agent } = await createAgent(fixture, namespace, "Encoded content Agent");
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
-  const escape = (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
-  const cases = [
+  const escape = (character: string) =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  const cases: [string, string, ((character: string) => string) | undefined][] = [
     // JSON.stringify writes each control character as a six-byte escape: a 98 KB body.
     ["U+0001 control characters", "\u0001".repeat(16 * 1024), undefined],
     // ASCII-only JSON (Python's json.dumps default) writes each two-byte letter in six bytes.
@@ -591,21 +735,21 @@ test("Agent workspace file routes map provider file states without leaking conte
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/SOUL.md`,
   );
   assert.equal(missing.response.status, 404);
-  assert.equal(missing.payload.error.code, "NOT_FOUND");
+  assert.equal(errorOf(missing).code, "NOT_FOUND");
 
   const readUnavailable = await request(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/IDENTITY.md`,
   );
   assert.equal(readUnavailable.response.status, 503);
-  assert.equal(readUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(errorOf(readUnavailable).code, "DEPENDENCY_UNAVAILABLE");
 
   const oversized = await request(
     fixture.app,
     `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/AGENTS.md`,
   );
   assert.equal(oversized.response.status, 503);
-  assert.equal(oversized.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(errorOf(oversized).code, "DEPENDENCY_UNAVAILABLE");
 
   const writeUnavailable = await put(
     fixture.app,
@@ -613,7 +757,7 @@ test("Agent workspace file routes map provider file states without leaking conte
     { content: "secret-ish replacement\n" },
   );
   assert.equal(writeUnavailable.response.status, 503);
-  assert.equal(writeUnavailable.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(errorOf(writeUnavailable).code, "DEPENDENCY_UNAVAILABLE");
 
   const writeMissing = await put(
     fixture.app,
@@ -621,7 +765,7 @@ test("Agent workspace file routes map provider file states without leaking conte
     { content: "secret-ish soul\n" },
   );
   assert.equal(writeMissing.response.status, 404);
-  assert.equal(writeMissing.payload.error.code, "NOT_FOUND");
+  assert.equal(errorOf(writeMissing).code, "NOT_FOUND");
 
   const audits = fileAudits(fixture);
   assert.equal(JSON.stringify(audits).includes("secret-ish"), false);
@@ -630,7 +774,7 @@ test("Agent workspace file routes map provider file states without leaking conte
       action,
       outcome,
       reasonCode,
-      details.workspaceFileName,
+      details?.workspaceFileName,
     ]),
     [
       ["openclaw.agents.workspace.files.write", "failure", "DEPENDENCY_UNAVAILABLE", "USER.md"],
@@ -640,7 +784,7 @@ test("Agent workspace file routes map provider file states without leaking conte
 });
 
 test("Agent workspace file reads refuse provider content OCC would not accept in a write", async () => {
-  let content;
+  let content: string;
   const fixture = await createFixture({
     workspaceFilesAccess: {
       async read(read) {
@@ -658,27 +802,26 @@ test("Agent workspace file reads refuse provider content OCC would not accept in
     content = refused;
     const result = await request(fixture.app, path);
     assert.equal(result.response.status, 503, JSON.stringify(refused));
-    assert.equal(result.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(errorOf(result).code, "DEPENDENCY_UNAVAILABLE");
   }
   content = "paired \ud83d\ude00 emoji\n";
   const accepted = await request(fixture.app, path);
   assert.equal(accepted.response.status, 200);
-  assert.equal(accepted.payload.data.content, content);
+  assert.equal(record(accepted.payload.data).content, content);
 });
 
 test("Agent workspace file writes report an unknown outcome when the success audit fails", async (context) => {
-  const writes = [];
-  const fixture = await createFixture({
-    workspaceFilesAccess: {
-      async read() {
-        throw new Error("not used");
-      },
-      async write(write) {
-        writes.push(write);
-        return { status: "ok" };
-      },
+  const writes: ControllerWorkspaceFileWriteRequest[] = [];
+  const workspaceFilesAccess: AcknowledgementOnlyAccess = {
+    async read() {
+      throw new Error("not used");
     },
-  });
+    async write(write) {
+      writes.push(write);
+      return { status: "ok" };
+    },
+  };
+  const fixture = await createFixture({ workspaceFilesAccess });
   const namespace = await createNamespace(fixture, "Unaudited write tenant");
   const { agent } = await createAgent(fixture, namespace, "Unaudited write Agent");
   const append = fixture.auditSink.append.bind(fixture.auditSink);
@@ -696,9 +839,9 @@ test("Agent workspace file writes report an unknown outcome when the success aud
   );
   // The provider wrote the file, but without its audit record OCC cannot report success.
   assert.equal(result.response.status, 503);
-  assert.equal(result.payload.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(errorOf(result).code, "UNKNOWN_OUTCOME");
   assert.equal(
-    result.payload.error.message,
+    errorOf(result).message,
     "The workspace file was written, but its final audit outcome could not be persisted.",
   );
   assert.equal(writes.length, 1);
@@ -707,7 +850,7 @@ test("Agent workspace file writes report an unknown outcome when the success aud
 // Exercise an uncertain write together with a stalled audit sink. The provider is
 // simulated here; this test does not perform or verify a real gateway file write.
 test("Agent workspace file unknown outcomes stay bounded when audit persistence stalls", async (context) => {
-  const writes = [];
+  const writes: ControllerWorkspaceFileWriteRequest[] = [];
   const fixture = await createFixture({
     workspaceFilesAccess: {
       async read() {
@@ -742,7 +885,7 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
 
   // Report uncertainty rather than claiming success or a definite write failure.
   assert.equal(result.response.status, 503);
-  assert.equal(result.payload.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(errorOf(result).code, "UNKNOWN_OUTCOME");
   // The 20 ms deadline must release the request; 2 seconds allows scheduling slack.
   assert.ok(
     elapsedMs < 2_000,
@@ -750,7 +893,7 @@ test("Agent workspace file unknown outcomes stay bounded when audit persistence 
   );
   // OCC must not replay a mutation that may already have succeeded.
   assert.equal(writes.length, 1);
-  assert.equal(writes[0].content, "sent once\n");
+  assert.equal(writes[0]?.content, "sent once\n");
   // Error responses must not echo operator-supplied file contents.
   assert.equal(JSON.stringify(result.payload).includes("sent once"), false);
 });
@@ -785,11 +928,11 @@ test("Agent workspace file requests are bounded before and during provider acces
   // The provider half needs the real lookup back.
   restoreLookup();
   assert.equal(read.response.status, 503);
-  assert.equal(read.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(errorOf(read).code, "DEPENDENCY_UNAVAILABLE");
   assert.ok(readElapsedMs < 2_000, `expected pre-access deadline, took ${readElapsedMs}ms`);
   assert.deepEqual(fileAudits(preAccess), []);
 
-  const writes = [];
+  const writes: ControllerWorkspaceFileWriteRequest[] = [];
   const providerAccess = await createFixture({
     workspaceFilesAccess: {
       async read() {
@@ -797,7 +940,7 @@ test("Agent workspace file requests are bounded before and during provider acces
       },
       async write(write) {
         writes.push(write);
-        await new Promise(() => {});
+        return new Promise<never>(() => {});
       },
     },
     workspaceFileRequestTimeoutMs: 20,
@@ -825,31 +968,27 @@ test("Agent workspace file requests are bounded before and during provider acces
   );
   const writeElapsedMs = Date.now() - startedBeforeWrite;
   assert.equal(write.response.status, 503);
-  assert.equal(write.payload.error.code, "UNKNOWN_OUTCOME");
+  assert.equal(errorOf(write).code, "UNKNOWN_OUTCOME");
   assert.ok(writeElapsedMs < 2_000, `expected provider deadline, took ${writeElapsedMs}ms`);
   assert.equal(writes.length, 1);
-  assert.equal(writes[0].signal.aborted, true);
+  assert.equal(writes[0]?.signal.aborted, true);
   assert.deepEqual(
     fileAudits(providerAccess).map(({ outcome, reasonCode, details }) => [
       outcome,
       reasonCode,
-      details.workspaceFileName,
+      details?.workspaceFileName,
     ]),
     [["failure", "UNKNOWN_OUTCOME", "USER.md"]],
   );
 });
 
 test("Agent workspace file read aborts provider access on real HTTP client disconnect", async (context) => {
-  let enteredRead;
-  const readEntered = new Promise((resolve) => {
-    enteredRead = resolve;
-  });
-  let observedAbort;
-  const readAborted = new Promise((resolve) => {
-    observedAbort = resolve;
-  });
-  const reads = [];
-  const workspaceFilesAccess = {
+  const { promise: readEntered, resolve: enteredRead } =
+    Promise.withResolvers<ControllerWorkspaceFileReadRequest>();
+  const { promise: readAborted, resolve: observedAbort } =
+    Promise.withResolvers<ControllerWorkspaceFileReadRequest>();
+  const reads: ControllerWorkspaceFileReadRequest[] = [];
+  const workspaceFilesAccess: ControllerWorkspaceFilesAccess = {
     async read(read) {
       reads.push(read);
       enteredRead(read);
@@ -869,17 +1008,24 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   const namespace = await createNamespace(fixture, "Disconnect tenant");
   const { agent } = await createAgent(fixture, namespace, "Disconnect Agent");
   // Every app forwards to the running case's workspace file provider.
-  const app = fixture.createApp(fixture.administrator, {}, createFastifyApp);
+  const app: unknown = Reflect.apply(fixture.createApp, fixture, [
+    fixture.administrator,
+    {},
+    createFastifyApp,
+  ]);
+  assert.ok(isListeningApp(app));
   context.after(async () => {
     await app.close();
   });
   const address = await app.listen({ host: "127.0.0.1", port: 0 });
   const controller = new AbortController();
+  const defaultSession = record(fixture.app).defaultSession;
+  assertSession(defaultSession);
   const response = fetchLoopback(
     new URL(`/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`, address).href,
     {
       method: "GET",
-      headers: authenticatedHeaders(fixture.app.defaultSession, {
+      headers: authenticatedHeaders(defaultSession, {
         host: new URL(publicOrigin).host,
         origin: publicOrigin,
       }),
@@ -895,6 +1041,8 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   assert.equal(abortedRead, read);
   assert.equal(read.signal.aborted, true);
   // The disconnect aborted the read, not the request deadline.
-  assert.match(read.signal.reason.message, /disconnected/);
+  const abortReason: unknown = read.signal.reason;
+  assert.ok(abortReason instanceof Error);
+  assert.match(abortReason.message, /disconnected/);
   assert.equal(reads.length, 1);
 });
