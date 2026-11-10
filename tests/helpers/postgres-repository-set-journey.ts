@@ -122,6 +122,7 @@ type NarrowPolicy = {
 };
 
 type NarrowStartupOptions = NarrowPolicy & {
+  kubeconfig?: { kubeconfigPath: string; context: string };
   maxAttempts?: number;
   beforeAdmission?: (input: {
     fixture: NarrowJourney["maintenance"]["fixture"];
@@ -448,6 +449,13 @@ async function repositoryGitJourney(
   f.controller.registerDriver(gateway);
   f.controller.selectDriver("credential_gateway", gateway.id);
   const kube = createTestKubernetesComputeDriver("repository-set-compute", {
+    ...(startupOptions?.kubeconfig && {
+      authentication: {
+        mode: "kubeconfig",
+        kubeconfigPath: startupOptions.kubeconfig.kubeconfigPath,
+        context: startupOptions.kubeconfig.context,
+      },
+    }),
     ...(modelProvider && { modelProvider }),
     repositoryCredentials: true,
     protectedDriver: owner,

@@ -27,6 +27,7 @@ import type {
   CredentialSource,
   CredentialSourceSnapshot,
 } from "../../packages/contracts/src/index.ts";
+import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellProviderProfile,
@@ -103,7 +104,7 @@ test("startup composes both OpenShell members from one Backend for static source
     | ["createProvider", unknown]
     | ["importProviderProfile" | "updateProviderProfile", string, OpenShellProviderProfile]
   )[] = [];
-  const profiles = new Map<string, OpenShellStoredProviderProfile>();
+  const profiles = new Map<string, OpenShellStoredProviderProfile & OpenShellProviderProfile>();
   let provider: OpenShellProviderResponse = {
     name: providerName,
     type: providerName,
@@ -118,9 +119,11 @@ test("startup composes both OpenShell members from one Backend for static source
   const observed: { sandbox?: OpenShellSandboxResponse } = {};
   let revoked = false;
   let policyVersion = 1;
+  let privateInferenceRevisionId: string | undefined;
   let activePolicyVersion = 1;
   let sourcePolicy: Readonly<Record<string, unknown>>;
   let startupReleases = 0;
+  let otherHost = "*.cluster.local";
   // Model only Backend storage and transport responses; the real Drivers choose,
   // authorize, reconcile, and withdraw the attachment. No provider is contacted.
   const unexpected = (): never => {
@@ -140,8 +143,38 @@ test("startup composes both OpenShell members from one Backend for static source
       startupReleases++;
       return 0;
     },
+    async getSandboxConfig(workspace) {
+      const sourceProfiles = Object.fromEntries(
+        [...profiles.values()]
+          .filter((profile) => profile.endpoints.some((endpoint) => endpoint.allowedIps?.length))
+          .map((profile) => [
+            "_provider_" + profile.id.replaceAll("-", "_"),
+            {
+              endpoints: profile.endpoints.map((endpoint) => ({
+                ...openShellProfileEndpoint(endpoint),
+                provider_credentialed: true,
+              })),
+            },
+          ]),
+      );
+      const collision = { shared: { endpoints: [{ host: otherHost, port: 443 }] } };
+      return {
+        workspace,
+        policy_source: 1,
+        configuration_admitted: true,
+        policy_validation_failure_mode: "fail_closed",
+        policy: {
+          network_policies: {
+            ...(sourcePolicy.network_policies as object),
+            ...sourceProfiles,
+            ...collision,
+          },
+        },
+      };
+    },
     async getPolicyStatus() {
       return {
+        ...(privateInferenceRevisionId && { privateInferenceRevisionId }),
         version: policyVersion,
         activeVersion: activePolicyVersion,
         state:
@@ -152,6 +185,7 @@ test("startup composes both OpenShell members from one Backend for static source
     async updatePolicy(request) {
       assert.equal(request.expectedResourceVersion, observed.sandbox?.resourceVersion);
       sourcePolicy = structuredClone(request.policy);
+      privateInferenceRevisionId = request.privateInferenceRevisionId;
       policyVersion++;
     },
     getServiceDocument: unexpected,
@@ -570,12 +604,33 @@ test("startup composes both OpenShell members from one Backend for static source
   assert.equal(policyVersion, 1);
   assert.equal(startupReleases, 0);
   delegateHostname = false;
+  otherHost = "**.cluster.local";
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /overlaps the private inference endpoint/,
+  );
+  assert.equal(policyVersion, 1);
+  otherHost = "*.cluster.local";
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(policyVersion, 2);
   // Saving an update is not the supervisor's acknowledgement of that policy.
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(startupReleases, 0);
   activePolicyVersion = policyVersion;
+  const acceptedPolicy = sourcePolicy!;
+  sourcePolicy = {
+    ...acceptedPolicy,
+    network_policies: {
+      ...(acceptedPolicy.network_policies as object),
+      unrelated: { name: "unrelated", endpoints: [] },
+    },
+  };
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /did not load the expected private inference policy/,
+  );
+  assert.equal(startupReleases, 0);
+  sourcePolicy = acceptedPolicy;
   assert.equal((await driver.prepareRevision(revision, context)).ready, true);
   assert.equal(startupReleases, 1);
   const workspace = openShellWorkspaceName({ ...tenant, status: "ready", name: namespace });
