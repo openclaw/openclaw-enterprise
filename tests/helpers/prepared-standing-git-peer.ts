@@ -14,6 +14,7 @@ import type { Clock } from "../../apps/controller/src/drivers/repo/access/backen
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import type { PreparedGitGrantMode } from "../../apps/controller/src/drivers/repo/github/access/prepared-git-redemption.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   startGitHubFixture,
@@ -152,7 +153,7 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
-    prepareGitOnDemand?: boolean;
+    prepareGitOnDemand?: false | PreparedGitGrantMode;
     sharedGitIssuanceGeneration?: number;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;

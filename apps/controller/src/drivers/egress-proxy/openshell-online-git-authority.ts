@@ -3,7 +3,10 @@ import type {
   InstalledGitMaterial,
   InstalledGitRoute,
 } from "../repo/github/access/prepared-repository-git.ts";
-import type { PreparedGitGrantRequest } from "../repo/github/access/prepared-git-redemption.ts";
+import {
+  gitGrantOperationAllowed,
+  type PreparedGitGrantRequest,
+} from "../repo/github/access/prepared-git-redemption.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
@@ -43,6 +46,7 @@ type GitBindingIdentity = {
   readonly grantId: string;
   readonly installed: InstalledGitMaterial | InstalledGitRoute;
   readonly grantCredentialIdentity?: string;
+  readonly grantAllowPush?: true;
 };
 
 type RepositoryBinding = GitBindingIdentity & {
@@ -358,8 +362,7 @@ export function createOpenShellOnlineGitAuthority(
             !binding.grantCredentialIdentity ||
             !("scope" in q) ||
             q.scope !== "github-repository" ||
-            q.repositories.length !== 1 ||
-            (operation !== "advertise-upload-pack" && operation !== "upload-pack")
+            !gitGrantOperationAllowed(operation, binding.grantAllowPush === true)
           ) {
             return deny("route_unsupported", operation);
           }

@@ -33,10 +33,12 @@ import { SharedPreparedRepositoryGit } from "./shared-prepared-git.ts";
 import type { InstalledTokenVersion } from "../../../../backends/token-service/material.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
-  allowsPreparedGitGrantRead,
+  preparedGitGrantContents,
+  gitGrantOperationAllowed,
   preparedGitRedemption,
   type PreparedGitGrantApproval,
   type PreparedGitGrantApprovals,
+  type PreparedGitGrantMode,
   type PreparedGitGrantBinding,
   type PreparedGitGrantRequest,
   type PreparedGitRedemption,
@@ -401,6 +403,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
   private readonly grantApprovals: PreparedGitGrantApprovals | undefined;
+  private readonly grantMode: PreparedGitGrantMode | undefined;
   readonly shared?: SharedPreparedRepositoryGit;
 
   constructor(
@@ -410,6 +413,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     policy: Policy,
     custody: RepositoryGitCustody,
     grantApprovals?: PreparedGitGrantApprovals,
+    grantMode?: PreparedGitGrantMode,
     sharedOwner?: Readonly<{
       apiOrigin: string;
       repositoryBackendId: string;
@@ -447,6 +451,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.authority = authority;
     this.policy = policy;
     this.grantApprovals = grantApprovals;
+    this.grantMode = grantMode;
     if (sharedOwner) {
       if (!driver || !installationRecipient(proxy)) {
         throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_SELECTED_DRIVER");
@@ -915,7 +920,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           (wide && grant.profile !== scope) ||
           (wide && !installationRecipient(this.proxy)) ||
           (!includeValue &&
-            (grant.profile !== "github-repository" || !allowsPreparedGitGrantRead(grant)))
+            (grant.profile !== "github-repository" ||
+              !preparedGitGrantContents(grant, this.grantMode)))
         ) {
           return unprepared;
         }
@@ -1225,14 +1231,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     ) {
       return fail();
     }
-    if (
-      grantDecision &&
-      (!installed?.route ||
-        grant.profile !== "github-repository" ||
-        !allowsPreparedGitGrantRead(grant) ||
-        (q.operation !== "advertise-upload-pack" && q.operation !== "upload-pack"))
-    ) {
-      return fail();
+    if (grantDecision) {
+      const contents =
+        grant.profile === "github-repository" && preparedGitGrantContents(grant, this.grantMode);
+      if (
+        !installed?.route ||
+        !contents ||
+        !gitGrantOperationAllowed(q.operation, contents === "write")
+      ) {
+        return fail();
+      }
     }
     const installation = "installationId" in q;
     let repositoryId;

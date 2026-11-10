@@ -83,7 +83,9 @@ export function createOpenShellCapabilities(input: {
       const store = new PostgresOpenShellGitRouteStore(pool);
       git.connectRestartObservation(store.restartEvidence.bind(store));
     },
-    ...(configuration?.grantRedemption && { prepareGitOnDemand: true as const }),
+    ...(configuration?.grantRedemption && {
+      prepareGitOnDemand: configuration.grantRedemptionProfile ?? (true as const),
+    }),
     async bind(authority, pool, emit) {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");

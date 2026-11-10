@@ -26,8 +26,9 @@ import {
   type PreparedRepositoryGitSource,
 } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
-  allowsPreparedGitGrantRead,
+  preparedGitGrantContents,
   type PreparedGitGrantApprovals,
+  type PreparedGitGrantMode,
 } from "../../drivers/repo/github/access/prepared-git-redemption.ts";
 import {
   validateGitHubRepositoryRegistry,
@@ -77,8 +78,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
   gitGrantApprovals?: PreparedGitGrantApprovals;
-  /** Only the opt-in grant-delivery profile prepares its selected read token at redemption. */
-  prepareGitOnDemand?: boolean;
+  /** Only opt-in selected repository grant delivery prepares its token at redemption. */
+  prepareGitOnDemand?: false | PreparedGitGrantMode;
   /** Opt-in generation for all Workers serving this shared issuer enrollment. */
   sharedGitIssuanceGeneration?: number;
 }
@@ -225,6 +226,13 @@ export async function startPreparedGitHubGitOwner(
   const sharedGeneration = options.sharedGitIssuanceGeneration;
   if (
     sharedGeneration !== undefined &&
+    options.prepareGitOnDemand &&
+    options.prepareGitOnDemand !== true
+  ) {
+    throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_READ_ONLY_PROFILE");
+  }
+  if (
+    sharedGeneration !== undefined &&
     (!options.prepareGitOnDemand ||
       !selected ||
       !Number.isSafeInteger(sharedGeneration) ||
@@ -358,6 +366,7 @@ export async function startPreparedGitHubGitOwner(
     },
     custodySelection,
     options.gitGrantApprovals,
+    options.prepareGitOnDemand || undefined,
     sharedGeneration === undefined
       ? undefined
       : {
@@ -396,9 +405,8 @@ export async function startPreparedGitHubGitOwner(
               : use(input, signal),
         );
   const onDemand = (source: PreparedRepositoryGitSource) =>
-    options.prepareGitOnDemand &&
     source.grant.profile === "github-repository" &&
-    allowsPreparedGitGrantRead(source.grant);
+    preparedGitGrantContents(source.grant, options.prepareGitOnDemand) !== undefined;
   async function withAppKey<T>(
     use: (key: Awaited<ReturnType<typeof appSigningKey>>["owner"], version: string) => Promise<T>,
   ) {
