@@ -90,30 +90,15 @@ jobs:
           run-id: ${{ needs.runtime-artifact.outputs.run-id }}
           path: ${{ runner.temp }}/runtime-artifact
           merge-multiple: true
-      - name: Verify and load the runtime before staging credentials
-        timeout-minutes: 15
+      - name: Prepare the matching image pair before staging credentials
+        timeout-minutes: 35
         env:
           OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ runner.temp }}/runtime-artifact
           OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
           OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ needs.runtime-artifact.outputs.source-sha }}
           OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ needs.runtime-artifact.outputs.run-id }}
           OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
-        run: |
-          node --input-type=module <<'JS'
-          import assert from "node:assert/strict";
-          import { appendFile } from "node:fs/promises";
-          import { loadRuntimeArtifact, runtimeArtifactSelection } from "./scripts/ci/runtime-artifact.mjs";
-
-          const selection = runtimeArtifactSelection(process.env);
-          assert.ok(selection, "The quickstart requires its same-run runtime artifact.");
-          const tag = `localhost/oce-quickstart/runtime:${selection.runId}-${selection.producerAttempt}`;
-          const runtime = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 10 * 60_000);
-          try {
-            await appendFile(process.env.GITHUB_ENV, `OCC_KUBERNETES_RUNTIME_IMAGE=${tag}\n`);
-          } finally {
-            await runtime.cleanup();
-          }
-          JS
+        run: node scripts/ci/k3d-quickstart/images.mjs
       - name: Stage run-private inputs
         id: inputs
         env:
@@ -170,6 +155,17 @@ jobs:
         if: always() && steps.inputs.outcome == 'success' && (steps.git.outcome == 'skipped' || steps.git_cleanup.outcome == 'success')
         timeout-minutes: 18
         run: bash scripts/ci/k3d-quickstart/private-step.sh teardown
+      - name: Remove the run-owned image registry
+        if: always()
+        run: |
+          set -euo pipefail
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          id=$(docker ps --all --quiet --no-trunc --filter "label=openclaw.dev/quickstart-image-owner=$owner")
+          if [[ -n "$id" ]]; then
+            [[ "$id" =~ ^[a-f0-9]{64}$ ]]
+            test "$(docker inspect --format '{{.Name}}' "$id")" = "/oce-quickstart-images-$owner"
+            docker rm --force --volumes "$id"
+          fi
       - name: Remove private input files
         if: always()
         run: rm -f -- "$RUNNER_TEMP/oce-credentials/app.pem" "$RUNNER_TEMP/oce-credentials/codex-pat"

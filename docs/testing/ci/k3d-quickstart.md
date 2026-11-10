@@ -28,8 +28,11 @@ The stages use the same Agent throughout installation, integration changes,
 and redeployment. Setup executes the quickstart's published shell examples.
 The reusable CI runtime job builds this workflow's source before installation.
 Quickstart verifies the same-run artifact's source, checksum, OCI configuration,
-and platform before loading it and staging operator credentials. The launcher
-builds the controller from the same checkout; it does not repeat the runtime build.
+and platform before loading it. Image preparation builds the controller from
+the same checkout and records both immutable references through a run-owned
+loopback registry. Both selections are exported before operator credentials
+are staged; the launcher does not repeat either build. The registry is removed
+after the run, including failed preparation.
 
 | Setup and action                                                                         | Expected outcome                                                                                                                                          | Source                                                                                                                                     |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
