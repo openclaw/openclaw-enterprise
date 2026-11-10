@@ -239,9 +239,88 @@ only verified run-owned refs.
 
 `OCC_TEST_QA_ARTIFACTS` selects private results; otherwise the runner prints its
 temporary path. Set `OCC_TEST_QA_CONTROLLER_IMAGE` and `OCC_TEST_QA_RUNTIME_IMAGE`
-together to reuse immutable builds; `OCC_TEST_QA_REPOSITORY_IMAGE` selects the
+together to reuse [prebuilt images](#prebuild-local-qa-images); `OCC_TEST_QA_REPOSITORY_IMAGE` selects the
 broker. Model defaults are in [shared configuration](configuration.md#environments); the [manifest](../../../scripts/ci/test-suites/qa-matrix.json)
 lists overrides.
+
+### Prebuild local QA images
+
+For Kubernetes QA, build once and reuse a controller/runtime pair from the same
+clean checkout. The [image selection contract](../../reference/settings/development.md)
+requires both immutable references and matching source-commit labels. These steps
+use an existing builder you own; they do not change the selected global builder.
+Use a native Linux `amd64` or `arm64` host, Docker with the containerd image store,
+Buildx, and Node.js 24+. Keep the same Docker context for building and QA.
+
+In a fresh Bash shell at the repository root, replace the builder name and select
+your host's platform. No QA credentials are needed for these builds.
+
+```bash
+set -euo pipefail
+umask 077
+qa_builder="your-existing-builder"
+qa_platform="linux/amd64"
+unset OCC_TEST_QA_CONTROLLER_IMAGE OCC_TEST_QA_RUNTIME_IMAGE
+qa_commit="$(git rev-parse HEAD)"
+[[ -z "$(git status --porcelain)" ]]
+qa_metadata="$(mktemp -d)"
+qa_prefix="localhost/oce-qa-$(date +%s)-$$"
+qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
+qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_runtime_args=()
+while IFS= read -r argument; do
+  qa_runtime_args+=(--build-arg "$argument")
+done <<< "$qa_source"
+docker buildx inspect "$qa_builder"
+
+for role in controller runtime; do
+  qa_recipe=(--target runtime)
+  if [[ "$role" == runtime ]]; then
+    qa_recipe=(-f deploy/runtime/Dockerfile "${qa_runtime_args[@]}")
+  fi
+  docker buildx build --builder "$qa_builder" --platform "$qa_platform" \
+    --load --provenance=false --sbom=false "${qa_recipe[@]}" \
+    --build-arg NODE_BASE_IMAGE="$qa_node_base" \
+    --build-arg OCC_BUILD_REVISION="$qa_commit" \
+    --label "org.opencontainers.image.revision=$qa_commit" \
+    --metadata-file "$qa_metadata/$role.json" \
+    --tag "$qa_prefix/$role:source" .
+  qa_digest="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1]))["containerimage.digest"]' "$qa_metadata/$role.json")"
+  [[ "$qa_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+  qa_ref="$qa_prefix/$role@$qa_digest"
+  [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$qa_ref")" == "$qa_platform" ]]
+  [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$qa_ref")" == "$qa_commit" ]]
+  if [[ "$role" == controller ]]; then
+    CONTROLLER_IMAGE="$qa_ref"
+  else
+    RUNTIME_IMAGE="$qa_ref"
+  fi
+done
+[[ "$(git rev-parse HEAD)" == "$qa_commit" && -z "$(git status --porcelain)" ]]
+printf 'Build metadata: %s\n' "$qa_metadata"
+```
+
+A failed digest lookup or inspection stops here: the selected engine must resolve
+the loaded image by its actual digest. Do not substitute a tag or invent a digest.
+These local images omit publication attestations; source labels establish
+consistency, not provenance. Keep the metadata until qualification finishes.
+Run the [local image checks](../docker.md#build-images-from-the-checkout) using
+`CONTROLLER_IMAGE` and `RUNTIME_IMAGE`, without pulling. After all required cases
+pass without skips, select the pair in this shell:
+
+```bash
+export OCC_TEST_QA_CONTROLLER_IMAGE="$CONTROLLER_IMAGE"
+export OCC_TEST_QA_RUNTIME_IMAGE="$RUNTIME_IMAGE"
+```
+
+Reuse the same builder to retain its intermediate cache, including Node compilation.
+Keep the platform and build arguments consistent when expecting cache hits.
+Loading a final image does not restore another builder's intermediate cache.
+For portability, use Docker's explicit [cache export/import options](https://docs.docker.com/build/cache/backends/);
+`mode=max` includes intermediate stages. Hosted CI's cache credentials and storage
+are separate. This procedure neither exports a cache nor changes builder networking.
+
+### Run local QA
 
 After preparing those inputs, run from the repository root:
 
