@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4
+last_updated_session: authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b
 ---
 
 # GitHub Actions testing flow
@@ -54,24 +54,24 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` assembles `scripts/ci/test-suites.json` and its ordered
-`scripts/ci/test-suites/<lane>.json` references for runners and preparation.
-Each lane owns its tests, environment, required inputs and preparation settings.
+`loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
+`scripts/ci/test-suites/<lane>.json` references. Lanes own their tests, environment,
+required inputs and preparation settings.
 
-For focused proof, `run-tests.mjs:selectLane` requires a lane-owned path; the action
-validates it before setup. Focused results retain expected cases, environment and
-cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
-including one-file lanes.
+`run-tests.mjs:selectLane` and the action validate lane-owned focused paths before setup.
+Focused results retain expected cases, environment and cleanup;
+`validateLaneEvidence` rejects them for full-lane aggregation, including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
+`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
 
 Pull requests compare the verified merge with its first parent using that parent’s
 policy; the second parent must match the event head. Canonical main pushes compare
 the complete `before` to verified `after` range using `before` policy. Missing history,
 forced pushes, and older policies retain full CI.
-Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
-regular Markdown changes selects docs mode; generated API references, including Markdown
-under `docs/reference/api/`, require full CI for `openapi:check`.
+Decoding preserves leading UTF-8 BOMs.
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
+to docs mode. Generated API references,
+executables and symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
@@ -175,7 +175,7 @@ Required cases must pass; every skip or TODO fails the lane. There are no counte
 
 ### 4. Clean up and report results
 
-`scripts/ci/cleanup.mjs:main` and `scripts/ci/run-tests.mjs:main`
+`scripts/ci/cleanup.ts:main` and `scripts/ci/run-tests.mjs:main`
 
 `.github/actions/run-ci-lane/action.yml` uploads one sanitized result artifact
 per lane and run. A retry replaces that lane's artifact, preventing aggregation
@@ -222,8 +222,8 @@ for [hosted QA image warnings](github-actions-testing/preparation.md). Private s
 on its original runner and path. User databases, contexts, unrelated containers and other
 image references remain untouched.
 
-`scripts/ci/cleanup.mjs:execFile` awaits exit and drained output. On POSIX,
-`scripts/ci/cleanup-command.mjs` kills its group on caller IPC closure, including caller SIGKILL.
+`scripts/ci/cleanup.ts:execFile` awaits exit and drained output. On POSIX,
+`scripts/ci/cleanup-command.ts` kills its group on caller IPC closure, including caller SIGKILL.
 Completion drains output, kills grouped descendants and returns command status.
 At [timeout](../testing/ci/configuration.md#runner-overrides), TERM then KILL still apply after
 direct-child exit. Escaped groups are unsignaled; retained streams close after grace.
@@ -268,11 +268,17 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
+
+- 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
+
 - 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
 
 - 2026-11-10 10:19: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 1af8c3c4f21c6fe1c8b36ef9545e9e4754e74de6)
 
 - 2026-11-10 10:07: Preserve the builder and epoch for full OpenShell source-build tests. (authoring-run/0c79fd33-2fb7-4114-a408-f08f34d1048d - ce80e6a6b254add076625a1087d098327370672c)
+
+- 2026-11-10 09:09: Document qualified registry-tool reuse and APT setup deadlines in the preparation flow. (authoring-run/dc4064e9-3291-42b3-aaf2-9c36fb81f1a6 - 49e3f601c762f94c8d7b97f594c4a342986d68bd)
 
 - 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
 

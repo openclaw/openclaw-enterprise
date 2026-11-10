@@ -29,6 +29,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "conformance/kubernetes-runtime-log-fixture.ts",
     "conformance/kubernetes-teardown-cases.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
@@ -53,6 +54,7 @@
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
     "helpers/codex-preparation-caller.ts",
+    "helpers/codex-gateway-supervisor.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",

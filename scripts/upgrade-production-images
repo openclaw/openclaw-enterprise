@@ -673,8 +673,9 @@ umask 077
 if ((resume == 0)); then
   mkdir -m 700 "$evidence_dir"
 fi
-mkdir "$evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
-trap 'rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+upgrade_evidence_dir=$evidence_dir
+mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
+trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # An interrupted caller does not establish that its child or remote operation stopped.
 # Keep the lock and preflight resources until the operator reconciles that work.
@@ -766,6 +767,11 @@ unconfirmed_preflight() {
   else
     reason="kubectl reported an error for the create; see $errors in the evidence directory."
   fi
+  if ((resume)); then
+    # The remote create may still be running; keep the original recovery lock.
+    trap - EXIT
+    die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Resume evidence is in $evidence_dir. Preserve $upgrade_evidence_dir and any dispatch journal; the original .upgrade-lock is retained. Reconcile the unknown create and any running helper before removing that lock and retrying --resume with the original evidence directory. No additional OCC writer was stopped."
+  fi
   die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
 }
 # create_preflight FILE ERRORS [scrub] prints guarded DeleteOptions for the
@@ -811,7 +817,7 @@ import json, os, sys
 root, slot, resource = sys.argv[1:]
 with os.fdopen(3, encoding="utf-8") as options:
     uid = json.load(options)["preconditions"]["uid"]
-assert slot in ("networkpolicy", "secret", "api", "worker", "api-pod", "worker-pod")
+assert slot in ("networkpolicy", "secret", "api", "worker", "migration", "api-pod", "worker-pod", "migration-pod")
 kind, name = resource.split("/", 1)
 record = {"kind": kind, "name": name, "uid": uid}
 # Fixed local names, exclusive staging, and link publication refuse existing
@@ -936,7 +942,7 @@ cleanup_preflight() {
   preflight_resources=()
   return "$cleanup_failed"
 }
-trap 'cleanup_preflight || true; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # Read the current Job and validate the child against its original controller and UID.
 read_preflight_child() {
@@ -951,6 +957,185 @@ read_preflight_child() {
     "$evidence_dir/preflight-$component-pods.json" "$previous_uid"
 }
 
+# All preflight components share UID-bound creation, observation, and cleanup.
+# The migration check keeps the initializer's database identity; API and worker
+# use the candidate configuration and their own startup identities.
+run_preflight_jobs() {
+  local components=("$@") job_uids=()
+  local component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid logs logs_status draft_refusals
+  local index=0 writer_qualifier=''
+  ((resume == 0)) || writer_qualifier='additional '
+  # Leave room for the suffix; a trailing dot would create an invalid DNS label.
+  job_prefix=${release:0:26}
+  job_prefix=${job_prefix%.}
+  for component in "${components[@]}"; do
+    job="$job_prefix-upgrade-preflight-$component-$suffix"
+    node scripts/upgrade-startup-preflight.mjs job "$evidence_dir/preflight-rendered.jsonl" \
+      "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
+      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
+      >"$evidence_dir/preflight-$component-job.json" ||
+      die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
+    delete_options=$(create_preflight "$evidence_dir/preflight-$component-job.json" \
+      "preflight-$component-job-create.err") ||
+      unconfirmed_preflight "job.batch/$job" "preflight-$component-job-create.err" $?
+    acknowledge_preflight "$component" "job.batch/$job" "$delete_options"
+    job_uids+=("$(jq -er '.preconditions.uid' <<<"$delete_options")")
+  done
+  # Wait for every Pod and save each one's status and log before reporting, so a
+  # refusal shows every component that failed, not only the first.
+  deadline=$((SECONDS + timeout_seconds))
+  failures=()
+  for component in "${components[@]}"; do
+    job="$job_prefix-upgrade-preflight-$component-$suffix"
+    job_uid=${job_uids[$index]}
+    index=$((index + 1))
+    pod= pod_uid=
+    phase=
+    waiting=
+    message=
+    identity_valid=0
+    while true; do
+      # Read each Pod at least once, even after an earlier one used up the deadline.
+      remaining_seconds=$((deadline - SECONDS))
+      ((remaining_seconds >= 15)) || remaining_seconds=15
+      identity_valid=0
+      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" "${remaining_seconds}s"); then
+        message="cannot establish the $component startup preflight child Pod identity; no ${writer_qualifier}OCC writer was stopped."
+        break
+      fi
+      identity_valid=1
+      phase=Running
+      if [[ -n "$child" ]]; then
+        printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
+        if [[ -z "$pod" ]]; then
+          pod=$(jq -er '.metadata.name' <<<"$child")
+          pod_uid=$(jq -er '.metadata.uid' <<<"$child")
+          preflight_children+=("$job_uid $pod $pod_uid")
+          delete_options=$(jq -cn --arg uid "$pod_uid" \
+            '{apiVersion:"v1",kind:"DeleteOptions",propagationPolicy:"Background",preconditions:{uid:$uid}}')
+          acknowledge_preflight "$component-pod" "pod/$pod" "$delete_options"
+        fi
+        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+          "$evidence_dir/preflight-$component-job-status.json")
+      fi
+      case "$phase" in
+        Running | Pending:*)
+          [[ "$phase" != Pending:* ]] || waiting=${phase#Pending:}
+          if ((SECONDS >= deadline)); then
+            message="the $component startup preflight did not finish before the timeout${waiting:+ ($waiting)}; see preflight-$component-job-status.json and preflight-$component-pods.json. No ${writer_qualifier}OCC writer was stopped."
+            break
+          fi
+          ;;
+        *) break ;;
+      esac
+      sleep 2
+    done
+    # The logs API addresses a name, so retain output only while that name still
+    # identifies the validated child before and after the request.
+    if [[ -n "$pod" ]] && ((identity_valid)); then
+      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        message="cannot bind the $component startup preflight logs to the original child Pod; no ${writer_qualifier}OCC writer was stopped."
+      else
+        logs_status=0
+        # Bash drops NUL bytes; reject them before they can change a result marker.
+        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+          2>"$evidence_dir/preflight-$component-logs.err" |
+          python3 -c 'import sys
+data = sys.stdin.buffer.read()
+if b"\0" in data:
+    sys.exit(1)
+sys.stdout.buffer.write(data)') || logs_status=$?
+        if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+          logs=
+          message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
+        else
+          printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
+          printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
+          logs=
+          phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
+            "$evidence_dir/preflight-$component-job-status.json")
+          if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
+            message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
+          fi
+        fi
+      fi
+    fi
+    if [[ -z "$message" ]]; then
+      case "$phase" in
+        JobFailed)
+          message="the $component startup preflight Job failed; see preflight-$component-job-status.json. No ${writer_qualifier}OCC writer was stopped."
+          ;;
+        Succeeded)
+          if [[ "$component" == migration ]]; then
+            jq -Rse 'split("\n") | any(.[]; try (fromjson |
+              .event == "migration.checked" and (.history | type == "string")) catch false)' \
+              "$evidence_dir/preflight-$component.log" >/dev/null 2>&1 ||
+              message="the migration preflight succeeded without migration.checked; no additional OCC writer was stopped."
+          else
+            grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
+              message="the $component startup preflight succeeded without its result line; no ${writer_qualifier}OCC writer was stopped."
+          fi
+          if [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            grep -qx agent-draft-check-unavailable "$evidence_dir/preflight-api.log"; then
+            warn "the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it."
+          elif [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
+            message="the api startup preflight succeeded without checking the Agent drafts; no ${writer_qualifier}OCC writer was stopped."
+          fi
+          ;;
+        Stuck:*)
+          message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no ${writer_qualifier}OCC writer was stopped."
+          ;;
+        *)
+          name_refusal=$(grep -m 1 '^The stored Installation name breaks the Name rule: ' \
+            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
+          refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
+            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
+          draft_refusals=
+          if [[ "$component" == api && -n "$drafts" ]]; then
+            draft_refusals=$(node scripts/upgrade-startup-preflight.mjs refusals \
+              "$evidence_dir/preflight-api.log") || draft_refusals=
+          fi
+          if [[ "$component" == migration ]]; then
+            message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
+          elif [[ -n "$draft_refusals" ]]; then
+            message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
+$draft_refusals
+No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
+          elif [[ "$component" == api && -n "$drafts" ]] &&
+            grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
+            message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
+          elif [[ -n "$name_refusal" ]]; then
+            message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
+          elif [[ -n "$refusal" ]]; then
+            message="the $component startup preflight stopped: $refusal No ${writer_qualifier}OCC writer was stopped; the old release keeps serving."
+            if [[ "$refusal" == *split-layout* ]]; then
+              message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."
+            elif [[ "$refusal" == *"openclaw-execution chart"* ]]; then
+              message+=" Upgrade the execution release as in docs/testing/kubernetes.md#upgrade-the-execution-chart, then start again with a new evidence directory."
+            elif [[ "$refusal" == *"execution cluster tenant grant review failed"* ]]; then
+              message+=" The Pod used its execution cluster kubeconfig, which must list Namespaces and create SelfSubjectAccessReviews there; fix that access and start again with a new evidence directory."
+            else
+              message+=" The Pod uses the installed release's service account and RBAC and only the chart's dependency egress (preflight-networkpolicy.json); fix its Kubernetes API access and start again with a new evidence directory."
+            fi
+          else
+            message=$(tail -n 3 "$evidence_dir/preflight-$component.log" | tr '\n' ' ' | cut -c 1-600)
+            [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
+            message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
+          fi
+          ;;
+      esac
+    fi
+    [[ -z "$message" ]] || failures+=("$message")
+  done
+  if [[ -n "${failures[*]+set}" ]]; then
+    for message in "${failures[@]:0:${#failures[@]}-1}"; do
+      warn "$message"
+    done
+    die "${failures[${#failures[@]}-1]}"
+  fi
+}
+
 # Before any writer stops, start the selected controller image on the candidate
 # Installation the way the API and worker start: the rendered chart's env, mounts
 # and service account, with the candidate Installation in a temporary Secret.
@@ -959,9 +1144,8 @@ read_preflight_child() {
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local suffix secret component job_prefix job job_uid pod pod_uid child phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options identity_valid logs logs_status
-  local job_uids=()
-  local drafts='' drafts_flag=none drafts_status=0 draft_refusals
+  local suffix secret delete_options
+  local drafts='' drafts_flag=none drafts_status=0
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ -s "${agent_drafts:-}" ]]; then
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
@@ -1011,167 +1195,25 @@ preflight_startup() {
     create_preflight - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
   acknowledge_preflight secret "secret/$secret" "$delete_options"
-  # Leave room for the suffix; a trailing dot would create an invalid DNS label.
-  job_prefix=${release:0:29}
-  job_prefix=${job_prefix%.}
-  for component in api worker; do
-    job="$job_prefix-upgrade-preflight-$component-$suffix"
-    node scripts/upgrade-startup-preflight.mjs job "$evidence_dir/preflight-rendered.jsonl" \
-      "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
-      >"$evidence_dir/preflight-$component-job.json" ||
-      die "cannot build the $component startup preflight Job from the rendered chart; no OCC writer was stopped."
-    delete_options=$(create_preflight "$evidence_dir/preflight-$component-job.json" \
-      "preflight-$component-job-create.err") ||
-      unconfirmed_preflight "job.batch/$job" "preflight-$component-job-create.err" $?
-    acknowledge_preflight "$component" "job.batch/$job" "$delete_options"
-    job_uids+=("$(jq -er '.preconditions.uid' <<<"$delete_options")")
-  done
-  # Wait for every Pod and save each one's status and log before reporting, so a
-  # refusal shows every component that failed, not only the first.
-  deadline=$((SECONDS + timeout_seconds))
-  failures=()
-  for component in api worker; do
-    job="$job_prefix-upgrade-preflight-$component-$suffix"
-    job_uid=${job_uids[0]}
-    [[ "$component" != worker ]] || job_uid=${job_uids[1]}
-    pod= pod_uid=
-    phase=
-    waiting=
-    message=
-    identity_valid=0
-    while true; do
-      # Read each Pod at least once, even after an earlier one used up the deadline.
-      remaining_seconds=$((deadline - SECONDS))
-      ((remaining_seconds >= 15)) || remaining_seconds=15
-      identity_valid=0
-      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" "${remaining_seconds}s"); then
-        message="cannot establish the $component startup preflight child Pod identity; no OCC writer was stopped."
-        break
-      fi
-      identity_valid=1
-      phase=Running
-      if [[ -n "$child" ]]; then
-        printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
-        if [[ -z "$pod" ]]; then
-          pod=$(jq -er '.metadata.name' <<<"$child")
-          pod_uid=$(jq -er '.metadata.uid' <<<"$child")
-          preflight_children+=("$job_uid $pod $pod_uid")
-          delete_options=$(jq -cn --arg uid "$pod_uid" \
-            '{apiVersion:"v1",kind:"DeleteOptions",propagationPolicy:"Background",preconditions:{uid:$uid}}')
-          acknowledge_preflight "$component-pod" "pod/$pod" "$delete_options"
-        fi
-        phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
-          "$evidence_dir/preflight-$component-job-status.json")
-      fi
-      case "$phase" in
-        Running | Pending:*)
-          [[ "$phase" != Pending:* ]] || waiting=${phase#Pending:}
-          if ((SECONDS >= deadline)); then
-            message="the $component startup preflight did not finish before the timeout${waiting:+ ($waiting)}; see preflight-$component-job-status.json and preflight-$component-pods.json. No OCC writer was stopped."
-            break
-          fi
-          ;;
-        *) break ;;
-      esac
-      sleep 2
-    done
-    # The logs API addresses a name, so retain output only while that name still
-    # identifies the validated child before and after the request.
-    if [[ -n "$pod" ]] && ((identity_valid)); then
-      if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-        message="cannot bind the $component startup preflight logs to the original child Pod; no OCC writer was stopped."
-      else
-        logs_status=0
-        # Bash drops NUL bytes; reject them before they can change a result marker.
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" 2>&1 |
-          python3 -c 'import sys
-data = sys.stdin.buffer.read()
-if b"\0" in data:
-    sys.exit(1)
-sys.stdout.buffer.write(data)') || logs_status=$?
-        if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
-          logs=
-          message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No OCC writer was stopped."
-        else
-          printf '%s\n' "$child" >"$evidence_dir/preflight-$component-status.json"
-          printf '%s\n' "$logs" >"$evidence_dir/preflight-$component.log"
-          logs=
-          phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json" \
-            "$evidence_dir/preflight-$component-job-status.json")
-          if ((logs_status != 0)) && [[ -z "$message" && "$phase" == Succeeded ]]; then
-            message="cannot read the $component startup preflight logs; no OCC writer was stopped."
-          fi
-        fi
-      fi
-    fi
-    if [[ -z "$message" ]]; then
-      case "$phase" in
-        JobFailed)
-          message="the $component startup preflight Job failed; see preflight-$component-job-status.json. No OCC writer was stopped."
-          ;;
-        Succeeded)
-          grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
-            message="the $component startup preflight succeeded without its result line; no OCC writer was stopped."
-          if [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
-            grep -qx agent-draft-check-unavailable "$evidence_dir/preflight-api.log"; then
-            warn "the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it."
-          elif [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
-            ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
-            message="the api startup preflight succeeded without checking the Agent drafts; no OCC writer was stopped."
-          fi
-          ;;
-        Stuck:*)
-          message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
-          ;;
-        *)
-          name_refusal=$(grep -m 1 '^The stored Installation name breaks the Name rule: ' \
-            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
-          refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
-            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
-          draft_refusals=
-          if [[ "$component" == api && -n "$drafts" ]]; then
-            draft_refusals=$(node scripts/upgrade-startup-preflight.mjs refusals \
-              "$evidence_dir/preflight-api.log") || draft_refusals=
-          fi
-          if [[ -n "$draft_refusals" ]]; then
-            message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
-$draft_refusals
-No OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
-          elif [[ "$component" == api && -n "$drafts" ]] &&
-            grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
-            message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
-          elif [[ -n "$name_refusal" ]]; then
-            message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
-          elif [[ -n "$refusal" ]]; then
-            message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
-            if [[ "$refusal" == *split-layout* ]]; then
-              message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."
-            elif [[ "$refusal" == *"openclaw-execution chart"* ]]; then
-              message+=" Upgrade the execution release as in docs/testing/kubernetes.md#upgrade-the-execution-chart, then start again with a new evidence directory."
-            elif [[ "$refusal" == *"execution cluster tenant grant review failed"* ]]; then
-              message+=" The Pod used its execution cluster kubeconfig, which must list Namespaces and create SelfSubjectAccessReviews there; fix that access and start again with a new evidence directory."
-            else
-              message+=" The Pod uses the installed release's service account and RBAC and only the chart's dependency egress (preflight-networkpolicy.json); fix its Kubernetes API access and start again with a new evidence directory."
-            fi
-          else
-            message=$(tail -n 3 "$evidence_dir/preflight-$component.log" | tr '\n' ' ' | cut -c 1-600)
-            [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
-            message="the selected controller image cannot start the $component with the candidate Installation: ${message}No OCC writer was stopped; correct the Installation and start again with a new evidence directory."
-          fi
-          ;;
-      esac
-    fi
-    [[ -z "$message" ]] || failures+=("$message")
-  done
-  if [[ -n "${failures[*]+set}" ]]; then
-    for message in "${failures[@]:0:${#failures[@]}-1}"; do
-      warn "$message"
-    done
-    die "${failures[${#failures[@]}-1]}"
-  fi
+  run_preflight_jobs api worker migration
   cleanup_preflight || die "startup preflight cleanup is incomplete; no OCC writer was stopped."
   touch "$evidence_dir/startup-preflight-passed"
+}
+
+# A resume can happen long after preparation or after a separate database
+# deployment. Keep the signal-owning shell; scope only the evidence path locally.
+preflight_migration() {
+  local evidence_dir suffix secret='' drafts='' drafts_flag=none
+  evidence_dir=$(mktemp -d "$upgrade_evidence_dir/migration-preflight-resume.XXXXXXXX")
+  suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  preflight_resources=()
+  preflight_children=()
+  preflight_consumer_unknown=0
+  yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
+    die "cannot read the rendered chart for migration preflight; no additional OCC writer was stopped."
+  run_preflight_jobs migration
+  cleanup_preflight || die "migration preflight cleanup is incomplete; no additional OCC writer was stopped."
+  touch "$evidence_dir/migration-preflight-passed"
 }
 
 validate_controller_compatibility() {
@@ -1330,6 +1372,15 @@ cp "$values" "$evidence_dir/before-values.yaml"
 cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
+
+if ! preprovisioned_namespace=$(yq -r '(.preprovisionedNamespace // {} | length) > 0' \
+  "$evidence_dir/before-values.yaml" 2>"$evidence_dir/preprovisioned-namespace.err") ||
+  [[ "$preprovisioned_namespace" != true && "$preprovisioned_namespace" != false ]]; then
+  die "cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory."
+fi
+if [[ "$preprovisioned_namespace" == true ]]; then
+  die "production image upgrades require the chart initialization Job; preprovisioned Namespace canaries manage database upgrades separately. See docs/reference/drivers/kubernetes-compute/preprovisioned-namespace.md."
+fi
 
 "${kube[@]}" --request-timeout=15s get --raw=/readyz >"$evidence_dir/kubernetes-readyz"
 helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-status.json"
@@ -1929,6 +1980,10 @@ if ((helm_complete == 0)); then
   fi
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
+  fi
+  if ((resume)); then
+    rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
+    preflight_migration
   fi
   # Stop the old database writers before the migration hook. Other writers and
   # autoscalers must already be stopped by the operator's maintenance window.

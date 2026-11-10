@@ -221,8 +221,11 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   answer = { ...answer, extra: "x".repeat(20_000) };
   assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
   delete answer.extra;
-  // Oversized policy responses fail closed before asking for authentication.
-  requirements = { modelProviders: { managed: { name: "x".repeat(1024 * 1024) } } };
+  // Size takes priority even if a complete policy also denies the required sandbox mode.
+  requirements = {
+    allowedSandboxModes: ["read-only"],
+    modelProviders: { managed: { name: "x".repeat(1024 * 1024) } },
+  };
   const beforeOversized = requests.length;
   await assert.rejects(driver.harnessStatus(context), {
     code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
@@ -233,27 +236,49 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
   requirements = { modelProviders: { managed: { name: "x".repeat(2 * 1024 * 1024) } } };
   assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
-  // A hydrated PAT and an allowed profile name still cannot activate a
-  // runtime whose effective sandbox policy excludes that profile's mode.
-  requirements = {
-    allowedSandboxModes: ["read-only", "workspace-write"],
-    allowedPermissionProfiles: { ":danger-full-access": true },
+  const apiKeyContext = {
+    ...context,
+    revision: {
+      ...context.revision,
+      harnessAuth: {
+        ...context.revision.harnessAuth,
+        loginMode: "api_key",
+        sourceType: "openai",
+      },
+    },
   };
-  for (const target of [
-    context,
-    { ...context, revision: { ...context.revision, harnessAuth: undefined } },
-  ]) {
-    await assert.rejects(driver.harnessStatus(target), {
-      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
-    });
-  }
-  for (const policy of [
-    { allowedPermissionProfiles: { ":workspace": true } },
-    { allowedApprovalsReviewers: ["auto_review"] },
+  // A valid reply can independently deny each requirement or deny several at once.
+  for (const [target, policy, denials] of [
+    [
+      context,
+      {
+        allowedSandboxModes: ["read-only", "workspace-write"],
+        allowedPermissionProfiles: { ":danger-full-access": true },
+      },
+      ["sandbox-mode-denied"],
+    ],
+    [context, { allowedPermissionProfiles: { ":workspace": true } }, ["named-profile-denied"]],
+    [context, { allowedApprovalsReviewers: ["auto_review"] }, ["reviewer-denied"]],
+    [
+      apiKeyContext,
+      {
+        allowedSandboxModes: [],
+        allowedPermissionProfiles: { ":danger-full-access": false },
+        allowedApprovalsReviewers: ["guardian_subagent"],
+        additionalDeveloperInstructions: "SYNTHETIC_POLICY_TEXT_MUST_STAY_PRIVATE",
+      },
+      ["sandbox-mode-denied", "named-profile-denied", "reviewer-denied"],
+    ],
   ]) {
     requirements = policy;
-    await assert.rejects(driver.harnessStatus(context), {
-      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    await assert.rejects(driver.harnessStatus(target), (error) => {
+      assert.equal(error.code, "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE");
+      assert.deepEqual(error.permissionDenials, denials);
+      assert.doesNotMatch(
+        `${error.message}\n${JSON.stringify(error)}`,
+        /SYNTHETIC_POLICY_TEXT_MUST_STAY_PRIVATE/,
+      );
+      return true;
     });
   }
   for (const policy of [
@@ -262,19 +287,17 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
     { allowedSandboxModes: ["danger-full-access", "unrecognized"] },
     { allowedApprovalsReviewers: ["user", "unrecognized"] },
     { allowedApprovalsReviewers: ["unrecognized"] },
+    {
+      allowedSandboxModes: [],
+      allowedPermissionProfiles: { ":danger-full-access": "false" },
+    },
   ]) {
     requirements = policy;
     assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
   }
   requirements = { allowedSandboxModes: ["danger-full-access"] };
   const beforeNonPat = requests.length;
-  assert.deepEqual(
-    await driver.harnessStatus({
-      ...context,
-      revision: { ...context.revision, harnessAuth: undefined },
-    }),
-    { state: "serving" },
-  );
+  assert.deepEqual(await driver.harnessStatus(apiKeyContext), { state: "serving" });
   assert.ok(!requests.slice(beforeNonPat).some(({ method }) => method === "getAuthStatus"));
   requirements = null;
   // A valid backend service port must not inherit Fetch's browser-only port blocklist.
@@ -308,6 +331,7 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   requirements = { allowedSandboxModes: ["read-only"] };
   await assert.rejects(compute.prepare(), {
     code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    permissionDenials: ["sandbox-mode-denied"],
   });
   requirements = null;
   assert.equal((await compute.prepare()).ready, true);
@@ -316,6 +340,7 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   const beforeActivation = compute.writes.length;
   await assert.rejects(compute.activate(), {
     code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    permissionDenials: ["sandbox-mode-denied"],
   });
   assert.equal(compute.writes.length, beforeActivation);
   transportToken = TOKEN;

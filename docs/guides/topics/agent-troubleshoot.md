@@ -5,11 +5,13 @@ API keys, tokens, or Secret values.
 
 ## Codex refuses the required permission profile
 
-`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` means managed requirements explicitly
-refused a required mode, profile or reviewer. Ask the policy owner to check
+For `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`, find the revision's
+`worker.completed` event. Its `failure` field (`occ.failure` in the Collector) lists
+`sandbox-mode-denied`, `named-profile-denied`, or `reviewer-denied`, separated by
+underscores. Ask the policy owner to check
 [OpenShell's requirements](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
-`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` means the reply exceeds 1 MiB; ask the policy
-owner to reduce the document, then redeploy.
+For `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`, ask the policy owner to reduce the reply
+to at most 1 MiB, then redeploy.
 
 If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
 
@@ -17,9 +19,9 @@ If a dedicated Codex Agent on OpenShell reports `Codex did not grant the request
 - `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
 - `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
 
-Older runtimes omit this category. Their error alone does not distinguish a restricted grant from an incompatible response.
+Without this category, the error cannot distinguish a restricted grant from an incompatible response.
 
-Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+Login, source readiness, and a model reply under another profile cannot prove compatibility. Use an approved compatible credential or policy change. [Update copied API-key or PAT sources](../../reference/credential-sources.md#update-a-source). For device login, sign in again and replace the Agent binding. Redeploy, then [verify a model response from the Agent](../operate/model-verification.md). Keep the Gateway permission check and OpenShell isolation in place.
 
 ## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
 

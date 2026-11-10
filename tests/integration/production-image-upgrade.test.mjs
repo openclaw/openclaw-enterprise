@@ -309,7 +309,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -367,7 +367,7 @@ esac
     "yq",
     `if [[ "$*" == *OCE_UPGRADE_ATTEMPT* ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec yq -o=json "$@"
-elif [[ "$1" == -p=yaml && "\${!#}" == - ]]; then
+elif [[ "$1" == -r || ( "$1" == -p=yaml && "\${!#}" == - ) ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec yq "$@"
 fi
 case "$*" in
@@ -612,8 +612,8 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
-  // The startup preflight reads each controller container's image and Installation
-  // mount from the rendered chart; this stand-in renders only those fields.
+  // Preflight reads controller images, Installation mounts and the initializer's
+  // migration identity from the chart. Render those inputs for this protocol fixture.
   // Accepted upgrades retain their submitted values and advance the revision;
   // server dry-runs must leave both unchanged.
   await writeCommand(
@@ -639,6 +639,7 @@ elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
   printf '%s\\n' "$((revision + 1))" >"$revision_file"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
+  printf -- '---\\n%s\\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"oce-initialization","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"serviceAccountName":"openclaw-enterprise-initialization","initContainers":[{"name":"migration","image":"'"$OBSERVED_CONTROLLER_IMAGE"'"}]}}}}'
 fi
 `,
     { interpreter: "bash" },
@@ -740,7 +741,9 @@ if (args.includes("create")) {
   }
   delete state[name];
 } else if (args.includes("logs")) {
-  result = "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+  result = value("--container") === "migration"
+    ? JSON.stringify({ event: "migration.checked", history: "completed" }) + "\\n"
+    : "agent-drafts-accepted\\ninstallation-startup-ready\\n";
 } else if (args.includes("pods")) {
   const uid = value("--selector").slice("batch.kubernetes.io/controller-uid=".length);
   result = { items: Object.values(state).filter((object) =>

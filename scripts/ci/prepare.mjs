@@ -976,6 +976,9 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
+  ["slack", { localStore: false }],
+  ["production-tui", { localStore: false }],
+  ["gateway-routing", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
   ["qa-matrix", { localStore: false }],
@@ -1135,26 +1138,30 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   }
 }
 
+function observesImageCache(lane) {
+  return isOpenShellLane(lane) || ["slack", "production-tui", "gateway-routing"].includes(lane);
+}
+
 // Keep cache evidence without build arguments, URLs, command text or credentials.
-function firstAgentCacheObservation(state, role, phase, output) {
-  if (!isOpenShellLane(state.lane)) {
+function imageCacheObservation(state, role, phase, output) {
+  if (!observesImageCache(state.lane)) {
     return;
   }
   const text = output ?? "";
   const cached = new Set([...text.matchAll(/^#(\d+) CACHED\r?$/gm)].map((match) => match[1]));
-  const sourceBuild = [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map(
-    (match) => match[1],
+  const sourceBuild = new Set(
+    [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map((match) => match[1]),
   );
   progress(
     state.lane,
     JSON.stringify({
-      stage: "first-agent-image-cache",
+      stage: isOpenShellLane(state.lane) ? "first-agent-image-cache" : "image-cache",
       role,
       phase,
       cacheImports: [...text.matchAll(/^#\d+ importing cache manifest /gm)].length,
       cachedSteps: cached.size,
-      openclawBuildSteps: sourceBuild.length,
-      openclawBuildCached: sourceBuild.filter((id) => cached.has(id)).length,
+      openclawBuildSteps: sourceBuild.size,
+      openclawBuildCached: [...sourceBuild].filter((id) => cached.has(id)).length,
     }),
   );
 }
@@ -1211,7 +1218,7 @@ async function reuseEngineImage(state, role, args, tag) {
         throw error;
       }
     }
-    firstAgentCacheObservation(state, role, "probe", probeResult.stderr);
+    imageCacheObservation(state, role, "probe", probeResult.stderr);
     const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
     if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
       return false;
@@ -1281,7 +1288,7 @@ async function buildRuntimeImages(
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image and command once that ends (parallel builds stay
   // readable), also when it fails or overruns its own deadline inside the job's.
-  const plainProgress = cacheWarm || isOpenShellLane(state.lane) ? ["--progress=plain"] : [];
+  const plainProgress = cacheWarm || observesImageCache(state.lane) ? ["--progress=plain"] : [];
   if (revision !== undefined && !/^[a-f0-9]{40}$/.test(revision)) {
     throw new Error("Image builds require a complete checkout revision.");
   }
@@ -1314,7 +1321,7 @@ async function buildRuntimeImages(
   const build = async (role, args) => {
     if (!cacheWarm) {
       const result = await laneImageCommand(role, args);
-      firstAgentCacheObservation(state, role, "load", result.stderr);
+      imageCacheObservation(state, role, "load", result.stderr);
       return result;
     }
     const exportArgs = imageCacheExportArgs(role, args);
@@ -1464,6 +1471,7 @@ async function buildRuntimeImages(
                 ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
                   ? ["--builder", "default", "--load"]
                   : []),
+                ...plainProgress,
                 "--build-arg",
                 "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
                 "-t",
@@ -1497,7 +1505,7 @@ async function buildRuntimeImages(
     builds.map((entry) => async () => {
       if (registryOutput) {
         const result = await laneImageCommand(entry.role, entry.args);
-        firstAgentCacheObservation(state, entry.role, "direct-publish", result.stderr);
+        imageCacheObservation(state, entry.role, "direct-publish", result.stderr);
         const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
         const digest = metadata["containerimage.digest"];
         const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;

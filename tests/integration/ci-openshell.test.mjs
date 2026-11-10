@@ -31,8 +31,10 @@ import {
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
   outageAttemptRead,
+  waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
   const root = await temporaryDirectory(t, `${prefix}-`);
@@ -199,6 +201,60 @@ test("OpenShell Helm chart image values use the v0.1.6 registry and digest contr
     () => openShellChartImageValues("gateway.image", "localhost/example/gateway:local"),
     /immutable OpenShell image digest/,
   );
+});
+
+test("the OpenShell installation wait surfaces terminal deployment refusals on the first poll", async () => {
+  const agentPath =
+    "/namespaces/ns_10000000-0000-4000-8000-000000000001/agents/agt_10000000-0000-4000-8000-000000000002";
+  const revisionId = "rev_10000000-0000-4000-8000-000000000003";
+  const waitOnce = (description, read) => waitFor(description, read, { timeoutMs: 0 });
+  const refusalCode = "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
+  const privateDetail = "private requirements detail";
+  const activate = (deployment, activeRevisionId = null) =>
+    waitForOpenShellRevisionActivation(waitOnce, {
+      agentPath,
+      revisionId,
+      request: async (method, path) => {
+        assert.equal(method, "GET");
+        if (path === agentPath) {
+          return { status: 200, data: { activeRevisionId } };
+        }
+        assert.equal(path, `${agentPath}/deployments/${revisionId}`);
+        return { status: 200, data: deployment };
+      },
+    });
+
+  await assert.rejects(
+    activate({ status: "failed", error: { code: refusalCode, message: privateDetail } }),
+    {
+      code: refusalCode,
+      message: `OpenShell revision ${revisionId} deployment failed (${refusalCode}).`,
+    },
+  );
+  await assert.rejects(
+    activate({ status: "failed", error: { code: privateDetail, message: privateDetail } }),
+    { message: `OpenShell revision ${revisionId} deployment failed.` },
+  );
+  const nextAttemptAt = "2026-11-10T11:00:00.000Z";
+  for (const [status, lastAttempt] of [
+    ["queued", null],
+    [
+      "running",
+      {
+        at: "2026-11-10T10:59:59.000Z",
+        code: "REFUSED_CANDIDATE_STOP_PENDING",
+        message: `Deployment refused (${refusalCode}); stopping the refused version before recording the failure. The controller will retry.`,
+      },
+    ],
+  ]) {
+    await assert.rejects(
+      activate({ status, error: null, progress: { lastAttempt, nextAttemptAt } }),
+      { message: `Timed out waiting for OpenShell revision ${revisionId} activation.` },
+    );
+  }
+  assert.deepEqual(await activate({ status: "succeeded", error: null }, revisionId), {
+    activeRevisionId: revisionId,
+  });
 });
 
 // Finding 1846: the worker can claim the work again between reads. The status is read only once

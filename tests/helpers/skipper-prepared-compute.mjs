@@ -456,7 +456,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   const controlFile = join(modelDirectory, "skipper-command.json");
   const sendScript = async (cmd, label) => {
     const marker = "skipper-" + randomUUID();
-    const text = JSON.stringify({ cmd, id: marker });
+    const text = JSON.stringify({ cmd, id: marker, expiresAt: Date.now() + 170_000 });
     await writeFile(controlFile + ".next", text, { mode: 0o644 });
     await chmod(controlFile + ".next", 0o644);
     await rename(controlFile + ".next", controlFile);
@@ -477,6 +477,10 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
               modelRequests: observations.filter((e) => e.event === "skipper-native-request")
                 .length,
               modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
+              nativePolls: observations.filter((e) => e.event === "skipper-native-poll").length,
+              nativeStatus: observations.at(-1)?.status,
+              nativeExitCode: observations.at(-1)?.exitCode,
+              nativeSessionPresent: observations.at(-1)?.sessionPresent,
               markerSeen: observations.some(
                 (e) => e.event === "skipper-native-result" && e.markerSeen === true,
               ),
@@ -487,7 +491,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     const completed = await native(marker);
     const observations = (await modelEvents()).filter((e) => e.id === marker);
     assert.deepEqual(
-      observations.map((e) => e.event),
+      observations.filter((e) => e.event !== "skipper-native-poll").map((e) => e.event),
       ["skipper-native-request", "skipper-native-result"],
     );
     assert.equal(observations.at(-1).markerSeen, true);
