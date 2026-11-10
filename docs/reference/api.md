@@ -3134,7 +3134,8 @@ Example response
           "id": "research-model"
         }
       ],
-      "protocol": "openai-responses"
+      "protocol": "openai-responses",
+      "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   ],
   "meta": {
@@ -3251,7 +3252,8 @@ Example response
         "id": "research-model"
       }
     ],
-    "protocol": "openai-responses"
+    "protocol": "openai-responses",
+    "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -3330,7 +3332,8 @@ Example response
         "id": "research-model"
       }
     ],
-    "protocol": "openai-responses"
+    "protocol": "openai-responses",
+    "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -3390,6 +3393,7 @@ Example request
   "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
   "defaultModelId": "research-model",
   "displayName": "Research inference",
+  "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "models": [
     {
       "id": "research-model"
@@ -3453,7 +3457,8 @@ Example response
         "id": "research-model"
       }
     ],
-    "protocol": "openai-responses"
+    "protocol": "openai-responses",
+    "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -3543,7 +3548,8 @@ Example response
           "id": "research-model"
         }
       ],
-      "protocol": "openai-responses"
+      "protocol": "openai-responses",
+      "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   ],
   "meta": {
