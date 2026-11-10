@@ -146,12 +146,20 @@ Before restarting API/worker and deploying a new Agent revision:
    group/modes; see the [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes). Prevent concurrent PVC deletion or
    recreation: Kubernetes mounts reference claim names, so a UID check alone
    cannot prevent replacement after verification.
-2. For [local storage](https://kubernetes.io/docs/concepts/storage/volumes/#local), set the PV's node affinity to the prepared storage node.
+2. Check the selected OpenShell provider's resource admission policy for every
+   PVC mounted by the Harness, including the durable workspace. With the default
+   labels on providers that enable resource admission, the operator sets
+   `openshell.ai/sandbox-attachable=true` and
+   `openshell.ai/sandbox-attachable-workspace=<OpenShell workspace name>`
+   on each approved PVC. In operator mode, use the execution Kubernetes
+   namespace name as the workspace name. A selected RuntimeClass needs the
+   shared approval label. Check the actual policy if it uses custom labels.
+3. For [local storage](https://kubernetes.io/docs/concepts/storage/volumes/#local), set the PV's node affinity to the prepared storage node.
    Check that all Harness claims can mount there together, including the durable
    disk's availability zone, and that resources, taints, and RuntimeClass permit
    both preparation and execution. A Bound PVC does not establish schedulability;
    Compute's `runtime.nodeSelector` is not forwarded to OpenShell.
-3. Preserve workspace and Gateway state claims. Replacement stops existing
+4. Preserve workspace and Gateway state claims. Replacement stops existing
    workloads before checking scratch; a failed preparation causes downtime.
    See [replacement and recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
 
