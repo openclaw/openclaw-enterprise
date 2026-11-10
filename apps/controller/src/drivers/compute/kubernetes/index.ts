@@ -4683,9 +4683,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
     }
     const topology = this.harnessTopology(harness);
-    const native = topology === "Dedicated OpenClaw";
-    const codex = topology === "Dedicated Codex";
-    if (native && asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined) {
+    if (
+      topology === "Dedicated OpenClaw" &&
+      asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined
+    ) {
       throw callerSettingError(
         "cloudWorkers.requiredProfile",
         `must be unset on Dedicated OpenClaw: Kubernetes Compute owns the ${NATIVE_WORKER_PROFILE} profile`,
@@ -4696,11 +4697,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
     this.validateConfigurationContent(configuration, undefined, stage === "admission");
-    if (native || codex) {
-      requireDedicatedMainAgentDefault(
-        configuration,
-        native ? "Dedicated OpenClaw" : "Dedicated Codex",
-      );
+    if (topology === "Dedicated OpenClaw" || topology === "Dedicated Codex") {
+      requireDedicatedMainAgentDefault(configuration, topology);
     }
     return topology;
   }
@@ -11447,20 +11445,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<CredentialSourceType | undefined> {
-    if (revision.harnessAuth.method !== "credential_source") {
+    const auth = revision.harnessAuth;
+    if (auth.method !== "credential_source") {
       return undefined;
     }
-    const auth = revision.harnessAuth;
-    if (auth.credentialProxyId === undefined) {
-      const gateway = this.requireCredentialGateway();
-      if (gateway.id !== auth.credentialGatewayId) {
-        return undefined;
-      }
-      const sourceType = auth.sourceType;
-      const catalog = await gateway.listSourceTypes({ signal: this.operationSignal() });
-      return catalog.find((entry) => entry.type === sourceType);
+    if (auth.credentialProxyId !== undefined) {
+      return this.admittedProxyCredentialSourceType(revision, auth, context);
     }
-    return this.admittedProxyCredentialSourceType(revision, auth, context);
+    const gateway = this.requireCredentialGateway();
+    if (gateway.id !== auth.credentialGatewayId) {
+      return undefined;
+    }
+    const sourceType = auth.sourceType;
+    const catalog = await gateway.listSourceTypes({ signal: this.operationSignal() });
+    return catalog.find((entry) => entry.type === sourceType);
   }
 
   private admittedProxyCredentialSourceType(

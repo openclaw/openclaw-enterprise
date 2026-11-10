@@ -63,8 +63,8 @@ export async function resolveModelHarnessAuth(
   gateway: Pick<CredentialGatewayDriver, "id"> | undefined,
   proxy: Pick<CredentialProxyDriver, "id" | "sourceControl"> | undefined,
 ): Promise<{ readonly harnessAuth: ResolvedHarnessAuth } | PreparationRefusal> {
-  if (isSecretHarnessAuth(revision.harnessAuth)) {
-    const auth = revision.harnessAuth;
+  const auth = revision.harnessAuth;
+  if (isSecretHarnessAuth(auth)) {
     if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
       return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
     }
@@ -85,27 +85,26 @@ export async function resolveModelHarnessAuth(
     // OCC metadata without requiring permission to read backend Secret values.
     return { harnessAuth: { ...auth, backendRef: secret.backendRef } };
   }
-  if (revision.harnessAuth.method === "credential_source") {
-    const auth = revision.harnessAuth;
-    if (!harnessCredentialOwnerMatches(auth, gateway, proxy)) {
-      return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-    }
-    const { source, withdrawal } = await resolveRevisionCredentialSource(state, revision, auth);
-    // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-    if (withdrawal !== undefined) {
-      return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-    }
-    // A deleting source can no longer be attached, even to an admitted revision.
-    if (source === undefined) {
-      return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-    }
-    const projected = projectHarnessCredentialSource(auth, source, revision, proxy);
-    if (projected === undefined) {
-      return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-    }
-    return { harnessAuth: { ...auth, source: projected } };
+  if (auth.method !== "credential_source") {
+    return { harnessAuth: auth };
   }
-  return { harnessAuth: revision.harnessAuth };
+  if (!harnessCredentialOwnerMatches(auth, gateway, proxy)) {
+    return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+  }
+  const source = await resolveRevisionCredentialSource(state, revision, auth);
+  // A withdrawn source never re-attaches to its revision, for example after Pod loss.
+  if (source === "withdrawn") {
+    return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
+  }
+  // A deleting source can no longer be attached, even to an admitted revision.
+  if (source === undefined) {
+    return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+  }
+  const projected = projectHarnessCredentialSource(auth, source, revision, proxy);
+  if (projected === undefined) {
+    return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+  }
+  return { harnessAuth: { ...auth, source: projected } };
 }
 
 export async function resolveAttachedCredentialSources(
@@ -126,9 +125,9 @@ export async function resolveAttachedCredentialSources(
     if (sourceOwner !== (snapshot.credentialProxyId === undefined ? gateway?.id : proxy?.id)) {
       return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
     }
-    const { source, withdrawal } = await resolveRevisionCredentialSource(state, revision, snapshot);
+    const source = await resolveRevisionCredentialSource(state, revision, snapshot);
     // A withdrawn non-model source stays detached; the revision keeps running without it.
-    if (withdrawal !== undefined) {
+    if (source === "withdrawn") {
       continue;
     }
     if (source === undefined) {
@@ -143,7 +142,7 @@ function resolveRevisionCredentialSource(
   state: Pick<PlatformStateStore, "read">,
   revision: Pick<AgentRevision, "namespaceId" | "id">,
   snapshot: CredentialSourceSnapshot,
-) {
+): Promise<Readonly<CredentialSource> | "withdrawn" | undefined> {
   const { namespaceId, id: revisionId } = revision;
   const { sourceId } = snapshot;
   return state.read(async (view) => {
@@ -153,15 +152,12 @@ function resolveRevisionCredentialSource(
       revisionId,
       sourceId,
     );
-    return {
-      source:
-        withdrawal === undefined &&
-        source?.state === "ready" &&
-        credentialSourceMatchesSnapshot(source, snapshot)
-          ? source
-          : undefined,
-      withdrawal,
-    };
+    if (withdrawal !== undefined) {
+      return "withdrawn";
+    }
+    return source?.state === "ready" && credentialSourceMatchesSnapshot(source, snapshot)
+      ? source
+      : undefined;
   });
 }
 
