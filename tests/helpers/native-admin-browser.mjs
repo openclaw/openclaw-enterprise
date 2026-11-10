@@ -1674,6 +1674,7 @@ export async function runOidcAgentChatScenario(context, { createAccounts = false
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
   const initialMarker = `oidc-chat-${randomUUID()}`;
   let initialReply;
+  let lifecycle;
   try {
     initialReply = await submitChatTurnWithAssistantProof(
       nativePage,
@@ -1681,18 +1682,18 @@ export async function runOidcAgentChatScenario(context, { createAccounts = false
       frames,
       waitFor,
     );
+    lifecycle = await assertChatStreamStopAndResume({
+      page: nativePage,
+      initialReply,
+      initialMarker,
+      receivedFrames: frames,
+      sentFrames,
+      waitFor,
+    });
   } catch (error) {
     await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
     throw error;
   }
-  const lifecycle = await assertChatStreamStopAndResume({
-    page: nativePage,
-    initialReply,
-    initialMarker,
-    receivedFrames: frames,
-    sentFrames,
-    waitFor,
-  });
   context.diagnostic(
     `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
   );
