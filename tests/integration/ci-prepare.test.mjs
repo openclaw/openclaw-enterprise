@@ -3123,6 +3123,22 @@ if (args[0] === "pull") {
         { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
       );
     }
+    const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs";
+    for (const selectedFile of [false, true]) {
+      cases.push({
+        harness: "openclaw",
+        credentials: ["OPENAI_API_KEY"],
+        file: scratch,
+        selectedFile,
+        unsupportedHarness: true,
+      });
+    }
+    cases.push({
+      harness: "openclaw",
+      credentials: ["OPENAI_API_KEY"],
+      file: "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      selectedFile: true,
+    });
     for (const [index, value] of cases.entries()) {
       const statePath = join(root, `credential-${index}.json`);
       const env = {
@@ -3158,12 +3174,16 @@ if (args[0] === "pull") {
             env,
           );
       assert.equal(result.status, 1);
-      assert.match(
-        result.stderr,
-        value.missing
-          ? new RegExp(`Missing required CI input\\(s\\): ${value.missing}`)
-          : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
-      );
+      if (value.unsupportedHarness) {
+        assert.match(result.stderr, /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+      } else {
+        assert.match(
+          result.stderr,
+          value.missing
+            ? new RegExp(`Missing required CI input\\(s\\): ${value.missing}`)
+            : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
+        );
+      }
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
     }
   });

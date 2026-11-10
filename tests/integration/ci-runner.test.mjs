@@ -1526,6 +1526,7 @@ test("OpenShell selected files retain API-key selection and require the selected
     await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
   );
   const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs";
+  const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
   const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
   const inputs = {
     ...Object.fromEntries(
@@ -1557,10 +1558,25 @@ test("receives selected model inputs", () => {
 });
 `,
   );
+  await writeFile(
+    join(root, gatewayPolicy),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "openclaw");
+  assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+});
+`,
+  );
   await writeFile(join(root, sibling), 'throw new Error("unselected sibling ran");\n');
   for (const [index, value] of [
     { lane: "openshell" },
     { lane: "openshell-policy" },
+    {
+      file: gatewayPolicy,
+      env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw", OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" },
+    },
+    { env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw" }, unsupportedHarness: true },
     { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "", CODEX_ACCESS_TOKEN: "synthetic-model-token" } },
     { env: { OPENAI_API_KEY: "" }, missing: "OPENAI_API_KEY" },
     { env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" }, missing: "CODEX_ACCESS_TOKEN" },
@@ -1576,7 +1592,7 @@ test("receives selected model inputs", () => {
         [name]: {
           ...lane,
           files: lane.files
-            .filter(({ path }) => [scratch, sibling].includes(path))
+            .filter(({ path }) => [scratch, sibling, gatewayPolicy].includes(path))
             .map((file) => ({
               ...file,
               expectedTests: ["receives selected model inputs"],
@@ -1596,6 +1612,12 @@ test("receives selected model inputs", () => {
       { ...inputs, ...value.env },
     );
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    if (value.unsupportedHarness) {
+      assert.equal(result.status, 1);
+      assert.match(summary.issues[0]?.message ?? "", /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+      assert.deepEqual(summary.files, []);
+      continue;
+    }
     assert.equal(result.status, value.missing ? 1 : 0, result.stderr);
     assert.deepEqual(
       summary.issues.map(({ code, env }) => ({ code, env })),

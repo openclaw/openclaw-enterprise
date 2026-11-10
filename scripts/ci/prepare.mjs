@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -909,17 +909,19 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors } = {}) {
   const name = laneName(lane);
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
+  const modelEnv = modelSelectors ?? effectiveEnv;
+  const harnessError = openShellHarnessError(name, file, modelEnv);
+  if (harnessError) {
+    throw new Error(harnessError);
+  }
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  requireEnv(
-    openShellRequiredEnv(name, file, prepare.requireEnv ?? [], effectiveEnv),
-    effectiveEnv,
-  );
+  requireEnv(openShellRequiredEnv(name, file, prepare.requireEnv ?? [], modelEnv), effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -3722,13 +3724,13 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 // returned for this state. The file's database is then a copy of that database
 // (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
 // revision suite copies the database the runner prepared for its file, one copy per test.
-async function prepareFile({ lane, file, statePath, template }) {
+async function prepareFile({ lane, file, statePath, template, modelSelectors }) {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
   const relativeFile = toRepositoryRelative(filePath(file));
-  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile, modelSelectors });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.

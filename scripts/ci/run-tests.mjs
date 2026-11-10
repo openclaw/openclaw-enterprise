@@ -36,7 +36,7 @@ import {
 } from "./full-integration-coverage.ts";
 import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
@@ -537,6 +537,18 @@ function baseChildEnv(inheritedEnv) {
     }
   }
   return env;
+}
+
+function fileInputEnv(lane, file) {
+  return mergeEnv(
+    baseChildEnv([
+      ...lane.requiredEnv,
+      ...file.requiredEnv,
+      ...lane.optionalEnv,
+      ...file.optionalEnv,
+    ]),
+    lane.env,
+  );
 }
 
 function testTimeoutMs() {
@@ -1380,6 +1392,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  const inputs = fileInputEnv(lane, file);
   if (prepareFile) {
     try {
       const result =
@@ -1390,6 +1403,10 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
                 lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
                 file,
                 statePath,
+                modelSelectors: {
+                  OCC_TEST_OPENSHELL_HARNESS: inputs.OCC_TEST_OPENSHELL_HARNESS,
+                  OCC_TEST_OPENSHELL_MODEL_BASE_URL: inputs.OCC_TEST_OPENSHELL_MODEL_BASE_URL,
+                },
               }),
             prepareLimitMs(),
           ),
@@ -1434,11 +1451,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
-  const env = mergeEnv(
-    baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
+  const env = mergeEnv(inputs, prepared.env);
   for (const name of openShellRequiredEnv(lane.name, relativePath, requiredEnv, env)) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
@@ -1747,6 +1760,12 @@ function selectLane(manifest, laneName, selectedFile) {
         optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
+      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
+      if (error) {
+        issues.push(
+          issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),
+        );
+      }
     }
   }
 

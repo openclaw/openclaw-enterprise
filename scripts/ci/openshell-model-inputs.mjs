@@ -1,17 +1,32 @@
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 
+const codexOnlyFiles = new Set([
+  "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+  "tests/integration/openshell-refresh-real.test.ts",
+  "tests/integration/openshell-upstream-real.test.ts",
+  "tests/integration/openshell-credentials-real.test.ts",
+  "tests/integration/openshell-withdrawal-real.test.ts",
+]);
+
+export function openShellHarnessError(lane, file, env) {
+  if (
+    isOpenShellLane(lane) &&
+    codexOnlyFiles.has(file) &&
+    (env.OCC_TEST_OPENSHELL_HARNESS ?? "codex") !== "codex"
+  ) {
+    return `${file} requires OCC_TEST_OPENSHELL_HARNESS=codex. Unset the selector or select codex.`;
+  }
+}
+
 // Preparation and execution must agree on the credential consumed by the selected test.
 export function openShellRequiredEnv(lane, file, requiredEnv, env) {
-  const gatewayFile = [
-    "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-    "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
-    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-    "tests/integration/openshell-refresh-real.test.ts",
-    "tests/integration/openshell-upstream-real.test.ts",
-    "tests/integration/openshell-credentials-real.test.ts",
-    "tests/integration/openshell-withdrawal-real.test.ts",
-  ].includes(file);
+  const gatewayFile =
+    codexOnlyFiles.has(file) ||
+    [
+      "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+    ].includes(file);
   const apiKey =
     isOpenShellLane(lane) &&
     ((env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
