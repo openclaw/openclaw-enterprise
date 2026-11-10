@@ -80,6 +80,10 @@ replaying it. The local proofs do not replace this installed qualification.
 
 ### Reuse the rehearsal with another runtime
 
+The [Strands sender rehearsal](strands-box.md) provides a local adapter using
+the real repository sender and native Codex with controlled dependencies. Its
+result does not qualify Box containment or an installed deployment.
+
 Use [the scenario helper](../../tests/helpers/agent-grant-rehearsal.ts) from a
 Node test. Run all four observations inside the `runAgentGrantRehearsal` callback.
 The test fails if the callback returns before `modelAfter` succeeds.

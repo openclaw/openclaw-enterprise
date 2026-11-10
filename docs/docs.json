@@ -967,7 +967,8 @@
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
-              "testing/protected-repository-custody"
+              "testing/protected-repository-custody",
+              "testing/strands-box"
             ]
           },
           {

@@ -112,6 +112,7 @@ only resources created by the run.
 - [Native Agent browser tests](native-agent-browser.md): real OIDC sign-in and scoped browser chat.
 - [Populated controller return](populated-controller-return.md) checks that the previous controller can read a draft saved by the candidate after a database restore.
 - [OpenShell](openshell.md)
+- [Strands sender rehearsal](strands-box.md): native Codex and real Git with controlled local services.
 - [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.
 - [Protected repository custody](protected-repository-custody.md): qualify dispatch and response handling on an installed controller and OpenShell pair.
 - [SSH](ssh.md)
