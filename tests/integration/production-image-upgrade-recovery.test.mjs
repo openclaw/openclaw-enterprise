@@ -40,6 +40,15 @@ import { bashString, commandShim, startCommandServer } from "../helpers/fixture-
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
+import {
+  continuityAgent,
+  continuityFixture,
+  continuityFlags,
+  continuityNamespace,
+  continuityObservation,
+  continuityPodReference,
+  continuityRevision,
+} from "../helpers/production-upgrade-continuity-fixture.ts";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 // Every case owns its command server, state, and evidence directory. Two sibling
@@ -2324,74 +2333,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
 
   // These are the supported CLI JSON responses. They model only external observations;
   // the real upgrade command owns all continuity decisions and recovery writes.
-  const continuityNamespace = "ns_00000000-0000-4000-8000-000000000001";
-  const continuityAgent = "agt_00000000-0000-4000-8000-000000000002";
-  const continuityRevision = "rev_00000000-0000-4000-8000-000000000003";
-  const continuityFlags = [
-    "--verify-agent",
-    continuityAgent,
-    "--verify-agent-namespace",
-    continuityNamespace,
-  ];
-  function continuityObservation(suffix = "before") {
-    const observedAt = "2026-11-07T00:00:00Z";
-    const pods = ["agent", "gateway"].map((role) => ({
-      role,
-      cluster: "control",
-      name: `${role}-${suffix}`,
-      uid: `${role}-${suffix}-uid`,
-      phase: "Running",
-      ready: true,
-      createdAt: observedAt,
-      // Provider-backed workloads need not use the Compute container name.
-      containers: [
-        {
-          name: "runtime",
-          state: "running",
-          reason: null,
-          ready: true,
-          restartCount: 0,
-          startedAt: observedAt,
-          lastTermination: null,
-        },
-      ],
-      events: [],
-    }));
-    return {
-      agent: {
-        id: continuityAgent,
-        namespaceId: continuityNamespace,
-        name: "Continuity check",
-        servicePrincipalId: "spn_00000000-0000-4000-8000-000000000004",
-        configurationId: "cfg_00000000-0000-4000-8000-000000000005",
-        backendId: "backend",
-        // The draft was edited to embedded; the running immutable revision is dedicated.
-        executionMode: "embedded",
-        gatewayManagedMode: true,
-        sandboxPolicyEditing: false,
-        activeRevisionId: continuityRevision,
-        desiredRuntimeState: "running",
-        status: "active",
-        harnessAuth: null,
-        createdAt: observedAt,
-      },
-      runtime: {
-        revisionId: continuityRevision,
-        observedAt,
-        pods,
-        sources: pods.map((pod) => ({
-          id: pod.role,
-          kind: "container",
-          available: true,
-          retention: "Available while the Pod is retained.",
-          pods: [{ name: pod.name, uid: pod.uid, container: "runtime", restartCount: 0 }],
-        })),
-        harness: { state: "running" },
-      },
-    };
-  }
-  function continuityFixture() {
-    return { before: continuityObservation(), after: continuityObservation("replacement") };
+  function controllerContinuityFixture(t, continuity) {
+    return fixture(t, { controllerOnly: true, continuity });
   }
 
   // Run the actual upgrade shell with independent command responses and real JSON tools.
@@ -2801,7 +2744,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const continuity = continuityFixture();
     delete continuity.after.agent.activeRevisionId;
     continuity.after.runtime.pods = [];
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    const f = await controllerContinuityFixture(t, continuity);
     await f.run();
     assert.ok(existsSync(join(f.evidence, "completed")));
     assert.equal(
@@ -2825,13 +2768,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         finishedAt: "2026-11-07T00:00:01Z",
       },
     });
-    continuity.after.runtime.sources[0].pods.push({
-      name: continuity.after.runtime.pods[0].name,
-      uid: continuity.after.runtime.pods[0].uid,
-      container: "initialize-workspace",
-      restartCount: 0,
-    });
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    continuity.after.runtime.sources[0].pods.push(
+      continuityPodReference(continuity.after.runtime.pods[0], "initialize-workspace"),
+    );
+    const f = await controllerContinuityFixture(t, continuity);
     await f.run(...continuityFlags);
     const before = JSON.parse(await readFile(join(f.evidence, "agent-continuity.json")));
     const after = JSON.parse(await readFile(join(f.evidence, "agent-continuity-after.json")));
@@ -2847,7 +2787,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       await t.test(String(revision), async (t) => {
         const continuity = continuityFixture();
         continuity.after.agent.activeRevisionId = revision;
-        const f = await fixture(t, { controllerOnly: true, continuity });
+        const f = await controllerContinuityFixture(t, continuity);
         await assert.rejects(
           f.run(...continuityFlags),
           /continuity failed; completion was not recorded/,
@@ -2877,7 +2817,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         const continuity = continuityFixture();
         continuity.before[operation + "Error"] =
           `Error: OCC operation failed (HTTP ${status}): UNAVAILABLE: selected read refused`;
-        const f = await fixture(t, { controllerOnly: true, continuity });
+        const f = await controllerContinuityFixture(t, continuity);
         await assert.rejects(
           f.run(...continuityFlags),
           /continuity check failed before writer shutdown/,
@@ -2905,7 +2845,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         pods: [],
       },
     );
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    const f = await controllerContinuityFixture(t, continuity);
     await assert.rejects(
       f.run(...continuityFlags, "--timeout-seconds", "5"),
       /continuity failed; completion was not recorded\..*Timed out/,
@@ -2965,14 +2905,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         for (const source of continuity.after.runtime.sources) {
           source.pods = continuity.after.runtime.pods
             .filter((pod) => pod.role === source.id)
-            .map((pod) => ({
-              name: pod.name,
-              uid: pod.uid,
-              container: "runtime",
-              restartCount: 0,
-            }));
+            .map((pod) => continuityPodReference(pod));
         }
-        const f = await fixture(t, { controllerOnly: true, continuity });
+        const f = await controllerContinuityFixture(t, continuity);
         await assert.rejects(
           f.run(...continuityFlags, "--timeout-seconds", "5"),
           /continuity failed; completion was not recorded\..*Timed out/,
@@ -3008,7 +2943,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     continuity.after.runtime.sources = continuity.after.runtime.sources.filter(
       (source) => source.id === "gateway",
     );
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    const f = await controllerContinuityFixture(t, continuity);
     await assert.rejects(f.run(...continuityFlags), /revision workload roles changed/);
     await assert.rejects(f.run("--resume"), /resume evidence directory/);
     const baseline = join(f.evidence, "agent-continuity.json");
@@ -3026,7 +2961,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     // The old revision still has Ready Pods when a concurrent deployment switches
     // the active revision. The final Agent read must catch that intervening change.
     continuity.after.changeRevisionAfterRuntime = replacement;
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    const f = await controllerContinuityFixture(t, continuity);
     await assert.rejects(
       f.run(...continuityFlags),
       /selected Agent changed during runtime inspection/,
@@ -3043,7 +2978,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   test("Agent continuity finishes before the terminal Helm identity check", async (t) => {
     const continuity = continuityFixture();
     continuity.after.changeHelmRevisionAfterRuntime = true;
-    const f = await fixture(t, { controllerOnly: true, continuity });
+    const f = await controllerContinuityFixture(t, continuity);
     await assert.rejects(
       f.run(...continuityFlags),
       /the final Helm release is not this submission's deployed revision/,
