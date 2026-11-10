@@ -1396,8 +1396,8 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
   // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
   // Full Integration allocation while ordinary CI uses four CPUs. Observability,
-  // Network Isolation and Plugin Status retain four CPUs here while ordinary CI
-  // qualifies two CPUs.
+  // Network Isolation, Plugin Status, and Configuration retain four CPUs here
+  // while ordinary CI qualifies two CPUs.
   const jobs = loadYaml(".github/workflows/full-integration-execution.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1426,7 +1426,12 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
       runnerFor(job, lane),
       lane === "k3d-fixture-state"
         ? "blacksmith-8vcpu-ubuntu-2404"
-        : ["k3d-observability", "k3d-fixture-network", "k3d-fixture-plugins"].includes(lane)
+        : [
+            "k3d-observability",
+            "k3d-fixture-network",
+            "k3d-fixture-plugins",
+            "k3d-fixture-configuration",
+          ].includes(lane)
           ? "blacksmith-4vcpu-ubuntu-2404"
           : ciRunners.get(lane),
       lane,
@@ -2754,7 +2759,12 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     if (netfilter) {
       assert.equal(
         row.runner,
-        ["k3d-observability", "k3d-fixture-network", "k3d-fixture-plugins"].includes(row.lane)
+        [
+          "k3d-observability",
+          "k3d-fixture-network",
+          "k3d-fixture-plugins",
+          "k3d-fixture-configuration",
+        ].includes(row.lane)
           ? "blacksmith-2vcpu-ubuntu-2404"
           : "blacksmith-4vcpu-ubuntu-2404",
         row.lane,
