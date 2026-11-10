@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  OCCPluginDriver,
+  CodexPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -436,14 +439,16 @@ describe("Presets", { concurrency: 2 }, () => {
       /[A-Za-z .]/g,
       (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-    const escaped = await fetch(fixture.origin + collection(namespace.id), {
-      method: "POST",
-      headers: {
-        ...authenticatedHeaders(await fixture.signIn()),
-        "content-type": "application/json",
-      },
-      body: encoded,
-    });
+    const escaped = await fixture.fetch(
+      new Request(fixture.origin + collection(namespace.id), {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(await fixture.signIn()),
+          "content-type": "application/json",
+        },
+        body: encoded,
+      }),
+    );
     assert.equal(escaped.status, 201, await escaped.text());
 
     const oversized = structuredClone(template);
@@ -500,6 +505,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const auditStart = fixture.audit.events.length;
       const refused = await partialWrite({
         origin: fixture.origin,
+        transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
         method,
         path,
         session,
@@ -883,9 +889,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
     await deletePreset(fixture, namespace.id, unplugged.id);
-    const pluginDriver = new OCCPluginDriver();
-    fixture.controller.registerDriver(pluginDriver);
-    fixture.controller.selectDriver("plugin", pluginDriver.id);
+    fixture.controller.installPluginDrivers([new OCCPluginDriver(), new CodexPluginDriver()]);
     const cases = [
       [
         { agent: { executionMode: "turbo" } },

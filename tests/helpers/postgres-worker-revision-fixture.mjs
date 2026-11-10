@@ -534,6 +534,7 @@ export function createWorkerRevisionFixtures(
         // How far the controller clock that stamps the admission runs ahead of PostgreSQL's
         // (negative: behind). The store restamps admission on its own clock (finding 1195).
         controllerSkewMs = 0,
+        compute: admittedCompute = { id: compute.id, implementation: compute.implementation },
       } = {},
     ) {
       let harnessAuth;
@@ -592,8 +593,8 @@ export function createWorkerRevisionFixtures(
         configurationKind: "agent",
         configurationGeneration: 1,
         executionAdmission: { version: 2, mode: "unprotected" },
-        harness: approvedHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
+        harness: { ...approvedHarness, overrides: {}, configuration: {} },
+        compute: { ...admittedCompute },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
@@ -607,7 +608,15 @@ export function createWorkerRevisionFixtures(
         await state.transact(async (unit) => {
           const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
-          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          const sources = await controller.admitCredentialSources(
+            unit,
+            actorId,
+            owner,
+            sandbox,
+            undefined,
+            candidate.harness,
+            compute,
+          );
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
@@ -619,6 +628,7 @@ export function createWorkerRevisionFixtures(
               sandbox.id,
               repositoryCredentials,
               chosen,
+              candidate.harness.configuration,
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
@@ -654,6 +664,12 @@ export function createWorkerRevisionFixtures(
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
+        candidate.harness.configuration =
+          compute.resolveHarnessConfiguration?.(
+            candidate.harness,
+            harnessAuth,
+            candidate.configuration,
+          ) ?? {};
         const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
         if (admission !== undefined) {
           candidate.compute = { ...candidate.compute, admission };
@@ -820,6 +836,10 @@ export function createWorkerRevisionFixtures(
     // every resource kind (["delete"] also drops delete secret). The copied roles keep the
     // source role's scope, usually Installation-wide, so Namespace teardown never removes them;
     // like the copied identity they live until the per-file database is dropped.
+    /**
+     * @param {string} actorId
+     * @param {{ withoutActions?: string[] }} [options]
+     */
     async function copyActorGrants(actorId, { withoutActions = [] } = {}) {
       await observerPool.query(
         `INSERT INTO occ.iam_identities (id, kind, issuer, subject)

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, connect } from "node:net";
 import test from "node:test";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import { createPostgresPool, PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
@@ -280,9 +280,8 @@ test(
     const leaseDurationMs = 1_500;
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const relay = await startDatabaseRelay(databaseUrl);
-    // The production worker pool settings: a silent query is abandoned only after 60 s.
-    const workerPool = new Pool({
-      connectionString: relay.url,
+    // Use the production pool: resetting the relay drops idle clients as well as active queries.
+    const workerPool = await createPostgresPool(relay.url, {
       max: 4,
       ...workerDatabasePoolOptions(60_000),
     });
@@ -590,8 +589,7 @@ async function heldRenewalHandoff(context, stage) {
   const leaseDurationMs = 1_500;
   const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
   const relay = await startDatabaseRelay(databaseUrl);
-  const stalePool = new Pool({
-    connectionString: relay.url,
+  const stalePool = await createPostgresPool(relay.url, {
     max: 4,
     ...workerDatabasePoolOptions(60_000),
   });
@@ -808,15 +806,17 @@ test(
       { Pool },
       { createControllerWorker },
       { createDevelopmentComputeDriver },
-      { DEVELOPMENT_HARNESS_DESCRIPTOR },
+      { PRODUCTION_HARNESS_DESCRIPTOR },
+      { CodexPluginDriver },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { authorizedPrincipal, ensureInstallation },
+      { authorizedPrincipal, createBackendWorkerDrivers, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../../apps/controller/src/drivers/plugin/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
       import("../helpers/postgres-backend-state.mjs"),
@@ -855,7 +855,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: { method: "runtime" },
-      executionMode: "embedded",
+      executionMode: "dedicated",
       gatewayManagedMode: true,
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
@@ -873,7 +873,12 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       gatewayManagedMode: owner.gatewayManagedMode,
-      harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
+      harness: {
+        ...PRODUCTION_HARNESS_DESCRIPTOR,
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: compute.id,
         implementation: compute.implementation,
@@ -912,30 +917,43 @@ test(
       });
     });
 
-    const prepareStarted = Promise.withResolvers();
-    worker = createControllerWorker({
-      pool: workerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...compute,
-        async prepareRevision(candidate) {
-          prepareStarted.resolve();
-          await releasePreparation.promise;
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
+    const warningWorker = (pool, beforePrepare) =>
+      createControllerWorker({
+        pool,
+        installationId: installation.id,
+        pollIntervalMs: 20,
+        leaseDurationMs: 30_000,
+        maxAttempts: 5,
+        drivers: {
+          ...createBackendWorkerDrivers(
+            {
+              ...compute,
+              async prepareRevision(candidate) {
+                await beforePrepare?.();
+                return {
+                  namespaceId: candidate.namespaceId,
+                  agentId: candidate.agentId,
+                  revisionId: candidate.id,
+                  ready: true,
+                  warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+                };
+              },
+            },
+            [],
+          ),
+          pluginDrivers: [new CodexPluginDriver()],
         },
-      },
+      });
+    let preparing = false;
+    worker = warningWorker(workerPool, async () => {
+      preparing = true;
+      await releasePreparation.promise;
     });
     await worker.start();
-    await prepareStarted.promise;
+    await waitFor(
+      "the first worker to prepare the pinned Codex revision",
+      async () => preparing || undefined,
+    );
 
     const original = await observerPool.query(
       `SELECT state, claim_token, attempt_count
@@ -979,26 +997,7 @@ test(
     worker = undefined;
     await recoveryQueue.retry(recovered, { code: "TEST_RECOVERY_HANDOFF" });
 
-    const recoveredCompute = createDevelopmentComputeDriver();
-    worker = createControllerWorker({
-      pool: recoveredWorkerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...recoveredCompute,
-        async prepareRevision(candidate) {
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
-        },
-      },
-    });
+    worker = warningWorker(recoveredWorkerPool);
     await worker.start();
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {

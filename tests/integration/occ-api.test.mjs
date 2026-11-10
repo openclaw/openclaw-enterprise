@@ -1,3 +1,4 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
@@ -44,7 +45,7 @@ import {
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -95,7 +96,8 @@ function childEnvironment(port, overrides = {}) {
     NODE_ENV: "development",
     OCC_HOST: "127.0.0.1",
     OCC_PORT: String(port),
-    OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+    OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
     OCC_AUTH_SECRET: "openclaw-development-auth-secret-minimum-32-bytes",
     ...overrides,
   };
@@ -185,6 +187,7 @@ async function assertUnsafeStartupRejected() {
 
 async function request(url, method, path, options = {}) {
   const headers = {
+    host: "console.oce.localhost",
     ...(options.identity === false ? {} : authenticatedHeaders(options.session)),
     ...options.headers,
   };
@@ -197,7 +200,7 @@ async function request(url, method, path, options = {}) {
     body = options.rawBody;
   }
 
-  const response = await fetch(`${url}${path}`, {
+  const response = await fetchLoopback(`${url}${path}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -555,6 +558,7 @@ async function createInjectedFixture(options = {}) {
         : {}),
       development: {
         enabled: true,
+        browserOrigin: "https://console.oce.localhost",
         installationId,
       },
       auth: authFixture.auth,
@@ -684,7 +688,7 @@ async function injectedRequest(app, method, pathname, options = {}) {
     payload = JSON.stringify(options.body);
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(payload === undefined ? {} : { body: payload }),
@@ -1343,6 +1347,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
           const pending = deploy(actor, input, body, ...rest);
           if (change !== "stateful key") {
             input.agentId = missingAgentId;
+            input.harnessOverrides = { unsupported: true };
             body.expectedGeneration = 2;
           }
           return pending;
@@ -1740,9 +1745,10 @@ test("first-deployment CLI recovers a lost committed response with the original 
               chunks.push(chunk);
             }
             forwarded.push({ method: incoming.method, path: incoming.url });
-            const response = await fetch(`${origin}${incoming.url}`, {
+            const response = await fetchLoopback(`${origin}${incoming.url}`, {
               method: incoming.method,
               headers: {
+                host: "console.oce.localhost",
                 "x-api-key": incoming.headers["x-api-key"],
                 ...(incoming.headers["content-type"] === undefined
                   ? {}
@@ -3098,7 +3104,7 @@ test("credential source registration names the missing Credential Gateway", asyn
   );
 });
 
-test("Agent reads return the bound credentialSources; revision reads return only source IDs", async () => {
+test("Agent drafts and revisions support up to 64 distinct credential sources and expose only their IDs", async () => {
   const fixture = await createInjectedFixture({
     computeDriver: createReadyComputeDriver("compute-credential-sources", {
       validateHarnessAuth() {},
@@ -3165,14 +3171,23 @@ test("Agent reads return the bound credentialSources; revision reads return only
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const source = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    {
-      body: { name: "registry", type: "registry", config: { host: "registry.example.com" } },
-    },
-  );
-  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const sources = [];
+  for (let i = 0; i < 65; i++) {
+    const registered = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: `registry-${i}`,
+          type: "registry",
+          config: { host: `registry-${i}.example.com` },
+        },
+      },
+    );
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+    sources.push({ sourceId: registered.data.id });
+  }
+  const credentialSources = sources.slice(0, 64);
   const configuration = await createConfiguration(controller, namespace.id, {
     agents: {
       defaults: {
@@ -3187,11 +3202,11 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }],
+      credentialSources,
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(created.data.credentialSources, credentialSources);
   // An object array declared uniqueItems: listing one source twice names the rule.
   const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
@@ -3199,7 +3214,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+      credentialSources: [sources[0], sources[0]],
     },
   });
   assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
@@ -3211,9 +3226,15 @@ test("Agent reads return the bound credentialSources; revision reads return only
     { path: "/credentialSources", code: "INVALID_VALUE" },
   ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
-    { sourceId: source.data.id },
-  ]);
+  const overflow = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources: sources },
+  });
+  assertApiError(overflow, 400, "INVALID_REQUEST");
+  assert.match(overflow.body.error.message, /credentialSources.*at most 64 items/);
+  assert.deepEqual(
+    (await controller.request("GET", agentPath)).data.credentialSources,
+    credentialSources,
+  );
 
   const roleId = `credential-source-operate-${created.data.id}`;
   fixture.state.roles.push({
@@ -3221,15 +3242,17 @@ test("Agent reads return the bound credentialSources; revision reads return only
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
-  fixture.state.bindings.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: created.data.servicePrincipalId,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: source.data.id,
-  });
+  for (const { sourceId } of credentialSources) {
+    fixture.state.bindings.push({
+      id: `${roleId}-${sourceId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: created.data.servicePrincipalId,
+      roleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+  }
   fixture.state.identities.push({
     kind: "service_principal",
     id: created.data.servicePrincipalId,
@@ -3239,10 +3262,10 @@ test("Agent reads return the bound credentialSources; revision reads return only
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   // The gateway and type frozen at admission are private admission metadata.
-  assert.deepEqual(deployed.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(deployed.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(revision.data.credentialSources, credentialSources);
 });
 
 test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
@@ -3729,7 +3752,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   assert.equal(
     unknown.body.error.message,
-    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
   );
 
   // No route lists Configurations; the Agent and Secret collections stay empty.
@@ -5498,7 +5521,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
+  const capabilities = installation.data.capabilities.pluginCatalogs[0].pluginPolicies;
   assert.deepEqual(capabilities.driver, {
     id: "occ-plugin",
     implementation: "occ/openclaw-plugin",
@@ -5681,7 +5704,7 @@ test("Agent plugin reviewer selection preserves omission and rejects unsupported
   const namespace = await createNamespace(controller, "plugin-reviewer-api");
   // The automatic reviewer below needs an explicit on-request session policy at save.
   const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "on-request" } } } } },
   });
   const pluginDriver = new CodexPluginDriver();
@@ -5689,7 +5712,7 @@ test("Agent plugin reviewer selection preserves omission and rejects unsupported
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
+  const capabilities = installation.data.capabilities.pluginCatalogs[0].pluginPolicies;
   assert.equal(capabilities.driver.id, "codex-plugin");
   assert.deepEqual(capabilities.toolDefaults.reviewer, ["human", "auto"]);
   assert.deepEqual(capabilities.tools.reviewer, []);
@@ -5931,8 +5954,8 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const plugins = { [diffsPluginId]: pluginPolicy() };
   const message = (harness) =>
-    `The Installation's Plugin Driver runs plugins only in ${harness}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`;
-  const assertRefused = (refused, label, harness = "an OpenClaw Harness") => {
+    `No Plugin Driver is enabled for the ${harness} Harness. Remove the Agent's plugins or enable its catalog.`;
+  const assertRefused = (refused, label, harness = "codex") => {
     assertApiError(refused, 400, "INVALID_REQUEST", label);
     assert.equal(refused.body.error.message, message(harness), label);
   };
@@ -5972,34 +5995,20 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     namespace.id,
     "ready",
   );
-  await bindHarnessKey(controller.fixture, namespace.id, created.data);
-  // An Agent stored before this check: deployment refuses it before admitting a revision.
-  await controller.fixture.controller.transact((unit) =>
-    unit.agents.updateConfiguration(
-      namespace.id,
-      created.data.id,
-      codex.id,
-      undefined,
-      undefined,
-      undefined,
-      plugins,
-    ),
-  );
-  assertRefused(await controller.request("POST", `${agentPath}/deploy`), "deploy");
-  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
-  // The refusal's advice works: clearing the plugins saves.
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: codex.id, plugins: {} },
-  });
-  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  await bindHarnessKey(controller.fixture, namespace.id, embedded.data);
+  // Removing an installed catalog prevents another deployment of an Agent that already selected it.
+  const openclawPath = `${agents}/${embedded.data.id}`;
+  controller.fixture.controller.installPluginDrivers([]);
+  const missing = await controller.request("POST", `${openclawPath}/deploy`);
+  assertApiError(missing, 501, "NOT_IMPLEMENTED");
+  assert.deepEqual((await controller.request("GET", `${openclawPath}/revisions`)).data, []);
 
-  // The Codex Plugin Driver runs in dedicated Codex or embedded OpenClaw, not dedicated
-  // OpenClaw; Create Agent's preflight refuses the pair as create does.
+  // An Installation offering only Codex plugins refuses both OpenClaw modes at save.
   const codexDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(codexDriver);
   controller.fixture.controller.selectDriver("plugin", codexDriver.id);
   const codexPlugins = { [linearPluginId]: { enabled: true } };
-  const codexHarness = "a dedicated Codex Harness or embedded OpenClaw Harness";
+  const codexHarness = "openclaw";
   assertRefused(
     await controller.request("POST", agents, {
       body: {
@@ -6026,7 +6035,7 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   const codexEmbedded = await controller.request("POST", agents, {
     body: { name: "embedded-codex-plugins", configurationId: openclaw.id, plugins: codexPlugins },
   });
-  assert.equal(codexEmbedded.status, 201, JSON.stringify(codexEmbedded.body));
+  assertRefused(codexEmbedded, "embedded OpenClaw cannot use the Codex catalog", codexHarness);
 });
 
 test("a saved Google package refuses an incompatible Agent mode, Harness or Compute", async () => {
@@ -6051,8 +6060,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
   const driver = new OCCPluginDriver();
-  controller.fixture.controller.registerDriver(driver);
-  controller.fixture.controller.selectDriver("plugin", driver.id);
+  controller.fixture.controller.installPluginDrivers([driver, new CodexPluginDriver()]);
   const packageId = "occ-plugin:google@1.0.0";
   const plugins = { [packageId]: { enabled: true } };
   const agentsPath = `/namespaces/${namespace.id}/agents`;
@@ -6109,7 +6117,24 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   await changeHarness("codex");
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
-  assert.equal(deploy.body.error.message, mode.body.error.message);
+  assert.match(deploy.body.error.message, /Clear the Agent's existing plugin selections/);
+  // A second Agent in the same Installation can select and admit a plugin through Codex.
+  const codexAgent = await controller.request("POST", agentsPath, {
+    body: {
+      name: "Codex Agent",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assert.equal(codexAgent.status, 201, JSON.stringify(codexAgent.body));
+  await bindHarnessKey(controller.fixture, namespace.id, codexAgent.data);
+  const codexRevision = await controller.request(
+    "POST",
+    `${agentsPath}/${codexAgent.data.id}/deploy`,
+  );
+  assert.equal(codexRevision.status, 202, JSON.stringify(codexRevision.body));
+  assert.equal(codexRevision.data.plugins.driver.id, "codex-plugin");
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
@@ -6170,7 +6195,10 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   }
   // Every session runs as a sole roster entry, so its tools.deny counts too (finding 1848).
   const entryDenying = await createConfiguration(controller, namespace.id, {
-    agents: { entries: { main: { tools: { deny: ["*"] } } } },
+    agents: {
+      ...createHarnessConfiguration("openclaw", "gpt-5.1").agents,
+      entries: { main: { tools: { deny: ["*"] } } },
+    },
   });
   const refusedEntry = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "tool-deny-agent", configurationId: entryDenying.id, plugins },
@@ -6182,7 +6210,7 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   );
   // The primary model's tools.byProvider deny list is its own deny step (finding 1855).
   const providerDenying = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "openai/gpt-5.1" } },
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { byProvider: { openai: { deny: ["*"] } } },
   });
   const refusedProvider = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -6409,7 +6437,7 @@ test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "codex-plugin-approvers-api");
   const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
   });
   const pluginDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(pluginDriver);
@@ -6417,7 +6445,7 @@ test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide
   // The Console reads this capability to hide plugin and tool approver fields for Codex.
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities.pluginPolicies.approvers, {
+  assert.deepEqual(installation.data.capabilities.pluginCatalogs[0].pluginPolicies.approvers, {
     agent: true,
     plugin: false,
     tools: false,
@@ -6666,6 +6694,22 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   });
   assertApiError(foreignUpdate, 403, "FORBIDDEN");
 
+  // A catalog refusal must not bypass the exact grant on a newly requested source.
+  const requestedSourceId = `cs_${randomUUID()}`;
+  const deniedSource = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      credentialSources: [{ sourceId: requestedSourceId }],
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assertApiError(deniedSource, 403, "FORBIDDEN");
+  assert.deepEqual(controller.fixture.auditSink.events.at(-1).authorization.resource, {
+    kind: "credential_source",
+    namespaceId: namespace.id,
+    id: requestedSourceId,
+  });
+
   const updated = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
     body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
   });
@@ -6717,7 +6761,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     assertApiError(response, 400, "INVALID_REQUEST");
     assert.match(
       response.body.error.message,
-      /^A plugin selection names a plugin that the selected Plugin Driver \(codex-plugin\) does not offer: occ-plugin:diffs\./,
+      /No Plugin Driver is enabled for the openclaw Harness/,
     );
     assert.equal(Object.hasOwn(response.body.error, "details"), false);
   }
@@ -7004,7 +7048,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
   // Failed admissions create no pending revision that could keep a detached account referenced.
   const deletedDetached = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${accountPath}`, {
+    new Request(`https://console.oce.localhost${accountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -7015,7 +7059,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${unusedAccountPath}`, {
+    new Request(`https://console.oce.localhost${unusedAccountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -7744,7 +7788,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     assert.equal(invalidReplacement.status, 400);
   }
 
-  for (const body of [{ configuration: {} }, { draft_spec: {} }, {}]) {
+  for (const body of [{ configuration: {} }, { draft_spec: {} }]) {
     const invalidDeployment = await controller.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -8672,6 +8716,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     `/namespaces/${namespace.data.id}/agents/provision`,
     {
       body: provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
         plugins: {
           [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
         },
@@ -8693,7 +8738,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     plugins: { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } },
   });
   automaticReviewer.configuration.values = {
-    ...automaticReviewer.configuration.values,
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
   };
   const refusedReviewer = await injectedRequest(
@@ -8720,7 +8765,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     plugins: { [diffsPluginId]: pluginPolicy() },
   });
   deniedTools.configuration.values = {
-    ...deniedTools.configuration.values,
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { deny: ["*"] },
   };
   const refusedDenial = await injectedRequest(
@@ -8757,7 +8802,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       code: "INVALID_REQUEST",
       message:
-        "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.",
+        "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.",
     },
   );
   assert.deepEqual(
@@ -8916,7 +8961,7 @@ test("bodyless OCC routes reject request payloads before IAM or domain side effe
         headers: {
           ...authenticatedHeaders(app.defaultSession),
           "content-type": "application/json",
-          host: "127.0.0.1",
+          host: "console.oce.localhost",
         },
         payload: JSON.stringify({ unexpected: "request body" }),
         remoteAddress: "127.0.0.1",
@@ -9247,6 +9292,8 @@ test("two Namespaces become independently ready and deletion tombstones only its
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
   assert.deepEqual(readyDeployment.data.compute, {
     id: "compute-integration",
@@ -9580,24 +9627,27 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
+async function plaintextGatewayAdmissionFixture(nativeCompute, bootstrapLabel, namespaceSlug) {
+  // The API/state fixture owns lifecycle and credentials; the actual selected
+  // Driver owns admission. No worker or remote backend is dispatched here.
+  const computeDriver = createProvisioningCapableComputeDriver();
+  computeDriver.validateGatewaySettings = (configuration) =>
+    nativeCompute.validateGatewaySettings?.(configuration);
+  const controller = await configuredController({ computeDriver });
+  const { fixture } = controller;
+  await bootstrap(controller, bootstrapLabel);
+  const namespace = await createNamespace(controller, namespaceSlug);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  return { fixture, controller, namespace };
+}
+
 test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Codex approval ${kind}`);
-      const namespace = await createNamespace(controller, `codex-approval-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Codex approval ${kind}`,
+        `codex-approval-${kind}`,
       );
       const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
@@ -9665,21 +9715,10 @@ test("deployment refuses a Codex approval policy the Gateway refuses across Comp
 test("deployment refuses native listener TLS before admitting a revision across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Native HTTP ${kind}`);
-      const namespace = await createNamespace(controller, `native-http-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Native HTTP ${kind}`,
+        `native-http-${kind}`,
       );
       for (const [name, tls, expectedStatus] of [
         ["enabled", { enabled: true, certPath: "/owned/cert.pem" }, 409],
@@ -10600,6 +10639,38 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   }
 });
 
+async function createSlackValidationFixture(controller, namespaceName) {
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, namespaceName);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const base = `/namespaces/${namespace.id}`;
+  const makeSecret = async (name, value) => {
+    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
+    assert.equal(result.status, 201);
+    return result.data;
+  };
+  const app = await makeSecret("app", "xapp-synthetic-app");
+  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
+  const model = await makeSecret("model", "synthetic-model");
+  return { fixture, namespace, base, app, bot, model };
+}
+
+async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app, bot }) {
+  await bindHarnessKey(fixture, namespaceId, agent);
+  for (const secret of [app, bot]) {
+    fixture.state.bindings.push({
+      id: `slack-${secret.id}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: `harness-key-${agent.id}`,
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  }
+}
+
 test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules
   // Configuration save applies. That check reads only an env SecretRef, so every refused string
@@ -10617,19 +10688,10 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     },
     configurationDriver,
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-reference-forms");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-reference-forms",
+  );
   let calls = 0;
   const channel = new SlackChannelDriver(async () => {
     calls++;
@@ -10742,19 +10804,10 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-admission");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-admission",
+  );
   let calls = 0;
   let response = { ok: true, bot_id: "B123", team_id: "T123" };
   const channel = new SlackChannelDriver(async (url, options) => {
@@ -10867,18 +10920,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     body: { name: "slack-agent", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   response = { ok: false, error: "invalid_auth" };
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
@@ -10942,19 +10984,10 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-whole-reference");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-whole-reference",
+  );
   const tokens = [];
   const channel = new SlackChannelDriver(async (url, options) => {
     assert.equal(new URL(url).pathname, "/api/auth.test");
@@ -11013,18 +11046,7 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     body: { name: "slack-whole-reference", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
   assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
@@ -11035,19 +11057,10 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-no-route");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-no-route",
+  );
   // Finding 2521: production composition builds the Driver with expectProxy, since its API
   // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
   // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
@@ -11132,18 +11145,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     body: { name: "slack-no-route", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
@@ -11241,7 +11243,7 @@ test("managed MCP discovery refuses private DNS answers and redirects", async ()
   );
 });
 
-test("deploying Slack freezes the Agent's discovered tool selection and keeps its credential attachment independent", async (t) => {
+test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async (t) => {
   const sourceConfig = {
     protocol: "mcp",
     host: "mcp.slack.com",
@@ -11397,10 +11399,12 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
   });
   await bootstrap(controller);
   const pluginDriver = new OCCPluginDriver();
-  for (const driver of [sandbox, gateway, pluginDriver]) {
+  for (const driver of [sandbox, gateway]) {
     controller.fixture.controller.registerDriver(driver);
     controller.fixture.controller.selectDriver(driver.capability, driver.id);
   }
+  // A saved Agent selects the MCP credential and endpoint from its own Harness catalog.
+  controller.fixture.controller.installPluginDrivers([new CodexPluginDriver(), pluginDriver]);
   const namespace = await createNamespace(controller, "slack-mcp-admission");
   await controller.fixture.platformState.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
@@ -11513,6 +11517,37 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
   assert.match(forbidden.body.error.message, /CredentialSource operate/);
   assert.equal(tokenReads, 0);
   assert.deepEqual(upstream, []);
+  // The editor loses source access while the external Configuration Driver resolves the
+  // pre-dispatch placement. Their grant must be checked again before the peer sees a bearer.
+  const editorSource = {
+    id: "editor-slack",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: editor.principal.id,
+    roleId,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+  };
+  state.bindings.push(editorSource);
+  const { configurationDriver } = controller.fixture;
+  const readConfiguration = configurationDriver.read;
+  beforeTokenUse = () => {
+    configurationDriver.read = async (...args) => {
+      const saved = await readConfiguration.apply(configurationDriver, args);
+      configurationDriver.read = readConfiguration;
+      assert.equal(state.bindings.pop(), editorSource);
+      return saved;
+    };
+  };
+  const revoked = await controller.request("POST", `${agentPath}/plugins/details`, {
+    body: discovery,
+    session: editor.session,
+  });
+  assertApiError(revoked, 403, "FORBIDDEN");
+  assert.equal(tokenReads, 1);
+  assert.deepEqual(upstream, []);
+  beforeTokenUse = () => {};
+  tokenReads = 0;
   state.bindings.pop();
 
   const agentBinding = state.bindings.pop();
@@ -11578,42 +11613,42 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
   assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
   assert.equal(slot.toolDiscovery, true);
-  const save = (toolNames) =>
-    controller.request("PATCH", agentPath, {
-      body: {
-        configurationId: configuration.id,
-        plugins: {
-          [pluginId]: {
-            enabled: true,
-            driverPolicy: {
-              releaseSha256: slot.releaseSha256,
-              credentials: { account: source.data.id },
-              toolNames,
-            },
-          },
-        },
+  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const pluginsFor = (toolNames) => ({
+    ...google,
+    [pluginId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: slot.releaseSha256,
+        credentials: { account: source.data.id },
+        toolNames,
       },
+    },
+  });
+  const save = (plugins) =>
+    controller.request("PATCH", agentPath, {
+      body: { configurationId: configuration.id, plugins },
     });
-  const refused = await save(["slack_*"]);
+  const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
-  const saved = await save(["slack_send_message"]);
+  const approved = pluginsFor(["slack_send_message"]);
+  const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.deepEqual(deployed.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(deployed.data.plugins.plugins, approved);
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, plugins: {} },
-  });
+  const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.data.plugins, google);
   assert.deepEqual(cleared.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(revision.data.plugins.plugins, approved);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
@@ -11655,19 +11690,23 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   // Each step compares discovery with what saving the package on this Agent returns.
   const discoverAndSave = async () => {
     const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
-    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+
     const details = await controller.request("POST", `${path}/plugins/details`, {
       body: { pluginId: packageId },
     });
     const save = await controller.request("PATCH", path, {
       body: { configurationId: configuration.id, plugins: { [packageId]: { enabled: true } } },
     });
-    return { ids: catalog.data.plugins.map((entry) => entry.id), details, save };
+    return { catalog, details, save };
   };
 
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
-  assert.deepEqual(offered.ids, ["occ-plugin:google@1.0.0", packageId]);
+  assert.equal(offered.catalog.status, 200);
+  assert.deepEqual(
+    offered.catalog.data.plugins.map((entry) => entry.id),
+    ["occ-plugin:google@1.0.0", packageId],
+  );
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
@@ -11677,7 +11716,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
     ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
     [
       "occ-plugin:nope@1.0.0",
-      "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+      "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
     ],
   ]) {
     const unknown = await controller.request("POST", `${path}/plugins/details`, {
@@ -11709,11 +11748,13 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   );
   assert.equal(codex.status, 200, JSON.stringify(codex.body));
   const codexOffer = await discoverAndSave();
-  assert.deepEqual(codexOffer.ids, []);
+  assertApiError(codexOffer.catalog, 501, "NOT_IMPLEMENTED");
+  assertApiError(codexOffer.details, 501, "NOT_IMPLEMENTED");
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
-  assert.match(codexOffer.save.body.error.message, /Slack requires a dedicated OpenClaw/);
-  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
-  assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
+  assert.match(
+    codexOffer.save.body.error.message,
+    /No Plugin Driver is enabled for the codex Harness/,
+  );
 
   // Back on OpenClaw, Compute that cannot deliver the package refuses it the same way.
   const openclaw = await controller.request(
@@ -11731,7 +11772,8 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
     controller.fixture.controller.selectDriver(replacement.capability, replacement.id);
   }
   const computeOffer = await discoverAndSave();
-  assert.deepEqual(computeOffer.ids, []);
+  assert.equal(computeOffer.catalog.status, 200);
+  assert.deepEqual(computeOffer.catalog.data.plugins, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
   assert.equal(computeOffer.save.body.error.message, "Slack requires Kubernetes Compute.");
   assertApiError(computeOffer.details, 400, "INVALID_REQUEST");

@@ -19,12 +19,15 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  deploymentStatusResponse,
+  persistedDeploymentError,
+  routeFailedDeployment,
   AGENT_READ,
   apiRequests,
+  writeRequests,
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
-  deploymentStatusResponse as legacyDeploymentStatusResponse,
   detailUrl,
   fileBrowser,
   grantSecretOperate,
@@ -33,20 +36,21 @@ import {
   nativeValues,
   newPage,
   nextFrames,
-  persistedDeploymentError as legacyPersistedDeploymentError,
   recordLayoutShifts,
-  routeFailedDeployment,
   routeOneVersionPerPage,
-  settledFetches as legacySettledFetches,
   settledView,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches as legacySettledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentDetailsOpen as legacyDeploymentDetailsOpen,
   deploymentRecordUrl,
@@ -70,21 +74,7 @@ import {
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
 
-type DeploymentResponseOptions = {
-  status: string;
-  error?: ReturnType<typeof persistedDeploymentError> | null;
-  attempt?: { at: Date; code: string };
-  nextAttemptAt?: string;
-};
-function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === "function";
-}
-function deploymentStatusResponse(revision: Revision, options: DeploymentResponseOptions) {
-  const respond: unknown = legacyDeploymentStatusResponse;
-  assert.ok(isCallable(respond));
-  const response = record(respond(revision, options));
-  return { json: record(response.json) };
-}
+type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
 const versionChooser = (scope: Page | Locator) =>
   scope.getByLabel("Viewing version", { exact: true });
@@ -119,12 +109,6 @@ declare global {
 async function requiredAnswer(answer: Promise<Parameters<Route["fulfill"]>[0]> | null) {
   assert.ok(answer);
   return answer;
-}
-
-function persistedDeploymentError(...args: Parameters<typeof legacyPersistedDeploymentError>) {
-  const error = legacyPersistedDeploymentError(...args);
-  assert.ok(error);
-  return error;
 }
 
 // Narrow raw responses and domain-specific values at their usages.
@@ -223,7 +207,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
   await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
   assert.equal(await heading.evaluate((node) => node.matches(":focus")), true);
   assert.deepEqual(
-    requests.filter((request) => !["GET", "HEAD"].includes(request.method)),
+    writeRequests(requests).filter((request) => request.method !== "HEAD"),
     [],
   );
 });
@@ -874,6 +858,8 @@ for (const readback of ["stop status", "deployment"]) {
     await page.getByRole("dialog").getByRole("button", { name: "Stop Agent", exact: true }).click();
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
     await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    // The cancellation notice stays visible during the read; wait before another actor deploys.
+    await waitForEnabled(stopRegion.getByRole("button", { name: "Refresh stop status" }));
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 
     // Another actor deploys. A lifecycle read must retire this viewer's earlier Stop result,
@@ -960,7 +946,7 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   const { fixture, namespace, agent, page } = await agentPage(t, "Reread fails", "Reread fails");
   const first = await fixture.deployAgent(namespace.id, agent.id);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
-  let status = "queued";
+  let status: DeploymentResponseOptions["status"] = "queued";
   await page.route(recordUrl, (route) =>
     route.fulfill(deploymentStatusResponse(first, { status })),
   );
@@ -2045,6 +2031,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "REPOSITORY_DRIVER_MISMATCH",
       "REPOSITORY_EXECUTION_CHANGED",
       "REPOSITORY_EXECUTION_CLOSED",
+      "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
       "REPOSITORY_EXECUTION_REPLACED",
       "REPOSITORY_EXECUTION_UNVERIFIED",
       "REPOSITORY_GIT_ROUTE_BLOCKED",
@@ -2092,6 +2079,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "INVALID_REVISION_OWNER",
       "INVALID_TARGET",
       "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      "PLUGIN_DRIVER_MISMATCH",
       "REPOSITORY_BINDING_UNAVAILABLE",
       "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       "REPOSITORY_GIT_SENDER_UNQUALIFIED",
@@ -2555,12 +2543,17 @@ test("a late first deployment read moves nothing above the version tabs", async 
   assert.equal(await freshnessNote.evaluate((node) => node.checkVisibility()), true);
 
   const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
-  for (const c of [
+  const outcomes: {
+    status: DeploymentResponseOptions["status"] | "read error";
+    label: string;
+    stillOn: string[];
+  }[] = [
     { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
     { status: "running", label: "In progress", stillOn: ["draft", "version"] },
     { status: "failed", label: "Failed", stillOn: [] },
     { status: "read error", label: "Unavailable", stillOn: ["draft"] },
-  ]) {
+  ];
+  for (const c of outcomes) {
     for (const view of ["draft", "version"]) {
       const name = `${c.status} on the ${view}`;
       let respond: ((value: Parameters<Route["fulfill"]>[0]) => void) | undefined;
@@ -3158,7 +3151,7 @@ test("a deploy's details keep their queued height when its first claim starts", 
     { width: 1440, height: 900 },
     "Claimed",
   );
-  let record = { status: "queued" };
+  let record: DeploymentResponseOptions = { status: "queued" };
   await page.route(recordUrl, (route) => route.fulfill(deploymentStatusResponse(pending, record)));
   await open("Queued");
   const now = await page.evaluate(() => Date.now());
@@ -3291,7 +3284,7 @@ for (const viewport of [
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
       route.fulfill({
         json: {
-          data: { status: "available", url: "https://admin.example.test/" },
+          data: { status: "available", mode: "admin", url: "https://admin.example.test/" },
           meta: { requestId: "req_test_failing_deploy" },
         },
       }),
@@ -4284,7 +4277,7 @@ for (const viewport of [
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
       ["done", "Done: ", "Saved · API key · Secret configured"],
-      ["pending", "Not done: ", "Creates an immutable version from the saved draft"],
+      ["pending", "Not done: ", "Use the Installation default at deployment."],
     ]);
 
     // Deploy is the page's one primary.

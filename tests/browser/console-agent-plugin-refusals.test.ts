@@ -17,7 +17,7 @@ import {
   nativeValues,
   newPage,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 import { liftRestriction } from "../helpers/iam-grants.mjs";
 

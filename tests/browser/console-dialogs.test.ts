@@ -17,8 +17,8 @@ import {
   nativeValues,
   newPage,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

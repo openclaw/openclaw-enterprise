@@ -62,7 +62,13 @@ export type CreatedRevision = {
   credentialSources: unknown;
   pluginApprovers?: unknown;
   plugins?: { driver: unknown; plugins: unknown };
-  harness: { id: unknown; version: string; mode: unknown };
+  harness: {
+    id: unknown;
+    version: string;
+    mode: unknown;
+    overrides: Record<string, unknown>;
+    configuration: Record<string, unknown>;
+  };
   compute: { id: string; implementation: string };
   sandboxDriverId?: string;
   servicePrincipalId: unknown;
@@ -86,6 +92,7 @@ type UnreadableRevision = Pick<
 };
 type StoredRevision = CreatedRevision | UnreadableRevision;
 type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
+  harnessOverrides?: Record<string, unknown>;
   candidateSuperseded?: boolean;
   candidateSelected?: boolean;
   agentId?: string;
@@ -106,6 +113,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   pluginCapabilities?: { driver: unknown };
   policyState?: string;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: ReturnType<typeof candidateDeploymentError>;
   cleanupStatus?: string;
@@ -307,7 +315,21 @@ export function createAgentLifecycle(
             },
           }
         : {}),
-      harness: { id: harnessId, version: "demo", mode: owner.executionMode },
+      harness: {
+        id: harnessId,
+        version: "demo",
+        mode: owner.executionMode,
+        overrides: structuredClone(scenario.harnessOverrides ?? {}),
+        configuration: {
+          modelProvider: structuredClone(
+            scenario.harnessOverrides?.modelProvider ?? {
+              baseUrl: "https://api.openai.com/v1",
+              protocol: "openai-responses",
+              supportsStandaloneWebSearch: false,
+            },
+          ),
+        },
+      },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
       ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
@@ -584,6 +606,14 @@ export function createAgentLifecycle(
           .map((item) => item.revision),
       );
       const next = snapshot(saved, nextId("rev"), lastRevision + 1);
+      next.harness.overrides = spreadProperties(optionalProperty(body, "harnessOverrides") ?? {});
+      next.harness.configuration = {
+        modelProvider: next.harness.overrides.modelProvider ?? {
+          baseUrl: "https://api.openai.com/v1",
+          protocol: "openai-responses",
+          supportsStandaloneWebSearch: false,
+        },
+      };
       revisions.set(next.id, next);
       const stagedFiles = stagedWorkspaceFiles.get(id);
       for (const [filename, content] of Object.entries(stagedFiles ?? {})) {
@@ -628,7 +658,12 @@ export function createAgentLifecycle(
           backendId: item.backendId,
           configurationId: item.configurationId,
           configurationGeneration: item.configurationGeneration,
-          harness: item.harness,
+          harness:
+            item.agentId === seedAgentId &&
+            scenario.unrecordedHarnessRevision === item.revision &&
+            item.harness
+              ? { id: item.harness.id, version: item.harness.version, mode: item.harness.mode }
+              : item.harness,
           createdAt: item.createdAt,
           // The API lists each version's deployment outcome and error code (finding 2422).
           deploymentStatus: deployments.get(item.id)?.status ?? null,
@@ -643,6 +678,23 @@ export function createAgentLifecycle(
       const revision = revisions.get(suffix.split("/")[2] ?? "");
       if (!revision || revision.agentId !== id) {
         return error(404, "NOT_FOUND", "The requested platform resource was not found.");
+      }
+      if (
+        revision.agentId === seedAgentId &&
+        scenario.unrecordedHarnessRevision === revision.revision
+      ) {
+        return response({
+          id: revision.id,
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revision: revision.revision,
+          backendId: revision.backendId,
+          createdAt: revision.createdAt,
+          configurationReadError: {
+            code: "SAVED_CONFIGURATION_UNREADABLE",
+            field: "configuration",
+          },
+        });
       }
       return response(revision);
     }

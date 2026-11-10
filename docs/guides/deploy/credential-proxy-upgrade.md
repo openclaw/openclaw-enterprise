@@ -68,15 +68,14 @@ pnpm db:migrate:production --check
 
 An image-only install runs the release controller image with
 `node scripts/migrate-production.mjs --check` instead; on Kubernetes, the
-[maintenance Pod](auth-maintenance.md#run-the-command) provides the image, the
+[maintenance procedure](auth-maintenance.md#run-the-command) provides the image, the
 migrator credential and the database CA.
 
 If the check fails, stop. Exit 0 and `migration.checked` with
 `history: "completed"` mean no migration is pending for that release.
-From `preCredentialProxy`, the release applies `0060` through `0064`; from
-`prePreparedAttemptSettlement`, it applies `0063` and `0064`. From
-`preGatewayManagedMode`, only `0064` remains in this release.
-Confirm the target and authorization before running the migration and checking again:
+For a supported incomplete history, migration applies all remaining migrations
+bundled with the selected release. Confirm the target release, its pending
+migrations, and authorization before running the migration and checking again:
 
 ```bash
 pnpm db:migrate:production

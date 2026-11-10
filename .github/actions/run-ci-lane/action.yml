@@ -8,6 +8,10 @@ inputs:
     description: Exact manifest file for focused proof. Empty runs the complete lane.
     required: false
     default: ""
+  suite-view:
+    description: Suite registry view used by selection, preparation, and execution.
+    required: false
+    default: default
   profile:
     description: Tool setup profile passed to scripts/ci/setup-tools.sh.
     required: true
@@ -17,6 +21,26 @@ inputs:
   artifact-prefix:
     description: Prefix for the uploaded result artifact.
     required: true
+  runtime-artifact-id:
+    description: Exact same-run artifact ID from the shared runtime producer.
+    required: false
+    default: ""
+  runtime-artifact-sha256:
+    description: Producer archive SHA-256.
+    required: false
+    default: ""
+  runtime-artifact-source-sha:
+    description: Producer tested Git source SHA.
+    required: false
+    default: ""
+  runtime-artifact-run-id:
+    description: Producer workflow run ID.
+    required: false
+    default: ""
+  runtime-artifact-attempt:
+    description: Producer attempt (may precede a consumer rerun).
+    required: false
+    default: ""
   static-checks:
     description: >-
       Whether checks-baseline-1 runs the workspace boundary, lint, format, OpenAPI
@@ -41,37 +65,69 @@ runs:
       shell: bash
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
+        OPENSHELL_TIMING: ${{ (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
         fi
         printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
+        if [[ "$QA_TIMING" == true ]]; then
+          node scripts/ci/qa-phase-timing.ts entry 2>/dev/null >> "$GITHUB_OUTPUT" || true
+        fi
+        # OpenShell has not set up pinned Node yet. All its marks use Linux uptime.
+        if [[ "$OPENSHELL_TIMING" == true ]] && read -r uptime _ </proc/uptime; then
+          printf 'openshell-uptime=%s\n' "$uptime" >> "$GITHUB_OUTPUT" || true
+        fi
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      id: setup-node
       with:
         node-version: ${{ inputs.node-version }}
     - name: Validate focused test selection
+      id: validate-selection
       if: inputs.test-file != ''
       shell: bash
       env:
         CI_SELECTED_LANE: ${{ inputs.lane }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
-    - name: Select first-Agent image preparation
+    - name: Select installer image preparation
       id: image-mode
       shell: bash
       env:
         CI_SELECTED_LANE: ${{ inputs.lane }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
         node --input-type=module <<'NODE'
         import { appendFileSync } from 'node:fs';
         import { loadTestSuites } from './scripts/ci/test-suites.mjs';
-        const lanes = loadTestSuites('scripts/ci/test-suites.json').lanes;
-        const selected = process.env.CI_SELECTED_LANE === 'openshell' &&
-          lanes.openshell.prepare.selfProvisionedFiles.includes(process.env.CI_SELECTED_TEST_FILE);
+        import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
+        const view = process.env.OCC_CI_SUITE_VIEW;
+        const name = process.env.CI_SELECTED_LANE;
+        const lanes = loadTestSuites('scripts/ci/test-suites.json', view).lanes;
+        if (!Object.hasOwn(lanes, name) || (view === 'full-integration' && !isOpenShellLane(name))) {
+          throw new Error('The selected lane does not belong to the action suite view.');
+        }
+        const lane = lanes[name];
+        const file = process.env.CI_SELECTED_TEST_FILE;
+        const sourceBuild = lane.prepare?.sourceBuildFiles?.includes(file);
+        const selected = isOpenShellLane(name) &&
+          lane.prepare.selfProvisionedFiles.includes(file) && !sourceBuild;
+        appendFileSync(process.env.GITHUB_OUTPUT, `source-build=${Boolean(sourceBuild)}\n`);
         appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
         NODE
+    - name: Start memory sampling
+      id: memory-sampler
+      if: startsWith(inputs.lane, 'images-runtime-startup') || startsWith(inputs.lane, 'checks-browser')
+      continue-on-error: true
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/memory"
+        nohup bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" >"$RUNNER_TEMP/memory/${{ inputs.lane }}.summary.log" 2>&1 < /dev/null &
+        echo "pid=$!" >> "$GITHUB_OUTPUT"
     - id: pnpm-store
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -101,7 +157,8 @@ runs:
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
-        !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability')
+        !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability') &&
+        (inputs.runtime-artifact-id == '' || !contains(fromJSON('["images-runtime-startup","images-runtime-startup-2","images-runtime-startup-3"]'), inputs.lane))
       with:
         # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
         # removal; a persistent runner would accumulate buildx_buildkit_* containers.
@@ -109,18 +166,25 @@ runs:
         # First-Agent image exports target only their job-owned loopback registry.
         driver-opts: |
           ${{ steps.image-mode.outputs.first-agent == 'true' && 'network=host' || '' }}
+          ${{ steps.image-mode.outputs.source-build == 'true' && 'default-load=true' || '' }}
     - name: Set up CI tools
-      shell: bash
-      run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
-    - name: Install registry transport for image publication test
-      if: inputs.lane == 'images-packaging'
+      id: setup-ci-tools
+      uses: ./.github/actions/setup-ci-tools
+      with:
+        profile: ${{ inputs.profile }}
+    - name: Install registry transport for image tests
+      id: install-registry-transport
+      if: inputs.lane == 'images-packaging' || inputs.runtime-artifact-id != ''
       shell: bash
       run: |
         sudo apt-get -o Acquire::Retries=3 update
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
-        skopeo --version | grep -Fx 'skopeo version 1.13.3'
+        if [[ '${{ inputs.lane }}' == images-packaging ]]; then
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+        fi
     - name: Enable Kubernetes bridge packet filtering
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      id: kubernetes-bridge
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -147,56 +211,78 @@ runs:
         LOGGING_SETUP_OUTCOME: ${{ steps.install-dependencies.outcome }}
       run: node scripts/ci/logging-setup-timing.ts finish pnpm-install
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      id: save-pnpm-store
       if: success() && steps.pnpm-store.outputs.store-cache-hit != 'true'
       with:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
+      id: install-browser
+      if: inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
+      id: setup-go
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'k3d-fixture-configuration' || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
-        cache: true
+        cache: ${{ inputs.lane != 'checks-browser' }}
     - name: Run workspace boundary check
+      id: workspace-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm check:workspace
     - name: Run lint check
+      id: static-lint
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm lint
     - name: Set up formatter
-      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
+      id: setup-formatter
+      if: inputs.lane == 'checks-baseline-1'
       uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
       with:
         bun-version-file: .bun-version
     - name: Run format check
+      id: format-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm format:check
     - name: Run OpenAPI check
+      id: openapi-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm openapi:check
+    - name: Restore documentation dependencies
+      id: docs-store
+      if: inputs.lane == 'checks-baseline-1' || inputs.lane == 'checks-browser'
+      uses: ./.github/actions/setup-pnpm-store-cache
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-file: scripts/docs-site/package.json
+        lockfile-path: scripts/docs-site/pnpm-lock.yaml
+        # Static Checks saves this key after its documentation build succeeds.
+        cache-mode: restore
     - name: Run docs check
+      id: docs-check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
+      id: install-docs-browser
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
       # test needs Pagefind; the docs check above installs it otherwise.
       if: inputs.lane == 'checks-browser' || (inputs.lane == 'checks-baseline-1' && inputs.static-checks == 'false')
       shell: bash
       run: pnpm docs:install
     - name: Check Go CLI
+      id: check-go-cli
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
-      run: pnpm cli:check && node scripts/ci/go-test.mjs
+      run: pnpm cli:check && node scripts/ci/go-test.ts
     - name: Typecheck and build workspace output
+      id: typecheck-workspace
       # This one compiler run builds the workspace (some part 2 tests read
       # apps/controller/dist) and checks TypeScript tests without emitting them.
       # CI Impact also selects part 2 for a change confined to a TypeScript test.
@@ -204,10 +290,12 @@ runs:
       shell: bash
       run: pnpm typecheck
     - name: Build Go CLI for development installation proof
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
+      id: build-go-cli
+      if: inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Precompile controller route schemas
+      id: precompile-route-schemas
       # Most of these lanes' test files build the API in process. Each build then loads the
       # route validators and serializers from apps/controller/dist/route-compilers.cjs instead
       # of compiling every schema (http/route-compilers.ts). Other lanes build too few apps
@@ -216,14 +304,15 @@ runs:
       shell: bash
       run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
-      if: (startsWith(inputs.lane, 'k3d-observability') || inputs.lane == 'openshell') && runner.environment == 'github-hosted'
+      id: prepare-disk
+      if: (startsWith(inputs.lane, 'k3d-observability') || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && runner.environment == 'github-hosted'
       shell: bash
       env:
-        OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
+        OPENCLAW_CI_HEADROOM_LANE: ${{ inputs['suite-view'] == 'full-integration' && 'openshell' || inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -235,23 +324,50 @@ runs:
           core.setSecret(token);
           core.setOutput('token', token);
           core.setOutput('url', url);
+    - name: Download shared runtime image
+      id: download-runtime-artifact
+      if: inputs.runtime-artifact-id != ''
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      with:
+        artifact-ids: ${{ inputs.runtime-artifact-id }}
+        path: ${{ runner.temp }}/runtime-artifact
+        merge-multiple: true
+    - name: Mark OpenShell preparation start
+      id: openshell-prepare-start
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Prepare lane
       id: prepare-lane
       shell: bash
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ ((inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        BUILDX_BUILDER: ${{ steps.image-mode.outputs.source-build == 'true' && steps.builder.outputs.name || '' }}
         OCC_CI_FIRST_AGENT_BUILDER: ${{ steps.image-mode.outputs.first-agent == 'true' && steps.builder.outputs.name || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+        OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: ${{ inputs.runtime-artifact-id != '' && format('{0}/runtime-artifact', runner.temp) || '' }}
+        OCC_CI_RUNTIME_ARTIFACT_SHA256: ${{ inputs.runtime-artifact-sha256 }}
+        OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ inputs.runtime-artifact-source-sha }}
+        OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ inputs.runtime-artifact-run-id }}
+        OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ inputs.runtime-artifact-attempt }}
       run: |
         selection=()
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--selected-file "$CI_SELECTED_TEST_FILE")
         fi
         node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
+    - name: Mark OpenShell preparation end
+      id: openshell-prepare-end
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') && steps.openshell-prepare-start.outputs.uptime != ''
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Record skipped Logging Collector image preparation
       if: always() && inputs.lane == 'logging-collector' && steps.prepare-lane.outcome == 'skipped'
       continue-on-error: true
@@ -260,24 +376,41 @@ runs:
         LOGGING_SETUP_OUTCOME: skipped
       run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
+      id: install-browser-certificates
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || (inputs.lane == 'checks-browser' && (inputs.test-file == '' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.mjs' || inputs.test-file == 'tests/browser/console-agent-detail-2.test.ts'))
       shell: bash
       run: |
         if ! command -v certutil >/dev/null 2>&1; then
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libnss3-tools
         fi
+    # The QA caller has already set up Node. All observers use this runner's
+    # monotonic clock and leave the lane and cleanup commands in their own steps.
+    - name: Mark QA run start
+      id: qa-run-start
+      if: inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell run start
+      id: openshell-run-start
+      if: (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Run lane
+      id: run-lane
       shell: bash
       env:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
         # is left before the lane deadline.
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+        OCC_TEST_NATIVE_BROWSER_RECEIPT: ${{ inputs.lane == 'openshell' && format('{0}/native-browser-receipt.json', runner.temp) || '' }}
         # One V8 code cache per job, shared by the lane's host Node processes
         # (test files and the controllers and helpers they start with the job
         # env). Node keeps entries under a directory tagged with its version,
@@ -285,6 +418,7 @@ runs:
         # atomically, so concurrent files share it. No test forwards it into a
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
         launch=()
@@ -309,16 +443,53 @@ runs:
       continue-on-error: true
       shell: bash
       run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
+    - name: Mark QA cleanup start
+      id: qa-cleanup-start
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell cleanup start
+      id: openshell-cleanup-start
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Cleanup lane
+      id: cleanup-lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Stop memory sampling
+      if: always() && steps.memory-sampler.outputs.pid != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        SAMPLER_PID: ${{ steps.memory-sampler.outputs.pid }}
+      run: |
+        if [[ "$SAMPLER_PID" =~ ^[1-9][0-9]*$ ]]; then
+          kill "$SAMPLER_PID" 2>/dev/null || true
+        fi
+        tail -n 20 "$RUNNER_TEMP/memory/${{ inputs.lane }}.summary.log" || true
+    - name: Mark QA cleanup end
+      id: qa-cleanup-end
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
+    - name: Mark OpenShell cleanup end
+      id: openshell-cleanup-end
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/openshell-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
       shell: bash
       run: node scripts/ci/export-image-reconciliation.mjs "$RUNNER_TEMP/state/${{ inputs.lane }}.json" "$RUNNER_TEMP/image-reconciliation"
     - name: Retain image cleanup reconciliation
+      id: retain-image-reconciliation
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'images-packaging' && steps.image_reconciliation.outcome == 'success'
       with:
@@ -328,6 +499,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain runtime image fixture receipt
+      id: retain-runtime-fixture
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'runtime-image-fixture'
       with:
@@ -335,7 +507,17 @@ runs:
         path: ${{ runner.temp }}/state/runtime-image-fixture-receipt.json
         if-no-files-found: error
         retention-days: 7
+    - name: Retain native browser receipt
+      id: retain-native-browser-receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always() && inputs.lane == 'openshell' && (inputs.test-file == '' || inputs.test-file == 'tests/integration/dev-up-openshell-k3d-real.test.mjs')
+      with:
+        name: native-browser-receipt-${{ inputs.artifact-prefix }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/native-browser-receipt.json
+        if-no-files-found: ${{ steps.run-lane.outcome == 'success' && 'error' || 'ignore' }}
+        retention-days: 7
     - name: Upload cluster diagnostics
+      id: upload-cluster-diagnostics
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Setup failures, failed files' details and every k3d file's Agent
       # namespace activity; a lane with none writes no report. One per attempt,
@@ -349,7 +531,7 @@ runs:
         retention-days: 7
     - name: Upload memory samples
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-      if: always() && inputs.lane == 'k3d-fixture-configuration'
+      if: always() && (inputs.lane == 'k3d-fixture-configuration' || steps.memory-sampler.outputs.pid != '')
       continue-on-error: true
       with:
         name: memory-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
@@ -357,6 +539,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload browser failure diagnostics
+      id: upload-browser-diagnostics
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Screenshots and console/network logs for failed browser tests;
       # passing runs write nothing.
@@ -368,6 +551,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 3
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      id: aggregate-results
       if: always()
       with:
         name: ${{ inputs.artifact-prefix }}-${{ inputs.lane }}
@@ -377,6 +561,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain this attempt's results
+      id: attempt-results
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # The aggregated artifact above is replaced by a rerun; this copy keeps a
       # failed attempt's cases. The name must not match `<prefix>-*` patterns.
@@ -386,3 +571,113 @@ runs:
         path: ${{ runner.temp }}/results/${{ inputs.lane }}.json
         if-no-files-found: ignore
         retention-days: 7
+    - name: Summarize QA phase timing
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      env:
+        QA_ENTRY_NS: ${{ steps.deadline.outputs.qa-start-ns }}
+        QA_RUN_NS: ${{ steps.qa-run-start.outputs.ns }}
+        QA_CLEANUP_NS: ${{ steps.qa-cleanup-start.outputs.ns }}
+        QA_CLEANUP_END_NS: ${{ steps.qa-cleanup-end.outputs.ns }}
+        QA_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        QA_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null
+    - name: Summarize OpenShell phase timing
+      id: openshell-phase-timing
+      if: always() && (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers')
+      continue-on-error: true
+      shell: bash
+      env:
+        OPENSHELL_LANE: ${{ inputs.lane }}
+        OPENSHELL_ENTRY: ${{ steps.deadline.outputs.openshell-uptime }}
+        OPENSHELL_PREPARE_START: ${{ steps.openshell-prepare-start.outputs.uptime }}
+        OPENSHELL_PREPARE_END: ${{ steps.openshell-prepare-end.outputs.uptime }}
+        OPENSHELL_RUN_START: ${{ steps.openshell-run-start.outputs.uptime }}
+        OPENSHELL_CLEANUP_START: ${{ steps.openshell-cleanup-start.outputs.uptime }}
+        OPENSHELL_CLEANUP_END: ${{ steps.openshell-cleanup-end.outputs.uptime }}
+        OPENSHELL_PREPARE_OUTCOME: ${{ steps.prepare-lane.outcome }}
+        OPENSHELL_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        OPENSHELL_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        OPENSHELL_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/openshell-phase-timing.ts summarize "$RUNNER_TEMP/openshell-phase-timing.json" 2>/dev/null
+    - name: Retain OpenShell phase timing
+      if: ${{ !cancelled() && steps.openshell-phase-timing.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: timing-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/openshell-phase-timing.json
+        if-no-files-found: error
+        retention-days: 7
+    - name: Summarize first lane failure
+      if: failure() || cancelled()
+      continue-on-error: true
+      shell: bash
+      env:
+        # Ordered hard-step conclusions exclude tolerated failures and all step outputs.
+        CI_LANE_CONCLUSIONS: |-
+          deadline=${{ steps.deadline.conclusion }}
+          setup-node=${{ steps.setup-node.conclusion }}
+          validate-selection=${{ steps.validate-selection.conclusion }}
+          image-mode=${{ steps.image-mode.conclusion }}
+          pnpm-store=${{ steps.pnpm-store.conclusion }}
+          test-docker=${{ steps.test-docker.conclusion }}
+          builder=${{ steps.builder.conclusion }}
+          setup-ci-tools=${{ steps.setup-ci-tools.conclusion }}
+          install-registry-transport=${{ steps.install-registry-transport.conclusion }}
+          kubernetes-bridge=${{ steps.kubernetes-bridge.conclusion }}
+          install-dependencies=${{ steps.install-dependencies.conclusion }}
+          save-pnpm-store=${{ steps.save-pnpm-store.conclusion }}
+          install-browser=${{ steps.install-browser.conclusion }}
+          setup-go=${{ steps.setup-go.conclusion }}
+          workspace-check=${{ steps.workspace-check.conclusion }}
+          static-lint=${{ steps.static-lint.conclusion }}
+          setup-formatter=${{ steps.setup-formatter.conclusion }}
+          format-check=${{ steps.format-check.conclusion }}
+          openapi-check=${{ steps.openapi-check.conclusion }}
+          docs-store=${{ steps.docs-store.conclusion }}
+          docs-check=${{ steps.docs-check.conclusion }}
+          install-docs-browser=${{ steps.install-docs-browser.conclusion }}
+          check-go-cli=${{ steps.check-go-cli.conclusion }}
+          typecheck-workspace=${{ steps.typecheck-workspace.conclusion }}
+          build-go-cli=${{ steps.build-go-cli.conclusion }}
+          precompile-route-schemas=${{ steps.precompile-route-schemas.conclusion }}
+          prepare-disk=${{ steps.prepare-disk.conclusion }}
+          image-cache=${{ steps.image-cache.conclusion }}
+          download-runtime-artifact=${{ steps.download-runtime-artifact.conclusion }}
+          prepare-lane=${{ steps.prepare-lane.conclusion }}
+          install-browser-certificates=${{ steps.install-browser-certificates.conclusion }}
+          run-lane=${{ steps.run-lane.conclusion }}
+          cleanup-lane=${{ steps.cleanup-lane.conclusion }}
+          image_reconciliation=${{ steps.image_reconciliation.conclusion }}
+          retain-image-reconciliation=${{ steps.retain-image-reconciliation.conclusion }}
+          retain-runtime-fixture=${{ steps.retain-runtime-fixture.conclusion }}
+          retain-native-browser-receipt=${{ steps.retain-native-browser-receipt.conclusion }}
+          upload-cluster-diagnostics=${{ steps.upload-cluster-diagnostics.conclusion }}
+          upload-browser-diagnostics=${{ steps.upload-browser-diagnostics.conclusion }}
+          aggregate-results=${{ steps.aggregate-results.conclusion }}
+          attempt-results=${{ steps.attempt-results.conclusion }}
+      run: |
+        declare -A conclusions
+        first=unavailable
+        while IFS='=' read -r step conclusion; do
+          case "$conclusion" in
+            success|failure|cancelled|skipped) ;;
+            *) conclusion=unavailable ;;
+          esac
+          conclusions["$step"]=$conclusion
+          if [[ "$first" == unavailable && ( "$conclusion" == failure || "$conclusion" == cancelled ) ]]; then
+            first="$step ($conclusion)"
+          fi
+        done <<< "$CI_LANE_CONCLUSIONS"
+
+        {
+          printf '\n### CI lane failure\n\n'
+          printf -- '- First unsuccessful step: `%s`\n' "$first"
+          printf -- '- Run lane: `%s`\n' "${conclusions[run-lane]:-unavailable}"
+          printf -- '- Cleanup lane: `%s`\n' "${conclusions[cleanup-lane]:-unavailable}"
+          printf -- '- Aggregate result upload: `%s`\n' "${conclusions[aggregate-results]:-unavailable}"
+          printf -- '- Attempt result upload: `%s`\n' "${conclusions[attempt-results]:-unavailable}"
+        } >> "$GITHUB_STEP_SUMMARY"

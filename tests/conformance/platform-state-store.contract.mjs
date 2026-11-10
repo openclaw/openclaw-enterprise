@@ -122,7 +122,13 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       gateway: { controlUi: { enabled: false } },
     },
     harnessAuth: { ...apiKeyBinding, secretDriverId: harnessSecret.driverId },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: {
       id: "compute-contract",
       implementation: "deterministic-contract",
@@ -465,17 +471,71 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ["null Harness descriptor", { harness: null }],
     [
       "array Harness descriptor",
-      { harness: Object.assign([], { id: "openclaw", version: "1.0.0", mode: "embedded" }) },
+      {
+        harness: Object.assign([], {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+        }),
+      },
     ],
-    ["missing Harness version", { harness: { id: "openclaw", mode: "embedded" } }],
-    ["missing Harness mode", { harness: { id: "openclaw", version: "1.0.0" } }],
-    ["unsupported Harness mode", { harness: { id: "openclaw", version: "1.0.0", mode: "remote" } }],
-    ["empty Harness identity", { harness: { id: " ", version: "1.0.0", mode: "embedded" } }],
-    ["empty Harness version", { harness: { id: "openclaw", version: " ", mode: "embedded" } }],
+    [
+      "missing Harness version",
+      { harness: { overrides: {}, configuration: {}, id: "openclaw", mode: "embedded" } },
+    ],
+    [
+      "missing Harness mode",
+      { harness: { overrides: {}, configuration: {}, id: "openclaw", version: "1.0.0" } },
+    ],
+    [
+      "unsupported Harness mode",
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "remote",
+        },
+      },
+    ],
+    [
+      "empty Harness identity",
+      {
+        harness: { overrides: {}, configuration: {}, id: " ", version: "1.0.0", mode: "embedded" },
+      },
+    ],
+    [
+      "empty Harness version",
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: " ",
+          mode: "embedded",
+        },
+      },
+    ],
     [
       "unexpected Harness property",
-      { harness: { id: "openclaw", version: "1.0.0", mode: "embedded", unexpected: true } },
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          unexpected: true,
+        },
+      },
     ],
+    ["missing Harness overrides", { harness: { ...revision.harness, overrides: undefined } }],
+    ["null Harness overrides", { harness: { ...revision.harness, overrides: null } }],
+    ["missing Harness settings", { harness: { ...revision.harness, configuration: undefined } }],
+    ["array Harness settings", { harness: { ...revision.harness, configuration: [] } }],
     ["missing Compute descriptor", { compute: undefined }],
     ["null Compute descriptor", { compute: null }],
     [
@@ -954,7 +1014,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     configurationGeneration: accountConfiguration.generation,
     servicePrincipalId: accountAgent.servicePrincipalId,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     harnessAuth: {
       method: "codex_pat",
       source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
@@ -3060,7 +3120,7 @@ async function verifyCredentialSourceContract(
     id: identifier("rev"),
     agentId: externalAgent.id,
     servicePrincipalId: externalAgent.servicePrincipalId,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     sandboxDriverId: "sandbox-contract",
     credentialSources: [
       {

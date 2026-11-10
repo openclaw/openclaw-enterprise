@@ -15,13 +15,14 @@ import type {
   Permission,
 } from "../../packages/contracts/src/index.ts";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  routeFailedDeployment,
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
@@ -39,7 +40,6 @@ import {
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
-  routeFailedDeployment,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -49,11 +49,12 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   createRepositoryLaunchFixture,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
@@ -1715,7 +1716,7 @@ for (const [field, change] of [
     "plugin policy",
     {
       plugins: {
-        "codex-plugin:linear@openai-curated-remote": {
+        "occ-plugin:diffs": {
           enabled: true,
           toolDefaults: { approval: "none" },
         },
@@ -1740,7 +1741,7 @@ for (const [field, change] of [
         })()
       : await createRuntimeAuthFixture(t, `Deployment ${field}`);
     const namespace = resource(rawNamespace);
-    const pluginDriver = new CodexPluginDriver();
+    const pluginDriver = new OCCPluginDriver();
     checkedController(fixture.controller).registerDriver(pluginDriver);
     checkedController(fixture.controller).selectDriver("plugin", pluginDriver.id);
     const agent = agentFields(
@@ -1952,9 +1953,8 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     assert.deepEqual(pathRequests(requests, "POST", `${path}/deploy`), []);
   }
 
-  // Unknown answer: the first Secret answer fails, so Deploy stays enabled and the API decides.
-  // Its 403 names the grant and the Secret, which the operator may read (finding 2594); the
-  // answer, read again, names the Secret by name.
+  // An unavailable permission summary leaves the decision to actual deployment admission.
+  // Its 403 refreshes the summary and names the missing grant without creating a revision.
   {
     const { page } = await newPage(t, fixture);
     let failed = false;
@@ -1966,26 +1966,28 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
       failed = true;
       await route.abort();
     });
-    await login(page, fixture, url, operator.credentials);
-    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
-    const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await waitForEnabled(deploy);
+    const requests = apiRequests(page, fixture.origin);
     const refused = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}${path}/deploy` &&
         response.request().method() === "POST",
     );
+    await login(page, fixture, url, operator.credentials);
+    await page.getByRole("heading", { name: "Operator Secret Agent" }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    await waitForEnabled(deploy);
     await deploy.click();
     const response = await refused;
     assert.equal(response.status(), 403);
+    assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 1);
     assert.equal(
       record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
-    const alert = page.getByRole("alert").filter({ hasText: reason });
+    const alert = page.getByText(reason, { exact: true });
     await alert.waitFor();
     assert.equal(await alert.textContent(), reason);
-    // The alert says it once, and Deploy stays disabled until a grant is read.
+    // The deployment note says it once and stays refused until a grant is read.
     assert.equal(await page.getByText(reason).count(), 1);
     assert.equal(await deploy.isDisabled(), true);
   }

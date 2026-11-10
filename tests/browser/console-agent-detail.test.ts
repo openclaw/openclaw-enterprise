@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -48,24 +49,26 @@ import {
   nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
-  trackSettledFetches,
   versionChooser,
   waitForChosenVersion,
   waitForEnabled,
   waitForInputValue,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
@@ -73,7 +76,7 @@ import {
   agentStopRequests,
   replyWithDifferentAgentId,
   configurationPatchRequests,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -1243,6 +1246,94 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
+
+for (const focus of ["status", "editor", "navigation"]) {
+  test(`Configuration save conflict preserves ${focus} focus`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Conflict focus", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Conflict focus Agent",
+      nativeValues("base"),
+    );
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+    await openAdvancedSettings(page);
+    const editor = page.getByLabel("Configuration JSON", { exact: true });
+    const draft = JSON.stringify(nativeValues("local draft"), null, 2);
+    await editor.fill(draft);
+    const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const url = new URL(path, fixture.origin).href;
+    const held = await holdRequests(t, page, url, { method: "PATCH", once: true });
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await held.requested;
+    assert.equal(await hasFocus(page.getByText("Checking Configuration…", { exact: true })), true);
+    const navigation = page.getByRole("link", { name: "Agents", exact: true });
+    if (focus === "editor") {
+      // Read-only JSON must still support keyboard selection while the write is pending.
+      await editor.click();
+      await editor.press("ControlOrMeta+a");
+    } else if (focus === "navigation") {
+      await navigation.focus();
+    }
+    const selection = () =>
+      editor.evaluate((node) => {
+        if (!(node instanceof HTMLTextAreaElement)) {
+          throw new Error("Configuration JSON must be a textarea");
+        }
+        return [node.selectionStart, node.selectionEnd, node.selectionDirection];
+      });
+    const selected = await selection();
+    if (focus === "editor") {
+      assert.deepEqual(selected.slice(0, 2), [0, draft.length]);
+    }
+    const scroll = await page.evaluate(() => [scrollX, scrollY]);
+    // A real concurrent write wins after preflight, before the held PATCH reaches OCC.
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      nativeValues("concurrent edit"),
+    );
+    const before = await fixture.request("GET", path);
+    assert.equal(before.status, 200);
+    const response = page.waitForResponse(
+      (reply) => reply.request().method() === "PATCH" && reply.url() === url,
+    );
+    held.release();
+    assert.equal((await response).status(), 409);
+    const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+    await reload.waitFor();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "The saved Configuration changed while you were editing." })
+      .waitFor();
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await editor.getAttribute("readonly"), "");
+    assert.equal(
+      await page.getByRole("button", { name: "Save Configuration", exact: true }).isDisabled(),
+      true,
+    );
+    const after = await fixture.request("GET", path);
+    assert.equal(after.status, 200);
+    assert.deepEqual(after.data, before.data);
+    assert.deepEqual(after.data.values, nativeValues("concurrent edit"));
+    if (focus === "status") {
+      assert.equal(await hasFocus(reload), true);
+    } else {
+      assert.equal(await hasFocus(focus === "editor" ? editor : navigation), true);
+      assert.deepEqual(await page.evaluate(() => [scrollX, scrollY]), scroll);
+      if (focus === "editor") {
+        assert.deepEqual(await selection(), selected);
+      }
+    }
+  });
+}
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -3399,6 +3490,8 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  // Let the reload replace its view before changing tabs; the old metadata stays held.
+  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(replacement));
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const reason =
     "Saving this Configuration needs Secret operate on Current bot token, which your access does not include. Ask an Installation administrator to grant it.";
@@ -4053,6 +4146,40 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await expectReachableReason(page, control, reason);
     await page.unroute(permissionPath);
   }
+});
+
+test("a null revision-history rejection preserves the readable draft Configuration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Rejected history", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Rejected History Agent",
+    nativeValues("rejected-history"),
+  );
+  const { page }: { page: Page } = await newPage(t, fixture);
+  await page.addInitScript((path: string) => {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    const target = new URL(path, globalThis.location.origin);
+    let rejected = false;
+    globalThis.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input, globalThis.location.href);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (!rejected && method === "GET" && url.href === target.href) {
+        rejected = true;
+        // Inject a JS boundary rejection: falsy reasons must not look like empty history.
+        return Promise.reject(null);
+      }
+      return originalFetch(input, init);
+    };
+  }, `/namespaces/${namespace.id}/agents/${agent.id}/revisions`);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByText(/Version history unavailable\./).waitFor({ state: "visible" });
+  await page
+    .locator(".configuration-draft-editor")
+    .getByText("View native Configuration")
+    .waitFor({ state: "visible" });
+  assert.equal(await page.getByText(/No readable versions\./).count(), 0);
 });
 
 // A `null` passed to replaceChildren is painted as the text "null" (finding 1567).

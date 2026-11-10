@@ -1,3 +1,4 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -17,7 +18,6 @@ import {
   betterAuthIssuer,
   createPostgresControllerAuth,
   type ClientAddressConfiguration,
-  type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
   type PasswordHasher,
@@ -53,7 +53,6 @@ export interface ProductionConfig {
   readonly databaseUrl: string;
   readonly authSecret: string;
   readonly authBaseURL: string;
-  readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
@@ -110,7 +109,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -124,14 +123,8 @@ export async function composeProduction(
   }
 
   const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
-  }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
   }
 
   let phaseStartedAt = performance.now();
@@ -161,67 +154,6 @@ export async function composeProduction(
     validatePersistedNativeIAMState(iamState);
     phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
-    const auth = await createPostgresControllerAuth({
-      mode: config.mode,
-      installationId: persistedInstallation.id,
-      secret: config.authSecret,
-      baseURL: config.authBaseURL,
-      ...(config.nativeAdmin?.enabled === true
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
-      pool,
-      state,
-      iamDriver,
-      ...(config.github === undefined ? {} : { github: config.github }),
-      ...(config.google === undefined ? {} : { google: config.google }),
-      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
-      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
-      ...(config.logger === undefined
-        ? {}
-        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
-      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
-      ...(config.passwordSlowLaneFloors === undefined
-        ? {}
-        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
-      ...(dependencies.passwordHasher === undefined
-        ? {}
-        : { passwordHasher: dependencies.passwordHasher }),
-      ...(config.logger === undefined
-        ? {}
-        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
-      ...(config.metrics === undefined
-        ? {}
-        : {
-            onUnmatchedCallback: (provider) =>
-              config.metrics!.observeUnmatchedSignInCallback(provider),
-          }),
-    });
-    if (config.clientAddress === undefined && config.logger !== undefined) {
-      // No trusted proxy: every browser behind the ingress shares its address, so failed
-      // password sign-ins are limited per email only, and with external sign-in the start
-      // step has no per-client limit (callback and result key on browser cookies).
-      emitOccLogEvent(config.logger, {
-        event: "authentication.sign-in-limit-warning",
-        code: "TRUSTED_PROXY_NOT_CONFIGURED",
-      });
-    }
-    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
-      emitOccLogEvent(config.logger, {
-        event: "authentication.activation-warning",
-        reason: "Accounts without a Principal or exactly one password were not enrolled.",
-        ...skippedUserLogFields(auth.activationSkipped),
-      });
-    }
-    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
-      // Recovery-only password sign-in: these accounts cannot sign in until an
-      // administrator attaches a GitHub, Google or OIDC identity.
-      emitOccLogEvent(config.logger, {
-        event: "authentication.password-sign-in-warning",
-        code: "EXTERNAL_IDENTITY_MISSING",
-        ...skippedUserLogFields(auth.withoutExternalIdentity),
-      });
-    }
-    phaseCompleted("authentication");
     const humanAuthentication = new PostgresHumanAuthentication(
       state,
       persistedInstallation.id,
@@ -301,6 +233,9 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -334,16 +269,83 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
+    // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
+    // take custody of the grant and own refresh. Other installations use the built-in issuer.
+    config.drivers.tokenService?.registerIssuer(
+      new OAuthAccountTokens(
+        state,
+        secretDriver,
+        controller.resolveConnectionClient.bind(controller),
+      ),
+    );
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
+    const auth = await createPostgresControllerAuth({
+      mode: config.mode,
+      installationId: persistedInstallation.id,
+      secret: config.authSecret,
+      baseURL: config.authBaseURL,
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
+      pool,
+      state,
+      iamDriver,
+      defaultUserGroupIds: controller.defaultUserGroupIds,
+      ...(config.google === undefined ? {} : { google: config.google }),
+      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
+      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
+      ...(config.logger === undefined
+        ? {}
+        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
+      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
+      ...(config.passwordSlowLaneFloors === undefined
+        ? {}
+        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
+      ...(config.logger === undefined
+        ? {}
+        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
+    });
+    if (config.clientAddress === undefined && config.logger !== undefined) {
+      // No trusted proxy: every browser behind the ingress shares its address, so failed
+      // password sign-ins are limited per email only, and with external sign-in the start
+      // step has no per-client limit (callback and result key on browser cookies).
+      emitOccLogEvent(config.logger, {
+        event: "authentication.sign-in-limit-warning",
+        code: "TRUSTED_PROXY_NOT_CONFIGURED",
+      });
+    }
+    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
+      emitOccLogEvent(config.logger, {
+        event: "authentication.activation-warning",
+        reason: "Accounts without a Principal or exactly one password were not enrolled.",
+        ...skippedUserLogFields(auth.activationSkipped),
+      });
+    }
+    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
+      // Recovery-only password sign-in: these accounts cannot sign in until an
+      // administrator attaches a Google or OIDC identity.
+      emitOccLogEvent(config.logger, {
+        event: "authentication.password-sign-in-warning",
+        code: "EXTERNAL_IDENTITY_MISSING",
+        ...skippedUserLogFields(auth.withoutExternalIdentity),
+      });
+    }
+    phaseCompleted("authentication");
     if (config.logger !== undefined) {
       for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });

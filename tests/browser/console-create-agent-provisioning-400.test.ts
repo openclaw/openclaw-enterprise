@@ -41,7 +41,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
   apiRequests,
@@ -50,14 +50,15 @@ import {
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
   revokeAdministratorGrant,
   selectSecret,
   setSlackSelection,
-  trackSettledFetches,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   agentPostRequests,
   agentProvisionPostRequests,
@@ -65,11 +66,10 @@ import {
   nativeSandboxDriver,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-  routeProvisioningJob,
-  provisioningJob,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_NAME_CONFLICT,
   CHANNEL_BINDING_FORM_REMEDY,
@@ -688,6 +688,26 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
       () => globalThis.document.activeElement?.id === "configuration-json",
     );
   }
+  // A model edit does not repair the unbound Slack reference or own its field error.
+  const writesBeforeModelChange = nonAuthWriteRequests(requests);
+  const model = page.getByLabel("Model ID", { exact: true });
+  await model.fill("gpt-6-sol");
+  await model.press("Tab");
+  const changed = object(JSON.parse(await configuration.inputValue()));
+  assert.equal(object(object(changed.agents).defaults).model, "openai/gpt-6-sol");
+  assert.equal(object(object(changed.channels).slack).botToken, "${SLACK_SPARE_TOKEN}");
+  assert.equal(
+    await jsonError.textContent(),
+    `${unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN")} ${CHANNEL_BINDING_FORM_REMEDY}`,
+  );
+  assert.equal(await jsonError.isVisible(), true);
+  assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+  assert.match(
+    (await configuration.getAttribute("aria-describedby")) ?? "",
+    /\bconfiguration-json-error\b/,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), writesBeforeModelChange);
+
   // Later edits and submits read no bound Secret again.
   assert.equal(secretReads(), settledReads);
   // Refused before Slack was asked, and nothing was saved.
@@ -1657,8 +1677,9 @@ async function submitBoundCodexPreset(t: TestContext, options: ConsoleOptions, n
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture, { browser });
-  const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  // Observe every form write after authentication, including applying the Preset.
+  const requests = apiRequests(page, fixture.origin);
   await page.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
   await page.getByLabel("Name", { exact: true }).fill("bound-codex");
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
@@ -2457,7 +2478,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     job("running", handedOff),
     failed(handedOff),
   ];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
   // The first deployment read names the quota; every later one is denied.
   let deploymentReads = 0;
   await page.route(

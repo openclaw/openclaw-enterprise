@@ -1,16 +1,16 @@
 ---
 created: 2026-09-02
-updated: 2026-11-04
-last_updated_session: authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218
+updated: 2026-11-08
+last_updated_session: authoring-run/b490de13-d3f2-4301-b212-4393219a8625
 ---
 
 # Common Operational Logging Flow
 
 ## Overview
 
-Trusted startup configuration selects the OCC logging level. At deployment, OCC
-saves the runtime logging settings in the Agent revision. Optional Collectors export reviewed operational records; PostgreSQL audit remains separate
-durable evidence.
+Startup selects OCC's logging level; deployment saves runtime logging settings
+in the Agent revision. Optional Collectors export reviewed operational records;
+PostgreSQL audit remains separate durable evidence.
 
 ## Entry Points
 
@@ -80,26 +80,29 @@ Worker (`apps/controller/src/worker.mjs`), bootstrap
 also create Pino loggers at the selected level. The API disables Fastify request
 logging. Bootstrap and migration separate success protocol output from structured
 failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
-keeps reviewed scalar fields and drops unapproved fields, credentials, provider
-payloads, request/reply objects, and unsafe strings. This source boundary precedes
-the separate Collector filter in step 7. For worker records, the Collector retains
-allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
+keeps reviewed scalar fields and drops credentials, provider payloads, request/reply
+objects, and unsafe strings before the Collector filter in step 7. The Collector
+retains allowed worker `work.operation` values and `work.id` formats. Agent stop keys
 include the operation UUID. Credential withdrawal keys end in the operation UUID or
 `activation` (the attempt a candidate's activation queues), optionally followed by
 `:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
 Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
-characters, matching the work ID the API and worker share.
-Unsupported values and key shapes are excluded.
-The local worker emitter also retains `stopYields` from throttled drain-yield and
-completion records as a nonnegative safe integer; the Collector does not export this count.
+characters. The local emitter retains `stopYields` from throttled drain-yield and
+completion records as a nonnegative safe integer; the Collector excludes it.
 The sanitizer keeps `check`, `failure`, `reasonCode`, `harnessState`, `hintCode`
 and the `auth:maintain` event's `command` as identifier codes, never free text;
 `fence` must be a nonnegative safe integer. `installationId` and `orphanedConfigurationId` are kept only as
 OCC-assigned `ins_` and `cfg_` UUIDs.
 
-Compute preparation failures may include a Driver-reviewed stage, classification,
-status, and a message of at most 256 characters. The worker never serializes the raw exception, and
-the sanitizer drops secret-shaped messages before local output.
+`apps/controller/src/worker.ts:finalizeActiveRevision` adds only the runtime failure
+code to active maintenance's `worker.completed.failure`, normalized through the
+shared vocabulary. Unknown codes become `UNRECOGNIZED`; absent or malformed
+evidence adds nothing and does not establish health. Pending outcomes and
+scheduling are unchanged.
+
+Compute preparation failures may carry a Driver-reviewed stage, classification,
+status and message (up to 256 characters). The worker excludes raw exceptions;
+the sanitizer drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 
@@ -192,6 +195,10 @@ the replaced owner settings stay in `occ agent logs`.
 `worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
 `occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
 0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
+`worker.openshell-git-probe-failed` keeps `occ.git_probe.reason` only for
+`probe_process_failed` or `probe_response_invalid`. A process failure also keeps
+`occ.git_probe.exit_code` when `code` is an integer from 1 to 99. Other reasons,
+invalid exit codes, process output, response bodies, URLs and proofs are discarded.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
 attributes and replaces the body with the event name, stripping arbitrary content;
@@ -200,13 +207,13 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 `codex_core::responses_retry` retry messages; a Codex warning without such a
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
-the local diagnostic message is excluded from remote export.
+local diagnostic messages are not exported.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
-`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
-`membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
+`occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile`,
+`membership` or `email`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
@@ -216,10 +223,13 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `occ.failure` (a device login keeps its own, below), `occ.harness_state`,
 `occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
 `occ.fence`. `worker.openshell-git-expiry` keeps `work.outcome` (`pending`,
-`withdrawn` or `retire-runtime`); `worker.repository-delivery-pending` reports Git
-delivery retries. Reconciliation retries every second; this event logs the first failure after
-worker startup or a completed pass, then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
-Configuration IDs.
+`withdrawn` or `retire-runtime`).
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
+adds `failure` and `grpcStatus`, never supplier text.
+`worker.repository-delivery-pending` reports Git
+delivery retries. Reconciliation retries each second, logging failures initially
+and then at most once a minute. Sandbox Driver, Installation and
+Configuration IDs stay local.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
@@ -322,6 +332,14 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-08 16:26: Record bounded Git retirement diagnostics. (authoring-run/b490de13-d3f2-4301-b212-4393219a8625 - 842bea47b86394333aa46a900c962a8a81272580)
+
+- 2026-11-07 09:24: Retain closed-vocabulary runtime failure codes in active maintenance logs. (authoring-run/47c08087-e796-42e1-a716-e321ec52e41e - 5ed0898c6fba9875e075472747b660c27fb74bf6)
+
+- 2026-11-06 15:37: Retain the verified-email lookup stage in provider outage exports. (authoring-run/3cb37e31-4ea8-4dfe-bb12-965884fa83db - 3e29a60b00d2a4c6eb15d4ea2f1f283113592f74)
+
+- 2026-11-05 20:53: Export held Git probe failure categories and bounded curl exit codes through the Collector. (authoring-run/3c7815cf-f818-421f-879b-2b2fe90deac5 - 0a9351b645)
 
 - 2026-11-04 23:10: Trace worker exits during kubelet backoff and watch closure. (authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218 - e8ae41a62e9b480db3b67b894611b3d7fe340342)
 

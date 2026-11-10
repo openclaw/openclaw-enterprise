@@ -1,4 +1,8 @@
 import { failureInputLimit } from "./failure-redaction.mjs";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -51,15 +55,314 @@ const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
-// allowlisted shape below survives; anything else is dropped like other diagnostics.
+// allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellStageMeasurementKind = "openshell-stage";
+const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellPolicyCheckKind = "openshell-network-policy-check";
+const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
+const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const openShellInitialTurnoverKind = "openshell-initial-turnover";
+const nativePolicyPrimaryChecks = new Set([
+  "agent.get",
+  "agent.status-200",
+  "agent.active-revision",
+  "sandbox.wait-active",
+  "sandbox.native-address",
+  "baseline.policy-status",
+  "baseline.sandbox",
+  "baseline.resource-version",
+  "fixture.make-directory",
+  "fixture.pause-worker",
+  "fixture.read-helm-values",
+  "fixture.save-helm-values",
+  "fixture.parse-helm-values",
+  "fixture.prepare-auth-values",
+  "fixture.write-auth-values",
+  "client.reader",
+  "client.recommender",
+  "client.writer",
+  "client.no-scopes",
+  "read.unauthenticated-code-16",
+  "read.reader-equals-baseline",
+  "read.no-scopes-code-7",
+  "drafts.reader-code-7",
+  "drafts.no-scopes-code-7",
+  "drafts.recommender-rpc",
+  "drafts.recommender-chunks-array",
+  "read.recommender-code-7",
+  "update.reader-code-7",
+  "update.no-scopes-code-7",
+  "read.writer-code-7",
+  "read.reader-unchanged-after-denials",
+  "update.writer-rpc",
+  "read.reader-wait-loaded",
+  "read.loaded-policy-equals-baseline",
+  "fixture.write-success-marker",
+  "auth.helm-upgrade",
+  "auth.gateway-ready",
+  "auth.restart-forward",
+]);
+const nativePolicyCleanupChecks = new Set([
+  "cleanup.close-client",
+  "cleanup.restore-auth.helm-upgrade",
+  "cleanup.restore-auth.gateway-ready",
+  "cleanup.restore-auth.restart-forward",
+  "cleanup.remove-directory",
+  "cleanup.resume-worker",
+]);
+const openShellPolicyChecks = new Set([
+  "installation-discovery",
+  "cluster-target-reachability",
+  "agent-default-control-request",
+  "agent-default-control-exit",
+  "agent-default-control-response",
+  "agent-initial-denial-request",
+  "agent-initial-denial-exit",
+  "agent-initial-denial-reason",
+  "provider-denial-read",
+  "provider-denial-observed",
+  "provider-denied-dns-binding",
+  "editing-admission",
+  "apply-authorization",
+  "grant-application",
+  "granted-agent-request",
+  "provider-allow-observed",
+  "revision-unchanged",
+  "second-agent-isolation",
+  "second-agent-control-request",
+  "second-agent-denied-request",
+  "second-agent-cleanup",
+  "editing-state-enforcement",
+  "grant-revocation",
+]);
+const openShellSandboxStages = new Set([
+  "installation",
+  "exposure-auth",
+  "gateway-turns",
+  "filesystem-egress",
+  "network-policy",
+  "credential-route",
+  "pod-replacement",
+  "untrusted-model-upstream",
+  "tool-upstream-outage",
+  "model-provider-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-audit",
+  "source-withdrawal",
+  "embedded-fail-closed",
+  "native-policy-scopes",
+]);
 
-function safeMeasurement(message) {
-  let value;
+function parseMeasurement(message) {
+  if (!message.startsWith(measurementPrefix)) {
+    return undefined;
+  }
   try {
-    value = JSON.parse(message.slice(measurementPrefix.length));
+    return JSON.parse(message.slice(measurementPrefix.length));
   } catch {
     return undefined;
+  }
+}
+
+function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
+  if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
+    return safeOpenShellInitialTurnoverMeasurement(value);
+  }
+  if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
+    const { kind, checkpoint, turn, status } = value;
+    const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
+    const validTurn = outsideTurn
+      ? turn === 0
+      : [
+          "turn-request",
+          "response-read",
+          "credential-absence",
+          "http-status",
+          "response-nonce",
+        ].includes(checkpoint) &&
+        (turn === 1 || turn === 2);
+    const validStatus =
+      status === null ||
+      (checkpoint === "http-status" && Number.isInteger(status) && status >= 100 && status <= 599);
+    return validTurn && validStatus ? { kind, checkpoint, turn, status } : undefined;
+  }
+  if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
+    if (
+      ![
+        "installation",
+        "initial-model",
+        "filesystem-network",
+        "network-policy",
+        "credential-route",
+        "replacement",
+        "untrusted-upstream",
+        "tool-outage",
+        "model-outage",
+        "gateway-outage",
+        "oauth-refresh",
+        "non-model-source",
+        "credential-absence",
+        "credential-withdrawal",
+        "embedded-refusal",
+        "native-policy",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
+    if (
+      !openShellSandboxStages.has(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 2_400_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
+    return openShellPolicyChecks.has(value.check)
+      ? { kind: value.kind, check: value.check }
+      : undefined;
+  }
+  if (isRecord(value) && value.kind === "openshell-policy-probe") {
+    const count = (number) => Number.isSafeInteger(number) && number >= 0;
+    const hash = (text) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
+    if (
+      !(
+        (value.role === "control" && value.port === 8082) ||
+        (value.role === "policy" && value.port === 8083)
+      ) ||
+      !hash(value.targetHash) ||
+      !count(value.commandCount) ||
+      !count(value.candidateCount) ||
+      value.candidateCount > value.commandCount ||
+      !(value.selectedIndex === null
+        ? value.candidateCount === 0
+        : count(value.selectedIndex) &&
+          value.selectedIndex < value.commandCount &&
+          value.candidateCount > 0) ||
+      !count(value.laterUriMatches) ||
+      value.laterUriMatches >
+        (value.selectedIndex === null ? 0 : value.commandCount - value.selectedIndex - 1) ||
+      !Array.isArray(value.commands) ||
+      value.commands.length !== Math.min(8, value.commandCount - (value.selectedIndex ?? 0)) ||
+      !value.commands.every(
+        (command) =>
+          isRecord(command) &&
+          hash(command.hash) &&
+          [command.hasUrllib, command.hasInterpreter, command.hasExpectedUri].every(
+            (flag) => typeof flag === "boolean",
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      role: value.role,
+      port: value.port,
+      targetHash: value.targetHash,
+      commandCount: value.commandCount,
+      candidateCount: value.candidateCount,
+      selectedIndex: value.selectedIndex,
+      laterUriMatches: value.laterUriMatches,
+      commands: value.commands.map(({ hash, hasUrllib, hasInterpreter, hasExpectedUri }) => ({
+        hash,
+        hasUrllib,
+        hasInterpreter,
+        hasExpectedUri,
+      })),
+    };
+  }
+  if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
+    const { kind, stage, primaryCheck, cleanupCheck } = value;
+    if (
+      stage !== "native-policy-scopes" ||
+      (primaryCheck === null && cleanupCheck === null) ||
+      (primaryCheck !== null && !nativePolicyPrimaryChecks.has(primaryCheck)) ||
+      (cleanupCheck !== null && !nativePolicyCleanupChecks.has(cleanupCheck))
+    ) {
+      return undefined;
+    }
+    return { kind, stage, primaryCheck, cleanupCheck };
+  }
+  if (isRecord(value) && value.kind === openShellFixtureTeardownKind) {
+    return ["passed", "failed", "incomplete"].includes(value.outcome)
+      ? { kind: value.kind, outcome: value.outcome }
+      : undefined;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -94,6 +397,22 @@ function safeMeasurement(message) {
     }
     return result;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-manifest-failure") {
+    if (
+      ![
+        "selected-input",
+        "http-status",
+        "transport",
+        "deadline",
+        "canceled",
+        "integrity",
+        "local-io",
+      ].includes(value.reason)
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, reason: value.reason };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||
@@ -110,6 +429,19 @@ function safeMeasurement(message) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -123,7 +455,7 @@ function safeMeasurement(message) {
     ) {
       return undefined;
     }
-    return {
+    const result = {
       kind: value.kind,
       phase: value.phase,
       stage: value.stage,
@@ -131,6 +463,24 @@ function safeMeasurement(message) {
       failed: value.failed,
       elapsedMs: value.elapsedMs,
     };
+    if (value.stage === "runtime-build") {
+      const { nonzeroExitCount = 0, signaledCount = 0 } = value;
+      if (
+        Number.isInteger(nonzeroExitCount) &&
+        nonzeroExitCount >= 0 &&
+        Number.isInteger(signaledCount) &&
+        signaledCount >= 0 &&
+        nonzeroExitCount + signaledCount <= value.failed
+      ) {
+        if (nonzeroExitCount > 0) {
+          result.nonzeroExitCount = nonzeroExitCount;
+        }
+        if (signaledCount > 0) {
+          result.signaledCount = signaledCount;
+        }
+      }
+    }
+    return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent-pod") {
     if (
@@ -220,6 +570,153 @@ function safeMeasurement(message) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+// Shared by the real refresh observer and receipt admission. This establishes
+// original-turn continuity only; it cannot identify an interrupted workspace read.
+export function openShellTurnoverQualification(value) {
+  if (value.requestOutcome === "failed") {
+    return "failed";
+  }
+  if (
+    value.observation !== "complete" ||
+    !value.stableRuntime ||
+    !value.settingsConsistent ||
+    value.httpStatus !== 200 ||
+    !value.nonceMatched ||
+    !value.nodeIdSha256 ||
+    !value.configUnchanged ||
+    !value.policyUnchanged ||
+    !value.configBeforeSha256 ||
+    value.configBeforeSha256 !== value.configAfterSha256 ||
+    !value.policyBeforeSha256 ||
+    value.policyBeforeSha256 !== value.policyAfterSha256 ||
+    !value.providerEnvBeforeSha256 ||
+    !value.providerEnvAfterSha256 ||
+    !Number.isSafeInteger(value.clockOffsetMinMs) ||
+    !Number.isSafeInteger(value.clockOffsetMaxMs) ||
+    value.clockOffsetMinMs > value.clockOffsetMaxMs ||
+    value.startedAtMs > value.finishedAtMs
+  ) {
+    return "incomplete";
+  }
+  const events = [value.turnoverAtMs, value.staleTunnelAtMs];
+  const providerChanged = value.providerEnvBeforeSha256 !== value.providerEnvAfterSha256;
+  if (
+    !providerChanged &&
+    !value.providerEnvChanged &&
+    !value.harness1006LogObserved &&
+    events.every((time) => time === null) &&
+    value.capturedGeneration === null &&
+    value.currentGeneration === null &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs === value.connectedAfterMs
+  ) {
+    return "unexercised";
+  }
+  const inRequest = (time) =>
+    Number.isSafeInteger(time) &&
+    time >= value.startedAtMs + value.clockOffsetMaxMs &&
+    time <= value.finishedAtMs + value.clockOffsetMinMs;
+  if (
+    providerChanged &&
+    value.providerEnvChanged &&
+    value.harness1006LogObserved &&
+    events.every(inRequest) &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs <= value.startedAtMs + value.clockOffsetMinMs &&
+    value.connectedAfterMs > value.connectedBeforeMs &&
+    inRequest(value.connectedAfterMs) &&
+    value.turnoverAtMs <= value.staleTunnelAtMs &&
+    value.staleTunnelAtMs <= value.connectedAfterMs &&
+    Number.isSafeInteger(value.capturedGeneration) &&
+    value.capturedGeneration >= 0 &&
+    value.currentGeneration === value.capturedGeneration + 1
+  ) {
+    return "turn-continuity";
+  }
+  return "incomplete";
+}
+
+function safeOpenShellInitialTurnoverMeasurement(value) {
+  if (
+    ![1, 2].includes(value.request) ||
+    !["passed", "failed"].includes(value.requestOutcome) ||
+    !["complete", "unavailable"].includes(value.observation) ||
+    !["turn-continuity", "unexercised", "incomplete", "failed"].includes(value.qualification) ||
+    (value.httpStatus !== null &&
+      !(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599))
+  ) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    request: value.request,
+    requestOutcome: value.requestOutcome,
+    httpStatus: value.httpStatus,
+    observation: value.observation,
+    qualification: value.qualification,
+  };
+  for (const key of ["startedAtMs", "finishedAtMs"]) {
+    if (!(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of ["clockOffsetMinMs", "clockOffsetMaxMs"]) {
+    if (value[key] !== null && !Number.isSafeInteger(value[key])) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "connectedBeforeMs",
+    "connectedAfterMs",
+    "turnoverAtMs",
+    "staleTunnelAtMs",
+    "capturedGeneration",
+    "currentGeneration",
+  ]) {
+    if (value[key] !== null && !(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nodeIdSha256",
+    "providerEnvBeforeSha256",
+    "providerEnvAfterSha256",
+    "configBeforeSha256",
+    "configAfterSha256",
+    "policyBeforeSha256",
+    "policyAfterSha256",
+  ]) {
+    if (
+      value[key] !== null &&
+      !(typeof value[key] === "string" && /^[a-f0-9]{64}$/.test(value[key]))
+    ) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nonceMatched",
+    "harness1006LogObserved",
+    "durableCommands",
+    "configUnchanged",
+    "policyUnchanged",
+    "providerEnvChanged",
+    "settingsConsistent",
+    "stableRuntime",
+  ]) {
+    if (typeof value[key] !== "boolean") {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  return measurement.qualification === openShellTurnoverQualification(measurement)
+    ? measurement
+    : undefined;
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -651,6 +1148,28 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   const vocabularies = {
     proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    historyExecOuterStatus: ["completed", "failed", "waiting"],
+    historyExecOuterCode: [
+      "aborted",
+      "invalid_input",
+      "runtime_unavailable",
+      "timeout",
+      "output_limit_exceeded",
+      "snapshot_limit_exceeded",
+      "internal_error",
+    ],
+    historyExecOuterFailurePhase: ["input", "guest", "bridge", "host"],
+    historyExecNestedStatus: ["completed", "failed"],
+    historyExecNestedFailureKind: [
+      "shell-command-not-found",
+      "shell-not-executable",
+      "overall-timeout",
+      "no-output-timeout",
+      "memory-limit",
+      "signal",
+      "aborted",
+      "runtime-error",
+    ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -706,6 +1225,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyToolProofPresent",
     "historyFinalProofPresent",
     "historySettleExpired",
+    "historyExecBridgeDispatchStarted",
+    "historyExecProofProgramEntryPresent",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -724,6 +1245,25 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyRunMessageCount",
     "historyExecCount",
     "historyExplicitSuccessCount",
+    "historyStringContentCount",
+    "historyArrayContentCount",
+    "historyOtherContentCount",
+    "historyTextPartCount",
+    "historyToolCallPartCount",
+    "historyOtherPartCount",
+    "historyExecCallCount",
+    "historyExecCodeStringCount",
+    "historyExecCodeToolPrefixContainsCount",
+    "historyExecNestedExitZeroCount",
+    "historyExecNestedExitNonzeroCount",
+    "historyExecCommandStringCount",
+    "historyExecExactCommandCount",
+    "historyExecNonemptyTextCount",
+    "historyExecAggregatedCount",
+    "historyExecOtherJsonCount",
+    "historyToolPrefixContainsCount",
+    "historyAssistantNonemptyTextCount",
+    "historyFinalMarkerContainsCount",
     "historyToolPrefixCount",
     "historyFinalMarkerCount",
     "historyTerminalAssistantCount",
@@ -742,12 +1282,90 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
       safe[field] = worker[field];
     }
   }
+  if (
+    Number.isInteger(worker.historyExecNestedExitCode) &&
+    worker.historyExecNestedExitCode >= 0 &&
+    worker.historyExecNestedExitCode <= 255
+  ) {
+    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
+  }
+  if (
+    safe.historyExecNestedExitCode > 0 &&
+    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+      worker.historyExecFailureOperation,
+    ) &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "EEXIST",
+      "EISDIR",
+      "ENOTDIR",
+      "ENOSPC",
+      "EROFS",
+      "EMFILE",
+      "EIO",
+      "other",
+    ].includes(worker.historyExecFailureCode)
+  ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
+    safe.historyExecFailureCode = worker.historyExecFailureCode;
+  }
   return { ...diagnostic, worker: safe };
 }
 
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
+    return undefined;
+  }
+  if (diagnostic.kind === "openshell-startup-process") {
+    const keys = Reflect.ownKeys(diagnostic);
+    if (!keys.includes("kind") || !keys.includes("outcome")) {
+      return undefined;
+    }
+    const { kind, outcome, exitCode, signal, code } = diagnostic;
+    if (outcome === "output-limit" && keys.length === 2) {
+      return { kind, outcome };
+    }
+    if (keys.length !== 3) {
+      return undefined;
+    }
+    if (
+      outcome === "exit" &&
+      keys.includes("exitCode") &&
+      Number.isInteger(exitCode) &&
+      exitCode > 0 &&
+      exitCode <= 255
+    ) {
+      return { kind, outcome, exitCode };
+    }
+    if (
+      outcome === "signal" &&
+      keys.includes("signal") &&
+      typeof signal === "string" &&
+      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
+    ) {
+      return { kind, outcome, signal };
+    }
+    if (
+      outcome === "launch-error" &&
+      keys.includes("code") &&
+      [
+        "E2BIG",
+        "EACCES",
+        "EAGAIN",
+        "EMFILE",
+        "ENFILE",
+        "ENOENT",
+        "ENOEXEC",
+        "ENOMEM",
+        "ENOTDIR",
+        "EPERM",
+      ].includes(code)
+    ) {
+      return { kind, outcome, code };
+    }
     return undefined;
   }
   if (diagnostic.kind === "native-first-agent-proof") {
@@ -901,6 +1519,12 @@ function failureDiagnostic(error) {
           : undefined,
       lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
     };
+  }
+  if (diagnostic.kind === "observability-installation-status") {
+    const status = safeStatus(diagnostic.status);
+    return status === undefined
+      ? undefined
+      : { kind: "observability-installation-status", status, expectedStatus: 401 };
   }
   if (diagnostic.kind === "observability-log-export") {
     // Which attributed source never reached the OTLP receiver; no record content.
@@ -1202,21 +1826,21 @@ export default async function* jsonLinesReporter(source) {
       failed = true;
     }
     if (event.type === "test:diagnostic") {
-      // Per-test diagnostics name their file; the run summary counts do not.
-      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
-        output.diagnostic(event.data.message);
+      const message = event.data?.message;
+      if (typeof message !== "string") {
+        continue;
+      }
+      const value = parseMeasurement(message);
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
+        output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
-      if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(postTestAsyncActivityPrefix)
-      ) {
+      if (message.startsWith(postTestAsyncActivityPrefix)) {
         yield '{"type":"test:diagnostic","data":{"kind":"post-test-async-activity"}}\n';
-      } else if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(measurementPrefix)
-      ) {
-        const measurement = safeMeasurement(event.data.message);
+      } else if (value !== undefined) {
+        const measurement = safeMeasurement(value);
         if (measurement) {
           yield `${JSON.stringify({
             type: "test:diagnostic",

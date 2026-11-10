@@ -170,3 +170,105 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
     );
   }
 });
+
+test("ordinary creators enable browser access atomically on an unshared Configuration", async (t) => {
+  const f = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    nativeAdmin: { enabled: true, domain: "agents.oce.localhost" },
+    nativeAdminGatewayApiKey: "synthetic-browser-create-service-key",
+    filesystemConfiguration: true,
+  });
+  const bootstrapped = await f.request("POST", "/installation/bootstrap", {
+    body: { name: "Browser creation integration" },
+  });
+  assert.equal(bootstrapped.status, 201, JSON.stringify(bootstrapped.body));
+  const namespace = await f.createNamespace("Browser chat creators", { ready: true });
+  const member = await f.createNamespaceMember("browser-creator", namespace.id, [
+    ["read", "namespace"],
+    ["create", "agent"],
+    ["read", "agent"],
+    ["read", "configuration"],
+    ["create", "configuration"],
+    ["update", "configuration"],
+  ]);
+  const session = await f.signIn(member.credentials);
+  assert.equal((await f.request("GET", "/installation", { session })).status, 403);
+  const capabilities = await f.request("GET", `/namespaces/${namespace.id}/agent-capabilities`, {
+    session,
+  });
+  assert.equal(capabilities.status, 200);
+  assert.equal(capabilities.data.capabilities.nativeAdmin, true);
+  assert.equal(capabilities.data.capabilities.agentProvisioning, undefined);
+  const agents = `/namespaces/${namespace.id}/agents`;
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const freshConfiguration = async () => {
+    const result = await f.request("POST", configurations, {
+      session,
+      body: { kind: "agent", values: {} },
+    });
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    return result.data;
+  };
+  const config = await freshConfiguration();
+  const body = {
+    name: "browser-agent",
+    configurationId: config.id,
+    nativeAdmin: true,
+    expectedConfigurationGeneration: 1,
+  };
+  const created = await f.request("POST", agents, { session, body });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const saved = await f.request("GET", `${configurations}/${config.id}`, { session });
+  assert.equal(saved.data.generation, 2);
+  assert.equal(saved.data.values.gateway.controlUi.enabled, true);
+  assert.equal(saved.data.values.gateway.controlUi.allowedOrigins.length, 1);
+  const nativeOrigin = new URL(saved.data.values.gateway.controlUi.allowedOrigins[0]);
+  assert.equal(nativeOrigin.protocol, "https:");
+  assert.match(nativeOrigin.hostname, /^agent-[a-f0-9]+\.agents\.oce\.localhost$/);
+  assert.equal(nativeOrigin.port, new URL(f.origin).port);
+  assert.ok(
+    saved.data.values.gateway.auth.trustedProxy.requiredHeaders.includes("x-openclaw-scopes"),
+  );
+  const event = f.auditSink.events.find(
+    (event) => event.action === "openclaw.agents.create" && event.resource?.id === created.data.id,
+  );
+  assert.equal(event.actor.principalId, member.principal.id);
+  assert.equal(event.details.browserAccess, true);
+  assert.equal(event.details.preparedConfiguration.id, config.id);
+
+  // Reusing a referenced Configuration must not retarget the first Agent's browser origin.
+  const shared = await f.request("POST", agents, {
+    session,
+    body: { ...body, name: "shared-browser", expectedConfigurationGeneration: 2 },
+  });
+  assert.equal(shared.status, 409, JSON.stringify(shared.body));
+  assert.deepEqual(
+    (await f.request("GET", `${configurations}/${config.id}`, { session })).data,
+    saved.data,
+  );
+  const unused = await freshConfiguration();
+  const unusedBody = { ...body, configurationId: unused.id };
+  const stale = await f.request("POST", agents, {
+    session,
+    body: { ...unusedBody, expectedConfigurationGeneration: 2 },
+  });
+  assert.equal(stale.status, 409);
+  // A duplicate-name failure happens after native preparation. The filesystem document
+  // and metadata must both roll back rather than leave an origin for a nonexistent Agent.
+  const duplicate = await f.request("POST", agents, { session, body: unusedBody });
+  assert.equal(duplicate.status, 409, JSON.stringify(duplicate.body));
+  assert.deepEqual(
+    (await f.request("GET", `${configurations}/${unused.id}`, { session })).data,
+    unused,
+  );
+  const readonly = await f.createNamespaceMember("browser-config-reader", namespace.id, [
+    ["create", "agent"],
+    ["read", "configuration"],
+  ]);
+  const denied = await f.request("POST", agents, {
+    session: await f.signIn(readonly.credentials),
+    body: { ...unusedBody, name: "cannot-configure" },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((await f.request("GET", agents, { session })).data.length, 1);
+});

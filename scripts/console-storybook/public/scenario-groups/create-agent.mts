@@ -22,6 +22,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
   CredentialSourceType,
+  InstallationCapabilities,
   NamespaceStatus,
   PresetVariable,
   RepositoryOption,
@@ -48,6 +49,7 @@ type CreateAgentScenario = {
   openclawSettingRefusal?: string;
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
+  pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   // Deliberately unsupported input for the Preset validation scenario.
   presetAgent?: { executionMode: "turbo" };
@@ -326,20 +328,35 @@ export const createAgentFormScenarios = {
   },
   createNativeAdmin: {
     group: "Pages/Create Agent",
-    name: "Native admin UI opt-in",
+    name: "Browser chat opt-in",
     path: create,
     nativeAdminSetup: true,
     actions: readyForm,
     description:
-      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+      "Enable browser access during creation. Simulated UI proof; no runtime is deployed.",
     steps: [
-      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check Enable browser chat, then uncheck it. It starts off and explains chat and administration permissions.",
       "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createMemberBrowserChat: {
+    group: "Pages/Create Agent",
+    name: "Member browser chat setup",
+    path: create,
+    nativeAdminSetup: true,
+    observabilityDenied: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A Namespace creator without Installation access enables browser chat through ordinary Agent creation. This is simulated UI proof.",
+    steps: [
+      "Confirm Enable browser chat is available after the Namespace capability response.",
+      "Create the Agent. The request log shows ordinary POST agents with nativeAdmin true and expectedConfigurationGeneration 1, not guided provisioning.",
     ],
   },
   createNativeAdminSelected: {
     group: "Pages/Create Agent",
-    name: "Native admin UI selected",
+    name: "Browser chat selected",
     path: create,
     nativeAdminSetup: true,
     actions: [...readyForm, { selector: "#native-admin", click: true }],
@@ -348,7 +365,7 @@ export const createAgentFormScenarios = {
   },
   createNativeAdminDisabled: {
     group: "Pages/Create Agent",
-    name: "Native admin UI unavailable",
+    name: "Browser chat unavailable",
     path: create,
     actions: form,
     description:
@@ -408,6 +425,12 @@ export const createAgentFormScenarios = {
     ],
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+    steps: [
+      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
+      "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
+      "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
+    ],
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -440,7 +463,7 @@ export const createAgentFormScenarios = {
       "Selecting the Secret starts catalog discovery before the picker opens, without entering a separate token.",
     steps: [
       "Choose Calendar to load its details, then click Done and select another Secret to clear the catalog.",
-      "Without a selected Secret, the optional token field remains available for a preview.",
+      "Set a default plugin approver, then change Harness to OpenClaw. This Installation serves only the Codex catalog. Switch back to Codex to verify the approver was cleared.",
     ],
     gap: "The Secret and OCC discovery responses are simulated. This preview does not verify live provider access or Secret storage.",
   },
@@ -465,8 +488,24 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Select Linear from the curated catalog",
     path: create,
-    pluginCapabilities,
-    pluginDiscoveryCredential: "none",
+    pluginCatalogs: [
+      {
+        harnessId: "codex",
+        pluginPolicies: pluginCapabilities,
+        pluginDiscovery: { credential: "none" },
+      },
+      {
+        harnessId: "openclaw",
+        pluginPolicies: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          approvers: { agent: true, plugin: true, tools: true },
+          toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          driverPolicySchema: {},
+        },
+        pluginDiscovery: { credential: "none" },
+      },
+    ],
     pluginDiscovery: (() => {
       const linear = {
         id: "codex-plugin:linear@openai-curated-remote",
@@ -499,12 +538,16 @@ export const createAgentFormScenarios = {
         details: { [linear.remoteId]: linear },
       };
     })(),
-    actions: [...form, click("Configure plugins")],
+    actions: [
+      ...form,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Configure plugins"),
+    ],
     description:
-      "The selected Driver exposes Linear without a discovery token. Its tool inventory remains unknown.",
+      "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
     steps: [
       "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
-      "The catalog does not establish account access or runtime readiness; configure the Agent's actual credentials separately.",
+      "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
     ],
     gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
   },
@@ -2147,6 +2190,43 @@ export const createAgentProvisioningScenarios = {
       "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
     gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
   },
+  createPresetNonTextPrimary: {
+    group: "Pages/Create Agent",
+    name: "Preset with a non-text primary",
+    path: create,
+    rules: [
+      {
+        // Only this stored default is malformed; the other Preset remains a usable fallback.
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/presets/pre_default_codex",
+        method: "GET",
+        data: {
+          id: "pre_default_codex",
+          namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+          name: "default-codex",
+          template: {
+            variables: { marker: { type: "string" } },
+            agent: { name: "{{ vars.marker }}", executionMode: "dedicated" },
+            configuration: {
+              values: { agents: { defaults: { model: { primary: 42 } } } },
+            },
+          },
+        },
+      },
+    ],
+    actions: [
+      click("Start with default Preset"),
+      { selector: "#preset-variable-marker", value: "Retained chooser draft" },
+      click("Use Preset"),
+    ],
+    description:
+      "An older stored Preset has a numeric primary that the current Controller refuses to save. The production form explains that the primary must be text and keeps the chooser and entered Marker intact.",
+    steps: [
+      "Confirm the refusal says the primary model must be text and offers another Preset or a template fix. No Agent form opens and Marker still reads Retained chooser draft.",
+      "Select the Agents link, then Create Agent. Confirm Marker is retained. Choose Research assistant, enter a Name, and select Use Preset: the normal Agent form opens.",
+      "Reset the story. Choose Research assistant, then default-codex in Preset template. Enter a Marker and select Use Preset to check the same refusal through explicit selection.",
+    ],
+    gap: "The exact Preset GET is simulated; this preview does not save invalid data through the Controller. The owning console-agent-presets browser case covers the current PATCH 400, legacy stored value, both entry paths, and fallback recovery.",
+  },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
     name: "Permission check failed",
@@ -2196,27 +2276,46 @@ export const createAgentProvisioningScenarios = {
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+      "A member whose Namespace grants Agent create cannot read the Installation, so the form reads the Namespace's Agent capabilities instead. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
     steps: [
-      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'Above the form, "Your access" says you can create Agents in Engineering and that deploying the new Agent gives it access to the Secrets and credential sources it uses.',
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered.",
+      "Enable browser chat is disabled. Its hint says browser chat is not enabled on this installation and asks an Installation administrator to enable it, without offering a capability retry.",
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",
-    name: "Member Agent created, grant needs an administrator",
+    name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
     actions: [...readyForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
     steps: [
-      "Read the alert: giving the Agent access to its Secrets needs Installation administration, so it asks an Installation administrator to open the saved Agent and grant it.",
-      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
-      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
+      "After Create Agent, the Agent page opens on its draft.",
+      "The request log shows no /iam/ request.",
     ],
+  },
+  createMemberCredentialGateway: {
+    group: "Pages/Create Agent",
+    name: "Member on a Credential Gateway Installation",
+    path: create,
+    observabilityDenied: true,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    unsupportedProvisioning: true,
+    actions: readyForm,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
+    steps: [
+      "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
+      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
+    ],
+    gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",
   },
   createRestricted: {
     group: "Pages/Create Agent",
@@ -2460,6 +2559,9 @@ export const createAgentOutcomeScenarios = {
     description:
       "The fixed model list is available before entering a credential and starts with Choose a model. No model is selected by default.",
     steps: [
+      'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
+      'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
+      'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
       "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
       "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
     ],

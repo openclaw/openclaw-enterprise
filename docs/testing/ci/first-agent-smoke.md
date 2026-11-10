@@ -1,6 +1,8 @@
 ---
 kind: reference/ci
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # First Agent Smoke
@@ -19,6 +21,15 @@ real model service.
 This is a job in the CI workflow, selected when CI Impact chooses `full` mode.
 Documentation-only and recognized test-only changes skip it. CI also runs on
 `main` pushes, merge groups, and manual dispatch.
+
+In hosted CI, the job reuses the same verified runtime artifact as the four
+ordinary image lanes. It adds test trust to the runtime and pushes that image
+and the controller to its existing local registry. The simulated provider uses
+the pinned Node base, copies the WebSocket package from the verified runtime,
+and loads into the job's Docker engine. All installation, chat and lifecycle
+checks still run.
+See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) for
+artifact verification and rerun behavior.
 
 The job is outside `CI Required`, so its failure does not fail that merge gate.
 A failed main-push CI workflow can still block container and CLI publication,
@@ -58,6 +69,8 @@ node scripts/ci/first-agent-smoke.mjs run
 
 The second command builds images; `run` requires those build results. Do not
 substitute a production cluster for the script's disposable installation.
+
+Cold runtime source builds have a 180-minute command budget, matching native runtime assembly. Node compilation alone has exceeded the former 40-minute limit. The protected prepared-Git job allows 240 minutes for image builds and its installed proof. Controller-only builds and artifact-backed bake calls retain 40 minutes; the ordinary artifact-backed smoke job also stays at 40 minutes. These are cancellation bounds, not predicted durations or an explanation for runner losses.
 
 ### Local isolation
 

@@ -14,12 +14,13 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import {
   cleanEnvironment,
@@ -29,11 +30,11 @@ import {
 } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 
 async function startBroker(
   t,
@@ -194,9 +195,14 @@ function refusedOnceBy(b, response, reason, operation) {
   ]);
 }
 
-async function withdrawRepositoryBinding(t, { state, agent }) {
+async function withdrawRepositoryBinding(t, { state, agent, revision }) {
+  const original = await state.read((unit) =>
+    unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+  );
+  assert.ok(original);
   const installation = await state.read((unit) => unit.installations.getInstallation());
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
+  assert.notEqual(original.actorId, auth.seed.principal.id);
   const iam = new NativeIAMDriver({
     async loadNativeIAMState() {
       return {
@@ -217,7 +223,11 @@ async function withdrawRepositoryBinding(t, { state, agent }) {
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
     auth: auth.auth,
-    development: { enabled: true, installationId: installation.id },
+    development: {
+      enabled: true,
+      installationId: installation.id,
+      browserOrigin: "https://console.oce.localhost",
+    },
   });
   t.after(() => app.close());
   const api = await createAuthenticatedControllerRequest(app, auth);
@@ -227,6 +237,12 @@ async function withdrawRepositoryBinding(t, { state, agent }) {
   });
   assert.equal(result.status, 200, JSON.stringify(result.error));
   assert.deepEqual(result.data.repositoryBindings ?? [], []);
+  // Cleanup retains the original deployer, even when another principal removes Git.
+  const withdrawal = await state.read((unit) =>
+    unit.operations.findWork(repositoryRemovalWorkKey(revision.id)),
+  );
+  assert.ok(withdrawal);
+  assert.equal(withdrawal.actorId, original.actorId);
 }
 
 test(
@@ -236,7 +252,10 @@ test(
     timeout: 75000,
   },
   async (t) => {
-    const f = await fixture(t, { openBroker: (input) => startBroker(t, input) });
+    const f = await fixture(t, {
+      openBroker: (input) => startBroker(t, input),
+      recordDeploymentOperation: true,
+    });
     const b = f.broker;
     const repo = "/" + b.repository + ".git/";
     const discovery = repo + "info/refs?service=git-upload-pack";
@@ -504,7 +523,7 @@ for (const mode of [
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
       const client = new URL(
-        "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
+        "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
         import.meta.url,
       ).href;
       const args = (operation = operationId, target = base) => [

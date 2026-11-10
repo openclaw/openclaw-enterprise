@@ -1,3 +1,4 @@
+import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -2704,6 +2705,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     plugins: openClawPluginState(),
     pluginApprovers: rawSlackApprovers,
   });
+  admitRevisionHarness(driver, embedded);
   const namespace = kubernetesNamespaceName(tenant.id);
   const tenantOwnership = { namespaceId: tenant.id };
   const defaultPolicies = new Map(
@@ -2829,6 +2831,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     }),
   });
   useRoutedGateway(dedicated);
+  admitRevisionHarness(dedicatedDriver, dedicated);
   const dedicatedNamespace = kubernetesNamespaceName(dedicated.namespaceId);
   const dedicatedTenantOwnership = { namespaceId: dedicated.namespaceId };
   const dedicatedDefaultPolicies = new Map(
@@ -3082,24 +3085,17 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
           },
         },
       });
-      if (expected === "rejects") {
-        await assert.rejects(
-          () =>
-            driver.pluginRuntimeStatus(
-              candidate,
-              { name: namespace, plane: "execution" },
-              "gateway",
-              expectedWarnings,
-            ),
-          DependencyUnavailableError,
-        );
-      } else {
-        const status = await driver.pluginRuntimeStatus(
+      const readStatus = () =>
+        driver.pluginRuntimeStatus(
           candidate,
           { name: namespace, plane: "execution" },
           "gateway",
           expectedWarnings,
         );
+      if (expected === "rejects") {
+        await assert.rejects(readStatus, DependencyUnavailableError);
+      } else {
+        const status = await readStatus();
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
       // Every case, not-ready ones included, reads the running Pod's report.
@@ -3270,7 +3266,7 @@ test("gateway runtime status maps native Slack channel status without provider d
             return false;
           },
           lstatSync() {
-            return { isDirectory: () => true };
+            throw Object.assign(new Error("File not found"), { code: "ENOENT" });
           },
           mkdirSync() {},
           readFileSync() {
@@ -3776,6 +3772,12 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!files.has(path)) {
@@ -4015,6 +4017,12 @@ async function startCodexGatewaySupervisor(
       if (specifier === "node:fs") {
         return {
           existsSync: (path) => fixture.files.has(path),
+          lstatSync(path) {
+            if (!fixture.files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!fixture.files.has(path)) {
@@ -5030,6 +5038,12 @@ for (const [dedicated, withBroker, proxyEnabled] of [
             existsSync(path) {
               return files.has(path);
             },
+            lstatSync(path) {
+              if (!files.has(path)) {
+                throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+              }
+              return { isFile: () => true, mode: 0o600 };
+            },
             mkdirSync() {},
             readFileSync(path) {
               if (!files.has(path)) {
@@ -5258,74 +5272,17 @@ for (const withBroker of [false, true]) {
   });
 }
 
-test("Kubernetes embedded OpenClaw gateway mounts broker-only Codex bridge runtime", async () => {
-  const driver = createKubernetesComputeDriver(kubernetesOptions());
-  const candidate = revision({
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    plugins: codexNoPluginState(),
-  });
-  const runtime = pluginRuntimeSpecForRevision(candidate, {
-    host: "git.oce.svc",
-    domains: {},
-  });
-  const deployment = driver.deployment(
-    "gateway-plugin-compute-rev",
-    {
-      namespaceId: tenant.id,
-      agentId: agent.id,
-      revisionId: "revision-plugin-compute-1",
-    },
-    { name: "oce-plugin-compute", plane: "execution" },
-    "openclaw-enterprise/gateway-fixture:local",
-    "gateway-plugin-compute",
-    "gateway",
-    {},
-    "info",
-    driver.gatewayConfiguration(candidate, undefined, {
-      name: "oce-plugin-compute",
-      plane: "execution",
-    }),
-    true,
-    candidate.servicePrincipalId,
-    driver.harnessAuthForRevision(
-      candidate,
-      {
-        harnessAuth: {
-          ...candidate.harnessAuth,
-          backendRef: {
-            namespaceName: "oce-plugin-compute",
-            name: "plugin-model-key",
-            key: "value",
-            uid: "plugin-model-key-uid",
-          },
-        },
-      },
-      { name: "oce-plugin-compute", plane: "execution" },
-    ),
-    [],
-    [],
-    { name: "plugin-runtime-gateway-plugin-compute", runtime },
-  );
-
-  const pod = deployment.spec.template.spec;
-  assert.equal(
-    pod.volumes.some(
-      (volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-compute",
-    ),
-    true,
-  );
-  const container = pod.containers[0];
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT),
-    true,
-  );
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT),
-    false,
-  );
-  assert.equal(
-    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT),
-    false,
+test("an embedded OpenClaw revision cannot mount a historical broker-only Codex bridge", () => {
+  assert.throws(
+    () =>
+      pluginRuntimeSpecForRevision(
+        revision({
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          plugins: codexNoPluginState(),
+        }),
+        { host: "git.oce.svc", domains: {} },
+      ),
+    /a dedicated Codex Harness/,
   );
 });
 
@@ -5345,6 +5302,8 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
   });
   useRoutedGateway(candidate);
   useRoutedGateway(predecessor);
+  admitRevisionHarness(driver, candidate);
+  admitRevisionHarness(driver, predecessor);
   const namespace = kubernetesNamespaceName(tenant.id);
   const tenantOwnership = { namespaceId: tenant.id };
   const agentName = `agent-${shortHash(candidate.agentId)}`;

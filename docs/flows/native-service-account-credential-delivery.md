@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-30
-last_updated_session: authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e
+updated: 2026-11-04
+last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
 ---
 
 # Harness Authentication Binding Flow
@@ -278,9 +278,9 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
   `OCC_TEST_HARNESS_K3D_REAL=1` exercises the API binding/deploy path with
   disposable Kubernetes/PostgreSQL, genuine images, and an authorized API key,
   requiring a provider-backed turn from both dedicated Codex and embedded OpenClaw.
-- [Managed-account testing](../testing/slack.md#chatgpt-service-accounts) separately requires
-  provider authorization, an issued ChatGPT credential, and a real Codex turn;
-  API fixtures prove only admission or persistence.
+- [Service-account coverage](../testing/slack.md#service-account-coverage) checks
+  lifecycle, API, and persistence behavior. It does not prove live provider
+  credential revocation or model turns.
 - Verify Secret projections only on intended consumers, source-deletion guards,
   Agent revision metadata, dispatch denial after revoked grants, and failed
   auth preventing readiness. Use synthetic sentinels for serialized resources,

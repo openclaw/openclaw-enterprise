@@ -41,7 +41,7 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
@@ -79,7 +79,7 @@ import {
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
 const administratorSessions = new Map();
@@ -198,6 +198,14 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
     initialWorkspaceFiles: {},
     ...overrides,
   };
+}
+
+async function requestAcceptedProvisioning(fixture, namespaceId, secrets) {
+  const admitted = await fixture.request("POST", `/namespaces/${namespaceId}/agents/provision`, {
+    body: provisioningBody(namespaceId, secrets),
+  });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  return admitted;
 }
 
 function createRuntimeComputeDriver(options = {}) {
@@ -325,6 +333,7 @@ async function ensureProvisioningBootstrap(context, state) {
       password: adminPassword,
       authSecret,
       authBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName: "Agent provisioning integration",
       environment: { PATH: process.env.PATH },
     });
@@ -435,7 +444,7 @@ function installationDrivers({
             backendId: "provisioning-repositories",
           },
         }),
-    ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    pluginDrivers: pluginDriver === undefined ? [] : [pluginDriver],
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };
@@ -498,7 +507,9 @@ async function createFixture(context, options = {}) {
     credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
-  let nativeAdminSettings = {};
+  let nativeAdminSettings = {
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+  };
   if (options.nativeAdmin) {
     const directory = await temporaryDirectory(context, "native-admin-provisioning-");
     const gatewayApiKeyPath = join(directory, "gateway-key");
@@ -507,7 +518,6 @@ async function createFixture(context, options = {}) {
       nativeAdmin: {
         enabled: true,
         domain: "agents.oce.localhost",
-        sharedCookieDomain: "oce.localhost",
       },
       gatewayApiKeyPath,
     };
@@ -936,10 +946,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     const statusPath = `/namespaces/${namespace.id}/agents/provision/${encodeURIComponent(workId)}`;
     const apiStatus = async () => {
@@ -1584,10 +1591,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     await fixture.startWorker();
     let handoff;
     try {
@@ -1666,10 +1670,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     await fixture.startWorker();
     try {
       const handoff = await waitFor("the first deployment to be admitted", async () => {
@@ -1796,10 +1797,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
@@ -1893,10 +1891,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
@@ -1940,6 +1935,65 @@ test(
     assert.equal(after.status, 200, JSON.stringify(after.body));
     assert.equal(after.data.status, "failed");
     assert.deepEqual(after.data.error, failure);
+  },
+);
+
+test(
+  "provisioning takes the IAM configuration lock before the Namespace lock",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, { stopAfterProvisioning: true });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
+
+    // Applying the iam configuration at API or worker startup holds this advisory lock
+    // exclusively (the key is IAM_CONFIGURATION_LOCK_KEY in postgres-state.ts), then locks each
+    // Namespace it writes a configured binding into. Hold the lock until the provisioning worker
+    // waits on it: that wait must not already hold the Namespace, or a startup that overlaps
+    // provisioning deadlocks and PostgreSQL aborts one of them.
+    const holder = await fixture.pool.connect();
+    let failed = false;
+    try {
+      await holder.query("BEGIN");
+      const backend = await holder.query("SELECT pg_backend_pid() AS pid");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        "occ:iam-configuration",
+      ]);
+      await fixture.startWorker();
+      await waitForLockWaiter(
+        fixture.pool,
+        backend.rows[0].pid,
+        "the provisioning worker's wait on the IAM configuration lock",
+      );
+      await assert.doesNotReject(
+        holder.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE NOWAIT", [
+          namespace.id,
+        ]),
+        "provisioning waiting for the IAM configuration must not already hold its Namespace",
+      );
+      await holder.query("COMMIT");
+    } catch (error) {
+      failed = true;
+      await holder.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      holder.release(failed);
+    }
+
+    // Once the configuration change commits, the same provisioning attempt goes on to create
+    // its Agent.
+    try {
+      const created = await waitFor("provisioning to create its Agent", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        return observed.data.agentId === undefined ? undefined : observed.data;
+      });
+      fixture.cancelProvisioningAtTeardown(namespace.id, created.agentId);
+    } finally {
+      await fixture.stopWorker();
+    }
   },
 );
 
@@ -2757,10 +2811,7 @@ test(
     const fixture = await createFixture(context, { computeDriver, configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
 
     // Inside the window an absent Configuration may still be a late create, so the worker
     // neither resends it nor spends the fixture's three attempts waiting.
@@ -2914,10 +2965,7 @@ test(
     const fixture = await createFixture(context, { configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     await provisionUntilConfigurationSettling(fixture, admitted, sent);
     await elapseConfigurationSettleWindow(fixture, workId);
@@ -3159,10 +3207,7 @@ test(
     const fixture = await createFixture(context, { configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const secretPath = (secret) => `/namespaces/${namespace.id}/secrets/${secret.id}`;
 
     // Queued: no Configuration or Agent names these Secrets yet, only the accepted plan. Its
@@ -3231,10 +3276,7 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     // No worker runs, so the request stays queued and keeps referencing both Secrets.
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.modelKey.id}`;
     assert.deepEqual(
@@ -3290,10 +3332,7 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     // No worker runs, so administrator A's request stays queued and keeps referencing both Secrets.
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
 
     // Administrator B holds A's Installation-wide administrator Role, so every grant a status
@@ -3362,6 +3401,9 @@ test(
   },
 );
 
+const missingCodexPluginCatalog =
+  "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.";
+
 test(
   "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
   { ...requiresPostgres, timeout: 60_000 },
@@ -3416,8 +3458,7 @@ test(
     // Rule out the Configuration outage as the cause of the retry refusal below.
     configurationOutage = false;
 
-    // The administrator restarts the API with a Plugin Driver that does not offer the stored
-    // plugin. Reading status reports the stored work: plugin admission belongs to writes.
+    // Restart with only the OpenClaw catalog. Status still returns the persisted failure.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3428,16 +3469,10 @@ test(
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.deepEqual(status.data, failed);
 
-    // Retry would run the plan again, so it is still refused, naming the stored plugin
-    // without a request-body detail, and queues nothing.
+    // Retry must resolve the plan's Codex Harness catalog before validating any plugin ID.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 400, "INVALID_REQUEST");
-    assert.match(
-      retried.body.error.message,
-      new RegExp(
-        `^A plugin selection names a plugin that the selected Plugin Driver \\(occ-plugin\\) does not offer: ${pluginId}\\.`,
-      ),
-    );
+    assert.equal(retried.body.error.message, missingCodexPluginCatalog);
     assert.equal(Object.hasOwn(retried.body.error, "details"), false);
     // A replay of the original request rechecks the stored plan, so it is refused the same way
     // and returns no progress.
@@ -3474,15 +3509,13 @@ test(
     });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    // A hosted-app plugin ID makes the refusal outgrow the 256-character status message.
-    const pluginId = "codex-plugin:app-69312da8e4dc81919370cb86fd172b6c@openai-curated-remote";
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    // The Installation now selects a Plugin Driver that does not offer the stored plugin. Every
-    // attempt would refuse the plan the same way, so the worker fails it on the first one.
+    // The plan was admitted for Codex. A worker with only OpenClaw must refuse it on its first attempt.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3498,17 +3531,8 @@ test(
     await switched.stopWorker();
     const failed = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(failed.status, 200, JSON.stringify(failed.body));
-    // The refusal names the stored plugin, as HTTP retry would, so Console can say why.
     assert.equal(failed.data.error.code, "PROVISIONING_REJECTED");
-    assert.ok(
-      failed.data.error.message.startsWith(
-        `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}.`,
-      ),
-      failed.data.error.message,
-    );
-    // Cut to the 256-character cap with an ellipsis that says text is missing.
-    assert.equal(Array.from(failed.data.error.message).length, 256);
-    assert.ok(failed.data.error.message.endsWith("…"), failed.data.error.message);
+    assert.equal(failed.data.error.message, missingCodexPluginCatalog);
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],
@@ -5581,10 +5605,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     let handoff;
     await fixture.startWorker();

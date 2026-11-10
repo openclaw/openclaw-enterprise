@@ -496,7 +496,8 @@ async function buildStaticEgressFixture(
     : preparedGitHub;
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
   if (preparedGitHub) {
-    preparedTokens.register({
+    preparedTokens.registerIssuer({
+      tokenKind: "github_app_installation",
       provider: preparedGitHubProviderRef,
       sourceFromRoute: preparedGitHubSourceFromRoute,
       issuerInput: "private_key",
@@ -505,7 +506,7 @@ async function buildStaticEgressFixture(
         return { origin: owner.apiOrigin, grant: githubMetadataGrant(config), schemaVersion: 2 };
       },
       configure: (...args) => owner.configure(...args),
-      readWarm: (...args) => owner.readWarm(...args),
+      resolve: (...args) => owner.resolve(...args),
       ready: (...args) => owner.ready(...args),
       withdraw: (...args) => owner.withdraw(...args),
     });
@@ -537,7 +538,6 @@ async function buildStaticEgressFixture(
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
   };
   const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    modelProvider,
     id: proxyDriverId,
     preparedProviders: preparedProvider
       ? [preparedProvider]
@@ -549,7 +549,7 @@ async function buildStaticEgressFixture(
   });
   const catalog = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend, modelProvider },
+    { id: "openshell-credentials", backend },
   );
   const gatewayEffects = [];
   for (const method of ["registerSource", "updateSource", "removeSource"]) {
@@ -560,6 +560,8 @@ async function buildStaticEgressFixture(
     };
   }
   const placement = createTestKubernetesComputeDriver("placement", {
+    gatewayRuntime: true,
+    modelProvider,
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
   const app = await appFactory(t, {
@@ -580,6 +582,9 @@ async function buildStaticEgressFixture(
     secretDriver,
     computeDriver: {
       ...createDevelopmentComputeDriver(),
+      normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
+      resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
+      validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
       // Schema/protocol fixture only: no workload is released by this Compute.
       validateExecutionAdmission: assertExecutionAdmission,
       async resolveSandboxNamespace(value) {
@@ -1231,7 +1236,7 @@ async function buildStaticEgressFixture(
  * @template {import("node:net").Server} [Provider=never]
  * @overload
  * @param {import("node:test").TestContext} t
- * @param {ExecutionFixtureOptions<Provider> & {admitRevision: boolean}} options
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: boolean}} [options]
  * @returns {Promise<Exclude<StaticFixtureResult<Provider>, {fixtureKind: "admission"}>>}
  */
 /**

@@ -126,7 +126,13 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       configuration: {},
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      harness: {
+        id: "openclaw",
+        version: "1.0.0",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
       compute: {
         id: "compute-local-development",
         implementation: "deterministic-local-development",
@@ -577,7 +583,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: { agents: { defaults: { model: "test/model" } } },
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
         executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
@@ -1437,7 +1449,7 @@ test(
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../packages/occ/src/state/postgres-state.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/postgres-backend-state.mjs"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
@@ -1504,6 +1516,7 @@ test(
           harnessAuth: null,
           executionMode: "embedded",
           servicePrincipalId: `service-agent-${malformedCreateAgentId}`,
+          pluginDriver: { id: pluginDriver.id, implementation: pluginDriver.implementation },
           plugins: {
             "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "sometimes" } },
           },
@@ -1539,6 +1552,12 @@ test(
     );
     assert.equal(persistedAgent.configurationId, configuration.id);
     assert.deepEqual(persistedAgent.pluginApprovers, []);
+    const driverIdentity = { id: pluginDriver.id, implementation: pluginDriver.implementation };
+    assert.deepEqual(persistedAgent.pluginDriver, driverIdentity);
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET plugin_driver = NULL WHERE id = $1", [agent.id]),
+      { code: "23514", constraint: "agents_plugin_driver_selection" },
+    );
 
     const storedSelection = await pool.query(
       "SELECT plugins, plugin_approvers FROM occ.agents WHERE id = $1",
@@ -1646,6 +1665,7 @@ test(
       configurationId: replacementConfiguration.id,
     });
     assert.deepEqual(omittedPlugins.plugins, initialPlugins);
+    assert.deepEqual(omittedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(omittedPlugins.pluginApprovers, []);
     const replacementPlugins = {
       "occ-plugin:diffs": {
@@ -1666,6 +1686,7 @@ test(
       pluginApprovers: rawSlackApprovers,
     });
     assert.deepEqual(replacedPlugins.plugins, replacementPlugins);
+    assert.deepEqual(replacedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(replacedPlugins.pluginApprovers, rawSlackApprovers);
     const clearedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
@@ -1681,6 +1702,8 @@ test(
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
+    assert.equal(reloadedAgent.pluginDriver, undefined);
+    assert.deepEqual(reloadedRevision.plugins.driver, driverIdentity);
     assert.deepEqual(reloadedAgent.pluginApprovers, rawSlackApprovers);
     assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
     assert.deepEqual(reloadedRevision.pluginApprovers, []);
@@ -1898,7 +1921,13 @@ test(
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: configuration.values,
-        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: {
           id: "compute-local-development",
           implementation: "deterministic-local-development",
@@ -1933,10 +1962,10 @@ test(
     const malformedPlugins = {
       "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
     };
-    await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
-      agent.id,
-      JSON.stringify(malformedPlugins),
-    ]);
+    await pool.query(
+      "UPDATE occ.agents SET plugins = $2::jsonb, plugin_driver = $3::jsonb WHERE id = $1",
+      [agent.id, JSON.stringify(malformedPlugins), JSON.stringify(revision.plugins.driver)],
+    );
     const malformedRevisionId = `rev_${randomUUID()}`;
     await pool.query(
       `INSERT INTO occ.agent_revisions
@@ -2069,7 +2098,7 @@ test(
       // decodes it, so the CLI lists it beside its healthy sibling without a strict read.
       await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
         agent.id,
-        JSON.stringify(agent.plugins ?? {}),
+        JSON.stringify(plugins),
       ]);
       const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
       assert.equal(history.stderr, "");
@@ -2210,7 +2239,13 @@ test(
           configurationKind: "agent",
           configurationGeneration: 1,
           configuration: configuration.values,
-          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          harness: {
+            id: "openclaw",
+            version: "1.0.0",
+            mode: "embedded",
+            overrides: {},
+            configuration: {},
+          },
           compute: {
             id: "compute-local-development",
             implementation: "deterministic-local-development",
@@ -2278,7 +2313,7 @@ test(
       { requestFailure },
     ] = await Promise.all([
       import("pg"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../../apps/controller/src/http/errors.ts"),
     ]);
@@ -2648,7 +2683,7 @@ test(
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/index.ts"),
       import("../../packages/iam/src/index.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/drivers/channel/slack.ts"),

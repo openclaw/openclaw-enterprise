@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, posix, resolve } from "node:path";
+import { assertInsideDirectory } from "./assert-inside-directory.ts";
 import { privateOwned } from "./private-owned-path.mjs";
 import {
   assertReviewedCodexVersion,
@@ -76,13 +77,6 @@ function requireExecFile(execFile) {
     throw new Error("Codex seccomp preparation requires execFile.");
   }
   return execFile;
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function assertSelectedK3dCluster(cluster) {
@@ -524,8 +518,8 @@ async function writeDockerSeccompProfile(directory, codexVersion, installation) 
   await mkdir(dockerDirectory, { recursive: true, mode: 0o700 });
   await chmod(dockerDirectory, 0o700);
   const profilePath = join(dockerDirectory, `codex-${codexVersion}-${installation.sha256}.json`);
-  await writeFile(profilePath, installation.profileData, { mode: 0o644, flag: "wx" });
-  await chmod(profilePath, 0o644);
+  await writeFile(profilePath, installation.profileData, { mode: 0o600, flag: "wx" });
+  await chmod(profilePath, 0o600);
   return profilePath;
 }
 
