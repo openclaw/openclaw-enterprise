@@ -2352,7 +2352,12 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
     write.release();
     await page
-      .getByText(/Outcome unknown/)
+      .getByText(
+        mutation === "authentication"
+          ? "We couldn't confirm the result of your request."
+          : "Outcome unknown.",
+        { exact: false },
+      )
       .first()
       .waitFor();
     const credentialsPanel = page.locator(".channel-secrets");
@@ -2836,7 +2841,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await page
-    .getByText(/Outcome unknown/)
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
     .first()
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);

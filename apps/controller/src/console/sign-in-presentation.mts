@@ -89,7 +89,7 @@ function requestRefusalMessage({
     code === "FORBIDDEN" &&
     serverMessage?.startsWith("A trusted browser origin is required")
   ) {
-    return "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+    return "Sign-in requires the Console's exact address, including http or https, hostname, and port. Ask your administrator for the Console sign-in link.";
   }
   return undefined;
 }

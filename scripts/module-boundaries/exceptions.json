@@ -415,8 +415,8 @@
       "typeOnly": false,
       "bindings": [
         "value:normalizedRepositoryAccess",
+        "value:repositoryAccessProblem",
         "value:validAdmittedRepositoryBindings",
-        "value:validRepositoryAccess",
         "value:validRepositoryRevisionState"
       ],
       "owner": "Repository revision admission",

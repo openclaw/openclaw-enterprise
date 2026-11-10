@@ -877,7 +877,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   committed.release();
   await page
     .getByText(
-      "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
+      "We couldn't confirm the result of your request. Refresh the page and check before submitting it again.",
     )
     .waitFor();
   assert.equal(await save.isDisabled(), true);

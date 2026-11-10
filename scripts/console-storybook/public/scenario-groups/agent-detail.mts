@@ -663,7 +663,7 @@ export function createAgentDetailScenarios({
         actions: shareExistingPerson,
         rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
         description:
-          "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+          "A failed sharing response reports an unconfirmed request result. Refresh current policy before explicitly retrying; no automatic replay occurs.",
         steps: [
           "Tab to the Principal ID, the acknowledgement and Share Agent. Each takes focus and looks unavailable, described by the alert that asks for Refresh sharing; typing, Enter, Space or a click changes nothing.",
         ],
@@ -3246,7 +3246,27 @@ export function createAgentDetailScenarios({
           "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
         steps: [
           "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
-          "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+          "When the message about the request result takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+        ],
+      },
+      deployRepositoryRequired: {
+        group: "Pages/Agent detail",
+        name: "Deployment requires a repository",
+        path: draft,
+        rules: [
+          {
+            method: "POST",
+            suffix: "/deploy",
+            status: 409,
+            code: "RESOURCE_CONFLICT",
+            message:
+              "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.",
+          },
+        ],
+        description:
+          "Deploy refuses an Agent without a repository on an installation that requires one.",
+        steps: [
+          "Select Deploy new version. Read the refusal and ask an administrator to confirm protected Git readiness. After confirmation, open Repositories, select an approved repository and save before deploying again.",
         ],
       },
       deployRefusedSetting: {

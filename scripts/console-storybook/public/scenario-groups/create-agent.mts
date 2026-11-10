@@ -2778,6 +2778,26 @@ export const createAgentOutcomeScenarios = {
     ],
     gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
   },
+  createSaveUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "Agent save unconfirmed",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 503,
+      },
+    ],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "A failed response does not establish whether the Agent was saved. The form asks the reader to refresh and check before submitting again.",
+    steps: [
+      "Read the uncertain-save guidance, then open Agents to inspect saved state before starting another draft.",
+    ],
+    gap: "Simulated response loss. The browser regression also exercises an accepted create through the real controller before hiding its response.",
+  },
   createUnknown: {
     group: "Pages/Create Agent",
     name: "Provisioning outcome unknown",

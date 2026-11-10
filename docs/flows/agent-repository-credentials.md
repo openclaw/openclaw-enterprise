@@ -10,7 +10,7 @@ last_updated_session: "authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440"
 
 Codex uses prepared sessions; [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
 receives placeholders. Workers authorize signed requests against live grants.
-[Enrollment](../guides/repository-credentials/openshell-enrollment.md); [qualification](../testing/repository-credentials.md).
+[Enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 ## Entry Points
 
@@ -97,15 +97,15 @@ listings use the registered Repo Driver. Both reject stale owner results. Deploy
 Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-`createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` rejects explicit or inherited saves that mismatch bound
+`createRepositoryFields`: up to 1,000 choices and 16 attachments.
+`repositorySettings` rejects explicit or inherited saves mismatching bound
 Installation policy. Unbound saves use the registered Repo Driver. The database
-checks bindings. Only fresh, empty drafts tolerate classified outages. Catalogs
+checks bindings. `repositoryAccessProblem` identifies invalid fields and duplicates. Only fresh, empty drafts tolerate classified outages. Catalogs
 omit sender metadata, credentials and provider descriptions.
 
-Save Configuration first. Known Agent rejection permits reuse. Retry only after
-successful reload and nonempty repository selection. Resolve unknown outcomes by
-reading stored Agent and Configuration.
+[Console recovery](../reference/console/repository-access.md): save Configuration first; reuse after known Agent rejection. Retries require
+successful reload and nonempty repository selection. For unknown outcomes, read
+stored Agent and Configuration.
 
 Requests carry refs and optional profiles, never tokens or grant IDs.
 Without bound built-in policy or a selected Repo Driver, nonempty selections return
@@ -115,8 +115,8 @@ to `git-write` without provider or control-socket calls.
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
 installation, repository, duration, full Namespace profile policy, exact permissions
-and optional normalized push-ref allowlist. Each binding gets one grant. Installations
-can supply several repositories. Omission preserves selections. `[]` clears them.
+and optional normalized push-ref allowlist. One grant per binding; multiple repositories per Installation. Omission preserves
+selections; `[]` clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
@@ -140,6 +140,9 @@ and freezes Driver identity, grants and deadline across renewals and recovery.
 
 After approval lookup, changed bound ownership returns 503 before invocation.
 Unbound deploys recheck their Driver. Denial or binding/scope changes block revision creation.
+
+`OpenClawController.admitProxyPlan` distinguishes missing repositories
+from unsupported sources on Git-only Proxies.
 
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
 Driver. Finite sessions need no native sender, control socket, broker CA or session files.
@@ -253,10 +256,10 @@ verification stay in force. Codex verifies the named network profile on thread s
 
 Stock Git keeps commands, remotes, settings and hooks. Configuration routes
 canonical HTTPS hosts to the gateway. The helper checks host, path, generation and
-deadline before returning a bearer. `OCE_REPOSITORY_REF` selects bindings.
-[Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
-`pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
-builds launchers that resolve the dispatcher by module URL through symlinks and relocations.
+deadline before returning a bearer. `OCE_REPOSITORY_REF` selects bindings, not destinations.
+[Routing limits](../reference/repository-credentials.md#client-routing-and-limits): no whole-command preflight or egress confinement.
+`pushRefAllowlist`: image-owned hooks. `scripts/build-repository-credentials.ts:stage`
+builds launchers resolving the dispatcher by module URL through symlinks and relocations.
 `apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
 rejects disallowed refs before updates and passes arguments and input to
 common-directory hooks. See [discovery and hook limits](../reference/repository-credentials/push-ref-guardrail.md).
@@ -275,8 +278,8 @@ uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
 Draft heads require concrete refs. Receive-pack rejects disallowed refs before
 durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
 
-The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
-checks bearer, fixed repository/profile, capacity and deadlines. It refreshes
+The [exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
+checks bearer, fixed repository/profile, capacity and deadlines, refreshing
 installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
@@ -349,7 +352,6 @@ Compute waits for owned Pods to stop before removing material, preserving Secret
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
-Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
 
 `repository-not-admitted` identifies unselected targets; `name-one-repository-target`
 and `name-one-repository-ref` require explicit selection. Inspect metadata
@@ -362,11 +364,9 @@ Verify live PR updates, denial before provider contact and continued chat separa
 
 ## Related docs
 
-- [Repository credential reference](../reference/repository-credentials.md)
 - [Install repository access](../guides/repository-credentials/installation.md)
-- [Create and use a repository Agent](../guides/repository-credentials.md)
-- [Controller worker lifecycle](controller-worker.md)
-- [Credential service execution](repository-credentials.md)
+- [Repository Agent guide](../guides/repository-credentials.md)
+- [Worker lifecycle](controller-worker.md)
 
 ## Manual Notes
 
@@ -406,6 +406,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 - 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
+
+- 2026-11-03 13:50: Clarify validation and recovery. (authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
 

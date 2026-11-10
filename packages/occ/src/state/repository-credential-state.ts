@@ -81,32 +81,45 @@ export function validRepositoryBindingSelections(
 }
 
 export function validRepositoryAccess(value: unknown): value is RepositoryAccess {
+  return repositoryAccessProblem(value) === undefined;
+}
+
+/** The same shape rules govern saved intent and request diagnostics. */
+export function repositoryAccessProblem(value: unknown): string | undefined {
+  if (!exactObject(value, ["defaultProfile", "repositories"])) {
+    return "Send `repositoryAccess` with only `defaultProfile` and `repositories`.";
+  }
   if (
-    !exactObject(value, ["defaultProfile", "repositories"]) ||
     !boundedToken(value.defaultProfile) ||
-    isInstallationRepositoryProfile(value.defaultProfile) ||
-    !Array.isArray(value.repositories) ||
-    value.repositories.length > 16
+    isInstallationRepositoryProfile(value.defaultProfile)
   ) {
-    return false;
+    return "Set `repositoryAccess.defaultProfile` to a repository profile other than `github-installation`.";
+  }
+  if (!Array.isArray(value.repositories)) {
+    return "Send `repositoryAccess.repositories` as an array of repository selections.";
+  }
+  if (value.repositories.length > 16) {
+    return "Select at most 16 repositories in `repositoryAccess.repositories`.";
   }
   const seen = new Set<string>();
-  return value.repositories.every((entry: unknown) => {
-    if (entry === null || typeof entry !== "object") {
-      return false;
-    }
-    const keys = Object.hasOwn(entry, "profile") ? ["repositoryRef", "profile"] : ["repositoryRef"];
+  for (const entry of value.repositories) {
+    const keys =
+      entry !== null && typeof entry === "object" && Object.hasOwn(entry, "profile")
+        ? ["repositoryRef", "profile"]
+        : ["repositoryRef"];
     if (
       !exactObject(entry, keys) ||
       !boundedToken(entry.repositoryRef) ||
-      (keys.length === 2 && !boundedToken(entry.profile)) ||
-      seen.has(entry.repositoryRef)
+      (keys.length === 2 && !boundedToken(entry.profile))
     ) {
-      return false;
+      return "Each entry in `repositoryAccess.repositories` needs a valid `repositoryRef` and, if supplied, a valid `profile`.";
+    }
+    if (seen.has(entry.repositoryRef)) {
+      return "List each repository only once in `repositoryAccess.repositories`.";
     }
     seen.add(entry.repositoryRef);
-    return true;
-  });
+  }
+  return undefined;
 }
 
 /** Persist intent only alongside the exact profiles it resolves to. */

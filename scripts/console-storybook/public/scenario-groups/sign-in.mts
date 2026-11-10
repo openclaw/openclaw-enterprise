@@ -6,6 +6,8 @@ type SignInRule = {
 } & (
   | {
       status: number;
+      code?: string;
+      message?: string;
       delayMs?: number;
       bodyError?: never;
       hold?: never;
@@ -271,6 +273,27 @@ export function signInScenarios({
       steps: [
         "Immediately Tab to Recovery sign-in without activating it. When discovery fails, the password form appears and Email receives keyboard focus.",
         "Type a demo email. If you move focus away while waiting instead, the form appears without taking focus back.",
+      ],
+    },
+    loginWrongOrigin: {
+      group: "Pages/Sign in",
+      name: "Wrong Console address",
+      path: "/console/login",
+      signedOut: true,
+      rules: [
+        {
+          path: "/api/auth/sign-in/email",
+          method: "POST",
+          status: 403,
+          code: "FORBIDDEN",
+          message: "A trusted browser origin is required.",
+        },
+      ],
+      actions: submitPassword,
+      description:
+        "Sign-in from another address asks for the administrator's Console link. No destination is inferred from the browser address or the error response.",
+      steps: [
+        "Read the recovery instruction. Confirm that no Open sign-in page link is offered without a trusted destination.",
       ],
     },
     loginError: {

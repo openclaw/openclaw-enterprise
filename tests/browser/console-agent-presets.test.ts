@@ -3038,7 +3038,7 @@ for (const collection of ["secrets", "configurations"]) {
     await create.click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /Outcome unknown/ })
+      .filter({ hasText: "We couldn't confirm the result of your request." })
       .waitFor();
     assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
     assert.equal(await create.isDisabled(), true);
@@ -3574,7 +3574,7 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
     await page
       .getByRole("alert")
       .filter({
-        hasText: failure === "uncertain" ? /unknown|not confirmed|could not|cannot confirm/i : /\S/,
+        hasText: failure === "uncertain" ? "We couldn't confirm the result of your request." : /\S/,
       })
       .first()
       .waitFor();

@@ -158,7 +158,7 @@ A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
 both read the selected version, else the latest version you can `read`. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
-notice names the other readable version to pass. Notices call any other version newer or
+notice names both versions, the failed read and the `--revision ID` retry. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the Agent revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
@@ -187,7 +187,7 @@ they are also records on stdout. In text mode, the CLI exits with a nonzero
 status if it cannot write a no-running-Pod, gap, or withheld notice to stderr.
 Text lines and notices show an invisible or
 control character, such as a bidirectional override, as an escape like
-`\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
+`\u202e`; values containing one are quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view
 when the cursor is rejected, and exits cleanly on Ctrl-C. `501`, `503` and
 permission errors end the command with a nonzero exit. `--follow` cannot be
@@ -201,7 +201,7 @@ occ agent logs agt_... --source gateway --follow -o json | jq -r .message
 
 ## Output and errors
 
-Table output is meant for people; it prints `-` for unset fields and `No
+Table output prints `-` for unset fields and `No
 resources found.` for an empty list. A cell holding an invisible or control
 character, such as a bidirectional override in a name, is printed quoted with
 that character escaped; so is a value that starts with `"`. JSON and YAML print the exact resource or array
@@ -211,7 +211,7 @@ without the HTTP envelope. Deleting a Configuration prints
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
 the status and, when present, the API error code and message, and the
-`Retry-After` delay. Delay-seconds and HTTP-date values
+`Retry-After` delay. Runtime-log rate limits name the delay once, or suggest retrying shortly if unavailable. Delay-seconds and HTTP-date values
 ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
 up to one hour are accepted and rounded up to whole seconds for notices and
 waits; an expired or invalid date keeps the normal follow interval. It does not print

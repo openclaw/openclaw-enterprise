@@ -392,6 +392,8 @@ export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOA
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
 
+export const CreateSaveUnconfirmed = story("createSaveUnconfirmed");
+
 export const SharedModelDestination = {
   ...story("createSharedModelProviderSource"),
   name: "Authorize shared model destination",

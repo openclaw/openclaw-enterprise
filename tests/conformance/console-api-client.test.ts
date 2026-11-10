@@ -184,7 +184,7 @@ test("a disconnected JSON body reaches the caller's interrupted-read recovery", 
     );
     assert.equal(
       message(error, true),
-      "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
+      "We couldn't confirm the result of your request. Refresh the page and check before submitting it again.",
     );
     return true;
   });

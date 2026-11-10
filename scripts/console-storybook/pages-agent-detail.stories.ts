@@ -319,6 +319,8 @@ export const ConfigurationSaveReadDenied = {
   name: "Configuration Save read denied",
 };
 
+export const DeployRepositoryRequired = story("deployRepositoryRequired");
+
 export const HarnessOverrides = story("harnessOverrides");
 
 export const HarnessDeploymentPending = story("harnessDeploymentPending");
