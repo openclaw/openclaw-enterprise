@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import {
   authenticatedHeaders,
@@ -21,7 +20,10 @@ import {
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  createNativeTopologyConfiguration,
+  createTopologyPresetTemplate,
+} from "./topology-launch-configuration.ts";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 import {
   assertGatewayModelTurn,
@@ -1062,99 +1064,6 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   return configuration;
 }
 
-function nativeConfiguration(harnessId, slack, options = {}) {
-  const configuration = createHarnessConfiguration(harnessId, providerModel);
-  const provider = harnessId === "codex" ? "codex" : "openai";
-  configuration.models.providers[provider].models[0].input = ["text", "image"];
-  if (options.controlUi !== undefined) {
-    configuration.gateway.controlUi = options.controlUi;
-  }
-  if (options.gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: options.gatewayAuth.auth,
-      ...(options.gatewayAuth.allowRealIpFallback === undefined
-        ? {}
-        : { allowRealIpFallback: options.gatewayAuth.allowRealIpFallback }),
-      trustedProxies: options.gatewayAuth.trustedProxies,
-    };
-  }
-  if (harnessId === "openclaw") {
-    const modelEnvName = options.modelEnvName ?? "OPENAI_API_KEY";
-    configuration.secrets = {
-      providers: {
-        model: {
-          source: "env",
-          allowlist: Array.from(new Set(["OPENAI_API_KEY", modelEnvName])),
-        },
-      },
-    };
-    configuration.models.providers.openai.apiKey = {
-      source: "env",
-      provider: "model",
-      id: modelEnvName,
-    };
-  }
-  if (harnessId === "codex" && slack === undefined) {
-    // Native Codex file tools require a writable app-server sandbox plus an omitted or wildcard
-    // OpenClaw dynamic-tool allowlist; this case explicitly edits AGENTS.md in the workspace.
-    const appServer = configuration.plugins.entries.codex.config.appServer;
-    appServer.approvalPolicy = "never";
-    appServer.sandbox = "workspace-write";
-    configuration.tools = {
-      allow: ["*"],
-      fs: { workspaceOnly: true },
-    };
-    // Admission and slot selection are separate. Select the intended recall tool owner
-    // explicitly; provider status/search alone does not prove agent-tool registration.
-    configuration.plugins.allow.push("memory-core");
-    configuration.plugins.entries["memory-core"] = { enabled: true };
-    configuration.plugins.slots = { ...configuration.plugins.slots, memory: "memory-core" };
-    // Dedicated Gateways apply a second, concrete tool gate after plugin admission. Preserve
-    // the normal baseline and opt into only the Memory search used by this scenario.
-    const gatewayPolicy = managedGatewayConfiguration(configuration, configuration, true).tools
-      .gatewayPolicy;
-    configuration.tools.gatewayPolicy = {
-      ...gatewayPolicy,
-      allow: [...gatewayPolicy.allow, "memory_search"],
-    };
-    // Exercise remote file indexing without projecting the Harness model key into Gateway.
-    configuration.memory = {
-      search: {
-        enabled: true,
-        provider: "none",
-        sources: ["memory"],
-        store: { vector: { enabled: false } },
-      },
-    };
-  }
-  if (slack === undefined) {
-    return configuration;
-  }
-
-  configuration.plugins.allow.push("slack");
-  configuration.plugins.entries.slack = { enabled: true };
-  configuration.channels = {
-    slack: {
-      enabled: true,
-      mode: "socket",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      dmPolicy: "allowlist",
-      allowFrom: [slack.allowedUserId],
-      channels: {
-        [slack.channelId]: {
-          requireMention: true,
-          allowBots: "mentions",
-          users: [slack.allowedUserId],
-          replyToMode: "off",
-        },
-      },
-    },
-  };
-  return configuration;
-}
-
 async function captureCommand(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -1569,7 +1478,10 @@ async function storedSecret(pool, namespaceId, secretId) {
 async function createUndeployedAgent(request, namespaceId, mode, name, secretBindings) {
   const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
-    values: nativeConfiguration(mode === "dedicated" ? "codex" : "openclaw"),
+    values: createNativeTopologyConfiguration(
+      mode === "dedicated" ? "codex" : "openclaw",
+      providerModel,
+    ),
     ...(secretBindings === undefined ? {} : { secretBindings }),
   });
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -2378,7 +2290,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         };
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
-  const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  const launchValues = createNativeTopologyConfiguration(
+    harnessId,
+    providerModel,
+    slack,
+    nativeOptions,
+  );
   if (publicGithubRead !== undefined) {
     launchValues.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
@@ -2394,34 +2311,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       id: "OPENCLAW_GATEWAY_PASSWORD",
     });
   }
-  const templateValues = structuredClone(launchValues);
-  const modelReference = templateValues.agents.defaults.model;
-  templateValues.agents.defaults.model = "{{ vars.model }}";
-  templateValues.agents.defaults.models = {
-    "{{ vars.model }}": templateValues.agents.defaults.models[modelReference],
-  };
+  const template = createTopologyPresetTemplate(
+    launchValues,
+    mode,
+    secretApi.model.ref,
+    secretBindings,
+  );
+  const modelReference = template.variables.model.default;
   const presetsPath = `/namespaces/${namespaceId}/presets`;
   const preset = await adminRequest("POST", presetsPath, {
     name: `production-${mode}-${randomUUID()}`,
-    template: {
-      variables: {
-        name: { type: "string" },
-        model: { type: "string", default: modelReference },
-        secretId: { type: "string" },
-      },
-      agent: {
-        name: "{{ vars.name }}",
-        executionMode: mode,
-        harnessAuth: {
-          method: "api_key",
-          source: { ...secretApi.model.ref, id: "{{ vars.secretId }}" },
-        },
-      },
-      configuration: {
-        values: templateValues,
-        ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
-      },
-    },
+    template,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.error));
   const presetPath = `${presetsPath}/${preset.data.id}`;
@@ -5254,7 +5154,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations`,
     {
       kind: "agent",
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
     },
   );
   assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
@@ -5269,7 +5169,7 @@ async function assertSameNamespaceSecretSharing(context, topology) {
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${configuration.data.id}`,
     {
-      values: nativeConfiguration("openclaw"),
+      values: createNativeTopologyConfiguration("openclaw", providerModel),
       secretBindings: peerBindings,
     },
   );
@@ -5747,7 +5647,7 @@ async function assertNativeReferenceNegativeControl(context, topology) {
     "PATCH",
     configurationPath,
     {
-      values: nativeConfiguration("openclaw", undefined, {
+      values: createNativeTopologyConfiguration("openclaw", providerModel, undefined, {
         modelEnvName: "SECRET_API_DISABLED_OPENAI_KEY",
       }),
       secretBindings: topology.secretApi.configuration.secretBindings,
@@ -5814,7 +5714,7 @@ async function assertDedicatedToEmbeddedCutover(context, topology) {
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
   );
   assert.equal(currentConfiguration.status, 200);
-  const values = nativeConfiguration("openclaw");
+  const values = createNativeTopologyConfiguration("openclaw", providerModel);
   values.gateway = currentConfiguration.data.values.gateway;
   // The successor uses the existing authenticated Envoy route. It does not need
   // the dedicated Gateway's optional direct-loopback password or transport token.
