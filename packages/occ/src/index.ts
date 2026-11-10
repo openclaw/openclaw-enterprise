@@ -5617,6 +5617,7 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
+    this.requireIndependentMutation("OAuth client registration");
     const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
     const assertSelectedVersion = (version: number | undefined) => {
       if (version !== input.connectionTemplateVersion) {
@@ -5733,6 +5734,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
+    this.requireIndependentMutation("OAuth client secret rotation");
     await this.authorizeTemplateAdministration(principalId);
     const lockClient = async (state: PlatformUnitOfWork) => {
       const client = await state.connectionTemplates.lockOAuthClient(id);

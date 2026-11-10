@@ -14,6 +14,7 @@ const cursorExamples: Record<string, string | undefined> = {
   getAgentDeploymentRuntimeLogs: "v1.ZXhhbXBsZQ." + "x".repeat(43),
 };
 const rateLimitCodes: Record<string, string | undefined> = {
+  createAuthAccount: "RATE_LIMITED",
   signInEmail: "RATE_LIMITED",
   completeNamespaceConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",

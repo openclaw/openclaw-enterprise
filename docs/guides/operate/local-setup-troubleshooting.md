@@ -17,4 +17,4 @@ After the install succeeds, continue with the CLI build in [local k3d setup](../
 
 ## Helm warns that api.trustedProxy is unset
 
-For local password sign-in without a reverse proxy, leave this setting unset. Failed attempts are limited per email. If an HTTP proxy sits in front of the API, [configure proxy trust](../../reference/settings/production.md#github-sign-in-and-trusted-proxies) before using it.
+For local password sign-in without a reverse proxy, leave this setting unset. Failed attempts are limited per email. If an HTTP proxy sits in front of the API, [configure proxy trust](../../reference/settings/production.md#external-sign-in-and-trusted-proxies) before using it.

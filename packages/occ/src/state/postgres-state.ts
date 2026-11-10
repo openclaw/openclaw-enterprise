@@ -68,7 +68,12 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
-import { freezeSnapshot, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  freezeSnapshot,
+  immutableCopy,
+  isNonEmptyString,
+} from "@openclaw-enterprise/utils";
 import {
   CallerStateDeniedError,
   AGENT_NAME_CONFLICT,
@@ -675,13 +680,12 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
   const rawGeneration = row.configuration_generation;
   const configurationGeneration =
     typeof rawGeneration === "string" ? Number(rawGeneration) : rawGeneration;
-  const harness = row.harness as Record<string, unknown> | null;
+  const harness = asRecord(row.harness);
   if (
     typeof configurationGeneration !== "number" ||
     !Number.isSafeInteger(configurationGeneration) ||
     configurationGeneration <= 0 ||
-    typeof harness !== "object" ||
-    harness === null ||
+    harness === undefined ||
     typeof harness.id !== "string" ||
     typeof harness.version !== "string" ||
     (harness.mode !== "embedded" && harness.mode !== "dedicated")
@@ -696,8 +700,10 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
       id: harness.id,
       version: harness.version,
       mode: harness.mode,
-      overrides: harness.overrides as Readonly<Record<string, unknown>>,
-      configuration: harness.configuration as Readonly<Record<string, unknown>>,
+      ...(harness.overrides === undefined ? {} : { overrides: jsonObject(harness.overrides) }),
+      ...(harness.configuration === undefined
+        ? {}
+        : { configuration: jsonObject(harness.configuration) }),
     },
   });
 }
@@ -820,7 +826,16 @@ function revisionFromRow(
 
 function revisionForBrowsingFromRow(row: PostgresRow): Readonly<AgentRevisionRead> {
   const metadata = revisionMetadataFromRow(row);
-  return browseSavedConfiguration(metadata, () => revisionFromRow(row, metadata));
+  return browseSavedConfiguration(metadata, () => {
+    const revision = revisionFromRow(row, metadata);
+    if (revision.harness.overrides === undefined || revision.harness.configuration === undefined) {
+      throw new SavedConfigurationReadError(
+        "configuration",
+        "This revision predates recorded Harness settings.",
+      );
+    }
+    return revision;
+  });
 }
 
 function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBindings | undefined {
@@ -1519,12 +1534,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (
         binding.subjectKind !== "identity" ||
         binding.subjectId !== seed.principal.id ||
-        binding.resourceKind !== "installation" ||
-        binding.resourceId !== installation.id ||
-        binding.namespaceId !== undefined
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== "installation" ||
+            binding.resourceId !== installation.id ||
+            binding.namespaceId !== undefined)) ||
+        (binding.resourceKind === undefined && binding.resourceId !== undefined)
       ) {
         throw new ScopeViolationError(
-          "Account provisioning requires an exact Installation binding.",
+          "Account provisioning requires a supported initial Role binding.",
         );
       }
     }
@@ -1548,7 +1565,7 @@ export class PostgresPlatformState implements PlatformStateStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           binding.id,
-          null,
+          binding.namespaceId ?? null,
           binding.subjectId,
           null,
           binding.roleId,

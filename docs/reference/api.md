@@ -81,7 +81,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 27 operations |
+| [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
@@ -110,14 +110,10 @@ the paths.
 | [`POST /api/auth/accounts/{userId}/enable`](#post-apiauthaccountsuseridenable) | Re-enable a disabled human account |
 | [`POST /api/auth/accounts/{userId}/enrol`](#post-apiauthaccountsuseridenrol) | Enrol an existing account that activation skipped |
 | [`POST /api/auth/accounts/{userId}/methods/{methodId}/detach`](#post-apiauthaccountsuseridmethodsmethodiddetach) | Detach an external sign-in identity from an account |
-| [`POST /api/auth/accounts/{userId}/providers/github`](#post-apiauthaccountsuseridprovidersgithub) | Attach an exact GitHub identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/google`](#post-apiauthaccountsuseridprovidersgoogle) | Attach an exact Google identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/oidc`](#post-apiauthaccountsuseridprovidersoidc) | Attach an exact OIDC identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/revoke`](#post-apiauthaccountsuseridrevoke) | Revoke all sessions for a human account |
 | [`GET /api/auth/providers`](#get-apiauthproviders) | List configured browser sign-in methods |
-| [`GET /api/auth/providers/github/callback`](#get-apiauthprovidersgithubcallback) | Complete an enrolled GitHub sign-in |
-| [`POST /api/auth/providers/github/result`](#post-apiauthprovidersgithubresult) | Confirm which session a GitHub sign-in created |
-| [`POST /api/auth/providers/github/start`](#post-apiauthprovidersgithubstart) | Start GitHub sign-in for an enrolled account |
 | [`GET /api/auth/providers/google/callback`](#get-apiauthprovidersgooglecallback) | Complete an enrolled Google sign-in |
 | [`POST /api/auth/providers/google/result`](#post-apiauthprovidersgoogleresult) | Confirm which session a Google sign-in created |
 | [`POST /api/auth/providers/google/start`](#post-apiauthprovidersgooglestart) | Start Google sign-in for an enrolled account |
@@ -140,7 +136,7 @@ Create a local auth account as an Installation administrator
 
 **Operation ID:** `createAuthAccount`
 
-**Permissions:** Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled. An optional github.subject attaches that GitHub identity in the same transaction; it conflicts when GitHub sign-in is not configured or the identity is already assigned.
+**Permissions:** Requires administer permission on the Installation. Creates a Better Auth account and an explicit IAM Principal in one transaction. Supplying roleId also creates a binding to that existing IAM Role; omitting roleId creates no grants. Public signup remains disabled.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -155,8 +151,6 @@ Create a local auth account as an Installation administrator
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `email` | `string` | Yes | min length: 3; max length: 320 |
-| `github` | `object` | No | — |
-| `github.subject` | `string` | Yes | pattern: `^[1-9][0-9]{0,19}$` |
 | `name` | `string` | No | min length: 1; max length: 200 |
 | `password` | `string` | Yes | min length: 12; max length: 128 |
 | `roleId` | `string` | No | min length: 1; max length: 200 |
@@ -181,6 +175,7 @@ Example request
 | `409` | Conflict |
 | `413` | Payload Too Large |
 | `415` | Unsupported Media Type |
+| `429` | Too many account creation requests; wait for Retry-After |
 | `503` | Service Unavailable |
 
 **`201` response body:** `application/json`
@@ -556,80 +551,6 @@ Example response
 }
 ```
 
-#### `POST /api/auth/accounts/{userId}/providers/github`
-
-<span id="post-apiauthaccountsuseridprovidersgithub"></span>
-
-Attach an exact GitHub identity to an existing account
-
-**Operation ID:** `attachGitHubIdentity`
-
-**Permissions:** Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `subject` | `string` | Yes | pattern: `^[1-9][0-9]{0,19}$` |
-
-Example request
-```json
-{
-  "expectedVersion": 1,
-  "subject": "12345678"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `503` | Service Unavailable |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.userId` | `string` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | — |
-
-Example response
-```json
-{
-  "data": {
-    "userId": "user-docs-admin"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
 #### `POST /api/auth/accounts/{userId}/providers/google`
 
 <span id="post-apiauthaccountsuseridprovidersgoogle"></span>
@@ -873,7 +794,6 @@ List configured browser sign-in methods
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.github` | `boolean` | Yes | — |
 | `data.google` | `boolean` | Yes | — |
 | `data.oidc` | `boolean` | Yes | — |
 | `data.oidcSignIn` | `object` | No | Present only when OIDC sign-in is configured: the Console's button label and the configured authorization endpoint that the start URL must use. |
@@ -888,129 +808,10 @@ Example response
 ```json
 {
   "data": {
-    "github": false,
     "google": false,
     "oidc": false,
     "password": true,
     "sessionBinding": false
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /api/auth/providers/github/callback`
-
-<span id="get-apiauthprovidersgithubcallback"></span>
-
-Complete an enrolled GitHub sign-in
-
-**Operation ID:** `completeGitHubSignIn`
-
-**Permissions:** Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `302` | Redirect to Console |
-
-#### `POST /api/auth/providers/github/result`
-
-<span id="post-apiauthprovidersgithubresult"></span>
-
-Confirm which session a GitHub sign-in created
-
-**Operation ID:** `confirmGitHubSignIn`
-
-**Permissions:** Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
-
-Example request
-```json
-{
-  "attemptId": "example000000000000000000000000000000000000"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `503` | Service Unavailable |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.sessionKey` | `string` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | — |
-
-Example response
-```json
-{
-  "data": {
-    "sessionKey": "example-session-binding-not-a-credential"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /api/auth/providers/github/start`
-
-<span id="post-apiauthprovidersgithubstart"></span>
-
-Start GitHub sign-in for an enrolled account
-
-**Operation ID:** `startGitHubSignIn`
-
-**Permissions:** Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `503` | Service Unavailable |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
-| `data.url` | `string (uri)` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | — |
-
-Example response
-```json
-{
-  "data": {
-    "attemptId": "example000000000000000000000000000000000000",
-    "url": "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -9173,11 +8974,11 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data[].deploymentErrorCode` | `string or null` | Yes | The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended. |
 | `data[].deploymentStatus` | `"queued" or "running" or "succeeded" or "failed" or null` | Yes | The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it. |
-| `data[].harness` | `object` | Yes | — |
-| `data[].harness.configuration` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data[].harness` | `object` | Yes | Older revisions omit overrides and configuration when Harness settings were not recorded. |
+| `data[].harness.configuration` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.id` | `string` | Yes | min length: 1 |
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
-| `data[].harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data[].harness.overrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

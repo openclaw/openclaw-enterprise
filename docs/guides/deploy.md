@@ -84,7 +84,7 @@ window. For a persistent Helm installation on k3d, use
 
 For ongoing business operation, use [production handoff](deploy/production-handoff.md)
 to record owners, credential renewal, alert response, and recovery decisions.
-When GitHub sign-in needs recovery or must be turned back off, use
+When external sign-in needs recovery or must be turned back off, use
 [sign-in maintenance](deploy/auth-maintenance.md) with the API stopped.
 
 For private workspace-file administration, configure

@@ -79,6 +79,7 @@ import {
   PatchStrategy,
 } from "@kubernetes/client-node";
 import {
+  ActivationFailedError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
@@ -4070,8 +4071,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Observes the Harness through its bearer-passthrough exposure, as the Agent Gateway reaches a
    * Codex Harness. A Harness holding a startup failure (for example a failed model probe) serves
    * that failure on the exposed port in place of Codex, or in place of the dedicated OpenClaw
-   * worker's node. Provider-managed Codex PATs also require the serving process's auth status;
-   * other modes need the authenticated WebSocket handshake.
+   * worker's node. Dedicated Codex also checks the serving process's permission requirements.
+   * Provider-managed PATs additionally require the serving process's authentication status.
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
@@ -4089,31 +4090,39 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
       const auth = context.revision.harnessAuth;
-      const providerManagedPat =
-        context.revision.harness.id === "codex" &&
-        auth?.method === "credential_source" &&
-        auth.loginMode === "codex_pat";
-      if (providerManagedPat) {
-        const status = await client.serviceCodexPatStatus(
+      if (context.revision.harness.id === "codex") {
+        const status = await client.serviceCodexReadinessStatus(
+          service.url,
+          context.transportToken,
+          auth?.method === "credential_source" && auth.loginMode === "codex_pat",
+          context.signal,
+        );
+        context.signal.throwIfAborted();
+        if (status === "permission-refused") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+            "The Codex Harness reports managed permission requirements incompatible with activation.",
+          );
+        }
+        if (status === "requirements-too-large") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+            "The Codex Harness requirements reply exceeds the supported size limit.",
+          );
+        }
+        if (status !== "unavailable") {
+          return Object.freeze({ state: status });
+        }
+      } else {
+        const serving = await client.serviceWebSocketHandshake(
           service.url,
           context.transportToken,
           context.signal,
         );
         context.signal.throwIfAborted();
-        if (status !== "unavailable") {
-          return Object.freeze({ state: status });
+        if (serving) {
+          return Object.freeze({ state: "serving" });
         }
-      }
-      const serving =
-        !providerManagedPat &&
-        (await client.serviceWebSocketHandshake(
-          service.url,
-          context.transportToken,
-          context.signal,
-        ));
-      context.signal.throwIfAborted();
-      if (serving) {
-        return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
         service.url,

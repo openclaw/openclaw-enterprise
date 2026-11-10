@@ -57,8 +57,9 @@ command; use this page as its migration inventory.
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
 - [ ] Freeze concurrent Helm changes, disable OCC autoscalers and restart automation,
-      and stop all other database writers through recovery. For runtime releases,
-      also stop Agent deployments and draft edits and resolve existing deployment work.
+      and stop all other database writers through recovery. Freeze Agent deployments
+      and settle existing deployment work for every release; also freeze draft edits
+      for runtime releases.
 
 ### Check ReplicaSet capacity
 

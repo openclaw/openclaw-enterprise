@@ -2,8 +2,9 @@
 
 Use the `gateway-routing` lane to check browser chat through OCC, Kubernetes
 routing, and the real OpenClaw runtime. The `oidc-agent-chat` QA scenario adds
-Keycloak sign-in to that path. It uses a pre-enrolled OCE account; automatic
-account creation is outside this test.
+Keycloak sign-in and signed admission claims to that path. It uses manually
+created Default users with explicitly attached identities; automatic account
+creation is covered separately by the PostgreSQL enrollment integration.
 
 ## Run the combined OIDC journey
 
@@ -48,7 +49,8 @@ Keycloak state variable.
 ## What the test exercises
 
 The browser signs in at the real Keycloak server, returns through the OCC
-callback, and opens an Agent with the resulting shared session. The journey
+callback, verifies the original account ID, and opens an Agent with the resulting
+shared session. A disposable IdP Group supplies the signed admission claim. The journey
 checks chat with `agent:operate`, administration denial, and a real model
 response. Related native browser cases cover administrator access, Agent
 boundaries, permission withdrawal, and session expiry.

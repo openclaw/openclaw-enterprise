@@ -709,11 +709,28 @@ async function ensurePostgresServer(statePath, state) {
   resource.initSqlCreated = true;
   await writeState(statePath, state);
   await chmod(initSql, 0o644);
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-    { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
-  );
+  try {
+    await execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      dockerArgsForPostgres(resource, "up", "-d", "--wait"),
+      { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
+    );
+  } catch (error) {
+    if (
+      /all predefined address pools have been fully subnetted/i.test(
+        `${error.stderr ?? ""}\n${error.stdout ?? ""}`,
+      )
+    ) {
+      const quotedStatePath = `'${statePath.replaceAll("'", "'\\''")}'`;
+      error.message +=
+        `\nDocker subnet pools are exhausted. Clean this run's partial resources with:\n` +
+        `node scripts/ci/cleanup.mjs --state ${quotedStatePath}\n` +
+        `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
+        `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
+        `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+    }
+    throw error;
+  }
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -1301,13 +1318,16 @@ async function buildRuntimeImages(
     }
     const exportArgs = imageCacheExportArgs(role, args);
     // A failed or overrunning build fails the job and keeps nothing. The first
-    // stage and the image build share one 20-minute limit.
-    const deadline = performance.now() + 20 * 60_000;
+    // stage and the image build share one limit. Cold runtime builds compile
+    // Node; give them the native runtime assembly budget, retaining 20 min
+    // for controller builds.
+    const buildTimeoutMs = (role === "runtime" ? 180 : 20) * 60_000;
+    const deadline = performance.now() + buildTimeoutMs;
     if (role === "runtime") {
       await warmCommand(
         `runtime ${warmRuntimeFirstStage} build`,
         imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
-        20 * 60_000,
+        buildTimeoutMs,
       );
     }
     await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
