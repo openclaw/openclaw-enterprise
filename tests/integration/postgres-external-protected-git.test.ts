@@ -1056,7 +1056,8 @@ function externalGitJourney(
         pool,
         installationId: f.installation.id,
         mode: "development",
-        baseURL: "http://127.0.0.1",
+        baseURL: "https://console.oce.localhost",
+        agentDomain: "agents.oce.localhost",
         secret: "repository-policy-test-" + randomUUID(),
       });
       const app = createFastifyApp({
