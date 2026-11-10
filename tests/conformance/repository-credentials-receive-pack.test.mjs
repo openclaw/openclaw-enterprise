@@ -3,11 +3,11 @@ import test from "node:test";
 import {
   allowsReceivePackInput,
   maximumPushRefs,
-} from "../../apps/controller/src/drivers/repo/github/credentials/routes/receive-pack.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/routes/receive-pack.ts";
 import {
   normalizePushRefAllowlist,
   readPushedBranchRef,
-} from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
+} from "../../apps/controller/src/drivers/repo/access/client-contracts.ts";
 
 // The development token authority enforces its push allowlist at the gateway by
 // reading receive-pack commands before any byte goes upstream. These vectors use

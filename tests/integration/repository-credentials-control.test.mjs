@@ -99,7 +99,7 @@ async function admissionFixture(t, onCreate) {
     limits: { sessions: 1 },
     github: false,
   });
-  const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+  const { callControl } = await appModule("drivers/repo/github/access/client/operator");
   const upstream = await startAlternateUpstream(resources, { clock, tls });
   const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
@@ -377,11 +377,7 @@ test(
     assert.equal(agentStatus, 401);
     const clientParent = await temporaryDirectory(resources);
     const clientDirectory = join(clientParent, "session");
-    const operator = join(
-      appRoot,
-      "drivers/repo/github/credentials/client",
-      `operator.${appExtension}`,
-    );
+    const operator = join(appRoot, "drivers/repo/github/access/client", `operator.${appExtension}`);
     const relay = await dropControlResponse(resources, config.gateway.controlSocket);
     const admissionId = `${Date.now()}-${randomUUID()}`;
     const failed = await run(
@@ -470,9 +466,9 @@ test(
   async (t) => {
     const [{ createSystemClock }, { createCredentialService }, { startListeners }] =
       await Promise.all([
-        appModule("drivers/repo/credentials/clock"),
+        appModule("drivers/repo/access/clock"),
         import("../fixtures/repository-credentials/service.ts"),
-        appModule("drivers/repo/credentials/server"),
+        appModule("drivers/repo/access/server"),
       ]);
     const clock = createSystemClock();
     const tls = await createTlsMaterial(t);
@@ -505,7 +501,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const resources = createTestResourceScope(t);
-    const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
+    const { createSystemClock } = await appModule("drivers/repo/access/clock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     const upstream = await startAlternateUpstream(resources, { tls });
@@ -572,7 +568,7 @@ test(
     });
     const [{ createCredentialService }, { startListeners }] = await Promise.all([
       import("../fixtures/repository-credentials/service.ts"),
-      appModule("drivers/repo/credentials/server"),
+      appModule("drivers/repo/access/server"),
     ]);
     const received = [];
     let upstreamCancelled = false;
@@ -1301,7 +1297,7 @@ test(
 );
 
 test("the control client refuses socket paths over 103 bytes before connecting", async () => {
-  const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+  const { callControl } = await appModule("drivers/repo/github/access/client/operator");
   const request = { method: "GET", path: "/v1/sessions" };
   // 104 ASCII bytes, and 61 characters that encode to 115 bytes. Neither file exists,
   // so only the length guard can produce invalid-control-request.

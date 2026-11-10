@@ -230,7 +230,7 @@ the record `deleting` for retry.
 
 ### 6. Issue and renew a GitHub installation token
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
+`apps/controller/src/drivers/repo/github/access/prepared-owner.ts:createGitHubPreparationOwner`
 
 The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before posting to the configured installation token endpoint.
 
@@ -285,7 +285,7 @@ without confirming revocation. See [App key recovery](../guides/repository-crede
 detached bytes before settling the original receipt. If revocation and
 settlement both fail, the error names only the stages.
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
+`apps/controller/src/drivers/repo/github/access/prepared-postgres.ts:store`
 clears token buffers after successful or failed publication. Callers own their
 detached reads. Clearing bytes cannot revoke a token.
 

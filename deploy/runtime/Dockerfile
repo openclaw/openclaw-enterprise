@@ -59,8 +59,8 @@ FROM repository-credentials-deps AS repository-client-build
 COPY tsconfig.base.json ./
 COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
 COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
-COPY apps/controller/src/drivers/repo/credentials/client-contracts.ts apps/controller/src/drivers/repo/credentials/client-contracts.ts
-COPY apps/controller/src/drivers/repo/github/credentials/client apps/controller/src/drivers/repo/github/credentials/client
+COPY apps/controller/src/drivers/repo/access/client-contracts.ts apps/controller/src/drivers/repo/access/client-contracts.ts
+COPY apps/controller/src/drivers/repo/github/access/client apps/controller/src/drivers/repo/github/access/client
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
@@ -79,9 +79,9 @@ RUN set -eu; \
     chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
     chmod -R a+rX "$client"; \
     chmod 0555 "$client/bin/gh" "$client/bin/oce-github"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/native-git.js"; \
-    test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
+    test -f "$client/dist/drivers/repo/github/access/client/router.js"; \
+    test -f "$client/dist/drivers/repo/github/access/client/native-git.js"; \
+    test -x "$client/dist/drivers/repo/github/access/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
 # Build the service from the full, type-checked workspace of the same checkout.
