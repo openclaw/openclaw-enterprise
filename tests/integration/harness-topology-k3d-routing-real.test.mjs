@@ -97,6 +97,27 @@ test(
       );
       assert.equal(routeAfter.metadata.uid, routeBefore.metadata.uid);
       assert.deepEqual(routeAfter.spec, routeBefore.spec);
+      // Pod readiness does not prove route propagation or workspace-node reconnection.
+      // Require the real OCC read path to recover before the strict continuity checks.
+      await waitFor(
+        "OCC workspace access after Gateway Pod replacement",
+        async () => {
+          const observed = await topology.workspaceRequest(
+            "GET",
+            `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/workspace/files/AGENTS.md`,
+          );
+          if (observed.status === 503 && observed.error?.code === "DEPENDENCY_UNAVAILABLE") {
+            return undefined;
+          }
+          assert.equal(observed.status, 200, "the replacement must restore OCC workspace access");
+          assert.deepEqual(observed.data, {
+            name: "AGENTS.md",
+            content: proof.files.get("AGENTS.md"),
+          });
+          return true;
+        },
+        60_000,
+      );
       await assertRoutedWorkspaceFileReads(topology, proof.files);
       await assertRoutedWorkspaceModelTurn(topology, connection, proof.marker);
       await connection.assertNodeAuthentication();

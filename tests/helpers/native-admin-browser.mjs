@@ -1767,7 +1767,7 @@ export async function runNativeAdminScenario(context) {
     nativePerson.id,
     "OCE stop/redeploy preserves the native person across Agent revisions",
   );
-  const banner = currentSessionPage.getByRole("paragraph").filter({
+  const banner = currentSessionPage.getByRole("status").filter({
     hasText: "edit and save the Agent’s draft Configuration, then select Deploy new version",
   });
   await banner.waitFor();
