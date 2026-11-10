@@ -14,7 +14,8 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration-execution.yml:jobs`: same-source revalidation and execution.
 
 ## Flow
 
@@ -36,10 +37,11 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Main push or approved dispatch"] --> P["Source and environment preflight"]
-  P -->|docs only| D["Finish without execution lock"]
+  C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
+  P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
-  V --> E["Protected test jobs"]
+  V -->|scheduled recheck skips admission| D
+  V -->|eligible| E["Protected test jobs"]
   V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
@@ -88,13 +90,13 @@ raw output. Selector errors fail the job; missing evidence is unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-Full Integration uses `github.sha`: verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatch requires `integration-main-approval` and verified dispatcher, team and environment policy. Admission rejects invalid selections.
-A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
-otherwise it runs fresh. Credentialed lanes do not wait for reuse.
-
-Preflight precedes the main-push execution lock; docs-only pushes never enter it.
-Eligible pushes share one pending slot. The same-commit reusable workflow revalidates
-after waiting, then admits and runs lanes. Dispatch locks are run-specific. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These resource queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
+Full Integration checks out `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
+checks the current main commit, cadence and exact execution receipts before the
+automatic execution queue. The reusable workflow rechecks after acquiring the
+queue. Manual dispatch retains dispatcher, team and environment checks and a
+separate execution queue. Slack Live serializes channel/app access. Installation
+and installed Skipper Git serialize per branch. Retry through a new
+[approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.

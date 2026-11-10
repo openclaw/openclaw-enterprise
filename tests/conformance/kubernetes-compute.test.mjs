@@ -18161,6 +18161,21 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
+function stopResourceNotFound() {
+  return Object.assign(new Error("Not found"), { code: 404 });
+}
+
+async function readAbsentStopResource() {
+  throw stopResourceNotFound();
+}
+
+const absentStopResourceReads = {
+  readNamespacedConfigMap: readAbsentStopResource,
+  readNamespacedSecret: readAbsentStopResource,
+  readNamespacedService: readAbsentStopResource,
+  readNamespacedServiceAccount: readAbsentStopResource,
+};
+
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
 // `agentPodsLeft` observations. `events` records the Pod observations and the Agent Deployment's
 // deletion, in order; `gatewayReads` counts reads of the Gateway's Deployment, which its removal
@@ -18216,21 +18231,9 @@ function stopOrderFixture(id) {
     otherRevisionPod: false,
     gatewayReads: 0,
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
+      ...absentStopResourceReads,
       ...namespaceReads,
       async listNamespacedPod(request) {
         const role = labelSelectorLabels(request.labelSelector)["openclaw.dev/workload-role"];
@@ -18258,7 +18261,7 @@ function stopOrderFixture(id) {
         if (name === deploymentName && fixture.deploymentPresent) {
           return structuredClone(deployment);
         }
-        throw notFound();
+        throw stopResourceNotFound();
       },
       async deleteNamespacedDeployment({ name }) {
         assert.equal(name, deploymentName);
@@ -18440,21 +18443,9 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
       },
     },
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
-      async readNamespacedConfigMap() {
-        throw notFound();
-      },
-      async readNamespacedSecret() {
-        throw notFound();
-      },
-      async readNamespacedService() {
-        throw notFound();
-      },
-      async readNamespacedServiceAccount() {
-        throw notFound();
-      },
+      ...absentStopResourceReads,
       ...namespaceReads,
       async listNamespacedPod(request) {
         const selected = labelSelectorLabels(request.labelSelector);
@@ -18472,7 +18463,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     },
     apps: {
       async readNamespacedDeployment() {
-        throw notFound();
+        throw stopResourceNotFound();
       },
     },
     objects: {},
