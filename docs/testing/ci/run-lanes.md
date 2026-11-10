@@ -54,8 +54,8 @@ manually prepared lane has run.
 The runner removes inherited test selectors unless the manifest declares them.
 `requiredEnv` fails when an input is missing or empty; `optionalEnv` forwards an
 input only when supplied. Both may be declared on a lane or a file. A lane's
-`focusedEnv` forwards supplied inputs only after `--file` selects an exact file
-in that lane; those inputs are not inherited for full-lane runs.
+`focusedEnv` extends `optionalEnv` only after `--file` selects an exact file
+in that lane.
 File-specific test selectors do not reach sibling files, and optional inputs do
 not select a file or change its required-case inventory.
 
