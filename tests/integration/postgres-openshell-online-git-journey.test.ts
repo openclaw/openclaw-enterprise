@@ -1000,14 +1000,10 @@ for (const [contents, set] of [
 }
 
 test(
-  "stock gh creates a draft and edits its title through the scoped API grant",
-  {
-    ...requiresPostgres,
-    skip:
-      requiresPostgres.skip ||
-      (!process.env.OCC_TEST_STOCK_GH && "Set OCC_TEST_STOCK_GH to the pinned runtime gh binary."),
-    timeout: 90_000,
-  },
+  process.env.OCC_TEST_STOCK_GH
+    ? "stock gh executable creates a draft and edits titles through the scoped API grant"
+    : "captured stock gh requests create a draft and edit titles through the scoped API grant",
+  { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
     await selectedGrantGitJourney(
       t,
@@ -1101,7 +1097,7 @@ test(
         let apiToken: string | undefined;
         let warm = false;
         const cli = await stockGhPullPreview(t, {
-          executable: process.env.OCC_TEST_STOCK_GH!,
+          executable: process.env.OCC_TEST_STOCK_GH,
           provider: peer.gh,
           authorize: async (body: Buffer, headers: { name: string; value: string }[]) => {
             const { verdict, requestId } = await evaluateApi(body, headers);

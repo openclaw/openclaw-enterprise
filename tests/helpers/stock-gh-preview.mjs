@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createServer as createProxyServer } from "node:http";
 import { createServer as createHttpsServer, request } from "node:https";
 import { connect } from "node:net";
@@ -123,17 +124,111 @@ export async function stockGhPullPreview(t, { executable, authorize, provider })
     NO_PROXY: "",
     TZ: "Etc/UTC",
   });
-  const version = await run(executable, ["--version"], { cwd: root, env });
-  assert.match(version.stdout, /^gh version 2[.]103[.]2 /);
+  const replay = executable ? undefined : await capturedWireClient(api.address().port, tls.cert);
+  if (executable) {
+    const version = await run(executable, ["--version"], { cwd: root, env });
+    assert.match(version.stdout, /^gh version 2[.]103[.]2 /);
+  }
   return {
     requests,
     async invoke(args, allowFailure = false) {
-      const result = await run(executable, args, { cwd: root, env, allowFailure: true });
+      const result = replay
+        ? await replay(args)
+        : await run(executable, args, { cwd: root, env, allowFailure: true });
       assert.deepEqual(failures, []);
       if (!allowFailure) {
         assert.equal(result.code, 0, result.stderr);
       }
       return result;
     },
+  };
+}
+
+/** Replays recorded stock documents through the same TLS sender in ordinary CI.
+ * A caller supplying the pinned binary runs the executable instead. */
+async function capturedWireClient(port, ca) {
+  const fixture = JSON.parse(
+    await readFile(new URL("../fixtures/gh-pr-create-edit-2.103.2.json", import.meta.url), "utf8"),
+  );
+  const recorded = new Map(fixture.map((entry) => [entry.operation, entry]));
+  const send = (operation, variables) =>
+    new Promise((resolve, reject) => {
+      const entry = recorded.get(operation);
+      assert.ok(entry);
+      const body = Buffer.from(JSON.stringify({ query: entry.body.query, variables }));
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          servername: "api.github.com",
+          port,
+          path: "/graphql",
+          method: "POST",
+          ca,
+          agent: false,
+          headers: {
+            host: "api.github.com",
+            authorization: "token synthetic-placeholder",
+            "content-type": entry.contentType,
+            "content-length": String(body.length),
+            "user-agent": "GitHub CLI 2.103.2",
+            "graphql-features": "merge_queue",
+            "time-zone": "Etc/UTC",
+          },
+        },
+        async (response) => {
+          try {
+            const result = await buffer(response);
+            if (response.statusCode !== 200) {
+              throw new Error("Controlled sender refused the request with " + response.statusCode);
+            }
+            resolve(JSON.parse(result).data);
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+      req.once("error", reject);
+      req.end(body);
+    });
+  return async (args) => {
+    const flag = (name) => args[args.indexOf(name) + 1];
+    const [owner, repo] = flag("--repo").split("/");
+    try {
+      let url;
+      if (args[1] === "create") {
+        assert.ok(args.includes("--draft"));
+        const { repository } = await send("RepositoryInfo", { owner, name: repo });
+        const headRefName = flag("--head");
+        await send("PullRequestForBranch", { owner, repo, headRefName, states: ["OPEN"] });
+        const { createPullRequest } = await send("PullRequestCreate", {
+          input: {
+            repositoryId: repository.id,
+            baseRefName: flag("--base"),
+            headRefName,
+            title: flag("--title"),
+            body: flag("--body"),
+            draft: true,
+            maintainerCanModify: true,
+          },
+        });
+        url = createPullRequest.pullRequest.url;
+      } else {
+        assert.equal(args[1], "edit");
+        const number = Number(args[2]);
+        const { repository } = await send("PullRequestByNumber", {
+          owner,
+          repo,
+          pr_number: number,
+        });
+        await send("PullRequestProjectItems", { owner, name: repo, number, endCursor: null });
+        await send("PullRequestUpdate", {
+          input: { pullRequestId: repository.pullRequest.id, title: flag("--title") },
+        });
+        url = repository.pullRequest.url;
+      }
+      return { code: 0, stdout: url, stderr: "" };
+    } catch (error) {
+      return { code: 1, stdout: "", stderr: String(error) };
+    }
   };
 }

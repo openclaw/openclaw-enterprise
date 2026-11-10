@@ -3,7 +3,11 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
-  "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
+  "optionalEnv": [
+    "OCC_TEST_STANDING_GIT_CODEX",
+    "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION",
+    "OCC_TEST_STOCK_GH"
+  ],
   "fileConcurrency": 4,
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.mjs",
