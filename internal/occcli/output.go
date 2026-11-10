@@ -257,16 +257,13 @@ func (app *application) printDeploymentStatus(value any, agent map[string]any) e
 		return app.printItems(value, false, columns)
 	}
 	if desired, ok := agent["desiredRuntimeState"].(string); ok {
-		active := agent["activeRevisionId"]
 		if app.output == "table" {
+			active, _ := agent["activeRevisionId"].(string)
 			row["desiredRuntimeState"] = desired
-			row["activeRevisionId"] = active
-			if active == nil {
-				row["activeRevisionId"] = "none"
-			}
+			row["activeRevisionId"] = cmp.Or(active, "none")
 			columns = append(columns, column{title: "DESIRED STATE", key: "desiredRuntimeState"}, column{title: "ACTIVE REVISION", key: "activeRevisionId"})
 		} else {
-			row["currentAgent"] = map[string]any{"desiredRuntimeState": desired, "activeRevisionId": active}
+			row["currentAgent"] = map[string]any{"desiredRuntimeState": desired, "activeRevisionId": agent["activeRevisionId"]}
 		}
 	}
 	if row["repositoryAccess"] != nil {

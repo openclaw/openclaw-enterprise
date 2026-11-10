@@ -1008,10 +1008,10 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			agent, readErr := client.GetAgent(namespace, args[0])
+			agent, _ := client.GetAgent(namespace, args[0])
 			resource, _ := agent.(map[string]any)
 			if len(args) == 1 {
-				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource, readErr)
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource)
 			}
 			return app.printDeploymentStatus(deployment, resource)
 		},
@@ -1130,10 +1130,10 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 // defaultDeploymentNotice says which revision deployment-status chose without
 // an ID. Revision lists are permission-filtered, so the latest revision the
 // caller can read may be an old failed one while the active revision is hidden.
-func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64, resource map[string]any, err error) {
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64, resource map[string]any) {
 	active, _ := resource["activeRevisionId"].(string)
 	switch {
-	case err != nil:
+	case resource == nil:
 		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
 		return
 	case active == "":
