@@ -123,8 +123,7 @@ Supervisor grants accumulate per Namespace; callers must match ownership labels.
 Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
 selectors/ports and ready API endpoints. Empty discovery warns and removes stale
 backend grants; failed reads abort. Policies are recorded before application and
-deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md),
-[external-gateway selection](../guides/deploy/external-openshell-gateway.md),
+deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
 and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates

@@ -175,7 +175,7 @@ with `lane=openshell`.
 
 The local instructions below run the **QA matrix only**. They do not run all
 OpenShell files or the local installation suite. For those suites, follow
-[OpenShell setup](../openshell.md#openshell-sandbox) or
+[OpenShell setup](../openshell.md#openshell) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
 ### Select scenarios

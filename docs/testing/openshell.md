@@ -173,12 +173,8 @@ separately requires screenshots and video. This check records no video.
 
 ## OpenShell
 
-To point the profile at a gateway you already operate with OIDC
-client-credentials authentication instead of installing the pinned in-cluster
-gateway, see
+For an OIDC-authenticated external gateway, see
 [Use an external OpenShell gateway](../guides/deploy/external-openshell-gateway.md).
-That selection skips the in-cluster gateway and its images; the OpenShell
-proofs below run against the profile's own gateway.
 
 The real Sandbox suite checks a dedicated Codex Agent's authenticated Gateway
 access, model and tool turns, credential delivery, filesystem and network
