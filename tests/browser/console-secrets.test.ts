@@ -79,6 +79,8 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   await editor.getByLabel("Provider name").fill("Research inference");
   await editor.getByLabel("Inference base URL").fill(modelProvider.baseUrl);
   await editor.getByLabel("Model ID", { exact: true }).fill("research-model");
+  await editor.getByRole("button", { name: "Add model", exact: true }).click();
+  await editor.getByLabel("Model ID", { exact: true }).last().fill("research-large");
   await editor.getByLabel("Default model").selectOption("research-model");
   await editor.getByLabel("New static-key template name").fill("Research key");
   const saved = responseTo(page, "POST", fixture.origin + "/model-providers");
@@ -87,7 +89,7 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   assert.equal(created.status(), 201);
   const { data: provider } = await created.json();
   const persisted = await fixture.request("GET", "/model-providers/" + provider.id);
-  assert.deepEqual(persisted.data.models, [{ id: "research-model" }]);
+  assert.deepEqual(persisted.data.models, [{ id: "research-model" }, { id: "research-large" }]);
   assert.equal(persisted.data.defaultModelId, "research-model");
 
   // The key owner sees the exact operation and template version before approving the saved Secret.
@@ -138,6 +140,8 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     await page.getByLabel("Models offered by this provider").inputValue(),
     "research-model",
   );
+  await page.getByText("Additional models", { exact: true }).click();
+  await page.getByRole("checkbox", { name: "research-large", exact: true }).check();
   const savedAgent = responseTo(
     page,
     "POST",
@@ -149,6 +153,15 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   const { data: agent } = await agentResponse.json();
   assert.equal(agent.modelProviderId, provider.id);
   assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: key.id });
+  const config = await fixture.request(
+    "GET",
+    "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId,
+  );
+  assert.deepEqual(config.data.values.agents.defaults.modelPolicy.allow, [
+    "codex/research-model",
+    "codex/research-large",
+  ]);
+  assert.equal(config.data.values.agents.defaults.model, "codex/research-model");
 });
 
 async function createFromConsole(page: Page, name: string, value: string) {
