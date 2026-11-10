@@ -78,6 +78,26 @@ Current behavior is documented in
 acceptance evidence are attached to
 [PR #5144](https://github.com/openclaw/openclaw-enterprise/pull/5144).
 
+## Callback simplification
+
+Commit `65aa5bd78` resolves default Groups and the policy fingerprint at startup,
+passes the validated profile as data, and distinguishes missing identities from
+refused existing identities in one lookup. Enrollment and session transactions
+retain their freshness and concurrency checks. Operator configuration is unchanged.
+
+The 176 PostgreSQL authentication checks pass across the full run and a targeted
+rerun after correcting the detached-identity expectation. All 50 Google/OIDC
+transport and token checks pass. Typecheck, lint, formatting, workspace isolation,
+OpenAPI and documentation checks pass. Independent review found no P0–P2 issues.
+
+Both live acceptance paths were repeated against this refactor. The generic OIDC
+workflow passed in 141 seconds without skips, including real chat and streaming
+stop/resume. GitHub/Dex login retained the same account, Principal, methods,
+default-user Group and Agent grant; chat returned the requested marker and
+Installation access was denied. Two earlier generic runs stopped at Agent startup
+because of model-provider rate limits. Selecting another real model resolved that
+failure. The earlier GitHub team-removal qualification was not repeated.
+
 ## Test retention audit
 
 The direct GitHub browser consumer is removed. Repository credential consumers

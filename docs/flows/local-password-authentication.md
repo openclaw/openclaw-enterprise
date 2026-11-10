@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-09 15:02"
-last_updated_session: "authoring-run/fa345547-f102-4631-804e-25fc90a46621"
+updated: "2026-11-09 16:10"
+last_updated_session: "authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755"
 ---
 
 # Bootstrap and human authentication flow
@@ -352,6 +352,8 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
 
 - 2026-11-09 15:02: Trace OIDC admission, initial grants and native GitHub retirement in the accompanying changes. (authoring-run/fa345547-f102-4631-804e-25fc90a46621 - daecab29c452af39945f5526257288771a77bdfc)
 
