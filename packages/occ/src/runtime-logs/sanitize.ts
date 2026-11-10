@@ -114,7 +114,7 @@ const NODE_HOST_LEVELS: readonly (readonly [string, RuntimeLogLevel])[] = [
   ["node host gateway reconnect paused", "error"],
   ["node host gateway endpoint persistence failed:", "error"],
   ["node host gateway connected:", "info"],
-  ["[node-host] ", "info"],
+  ["[node-host] advertised commands:", "info"],
 ];
 
 function textLevel(trimmed: string): RuntimeLogLevel {

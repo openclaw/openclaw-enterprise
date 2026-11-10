@@ -2397,6 +2397,7 @@ test("known node-host plain-text lines carry a level so a level floor can drop t
       "node host gateway permanently rejected connection (proxy_attribution_required): x; exiting",
       "node host gateway reconnect paused after 5 failed attempts",
       "node host gateway endpoint persistence failed: EACCES",
+      "[node-host] unexpected diagnostic: boom",
       "some other plain line",
     ].map((raw, index) => ({ time: lineTime(index + 1), raw })),
   });
@@ -2410,6 +2411,7 @@ test("known node-host plain-text lines carry a level so a level floor can drop t
       "text error",
       "text error",
       "text error",
+      "text unknown",
       "text unknown",
     ],
   );

@@ -48,7 +48,7 @@ Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
 instance** adds `-previous` before `.log`.
 
 The `#` header names the Agent and version, plus the Pod and container if available.
-`instance=current` or `previous` is what you requested, not a guarantee that logs exist.
+`instance=current` or `instance=previous` is what you requested, not a guarantee that logs exist.
 Records follow the page format (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`,
 `GAP` or `WITHHELD`), with the same best-effort redaction. Treat the file as
 sensitive; delete it when done.
@@ -103,12 +103,13 @@ selection, flags, output formats, retries and exit codes.
 Installation administrators hold Agent `administer`, which also reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
-the exact Agent (every version). Opening the Agent in the console also
-needs Namespace `read`. Runtime
+the exact Agent; it covers every version. Opening the Agent in the console also
+needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
 status needs `read` bound to each Agent revision by ID; without it, the console
 does not read status. A `read_logs` Restriction blocks log text even for
 administrators. Without `operate`, the Logs tab has no runtime strip or Pod
-picker; it reads each source's current Pod and says when one is missing. Service principals use
+picker; it reads each source's current Pod and says when one is missing. A status
+refusal names only the grant the console knows is missing. Service principals use
 the same grants. Every request and poll is authorized again, so revoking a grant
 stops the next poll.
 See [authorization](../../reference/authorization.md).
@@ -137,9 +138,9 @@ returning it:
   connections and repeated remote-control retries (one per 10 minutes is kept).
 - **text**: plain lines up to 4 KiB, including those starting with a bracketed
   component tag such as `[node-host] advertised commands: ...`. Their level is
-  `unknown`, except known node host lines: connect failures and closes are `warn`,
-  paused reconnects, endpoint persistence failures and rejections are `error`,
-  and connected or `[node-host]` lines are `info`.
+  `unknown`, except known node host lines: connect failures and closes are `warn`;
+  paused reconnects, endpoint persistence failures and rejections are `error`;
+  connected and advertised-commands lines are `info`.
 
 Other structured output, including Codex JSON-RPC protocol traffic, oversized
 lines and malformed lines that start like a JSON object or array, is
@@ -205,10 +206,11 @@ replica allows each principal 2 requests per second per Agent with a burst of
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
 so a caller without the grants always gets `403`.
 
-Kubernetes keeps only each container's current and previous instance; for
-older output or deleted Pods, use your [observability backend](../observability.md). While a
+Kubernetes keeps only each container's current and previous instance, nothing
+from deleted Pods; for
+older output, use your [observability backend](../observability.md). While a
 container crash-loops, the previous instance can briefly read as empty.
-`PodInitializing` and `ContainerCreating` can also read as empty.
+Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
 
 ## Sandbox source
 
@@ -235,7 +237,7 @@ RUNTIME_LOGS_POD_INVALID`).
   `--token`, `--with-token`, `--username`, `-u`, `--user`, `-U` or
   `--proxy-user` with `user:password`, `smbclient -U user%password`,
   `lftp -u user,password`, `redis-cli -a`, `sqlcmd -P`, and the token of
-  `vault login`). A secret under another flag name can still show. A
+  `vault login`). A secret passed under another flag name can still show. A
   message that holds structured data is withheld.
 - OpenShell keeps the last 2000 lines per sandbox in memory and loses them when
   its gateway restarts; a follow poll whose last line is gone reports
