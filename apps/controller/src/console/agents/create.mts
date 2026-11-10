@@ -1452,12 +1452,12 @@ function renderAgentForm(
     values: ReturnType<typeof readModelConfiguration>,
     selectedModel: string,
     resetTransport = false,
+    providerId = harness.value === "codex" ? "codex" : nativeProvider.value,
   ): boolean {
     // Transport replacement and clearing a selection do not read the existing catalog.
     if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
       return true;
     }
-    const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
     const catalog = objectFields(
       objectFields(objectFields(values.models).providers)[providerId],
     ).models;
@@ -1475,7 +1475,7 @@ function renderAgentForm(
   }
   function changeAdditionalModel(id: string, add: boolean) {
     const values = readModelConfiguration();
-    if (typeof values === "string" || !canMergeModelCatalog(values, id)) {
+    if (typeof values === "string") {
       return;
     }
     const defaults = objectFields(objectFields(values.agents).defaults);
@@ -1484,10 +1484,16 @@ function renderAgentForm(
       return;
     }
     const providerId = primary.slice(0, primary.indexOf("/"));
+    if (!canMergeModelCatalog(values, id, false, providerId)) {
+      renderConfigurationEditors();
+      return;
+    }
     const reference = `${providerId}/${id}`;
     const providers = objectFields(objectFields(values.models).providers);
     const template = configurationTemplate(harness.value, nativeProvider.value, id);
-    const templateProvider = template.models!.providers[providerId]!;
+    // Advanced configurations can route openai/<id> through the dedicated Codex Harness.
+    // Preserve that declared provider key while taking new rows from the selected Harness.
+    const templateProvider = Object.values(template.models!.providers)[0]!;
     const provider =
       providers[providerId] === undefined
         ? { ...templateProvider, models: [] }
