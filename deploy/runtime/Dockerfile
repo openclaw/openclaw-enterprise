@@ -59,8 +59,8 @@ FROM repository-credentials-deps AS repository-client-build
 COPY tsconfig.base.json ./
 COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
 COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
-COPY apps/controller/src/drivers/repo/credentials/client-contracts.ts apps/controller/src/drivers/repo/credentials/client-contracts.ts
-COPY apps/controller/src/drivers/repo/github/credentials/client apps/controller/src/drivers/repo/github/credentials/client
+COPY apps/controller/src/drivers/repo/access/client-contracts.ts apps/controller/src/drivers/repo/access/client-contracts.ts
+COPY apps/controller/src/drivers/repo/github/access/client apps/controller/src/drivers/repo/github/access/client
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
@@ -79,9 +79,9 @@ RUN set -eu; \
     chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
     chmod -R a+rX "$client"; \
     chmod 0555 "$client/bin/gh" "$client/bin/oce-github"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/native-git.js"; \
-    test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
+    test -f "$client/dist/drivers/repo/github/access/client/router.js"; \
+    test -f "$client/dist/drivers/repo/github/access/client/native-git.js"; \
+    test -x "$client/dist/drivers/repo/github/access/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
 # Build the service from the full, type-checked workspace of the same checkout.
@@ -135,7 +135,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs

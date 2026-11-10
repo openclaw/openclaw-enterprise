@@ -3,10 +3,10 @@ import { lstat, mkdir, open, readdir, readlink, realpath, unlink } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
-import { record } from "../../drivers/repo/credentials/configuration.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import { record } from "../../drivers/repo/access/configuration.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
 import { runService } from "./service.ts";
 import { readStableDescriptor } from "./stable-file-descriptor.ts";

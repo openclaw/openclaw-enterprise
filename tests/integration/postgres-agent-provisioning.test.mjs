@@ -79,7 +79,7 @@ import {
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
 const administratorSessions = new Map();
@@ -198,6 +198,14 @@ function provisioningBody(namespaceId, secrets, overrides = {}) {
     initialWorkspaceFiles: {},
     ...overrides,
   };
+}
+
+async function requestAcceptedProvisioning(fixture, namespaceId, secrets) {
+  const admitted = await fixture.request("POST", `/namespaces/${namespaceId}/agents/provision`, {
+    body: provisioningBody(namespaceId, secrets),
+  });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  return admitted;
 }
 
 function createRuntimeComputeDriver(options = {}) {
@@ -325,6 +333,7 @@ async function ensureProvisioningBootstrap(context, state) {
       password: adminPassword,
       authSecret,
       authBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName: "Agent provisioning integration",
       environment: { PATH: process.env.PATH },
     });
@@ -498,7 +507,9 @@ async function createFixture(context, options = {}) {
     credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
-  let nativeAdminSettings = {};
+  let nativeAdminSettings = {
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+  };
   if (options.nativeAdmin) {
     const directory = await temporaryDirectory(context, "native-admin-provisioning-");
     const gatewayApiKeyPath = join(directory, "gateway-key");
@@ -507,7 +518,6 @@ async function createFixture(context, options = {}) {
       nativeAdmin: {
         enabled: true,
         domain: "agents.oce.localhost",
-        sharedCookieDomain: "oce.localhost",
       },
       gatewayApiKeyPath,
     };
@@ -936,10 +946,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     const statusPath = `/namespaces/${namespace.id}/agents/provision/${encodeURIComponent(workId)}`;
     const apiStatus = async () => {
@@ -1584,10 +1591,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     await fixture.startWorker();
     let handoff;
     try {
@@ -1666,10 +1670,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     await fixture.startWorker();
     try {
       const handoff = await waitFor("the first deployment to be admitted", async () => {
@@ -1796,10 +1797,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
@@ -1893,10 +1891,7 @@ test(
     const fixture = await createFixture(context);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     const claim = await claimProvisioningWork(fixture.pool, workId);
     const failure = {
@@ -1950,10 +1945,7 @@ test(
     const fixture = await createFixture(context, { stopAfterProvisioning: true });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
 
     // Applying the iam configuration at API or worker startup holds this advisory lock
     // exclusively (the key is IAM_CONFIGURATION_LOCK_KEY in postgres-state.ts), then locks each
@@ -2819,10 +2811,7 @@ test(
     const fixture = await createFixture(context, { computeDriver, configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
 
     // Inside the window an absent Configuration may still be a late create, so the worker
     // neither resends it nor spends the fixture's three attempts waiting.
@@ -2976,10 +2965,7 @@ test(
     const fixture = await createFixture(context, { configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     await provisionUntilConfigurationSettling(fixture, admitted, sent);
     await elapseConfigurationSettleWindow(fixture, workId);
@@ -3221,10 +3207,7 @@ test(
     const fixture = await createFixture(context, { configurationDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const secretPath = (secret) => `/namespaces/${namespace.id}/secrets/${secret.id}`;
 
     // Queued: no Configuration or Agent names these Secrets yet, only the accepted plan. Its
@@ -3293,10 +3276,7 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     // No worker runs, so the request stays queued and keeps referencing both Secrets.
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
     const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.modelKey.id}`;
     assert.deepEqual(
@@ -3352,10 +3332,7 @@ test(
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     // No worker runs, so administrator A's request stays queued and keeps referencing both Secrets.
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId } = admitted.data.provisioning;
 
     // Administrator B holds A's Installation-wide administrator Role, so every grant a status
@@ -5628,10 +5605,7 @@ test(
     const fixture = await createFixture(context, { computeDriver });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body: provisioningBody(namespace.id, secrets),
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const admitted = await requestAcceptedProvisioning(fixture, namespace.id, secrets);
     const { workId, url } = admitted.data.provisioning;
     let handoff;
     await fixture.startWorker();

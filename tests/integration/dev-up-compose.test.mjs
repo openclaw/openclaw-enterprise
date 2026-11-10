@@ -40,6 +40,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
     result.stdout.includes(
       `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker OCC_DEVELOPMENT_CONTAINER_ENGINE=docker ${fixture.occCli} dev down`,
     ),
+    result.stdout,
   );
   assert.ok(result.stdout.includes("API URL: http://127.0.0.1:3000"));
   assert.ok(result.stdout.includes(`Installation ID: ${matchingInstallationId}`));
@@ -123,6 +124,11 @@ test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
   assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
   assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
   assert.match(result.stdout, /Container engine: Docker/);
+  assert.match(
+    result.stdout,
+    /Browser console: https:\/\/console\.occ-docker-[a-f0-9]+\.oce\.localhost:8443\/console\//,
+  );
+  assert.match(result.stdout, /Browser CA certificate: .*browser-ca\.crt/);
 });
 
 test("dev-up refuses an invalid source identity before building or starting Compose", async (t) => {
@@ -581,6 +587,8 @@ test("dev-up honors Podman Compose file selection from the environment and expli
       assert.deepEqual(cleanup?.args, [
         ...expected.slice(0, -1),
         "compose.podman.yaml",
+        "-f",
+        join(explicit.fixtureRepository, "compose.native-admin.yaml"),
         "down",
         "--volumes",
       ]);
@@ -909,7 +917,7 @@ test("development cleanup rejects a Kubernetes control plane without Kubernetes 
 });
 
 for (const driver of ["docker", "kubernetes"]) {
-  for (const service of ["controller", "postgres"]) {
+  for (const service of ["controller", "postgres", "browser-proxy"]) {
     test(`${driver} dev-up rejects host networking for ${service} before startup`, async (t) => {
       const fixture = await createFixture(t);
       await prepareLifecycleCommands(fixture);
@@ -930,7 +938,10 @@ for (const driver of ["docker", "kubernetes"]) {
       assert.notEqual(result.status, 0);
       assert.match(
         result.stderr,
-        new RegExp(`Compose ${service} must use the development network`),
+        // The final browser overlay restores its network, so Compose itself rejects host mode.
+        service === "browser-proxy" && driver === "docker"
+          ? /Docker Compose config failed/
+          : new RegExp(`Compose ${service} must use the development network`),
       );
       await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
       const commands = await readJsonLines(fixture.env.SAFETY_LOG);
@@ -949,6 +960,7 @@ for (const driver of ["docker", "kubernetes"]) {
   for (const [service, port, label] of [
     ["controller", 3000, "controller"],
     ["postgres", 5432, "PostgreSQL"],
+    ["browser-proxy", 8443, "browser-proxy"],
   ]) {
     for (const [mapping, publication, error] of [
       ["public", `"0.0.0.0:39000:${port}"`, "must publish only on loopback"],

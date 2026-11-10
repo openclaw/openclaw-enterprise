@@ -4,7 +4,11 @@ import {
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
 } from "./auth/configuration.ts";
-import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
+import {
+  clientAddressConfiguration,
+  deriveSharedCookieDomain,
+  humanLoginConfiguration,
+} from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
@@ -27,7 +31,6 @@ import {
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
-const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
   if (error instanceof ConsoleThemeError) {
@@ -44,7 +47,9 @@ function startupFailureCode(error) {
     return "AUTH_SECRET_INVALID";
   }
   if (
-    /OCC_AUTH_BASE_URL|OCC_AUTH_COOKIE_DOMAIN|loopback host|loopback HTTP\(S\) URL/.test(message)
+    /OCC_AUTH_BASE_URL|OCC_AUTH_COOKIE_DOMAIN|OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN|OCC_AGENT_NATIVE_ADMIN_DOMAIN|Shared session cookies|Console and Agent hostnames|loopback host|loopback HTTP\(S\) URL/.test(
+      message,
+    )
   ) {
     return "AUTH_BASE_URL_INVALID";
   }
@@ -57,6 +62,7 @@ function startupFailureCode(error) {
   // Production composition refuses the combination before any database work; the auth
   // composer's host-only cookie check is the backstop.
   if (
+    message === "GitHub sign-in requires host-only-exchange for native administration." ||
     /sign-in (does not support|supports host-only cookies without shared) native admin/.test(
       message,
     )
@@ -221,21 +227,23 @@ function configuration(env) {
     env.OCC_AGENT_RUNTIME_LOGS_ENABLED.trim().length === 0
       ? true
       : optionalBooleanEnvironment(env, "OCC_AGENT_RUNTIME_LOGS_ENABLED");
+  for (const removed of ["OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"]) {
+    if (Object.hasOwn(env, removed)) {
+      throw new Error(
+        `${removed} has been removed; session cookie scope is derived from Console and Agent hostnames.`,
+      );
+    }
+  }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
-  const authCookieDomain = env.OCC_AUTH_COOKIE_DOMAIN;
-  const nativeAdmin =
-    nativeAdminEnabled || (nativeAdminDomain !== undefined && nativeAdminDomain.trim().length > 0)
-      ? {
-          enabled: nativeAdminEnabled,
-          ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
-          ...(authCookieDomain === undefined ? {} : { sharedCookieDomain: authCookieDomain }),
-        }
-      : undefined;
+  const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
+  if (!["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
+    throw new Error(
+      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
+    );
+  }
+  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain, sessionMode };
 
-  const configuredAuthBaseURL =
-    mode === "production"
-      ? requiredEnvironment(env, "OCC_AUTH_BASE_URL")
-      : (env.OCC_AUTH_BASE_URL ?? DEFAULT_BETTER_AUTH_BASE_URL);
+  const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
   let parsedAuthBaseURL;
   try {
     parsedAuthBaseURL = new URL(configuredAuthBaseURL);
@@ -250,6 +258,8 @@ function configuration(env) {
   if (mode === "development" && !isDevelopmentBrowserOrigin(authBaseURL)) {
     throw new Error(`Development OCC_AUTH_BASE_URL must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
+
+  deriveSharedCookieDomain(authBaseURL, nativeAdminDomain);
 
   // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
@@ -266,7 +276,7 @@ function configuration(env) {
       ...(channelDirectoryManagedProxyHost === undefined
         ? {}
         : { channelDirectoryManagedProxyHost }),
-      ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
+      nativeAdmin,
       agentRuntimeLogsEnabled,
       // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
       apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
@@ -290,7 +300,7 @@ function configuration(env) {
     authBaseURL,
     ...humanLogin,
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
-    ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
+    nativeAdmin,
     agentRuntimeLogsEnabled,
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),
     ...(trustedDevelopmentForwarderCidr === undefined || trustedDevelopmentForwarderCidr === ""

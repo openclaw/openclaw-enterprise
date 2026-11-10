@@ -7,7 +7,7 @@ import {
   InstallationFieldError,
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
-import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
+import { preparedGitHubConfiguration } from "../repo/github/access/prepared-configuration.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */

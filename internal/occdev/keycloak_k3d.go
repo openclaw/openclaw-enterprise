@@ -763,7 +763,6 @@ func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID strin
 		"displayName":      developmentKeycloakSignInName,
 		"egressCidrs":      cidrs,
 	}
-	values["agentNativeAdmin"] = map[string]any{"enabled": false}
 	return json.Marshal(values)
 }
 

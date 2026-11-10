@@ -329,7 +329,7 @@ export async function createRuntimeLogFixture(options = {}) {
     auth: admin.auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: "https://console.oce.localhost" },
     computeDriver,
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
     configurationDriver: createTestConfigurationDriver({ id: "runtime-log-configuration" }),
@@ -353,7 +353,7 @@ export async function createRuntimeLogFixture(options = {}) {
   async function request(method, path, { session = adminSession, serviceKey, body } = {}) {
     const response = await app.fetch(
       new Request(
-        new URL(path, "http://127.0.0.1"),
+        new URL(path, "https://console.oce.localhost"),
         jsonRequestInit(
           method,
           body,

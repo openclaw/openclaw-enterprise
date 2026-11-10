@@ -16,7 +16,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
-  "production GitHub-profile sessions reject cookies planted by a sibling domain",
+  "guarded production sessions share the browser cookie with trusted Agent hosts",
   requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
@@ -24,7 +24,6 @@ test(
     let browser;
     let proxy;
     let upstreamPort;
-    let plantedCookie;
     t.after(async () => {
       await browser?.close();
       await app?.close();
@@ -40,15 +39,6 @@ test(
       subjectAltName: "DNS:console.example.test,DNS:sibling.example.test",
     });
     proxy = createServer({ cert, key }, (incoming, outgoing) => {
-      if (incoming.headers.host?.startsWith("sibling.example.test:")) {
-        const attributes = "; Domain=example.test; Path=/; Secure; HttpOnly; SameSite=Lax";
-        outgoing.setHeader("set-cookie", [
-          `${plantedCookie}${attributes}`,
-          `${plantedCookie.replace("__Host-", "__Secure-")}${attributes}`,
-        ]);
-        outgoing.end("Cookies sent");
-        return;
-      }
       const upstream = httpRequest(
         {
           hostname: "127.0.0.1",
@@ -79,7 +69,7 @@ test(
       email,
       password,
       authSecret: secret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       installationName: "Cookie boundary proof",
     });
     const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
@@ -94,6 +84,7 @@ test(
       installationId: installation.id,
       secret,
       baseURL: origin,
+      agentDomain: "sibling.example.test",
       pool,
       state,
       iamDriver,
@@ -123,14 +114,16 @@ test(
       });
     const signedIn = await signIn();
     assert.equal(signedIn.statusCode, 200);
-    assert.equal(auth.sessionCookieName, "__Host-openclaw_occ.session_token");
+    assert.equal(auth.sessionCookieName, "__Secure-openclaw_occ_shared.session_token");
     const cookies = [signedIn.headers["set-cookie"]].flat();
-    const sessionCookie = cookies.find((value) => value.startsWith(`${auth.sessionCookieName}=`));
+    const sessionCookie = cookies.find(
+      (value) => value.startsWith(`${auth.sessionCookieName}=`) && !/Max-Age=0(?:;|$)/i.test(value),
+    );
     assert.ok(sessionCookie);
     assert.match(sessionCookie, /; Secure(?:;|$)/i);
     assert.match(sessionCookie, /; HttpOnly(?:;|$)/i);
     assert.match(sessionCookie, /; Path=\/(?:;|$)/i);
-    assert.doesNotMatch(sessionCookie, /; Domain=/i);
+    assert.match(sessionCookie, /; Domain=example\.test(?:;|$)/i);
     // x-occ-session-key can only narrow which cookie session a request may use:
     // absent keeps the cookie contract, and a key never selects a session.
     const ownKey = signedIn.json().data.sessionKey;
@@ -167,7 +160,6 @@ test(
       (await inspect("/api/auth/session", { "x-occ-session-key": ownKey })).json().data,
       null,
     );
-    plantedCookie = sessionCookie.split(";")[0];
     browser = await chromium.launch({
       chromiumSandbox: true,
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
@@ -180,26 +172,7 @@ test(
     });
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();
-    await page.goto(`https://sibling.example.test:${port}/plant`);
-    const domainCookies = await context.cookies();
-    assert.equal(
-      domainCookies.some((cookie) => cookie.name === auth.sessionCookieName),
-      false,
-      "the browser rejects a Domain attribute on a __Host- cookie",
-    );
-    assert.equal(
-      domainCookies.some(
-        (cookie) =>
-          cookie.name === "__Secure-openclaw_occ.session_token" &&
-          cookie.domain === ".example.test",
-      ),
-      true,
-      "the sibling fixture can plant an ordinary parent-domain cookie",
-    );
-    const anonymous = await page.goto(`${origin}/api/auth/session`);
-    assert.equal(anonymous.status(), 200);
-    assert.equal((await anonymous.json()).data, null);
-    await context.clearCookies();
+    await page.goto(`${origin}/api/auth/session`);
     const legitimateStatus = await page.evaluate(
       async (credentials) => {
         const response = await fetch("/api/auth/sign-in/email", {
@@ -217,8 +190,24 @@ test(
     const saved = (await context.cookies(origin)).find(
       (cookie) => cookie.name === auth.sessionCookieName,
     );
-    assert.equal(saved.domain, "console.example.test");
+    assert.equal(saved.domain, ".example.test");
     assert.equal(saved.secure, true);
     assert.equal(saved.httpOnly, true);
+    // Shared sessions reach trusted Agent hosts; account/device hints remain Console-only.
+    const agentCookies = await context.cookies(`https://sibling.example.test:${port}`);
+    assert.ok(agentCookies.some((cookie) => cookie.name === auth.sessionCookieName));
+    assert.ok(!agentCookies.some((cookie) => cookie.name === "__Host-occ_known_device"));
+    const knownDevice = (await context.cookies(origin)).find(
+      (cookie) => cookie.name === "__Host-occ_known_device",
+    );
+    assert.equal(knownDevice?.domain, "console.example.test");
+    const shared = await page.goto(`https://sibling.example.test:${port}/api/auth/session`);
+    assert.equal((await shared.json()).data.user.id, recoveryUserId);
+    const originDenied = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-out",
+      headers: { origin: `https://sibling.example.test:${port}`, cookie: ownCookie },
+    });
+    assert.equal(originDenied.statusCode, 403);
   },
 );

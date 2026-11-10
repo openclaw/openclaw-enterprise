@@ -1616,7 +1616,16 @@ export async function renderAgentDetail(
   const nativeAdmin = renderNativeAdminAccess(
     context,
     path,
-    () => latestPermissionsRead.then((permissions) => permissions?.administer),
+    () =>
+      latestPermissionsRead.then((permissions) => {
+        if (permissions?.administer === true || permissions?.operate === true) {
+          return true;
+        }
+        if (permissions?.administer === false && permissions?.operate === false) {
+          return false;
+        }
+        return undefined;
+      }),
     {
       // One the caller cannot read is not named by its ID (finding D791).
       versionLabel: () =>

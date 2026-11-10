@@ -382,6 +382,12 @@ export interface ComputeDriver extends Driver {
     readonly secretRef: ServiceAccountCredential["secretRef"];
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /**
+   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
+   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
+   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   */
+  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

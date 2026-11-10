@@ -1,3 +1,4 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
@@ -95,7 +96,8 @@ function childEnvironment(port, overrides = {}) {
     NODE_ENV: "development",
     OCC_HOST: "127.0.0.1",
     OCC_PORT: String(port),
-    OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+    OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
     OCC_AUTH_SECRET: "openclaw-development-auth-secret-minimum-32-bytes",
     ...overrides,
   };
@@ -185,6 +187,7 @@ async function assertUnsafeStartupRejected() {
 
 async function request(url, method, path, options = {}) {
   const headers = {
+    host: "console.oce.localhost",
     ...(options.identity === false ? {} : authenticatedHeaders(options.session)),
     ...options.headers,
   };
@@ -197,7 +200,7 @@ async function request(url, method, path, options = {}) {
     body = options.rawBody;
   }
 
-  const response = await fetch(`${url}${path}`, {
+  const response = await fetchLoopback(`${url}${path}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -555,6 +558,7 @@ async function createInjectedFixture(options = {}) {
         : {}),
       development: {
         enabled: true,
+        browserOrigin: "https://console.oce.localhost",
         installationId,
       },
       auth: authFixture.auth,
@@ -684,7 +688,7 @@ async function injectedRequest(app, method, pathname, options = {}) {
     payload = JSON.stringify(options.body);
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(payload === undefined ? {} : { body: payload }),
@@ -1741,9 +1745,10 @@ test("first-deployment CLI recovers a lost committed response with the original 
               chunks.push(chunk);
             }
             forwarded.push({ method: incoming.method, path: incoming.url });
-            const response = await fetch(`${origin}${incoming.url}`, {
+            const response = await fetchLoopback(`${origin}${incoming.url}`, {
               method: incoming.method,
               headers: {
+                host: "console.oce.localhost",
                 "x-api-key": incoming.headers["x-api-key"],
                 ...(incoming.headers["content-type"] === undefined
                   ? {}
@@ -7043,7 +7048,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
   // Failed admissions create no pending revision that could keep a detached account referenced.
   const deletedDetached = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${accountPath}`, {
+    new Request(`https://console.oce.localhost${accountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -7054,7 +7059,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
   // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
   const deleted = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${unusedAccountPath}`, {
+    new Request(`https://console.oce.localhost${unusedAccountPath}`, {
       method: "DELETE",
       headers: authenticatedHeaders(controller.fixture.session),
     }),
@@ -8956,7 +8961,7 @@ test("bodyless OCC routes reject request payloads before IAM or domain side effe
         headers: {
           ...authenticatedHeaders(app.defaultSession),
           "content-type": "application/json",
-          host: "127.0.0.1",
+          host: "console.oce.localhost",
         },
         payload: JSON.stringify({ unexpected: "request body" }),
         remoteAddress: "127.0.0.1",
@@ -9622,24 +9627,27 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
+async function plaintextGatewayAdmissionFixture(nativeCompute, bootstrapLabel, namespaceSlug) {
+  // The API/state fixture owns lifecycle and credentials; the actual selected
+  // Driver owns admission. No worker or remote backend is dispatched here.
+  const computeDriver = createProvisioningCapableComputeDriver();
+  computeDriver.validateGatewaySettings = (configuration) =>
+    nativeCompute.validateGatewaySettings?.(configuration);
+  const controller = await configuredController({ computeDriver });
+  const { fixture } = controller;
+  await bootstrap(controller, bootstrapLabel);
+  const namespace = await createNamespace(controller, namespaceSlug);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  return { fixture, controller, namespace };
+}
+
 test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Codex approval ${kind}`);
-      const namespace = await createNamespace(controller, `codex-approval-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Codex approval ${kind}`,
+        `codex-approval-${kind}`,
       );
       const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
@@ -9707,21 +9715,10 @@ test("deployment refuses a Codex approval policy the Gateway refuses across Comp
 test("deployment refuses native listener TLS before admitting a revision across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Native HTTP ${kind}`);
-      const namespace = await createNamespace(controller, `native-http-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Native HTTP ${kind}`,
+        `native-http-${kind}`,
       );
       for (const [name, tls, expectedStatus] of [
         ["enabled", { enabled: true, certPath: "/owned/cert.pem" }, 409],
@@ -10642,6 +10639,38 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   }
 });
 
+async function createSlackValidationFixture(controller, namespaceName) {
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, namespaceName);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const base = `/namespaces/${namespace.id}`;
+  const makeSecret = async (name, value) => {
+    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
+    assert.equal(result.status, 201);
+    return result.data;
+  };
+  const app = await makeSecret("app", "xapp-synthetic-app");
+  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
+  const model = await makeSecret("model", "synthetic-model");
+  return { fixture, namespace, base, app, bot, model };
+}
+
+async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app, bot }) {
+  await bindHarnessKey(fixture, namespaceId, agent);
+  for (const secret of [app, bot]) {
+    fixture.state.bindings.push({
+      id: `slack-${secret.id}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: `harness-key-${agent.id}`,
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  }
+}
+
 test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules
   // Configuration save applies. That check reads only an env SecretRef, so every refused string
@@ -10659,19 +10688,10 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     },
     configurationDriver,
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-reference-forms");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-reference-forms",
+  );
   let calls = 0;
   const channel = new SlackChannelDriver(async () => {
     calls++;
@@ -10784,19 +10804,10 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-admission");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-admission",
+  );
   let calls = 0;
   let response = { ok: true, bot_id: "B123", team_id: "T123" };
   const channel = new SlackChannelDriver(async (url, options) => {
@@ -10909,18 +10920,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     body: { name: "slack-agent", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   response = { ok: false, error: "invalid_auth" };
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
@@ -10984,19 +10984,10 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-whole-reference");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-whole-reference",
+  );
   const tokens = [];
   const channel = new SlackChannelDriver(async (url, options) => {
     assert.equal(new URL(url).pathname, "/api/auth.test");
@@ -11055,18 +11046,7 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     body: { name: "slack-whole-reference", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
   assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
@@ -11077,19 +11057,10 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-no-route");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, model } = await createSlackValidationFixture(
+    controller,
+    "slack-no-route",
+  );
   // Finding 2521: production composition builds the Driver with expectProxy, since its API
   // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
   // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
@@ -11174,18 +11145,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     body: { name: "slack-no-route", configurationId: config.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent.data, { app, bot });
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
