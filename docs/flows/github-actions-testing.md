@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905
+last_updated_session: authoring-run/9259c9bd-8e96-4172-ba73-d945dedd0c0e
 ---
 
 # GitHub Actions testing flow
@@ -234,14 +234,12 @@ Windows bounds streams and terminates only the direct child.
 Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
 60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`scripts/ci/run-tests.mjs:aggregateGroup` checks receipt SHA, lane ownership, job
-success, cases and cleanup. Reuse retains independent owners; fresh lanes retain
-matrix parents. Docs mode skips aggregation.
-The shared action's `scripts/ci/cleanup.ts:main` records final cleanup; installed
-Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
-requires this positive outcome for every lane, including passing siblings and reuse,
-separately from file cleanup. Later delivery failures keep checks red; missing
-artifacts cannot qualify.
+`scripts/ci/run-tests.mjs:aggregateGroup` checks SHA, ownership, jobs and execution.
+Reused lanes retain separate owners; fresh lanes retain matrix parents.
+`scripts/ci/cleanup.ts:main` records final cleanup; missing state cannot clear failure.
+Installed Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
+requires every lane's required cleanup to pass. Later delivery failures
+keep checks red; missing artifacts cannot qualify.
 `ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
 awaits an approved resource ledger.
@@ -267,6 +265,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 16:05: Preserve cleanup failures across missing-state retries. (authoring-run/9259c9bd-8e96-4172-ba73-d945dedd0c0e - ef14f2ab13e47d703fd4bddac3c1862de65b0092)
 
 - 2026-11-10 15:47: Require final lane cleanup evidence for execution coverage. (authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905 - 60dba17cf36b796aee257e61499803b5dacc5a8c)
 

@@ -289,6 +289,29 @@ test("full coverage receipts require real case evidence and retain approved same
   await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
   assert.equal(produce("openshell-policy").status, 0);
   await verify(0, true);
+  // Installed Skipper always requires file cleanup; ordinary no-callback files
+  // can legitimately retain null, so enforce the owning Skipper contract here.
+  const installedReceipt = await readFile(skipperPath, "utf8");
+  const nullCleanup = JSON.parse(installedReceipt);
+  nullCleanup.files[0].cleanup = null;
+  await json(skipperPath, nullCleanup);
+  await verify(0, false);
+  await writeFile(skipperPath, installedReceipt);
+  // A later artifact-copy failure leaves case execution and completed cleanup
+  // intact, even though the owning job and required aggregate remain failed.
+  for (const owner of [skipperLane, "openshell"]) {
+    needs[owner].result = "failure";
+    await json(needsPath, needs);
+    await verify(1, true);
+    needs[owner].result = "success";
+  }
+  needs.preflight.result = "failure";
+  await json(needsPath, needs);
+  await verify(1, false);
+  needs.preflight.result = "success";
+  await json(needsPath, { ...needs, unowned: { result: "failure" } });
+  await verify(1, false);
+  await json(needsPath, needs);
   const passingPolicy = await readFile(policyReceipt, "utf8");
   for (const damage of [
     (value) => {
@@ -433,6 +456,14 @@ test("full coverage receipts require real case evidence and retain approved same
     const refused = clean(target);
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, /Refusing to clean resource owned by another prefix/);
+    assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")).cleanup, { status: "failed" });
+    await verify(1, false);
+    // Losing the resource ledger cannot turn a known cleanup refusal into proof
+    // of removal. A retry needs actual restored state to reconcile that failure.
+    await rm(statePath);
+    const missingState = clean(target);
+    assert.equal(missingState.status, 1);
+    assert.match(missingState.stderr, /Cannot verify failed cleanup without resource state/);
     assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")).cleanup, { status: "failed" });
     await verify(1, false);
     // No cluster was created. Reconcile the synthetic ownership record, then

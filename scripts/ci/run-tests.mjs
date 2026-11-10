@@ -34,7 +34,7 @@ import {
   exercisedAssertionFailures,
   recordsCoverage,
 } from "./full-integration-coverage.ts";
-import { qualifySkipperRelease } from "./skipper-release.ts";
+import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
@@ -2181,7 +2181,15 @@ async function aggregateGroup(
         );
       }
       if (recordFullCoverage && lane) {
-        const outcome = exercisedLaneStatus(summary, lane.files);
+        let outcome = exercisedLaneStatus(summary, lane.files);
+        if (outcome && laneName === "skipper-prepared-git-installed") {
+          try {
+            projectSkipperRunnerReceipt(summary);
+          } catch {
+            // Its owning contract requires file cleanup even when other lanes do not.
+            outcome = undefined;
+          }
+        }
         if (outcome) {
           exercised.set(laneName, outcome);
         }
@@ -2229,7 +2237,9 @@ async function aggregateGroup(
       }
       const ownedLanes = needs?.[entry.need]?.lanes ?? [entry.need];
       return (
-        Array.isArray(ownedLanes) && ownedLanes.some((lane) => exercised.get(lane) === "failed")
+        Array.isArray(ownedLanes) &&
+        ownedLanes.length > 0 &&
+        ownedLanes.every((lane) => exercised.has(lane))
       );
     });
 
