@@ -1,10 +1,7 @@
 import type { AttemptContext, Clock } from "../../access/backend-contracts.ts";
 import { sendProviderRequest } from "./provider-transport/request.ts";
 import type { ProviderObservation } from "./provider-diagnostics.ts";
-import {
-  prepareProviderScope,
-  type ProviderIssuanceScope,
-} from "./provider-transport/request-options.ts";
+import type { ProviderScope } from "./provider-transport/request-options.ts";
 
 /** The caller owns admission and dispatch; this transport does not require a repository identity. */
 export type ProviderAttempt = Pick<
@@ -29,12 +26,10 @@ export interface ProviderTransport {
 
 /** This capability can only mint its original scope or revoke the presented token. */
 export function createProviderTransport(
-  origin: string,
   ca: Uint8Array | undefined,
   clock: Clock,
-  scope: ProviderIssuanceScope,
+  prepared: ProviderScope,
 ): ProviderTransport {
-  const prepared = prepareProviderScope(origin, scope);
   const trustedCa = ca === undefined ? undefined : Buffer.from(ca);
   return Object.freeze<ProviderTransport>({
     issue(authorization, attempt, assertMaterialCurrent, observeResponse, observe) {

@@ -946,7 +946,12 @@ test("native platform exports verify offline and assemble into a digest-bound ar
   }
   run(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
-  assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
+  execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
+    env: { ...valid.env, IMAGE_DIGEST: digest },
+  });
+  const sealed = JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8"));
+  assert.deepEqual(sealed.platformDigests, valid.expected);
+  assert.equal(sealed.digest, digest);
   const index = JSON.parse(
     execFileSync("tar", [
       "-xOf",

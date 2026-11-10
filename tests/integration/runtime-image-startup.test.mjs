@@ -1187,8 +1187,12 @@ try {
   const request = { cwd: "/tmp", ephemeral: true, approvalPolicy: "on-request", approvalsReviewer: "user" };
   const control = await client.request("thread/start", { ...request, sandbox: "read-only" });
   assert.equal(control.sandbox.type, "readOnly");
-  await assert.rejects(client.request("thread/start", { ...request, permissions: profile }),
-    /thread.start: Codex did not grant the requested :danger-full-access profile/);
+  await assert.rejects(client.request("thread/start", { ...request, permissions: profile }), (error) => {
+    const message = "thread/start: Codex did not grant the requested :danger-full-access profile";
+    assert.equal(error.message, ${historicalCodex} ? message : message +
+      " (comparison=sandbox-readOnly). Check native permission requirements and runtime compatibility.");
+    return true;
+  });
   if (!${historicalCodex}) {
     // Managed read-only requirements also refuse a workspace profile. Check the native
     // response before exposing that silently substituted thread to the Gateway caller.
@@ -1212,19 +1216,20 @@ try {
     const peerSource = [
       'const { createInterface } = require("node:readline");',
       'const result = JSON.parse(process.argv[1]);',
-      'delete result.activePermissionProfile;',
       'setTimeout(() => process.exit(1), 10000).unref();',
       'createInterface({ input: process.stdin }).on("line", (line) => {',
       '  const request = JSON.parse(line);',
       '  if (request.id === undefined) return;',
-      '  if (request.method !== "initialize" && request.method !== "thread/start") process.exit(1);',
+      '  if (!["initialize", "thread/start", "thread/resume", "thread/fork"].includes(request.method)) process.exit(1);',
       '  const response = request.method === "initialize"',
       '    ? { userAgent: "codex-cli/" + process.argv[2], codexHome: "/home/node/.codex" } : result;',
       '  process.stdout.write(JSON.stringify({ id: request.id, result: response }) + "\\n");',
       '});',
     ].join("\n");
-    const peer = await Client.start({ transport: "stdio", commandSource: "config",
-      command: process.execPath, args: ["-e", peerSource, JSON.stringify(control), client.getServerVersion()] });
+    const { activePermissionProfile: _profile, ...withoutProfile } = control;
+    const startPeer = (result) => Client.start({ transport: "stdio", commandSource: "config",
+      command: process.execPath, args: ["-e", peerSource, JSON.stringify(result), client.getServerVersion()] });
+    const peer = await startPeer(withoutProfile);
     try {
       await peer.initialize();
       await assert.rejects(peer.request("thread/start", { ...request, permissions: ":workspace" },
@@ -1236,6 +1241,40 @@ try {
       });
     } finally {
       await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+    }
+    // Protocol peers exercise the real client's guard, not native permission grants.
+    // Unknown peer values must never appear in diagnostics; valid grants still pass.
+    const { sandbox: _sandbox, ...withoutSandbox } = control;
+    for (const [result, comparison] of [
+      [null, "nonobject-result"],
+      [withoutSandbox, "field-absent"],
+      [{ ...control, sandbox: null }, "field-null"],
+      [{ ...control, sandbox: [] }, "field-not-object"],
+      [{ ...control, sandbox: {} }, "type-not-string"],
+      [{ ...control, sandbox: { type: "private-peer-value" } }, "type-unrecognized"],
+      [{ ...control, sandbox: { type: "workspaceWrite" } }, "sandbox-workspaceWrite"],
+      [{ ...control, sandbox: { type: "externalSandbox" } }, "sandbox-externalSandbox"],
+      [{ ...control, sandbox: { type: "dangerFullAccess" } }, null],
+    ]) {
+      const peer = await startPeer(result);
+      try {
+        await peer.initialize();
+        for (const method of ["thread/start", "thread/resume", "thread/fork"]) {
+          const response = peer.request(method, { ...request, permissions: profile }, { timeoutMs: 5000 });
+          if (comparison === null) {
+            assert.deepEqual(await response, result);
+          } else {
+            await assert.rejects(response, (error) => {
+              assert.equal(error.message, method +
+                ": Codex did not grant the requested :danger-full-access profile (comparison=" +
+                comparison + "). Check native permission requirements and runtime compatibility.");
+              return true;
+            });
+          }
+        }
+      } finally {
+        await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+      }
     }
   }
 } finally {
@@ -1919,7 +1958,7 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {

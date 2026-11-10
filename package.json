@@ -52,7 +52,7 @@
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
-    "test:files": "node scripts/test-files.mjs",
+    "test:files": "node scripts/test-files.ts",
     "credentials:build": "tsc --build tsconfig.json --pretty false && node scripts/build-repository-credentials.mjs",
     "credentials:check-config": "node .build/repository-credentials/service/dist/composition/repository-credentials/check-config.js --check-config",
     "credentials:start": "node .build/repository-credentials/service/dist/repository-credentials.js",

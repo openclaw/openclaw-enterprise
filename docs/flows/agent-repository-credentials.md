@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-08"
-last_updated_session: authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790
+updated: "2026-11-10"
+last_updated_session: authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e
 ---
 
 # Agent repository credential flow
@@ -106,14 +106,14 @@ inherited saves, refusing mismatches. Without that binding it uses the registere
 Repo Driver. The database checks bindings. Only fresh, empty drafts tolerate a
 classified outage. The catalog omits sender metadata, credentials and provider descriptions.
 
-Save Configuration first; reuse it after known Agent rejections.
-Repository retries require reload and nonempty reselection. Failed reloads block
-creation; ignore stale results. After unknown outcomes, read stored Agent and Configuration.
+Save Configuration first; reuse it after known Agent rejections. Retry repository
+selection only after a successful reload and nonempty selection. After unknown
+outcomes, read the stored Agent and Configuration.
 
-Requests carry distinct opaque refs and optional profiles, never tokens or grant IDs.
-Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
-OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
-`git-write` without GitHub or control-socket calls.
+Requests carry refs and optional profiles, never tokens or grant IDs.
+Nonempty selections without a bound built-in policy or selected Repo Driver return `409 RESOURCE_CONFLICT`.
+OCC preserves selection order. GitHub defaults legacy profiles to `git-write`
+without provider or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
@@ -127,10 +127,12 @@ can supply several repositories. Omitted updates preserve selections; `[]` clear
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 selects GitHub policy with a registry-matched Backend ID.
-Startup copies validated repository policy before Driver package or registry loading. Policy construction and the protected Git Driver's configuration ID use it.
+Startup snapshots validated policy before loading packages or registries; that snapshot
+determines policy construction and protected Driver identity.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds the owner,
-rejecting missing or mismatched ownership.
-Every mode rejects `drivers.repo` before creating workers or attempts.
+rejecting missing or mismatched ownership. `repository.policyMode: built-in` omits
+public Repo Driver registration; separate registration is refused.
+Startup rejects `drivers.repo`.
 
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
 owns OpenShell parsing and chart constraints.
@@ -139,9 +141,9 @@ Bound `OpenClawController.admitRepositoryCredentials` requires `resolveBindings`
 OCC checks Compute topology and freezes Driver identity, grants and a deadline
 unchanged by renewal or recovery. `validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
 
-After approval lookup, bound deploys recheck their owner; replacement
-returns 503 without calling it. Unbound deploys recheck their Driver.
-Denial or changed binding or scope prevents revision creation.
+After approval lookup, changed bound ownership returns 503 without calling it;
+unbound deploys recheck their Driver. Denial or binding/scope changes prevent
+revision creation.
 
 Protected `repository.preparedGitHub` uses installed Sandbox/Credential Proxy
 Driver. Finite sessions need no native sender, control socket, broker CA or
@@ -290,10 +292,9 @@ fresh installation tokens under the same grant until the version deadline.
 
 The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepositoryGitAuthority`
 to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-Missing authority or mismatched Drivers prevent binding.
-
-`reconcile` runs serially with 25-second timeout and one-second interval.
-Close aborts and joins; readback cannot restore authority.
+Missing authority or mismatched Drivers prevent binding. Serial `reconcile` runs
+with a 25-second timeout and one-second interval. Close aborts and joins;
+readback cannot restore authority.
 
 [The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) checks profile identity before defaulting omitted endpoint/credential lists to empty arrays.
 [Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
@@ -377,6 +378,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 02:09: Trace built-in repository policy. (authoring-run/a84609c2-f340-4cbc-b986-39550c4c7b2e - 83c78fb0c2ed8524d906cca60845bc9141424000)
 
 - 2026-11-08 07:45: Preserve withdrawal across Stop. (authoring-run/0bed479f-9c58-4dbb-bb72-972d7dfe9790 - d9dc87c351a0046df90915d66cbcc931ec649bb6)
 

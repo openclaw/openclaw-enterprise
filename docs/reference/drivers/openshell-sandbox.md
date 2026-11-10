@@ -212,6 +212,9 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 <a id="codex-permission-profile"></a>
 
 Dedicated Codex requires account policy permitting `:danger-full-access` with `user` review.
+Before reporting the Harness ready, the Driver reads the serving process's managed
+requirements. An explicit refusal fails deployment with
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; missing or malformed evidence stays pending.
 OpenShell isolates every login mode; restricted profiles, including the proxy's,
 require nested bubblewrap namespaces, which OpenShell blocks. The Gateway refuses
 constrained threads before turns; see [permission-profile troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).

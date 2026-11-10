@@ -21,7 +21,7 @@ import test from "node:test";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const runner = join(root, "scripts/test-files.mjs");
+const runner = join(root, "scripts/test-files.ts");
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
 
