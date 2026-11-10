@@ -24,7 +24,8 @@
     "immutableOptionalEnvImages": [
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       "OCC_TEST_KUBERNETES_AGENT_IMAGE"
-    ]
+    ],
+    "keycloak": true
   },
   "files": [
     {
@@ -39,6 +40,20 @@
         "production native admin UI opens through OCC and preserves Agent boundaries",
         "two people share an embedded native Gateway with selective stream withdrawal"
       ]
+    },
+    {
+      "path": "tests/integration/oidc-agent-chat-k3d-real.test.ts",
+      "expectedTests": [
+        "OIDC owner creates an Agent and a shared operator chats without administrative access"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KEYCLOAK_ISSUER",
+        "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+        "OCC_TEST_KEYCLOAK_CA_CERT",
+        "OCC_TEST_KEYCLOAK_CONTAINER",
+        "NODE_EXTRA_CA_CERTS"
+      ],
+      "optionalEnv": ["OCC_TEST_KEYCLOAK_STATE"]
     }
   ]
 }

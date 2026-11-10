@@ -108,8 +108,17 @@ proof selection, diff cleanup, and requested independent review.
 Maintainers retain their review, merge, and approved bypass permissions. When
 updating an assigned existing PR, keep its head repository and branch.
 
-Before publishing, verify the authenticated GitHub account with
-`gh api user --jq .login` and confirm it matches the requesting contributor.
+Before publishing with a personal credential, verify the authenticated GitHub
+account with `gh api user --jq .login` and confirm it matches the requesting
+contributor. For an explicitly delegated GitHub App installation task, verify the
+operator's approved App, installation and repository scope instead. Use the
+[verified App bot identity](docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
+for repository-local Git author settings. The
+[`/user` endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
+does not support installation tokens; its refusal does not establish that the
+repository credential is invalid. App delegation permits only the explicitly
+assigned repositories, branches and PRs.
+
 Inspect the actual fetch and push URLs with `git remote -v`; preserve existing
 remotes. Remote names do not establish ownership or the intended destination.
 Fetch the intended base before comparing or refreshing a branch.
@@ -139,7 +148,7 @@ branch. An explicit `--head` keeps `gh pr create` from choosing where to push th
 - Request relevant maintainers' feedback. Resolve substantive findings and
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
-  the final UI to GitHub (native attachments or a gist) and show them in the
+  the final UI as native GitHub attachments, not gists, and show them in the
   PR's Verification section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
@@ -165,9 +174,11 @@ Keep the RFC consistent with the final code and land them together when ready,
 either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
-Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. After
-the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
+Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
+checks. The command is read-only; it does not establish merge readiness. If the
+authenticated-user lookup is unavailable, it still reports the PR and checks,
+but marks the actor and account match unknown. Verify publishing authority
+separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
 ```sh
@@ -191,25 +202,40 @@ trailer where needed. Credit material review, documentation, and other non-code
 help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
-Before a release, or when correcting an omission, refresh the README wall from
+The [contributor workflow](.github/workflows/contributors.yml) refreshes the README
+wall once when a PR merges into the default branch, including fork PRs. It does
+not run on each push or on unmerged closures. You can also run it manually from
+the Actions page. It checks out only the default branch and opens or updates one
+PR on `automation/contributors` when the generated README differs. This branch
+is reserved for generated updates; do not add manual commits to it.
+
+To enable PR creation, a repository administrator must enable **Allow GitHub
+Actions to create and approve pull requests** under **Settings > Actions >
+General**. The workflow does not approve or merge PRs. PRs created with
+`GITHUB_TOKEN` do not start ordinary PR checks automatically; close and reopen
+the generated PR as a maintainer to start those checks before review and merge.
+No personal token or GitHub App secret is required.
+
+Before a release, or when correcting an omission, you can refresh the wall from
 the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
 
 ```sh
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.mjs` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly; the generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull
 requests, and public user profiles. Existing `gh` authentication is sufficient;
 no administrator access or GitHub App is needed. It prints the observed default
 branch SHA and writes only the README contributor block. Review the diff and
-submit it through the normal PR process. Refreshes are manual.
+submit it through the normal PR process.
 
 The wall combines GitHub contributors and authors of PRs merged into the default
-branch, deduplicates by account ID, and sorts by current login. Documentation
-contributors and default avatars are included. GitHub bot accounts are omitted.
+branch, deduplicates by account ID and explicit account aliases, and sorts by
+current login. Documentation contributors and default avatars are included.
+GitHub bot accounts are omitted.
 The contributor API can lag, and co-authors or people helping outside merged PRs
 may need explicit inclusion. Merged PRs whose author is unavailable are skipped;
 previously published credit still requires an explicit correction before removal.
@@ -222,6 +248,11 @@ an HTTPS `url` pointing to public evidence and a nonempty `reason`, plus one of:
 - `displayName` to change an included person's avatar alt text. Combine it with
   `include: true` when that person is absent from automatic discovery.
 - `exclude: true` for a service account or requested opt-out.
+- `aliasOf: "ACCOUNT_ID"` to show a person's canonical account once when they
+  contribute from multiple accounts. Supply public identity evidence; do not
+  infer identity from matching pictures alone. The target must resolve to a human
+  account, and cannot itself be an alias or excluded. Do not combine `aliasOf`
+  with `include`, `exclude`, or `displayName` on the same entry.
 
 Find the ID with `gh api users/LOGIN --jq .id`. Do not copy upstream's contributor
 list or store private email addresses. Never set both `include` and `exclude`.

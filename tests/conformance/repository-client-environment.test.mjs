@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
+import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/access/client/environment.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 
 const configuration = {
   sessionId: "session",

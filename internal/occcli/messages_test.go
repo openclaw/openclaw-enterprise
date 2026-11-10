@@ -138,8 +138,9 @@ func TestMissingCommandsPointAtWhatOCCOffers(t *testing.T) {
 		{[]string{"agent", "lst"}, `unknown command "lst" for "occ agent"; did you mean "occ agent list"?`},
 		{[]string{"secrets"}, `unknown command "secrets" for "occ"; did you mean "occ secret"?`},
 		{[]string{"agent", "gat"}, `unknown command "gat" for "occ agent"; did you mean "occ agent get"?`},
-		// A prefix suggests only the one command it starts, and only from two characters.
-		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"; did you mean "occ agent revisions"?`},
+		// A prefix suggests only one unambiguous command, and only from two characters.
+		{[]string{"agent", "up"}, `unknown command "up" for "occ agent"; did you mean "occ agent update"?`},
+		{[]string{"agent", "revi"}, `unknown command "revi" for "occ agent"`},
 		{[]string{"agent", "de"}, `unknown command "de" for "occ agent"`},
 		{[]string{"agent", "u"}, `unknown command "u" for "occ agent"`},
 		{[]string{"agent", ""}, `unknown command "" for "occ agent"`},

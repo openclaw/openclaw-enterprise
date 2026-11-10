@@ -218,8 +218,22 @@ must share the registry's App and installation and the same approved permissions
 The worker prepares a token restricted to exactly the selected numeric IDs.
 Repository availability in the registry alone does not authorize an Agent.
 
-Save the Agent with the selected repositories and the Gateway model source, provision its runtime credentials, and deploy. Wait for the selected revision to become ready. Clone and push the selected
-repositories over HTTPS, for example `https://github.com/example/project.git`.
+Save the Agent with the selected repositories and the Gateway model source, provision
+its runtime credentials, and deploy. Once the revision is ready, run these commands
+inside the Agent. Replace `example/project` with a selected repository that has at
+least one commit and for which the Agent has Contents read or write permission.
+OCE supplies authentication for Git over HTTPS and for `gh`; no personal token or
+`gh auth login` is needed.
+
+```bash
+git ls-remote https://github.com/example/project.git HEAD
+gh api repos/example/project --jq .full_name
+```
+
+Git should print a commit ID followed by `HEAD`, and `gh` should print the
+repository's full name. These checks verify reads, not permission to push or
+open a pull request.
+
 GitHub App permissions and normal GitHub branch rules still apply. OCE adds no
 branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision

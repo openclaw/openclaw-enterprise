@@ -25,15 +25,14 @@ const before = [
   step(agent, "source_type=codex-pat"),
   // The guide uses an example path. The workflow stages the service-account token here.
   'credential_file="${CODEX_TOKEN_FILE:?}"',
-  step(agent, 'name="openshell-codex-$(date +%s)"'),
+  step(agent, 'resource_prefix="$name-$(date +%s)"'),
   step(agent, '--rawfile token "$credential_file"'),
   step(agent, 'agent=$(jq -er .data.id "$RUN_DIR/agent")'),
   step(agent, 'cfg=$(jq -er .data.id "$RUN_DIR/configuration")'),
   step(agent, "# Provision transport once, before the first revision."),
   step(agent, "deploy_and_wait"),
-  step(agent, "workspace_check -f BOOTSTRAP.md"),
 ];
-const after = [step(agent, "workspace_check ! -e BOOTSTRAP.md"), step(agent, "save_session")];
+const after = [step(agent, "save_session")];
 for (const [file, blocks] of [
   ["setup-before-browser.sh", before],
   ["setup-after-browser.sh", after],

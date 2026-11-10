@@ -1,3 +1,4 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -112,14 +113,15 @@ export async function composePostgresDevelopment(
     );
   }
 
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
+  if (
+    config.github !== undefined &&
+    config.nativeAdmin?.enabled === true &&
+    config.nativeAdmin.sessionMode !== "host-only-exchange"
+  ) {
+    throw new Error("GitHub sign-in requires host-only-exchange for native administration.");
   }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
   }
 
   const pool = await createPostgresPool(config.databaseUrl, {
@@ -192,10 +194,9 @@ export async function composePostgresDevelopment(
             onUnmatchedCallback: (provider) =>
               config.metrics!.observeUnmatchedSignInCallback(provider),
           }),
-      secureCookies: config.nativeAdmin?.enabled === true,
-      ...(config.nativeAdmin?.enabled === true
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
+
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       ...(dependencies.passwordHasher === undefined
         ? {}
         : { passwordHasher: dependencies.passwordHasher }),
@@ -255,6 +256,9 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -289,6 +293,13 @@ export async function composePostgresDevelopment(
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
+      drivers.tokenService?.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          drivers.secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
@@ -300,6 +311,7 @@ export async function composePostgresDevelopment(
     }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
     if (config.logger !== undefined) {
       for (const shadowed of drivers?.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });

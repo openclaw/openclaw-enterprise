@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
@@ -126,7 +126,6 @@ const agentNativeAdminValues = {
   ...gatewayRoutingValues,
   "agentNativeAdmin.enabled": "true",
   "agentNativeAdmin.domain": "agents.example.invalid",
-  "agentNativeAdmin.sharedCookieDomain": "example.invalid",
 };
 // The sandbox listener's wildcard TLS Secret, on top of gateway routing.
 const sandboxValues = {
@@ -1685,6 +1684,8 @@ test(
 test("production settings coexist in fresh and upgrade chart renders", tooling, async () => {
   const settings = {
     ...agentNativeAdminValues,
+    "installation.attemptId": "eac2f079-cff2-4488-8e2e-3322df9b0bd6",
+    "installation.upgradeAttemptId": "df44c039-3515-4d0e-b2eb-759e177f1ff5",
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
     "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
@@ -1697,6 +1698,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       : values["images.controller"];
     const objects = await resources(
       (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    );
+    // Recovery joins the submitted attempt to all live hooks and its owned Pod;
+    // install-only attribution remains separate when both values are retained.
+    for (const hook of objects.filter((object) => object.metadata.annotations?.["helm.sh/hook"])) {
+      assert.equal(
+        hook.metadata.annotations["openclaw.dev/upgrade-attempt"],
+        isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
+      );
+    }
+    const initializer = objects.find(({ kind }) => kind === "Job");
+    assert.equal(
+      initializer.metadata.annotations["openclaw.dev/installation-attempt"],
+      isUpgrade ? undefined : settings["installation.attemptId"],
+    );
+    assert.equal(
+      initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
+      isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
     const deployment = (component) =>
       objects.find(
@@ -1853,7 +1871,7 @@ test(
     );
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"),
-      [{ name: "OCC_AUTH_COOKIE_DOMAIN", value: "example.invalid" }],
+      [],
     );
     assert.ok(!workerEnvironment.some(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")));
     assert.ok(!workerEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
@@ -1870,7 +1888,10 @@ test(
     const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
-      [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
+      [
+        { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" },
+        { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: "agents.example.invalid" },
+      ],
     );
     assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
   },
@@ -2330,6 +2351,7 @@ test(
       JSON.stringify({
         images: { controller: values["images.controller"] },
         gatewayRouting: { enabled: false },
+        agentNativeAdmin: { domain: values["agentNativeAdmin.domain"] },
         auth: {
           baseUrl: values["auth.baseUrl"],
           secretName: values["auth.secretName"],
@@ -2512,7 +2534,12 @@ case "$*" in
 esac
 `,
       occ: `#!/usr/bin/env bash
-printf '{"id":"ins_test"}'
+[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
+case "$4" in
+  get) printf '{"id":"ins_test"}' ;;
+  deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
+  *) exit 94 ;;
+esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
       node: `#!/usr/bin/env bash
@@ -2653,7 +2680,12 @@ esac
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
       );
       if (!failure) {
-        const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
+        // A failed dry-run has a render but no successful-preparation pointer.
+        const attempts = await readdir(join(evidence, "helm-attempts"));
+        assert.equal(attempts.length, 1);
+        const candidate = await resources(
+          await readFile(join(evidence, "helm-attempts", attempts[0], "rendered.yaml"), "utf8"),
+        );
         const deployment = candidate.find(
           ({ kind, metadata }) =>
             kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
@@ -4075,6 +4107,55 @@ test(
 );
 
 test(
+  "OCC can manage private OAuth client Secrets without access to Secrets in the release namespace",
+  tooling,
+  async () => {
+    const releaseNamespace = "oauth-control-plane";
+    const objects = await resources((await render({}, { namespace: releaseNamespace })).stdout);
+    const privateNamespaces = new Set();
+    for (const [component, verbs] of [
+      ["api", ["get", "create", "update", "delete"]],
+      ["worker", ["get", "delete"]],
+    ]) {
+      const pod = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
+      ).spec.template.spec;
+      const namespace = pod.containers[0].env.find(
+        ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
+      ).value;
+      privateNamespaces.add(namespace);
+      // Check the effective RoleBinding for the ServiceAccount the chart actually deploys.
+      const binding = objects.find(
+        ({ kind, metadata, subjects }) =>
+          kind === "RoleBinding" &&
+          metadata.namespace === namespace &&
+          subjects?.some((subject) => subject.name === pod.serviceAccountName),
+      );
+      assert.notEqual(namespace, releaseNamespace);
+      assert.deepEqual(binding.subjects, [
+        {
+          kind: "ServiceAccount",
+          name: pod.serviceAccountName,
+          namespace: releaseNamespace,
+        },
+      ]);
+      const role = objects.find(
+        ({ kind, metadata }) =>
+          kind === binding.roleRef.kind &&
+          metadata.namespace === namespace &&
+          metadata.name === binding.roleRef.name,
+      );
+      assert.deepEqual(role.rules, [{ apiGroups: [""], resources: ["secrets"], verbs }]);
+      assert.ok(
+        objects.some(({ kind, metadata }) => kind === "Namespace" && metadata.name === namespace),
+      );
+    }
+    assert.equal(privateNamespaces.size, 1);
+  },
+);
+
+test(
   "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
   tooling,
   async () => {
@@ -5148,7 +5229,12 @@ test(
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
-        { "agentNativeAdmin.enabled": "true" },
+        { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
+      ],
+      [
+        "retired shared cookie domain setting",
+        { "agentNativeAdmin.sharedCookieDomain": "example.invalid" },
+        /agentNativeAdmin.sharedCookieDomain is no longer supported/,
       ],
       [
         "Agent native admin configured with a wildcard DNS suffix",
@@ -5397,7 +5483,6 @@ test(
       "gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr": "0.0.0.0/0",
       "agentNativeAdmin.enabled": "true",
       "agentNativeAdmin.domain": "agents.example.invalid",
-      "agentNativeAdmin.sharedCookieDomain": "example.invalid",
       "executionCluster.enabled": "true",
       "executionCluster.apiCidrs[0]": "10.44.0.2/32",
     };

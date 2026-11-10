@@ -152,5 +152,4 @@ constraints and source-copy utilities without rewriting historical migrations. T
 the released catalog with revisions that exercise its latest admission fields, including a public
 GitHub reader revision with `compute.admission` populated. Preserve every released receipt and
 still-supported snapshot. If receipt history diverges, refuse the upgrade and leave the ledger unchanged.
-Disable legacy reattachment and refresh before removing capability selection, registration, exports,
-package checks and persistence coupling. A temporary adapter is useful only while those obligations remain.
+Move refresh setup, forced rotation, status and removal to Token Service. Preserve browser and device authorization for the credential families that support them. Verify that each grant has one refresh owner across a worker restart. Disable legacy reattachment and refresh before removing `drivers.credential_gateway`, `drivers.credential_refresh` and their public Driver contracts. A temporary adapter is useful only while those obligations remain.

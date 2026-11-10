@@ -492,8 +492,8 @@ controls:
   the relevant phone state; a second recording is useful only when the interaction differs.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video to GitHub, as native attachments or as
-  files in a gist, and show them in the PR's Verification section. Before and
+  Upload screenshots and a short video as native GitHub attachments. Do not use
+  gists for PR evidence. Show the attachments in the PR's Verification section. Before and
   after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the

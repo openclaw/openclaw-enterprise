@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,181 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDevelopmentRepository(t *testing.T) {
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
+	const genericError = "run occ dev from an OpenClaw Enterprise source checkout"
+	for _, test := range []struct {
+		name       string
+		module     string
+		hasCompose bool
+		hasCRLF    bool
+		wantError  string
+	}{
+		{name: "LF ancestor", module: declaration + "\n", hasCompose: true},
+		{name: "CRLF marker", module: declaration + "\r\n", hasCompose: true, hasCRLF: true},
+		{name: "mixed line endings", module: declaration + "\n\r\ngo 1.27\r\n", hasCompose: true, hasCRLF: true},
+		{name: "other CRLF module", module: declaration + "-other\r\n", hasCompose: true, wantError: genericError},
+		{name: "CRLF without Compose", module: declaration + "\r\n", wantError: genericError},
+		{name: "no terminating newline", module: declaration, hasCompose: true, wantError: genericError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := t.TempDir()
+			modulePath := filepath.Join(repository, "go.mod")
+			if err := os.WriteFile(modulePath, []byte(test.module), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.hasCompose {
+				if err := os.WriteFile(filepath.Join(repository, "compose.yaml"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			subdirectory := filepath.Join(repository, "subdirectory")
+			if err := os.Mkdir(subdirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(subdirectory)
+
+			got, err := developmentRepository()
+			wantError := test.wantError
+			if test.hasCRLF {
+				wantError = fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
+			}
+			if wantError != "" {
+				if got != "" || err == nil || err.Error() != wantError {
+					t.Fatalf("developmentRepository() = %q, %v; want no path and %q", got, err, wantError)
+				}
+				return
+			}
+			if err != nil || got != repository {
+				t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, repository)
+			}
+		})
+	}
+}
+
+func TestDevelopmentRepositoryComposeMarker(t *testing.T) {
+	const module = "module github.com/openclaw/openclaw-enterprise\n"
+	for _, marker := range []string{"regular file", "symlink to regular file", "missing", "directory"} {
+		t.Run(marker, func(t *testing.T) {
+			outer := t.TempDir()
+			inner := filepath.Join(outer, "nested")
+			if err := os.Mkdir(inner, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, directory := range []string{outer, inner} {
+				if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(module), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			outerCompose := filepath.Join(outer, "compose.yaml")
+			if err := os.WriteFile(outerCompose, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			innerCompose := filepath.Join(inner, "compose.yaml")
+			want := inner
+			switch marker {
+			case "regular file":
+				if err := os.WriteFile(innerCompose, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink to regular file":
+				if err := os.Symlink(outerCompose, innerCompose); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				want = outer
+			case "directory":
+				if err := os.Mkdir(innerCompose, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(inner)
+			got, err := developmentRepository()
+			if marker == "directory" {
+				wantError := fmt.Sprintf("%q must be a regular file", innerCompose)
+				if got != "" || err == nil || err.Error() != wantError {
+					t.Fatalf("developmentRepository() = %q, %v; want no path and %q", got, err, wantError)
+				}
+				return
+			}
+			if err != nil || got != want {
+				t.Fatalf("developmentRepository() = %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func TestDevRefusesNearestInvalidCheckout(t *testing.T) {
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
+	for _, test := range []struct {
+		name          string
+		module        string
+		composeMarker string
+	}{
+		{name: "CRLF", module: declaration + "\r\n"},
+		{name: "mixed endings", module: declaration + "\n\r\ngo 1.27.3\r\n"},
+		{name: "Compose directory", module: declaration + "\n", composeMarker: "directory"},
+		{name: "dangling Compose symlink", module: declaration + "\n", composeMarker: "dangling"},
+		{name: "looping Compose symlink", module: declaration + "\n", composeMarker: "loop"},
+	} {
+		for _, args := range [][]string{{"dev", "up"}, {"dev", "down", "--volumes"}} {
+			t.Run(test.name+"/"+args[1], func(t *testing.T) {
+				repository := t.TempDir()
+				nested := filepath.Join(repository, "nested")
+				if err := os.Mkdir(nested, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				// The outer checkout is valid, but must never receive the inner
+				// checkout's startup or destructive cleanup command.
+				for directory, content := range map[string]string{repository: declaration + "\n", nested: test.module} {
+					if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					composePath := filepath.Join(directory, "compose.yaml")
+					if directory == nested && test.composeMarker == "directory" {
+						if err := os.Mkdir(composePath, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					} else if directory == nested && (test.composeMarker == "dangling" || test.composeMarker == "loop") {
+						target := "missing.yaml"
+						if test.composeMarker == "loop" {
+							target = "compose.yaml"
+						}
+						if err := os.Symlink(target, composePath); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.WriteFile(composePath, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Chdir(nested)
+				// Keep an accidental dispatch from reaching host tools. This
+				// does not replace repository discovery or the CLI command tree.
+				t.Setenv("PATH", t.TempDir())
+				t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+				t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
+				t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "")
+				var output bytes.Buffer
+				command := New(&output, &output)
+				command.SetArgs(args)
+				err := command.Execute()
+				want := fmt.Sprintf("%q uses CRLF line endings; convert it to LF before running occ dev", filepath.Join(nested, "go.mod"))
+				if test.composeMarker == "directory" {
+					want = fmt.Sprintf("%q must be a regular file", filepath.Join(nested, "compose.yaml"))
+				}
+				if test.composeMarker == "dangling" || test.composeMarker == "loop" {
+					want = fmt.Sprintf("inspect %q:", filepath.Join(nested, "compose.yaml"))
+					if err == nil || !strings.HasPrefix(err.Error(), want) {
+						t.Fatalf("%v: got %v; want nearest-checkout refusal starting with %q", args, err, want)
+					}
+				} else if err == nil || err.Error() != want {
+					t.Fatalf("%v: got %v; want nearest-checkout refusal %q", args, err, want)
+				}
+			})
+		}
+	}
+}
 
 func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 	repository, err := developmentRepository()
@@ -106,7 +282,7 @@ func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 		{"empty", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS="}, ""},
 		{"disabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=0"}, ""},
 		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup."},
-		{"invalid", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=true"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1"},
+		{"invalid", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=true"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS must be unset, empty, or set to 0"},
 		{"database", []string{"OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_owned"}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
 		{"empty-database", []string{"OCC_DEVELOPMENT_DATABASE_NAME="}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
 		{"host-gateway", []string{"OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP=172.30.42.1"}, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting"},

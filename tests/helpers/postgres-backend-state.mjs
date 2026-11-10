@@ -12,7 +12,7 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
 import { createDevelopmentIAMState } from "./development-iam-state.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
@@ -259,6 +259,7 @@ export function createBackendWorkerDrivers(
   return {
     installation,
     computeDriver,
+    ...(options.tokenService && { tokenService: options.tokenService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),
@@ -364,7 +365,8 @@ export async function createBootstrappedBackendState(context, options) {
     email: options.email,
     password: options.password,
     authSecret: options.authSecret,
-    authBaseURL: options.origin,
+    authBaseURL: options.authBaseURL,
+    agentDomain: "agents.oce.localhost",
     installationName: options.installationName,
     environment: { PATH: process.env.PATH },
   });
@@ -422,7 +424,8 @@ export async function startBackendlessDevelopmentServer(context, options) {
         OCC_HOST: "127.0.0.1",
         OCC_PORT: String(options.reservation.port),
         OCC_DATABASE_URL: databaseUrl,
-        OCC_AUTH_BASE_URL: options.origin,
+        OCC_AUTH_BASE_URL: options.authBaseURL,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
         OCC_AUTH_SECRET: options.authSecret,
         OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
         OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",

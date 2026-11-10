@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmod, open, stat, truncate, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.ts";
-import { fetchPinnedBytes, isTransientFetchError } from "../../scripts/ci/routing.mjs";
+import {
+  downloadPinnedArtifact,
+  fetchPinnedBytes,
+  isTransientFetchError,
+} from "../../scripts/ci/routing.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
@@ -101,8 +111,120 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
     assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
-  assert.match(logs[0], /toomanyrequests.*attempt 2\/4/);
-  assert.match(logs[1], /timed out after 120000 ms.*attempt 3\/4/);
+  assert.match(logs[1], /toomanyrequests.*attempt 2\/4/);
+  assert.match(logs[3], /timed out after 120000 ms.*attempt 3\/4/);
+});
+
+test("pullImage retains bounded layer progress from actual timed-out children through the final attempt", async (t) => {
+  const directory = await temporaryDirectory(t, "image-pull-progress-");
+  const docker = join(directory, "docker");
+  // A real child produces Docker-shaped progress and unrelated private text, then
+  // hangs. Docker suppresses numeric progress on pipes; use its plain status lines.
+  // Node owns the timeout and captures both pipes; no registry is contacted.
+  await writeFile(
+    docker,
+    `#!${process.execPath}
+process.stdout.write("aaaaaaaaaaaa: Pull complete\\n" + "x".repeat(40000) + "\\n");
+for (let index = 0; index < 10; index++) {
+  process.stdout.write(index.toString(16).padStart(12, "0") + ": Downloading\\r");
+}
+process.stdout.write("000000000009: Download complete\\n");
+process.stderr.write("bbbbbbbbbbbb: Extracting\\n");
+process.stderr.write("cccccccccccc: Downloading https://example.invalid/private-marker\\n");
+process.stderr.write("dddddddddddd: Sending private-marker\\n");
+process.stderr.write("\\x1b[31meeeeeeeeeeee: Pull complete\\x1b[0m\\n");
+process.stderr.write("ffffffffffff: Downloading 12345678901234567890MB/2MB\\n");
+setInterval(() => {}, 1000);
+`,
+    { mode: 0o700 },
+  );
+  const runChild = promisify(execFileCallback);
+  const failures = [];
+  const logs = [];
+  await assert.rejects(
+    pullImage(image, {
+      docker,
+      attempts: 2,
+      firstDelayMs: 1,
+      attemptTimeoutMs: 1_000,
+      execFile: async (command, args, { timeoutMs }) => {
+        try {
+          return await runChild(command, args, { timeout: timeoutMs });
+        } catch (error) {
+          // Adapt Node's actual timeout marker to the caller's existing contract.
+          error.timedOut = error.killed;
+          failures.push(error);
+          throw error;
+        }
+      },
+      log: (message) => logs.push(message),
+    }),
+    (error) => error === failures.at(-1),
+  );
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every((error) => error.killed && error.signal === "SIGTERM"));
+  const diagnostics = logs.filter((line) => line.startsWith("Image pull attempt "));
+  assert.equal(diagnostics.length, 2, "retain the final attempt even when no retry follows");
+  for (const [index, diagnostic] of diagnostics.entries()) {
+    assert.match(
+      diagnostic,
+      new RegExp(`attempt ${index + 1}/2 failed after \\d+ ms \\(timeout\\)`),
+    );
+    assert.match(diagnostic, /000000000008: Downloading/);
+    assert.match(diagnostic, /000000000009: Download complete/);
+    assert.match(diagnostic, /bbbbbbbbbbbb: Extracting/);
+    assert.equal([...diagnostic.matchAll(/[a-f0-9]{12}: /g)].length, 8);
+    assert.doesNotMatch(diagnostic, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
+    assert.equal(diagnostic.includes(String.fromCharCode(27)), false);
+    assert.ok(diagnostic.length < 1_000);
+  }
+});
+
+test("pullImage never reports a truncated line as layer progress", async () => {
+  const complete = "\nbbbbbbbbbbbb: Pull complete\n";
+  for (const encode of [(value) => value, (value) => Buffer.from(value)]) {
+    for (const [prefix, first, retained] of [
+      ["a".repeat(20), `${"a".repeat(44)}: Downloading`, false],
+      ["unrelated-prefix ", "cccccccccccc: Downloading", false],
+      ["unrelated-prefix\n", "cccccccccccc: Downloading", true],
+      ["unrelated-prefix\r", "cccccccccccc: Downloading", true],
+    ]) {
+      // The retained 32 KiB starts either inside a line or exactly at its boundary.
+      const tail =
+        first + "\n" + "x".repeat(32_768 - first.length - 1 - complete.length) + complete;
+      for (const stream of ["stdout", "stderr"]) {
+        const logs = [];
+        const failure = pullFailure("", { [stream]: encode(prefix + tail) });
+        await assert.rejects(
+          pullImage(image, {
+            ...scriptedPull([failure]),
+            attempts: 1,
+            log: (message) => logs.push(message),
+          }),
+          (error) => error === failure,
+        );
+        assert.equal(logs.length, 1);
+        const progress = logs[0].split("; ").slice(1);
+        assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
+      }
+    }
+  }
+});
+
+test("pullImage preserves its terminal failure when the diagnostic sink throws", async () => {
+  const failure = pullFailure("", { timedOut: true, stdout: "aaaaaaaaaaaa: Downloading\n" });
+  const execution = scriptedPull([failure]);
+  await assert.rejects(
+    pullImage(image, {
+      ...execution,
+      attempts: 1,
+      log: () => {
+        throw new Error("diagnostic sink unavailable");
+      },
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(execution.calls.length, 1);
 });
 
 test("pullImage fails a permanent failure on the first attempt with the original error", async () => {
@@ -161,6 +283,113 @@ const answer =
 const reset = (request) => request.socket.destroy();
 const hang = () => {};
 const quick = { firstDelayMs: 1, attemptTimeoutMs: 1_000 };
+
+async function readManifestFile(path) {
+  // Reopen the current pathname after each download, including atomic replacement.
+  const file = await open(path, "r");
+  try {
+    return { contents: await file.readFile("utf8"), mode: (await file.stat()).mode & 0o777 };
+  } finally {
+    await file.close();
+  }
+}
+
+test("pinned manifests retry transient downloads and publish only verified private bytes", async (t) => {
+  const directory = await temporaryDirectory(t, "pinned-manifest-");
+  const body = "kind: Namespace\nmetadata:\n  name: pinned-manifest\n";
+  const artifact = {
+    name: "Agent Sandbox",
+    version: "test",
+    path: "sandbox.yaml",
+    sha256: createHash("sha256").update(body).digest("hex"),
+  };
+  const destination = join(directory, artifact.path);
+
+  // A reset and a release-server outage must not publish a partial manifest.
+  const server = await flakyServer(t, [reset, answer(504), answer(200, body)]);
+  assert.equal(
+    await downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory }),
+    destination,
+  );
+  assert.equal(server.requests(), 3);
+  assert.deepEqual(await readManifestFile(destination), { contents: body, mode: 0o600 });
+
+  // Reusing verified bytes must also restore the manifest's private mode.
+  await chmod(destination, 0o644);
+  await downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory });
+  assert.equal(server.requests(), 3);
+  assert.deepEqual(await readManifestFile(destination), { contents: body, mode: 0o600 });
+
+  // An invalid cached file is replaced only after the new bytes pass the pin.
+  await writeFile(destination, "previous unverified bytes");
+  const corrupt = await flakyServer(t, [answer(200, "wrong digest"), answer(200, body)]);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: corrupt.url }, directory }),
+    /SHA256 mismatch/,
+  );
+  assert.equal(corrupt.requests(), 1);
+  assert.deepEqual(await readManifestFile(destination), {
+    contents: "previous unverified bytes",
+    mode: 0o600,
+  });
+
+  const denied = await flakyServer(t, [answer(403), answer(200, body)]);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: denied.url }, directory }),
+    /HTTP 403 after 1 attempt/,
+  );
+  assert.equal(denied.requests(), 1);
+  assert.deepEqual(await readManifestFile(destination), {
+    contents: "previous unverified bytes",
+    mode: 0o600,
+  });
+});
+
+test("pinned manifests bound cached files and chunked responses before verification", async (t) => {
+  const directory = await temporaryDirectory(t, "bounded-manifest-");
+  const artifact = {
+    name: "Agent Sandbox",
+    version: "test",
+    path: "sandbox.yaml",
+    sha256: createHash("sha256").update("small manifest").digest("hex"),
+  };
+  const destination = join(directory, artifact.path);
+  const server = await flakyServer(t, [answer(200, "small manifest")]);
+  await writeFile(destination, "");
+  await truncate(destination, 32 * 1024 * 1024 + 1);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory }),
+    /manifest exceeds its size limit/,
+  );
+  assert.equal(server.requests(), 0, "an oversized cache fails before a download");
+
+  // Without Content-Length, the reader must enforce the limit as bytes arrive.
+  const oversized = await flakyServer(t, [
+    (_request, response) => {
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      for (let index = 0; index < 33; index += 1) {
+        response.write(chunk);
+      }
+      response.end();
+    },
+  ]);
+  await assert.rejects(
+    downloadPinnedArtifact({
+      artifact: { ...artifact, path: "download.yaml", url: oversized.url },
+      directory,
+    }),
+    (error) => {
+      assert.match(
+        error.message,
+        /Agent Sandbox download failed: manifest exceeds its 32 MiB size limit/,
+      );
+      assert.match(error.cause?.message ?? "", /manifest exceeds its size limit/);
+      return true;
+    },
+  );
+  assert.equal(oversized.requests(), 1, "oversized content is not retried");
+  await assert.rejects(stat(join(directory, "download.yaml")), { code: "ENOENT" });
+});
 
 test("fetchPinnedBytes retries 5xx, resets and timeouts, then returns the body", async (t) => {
   const server = await flakyServer(t, [answer(503), reset, hang, answer(200, "pinned")]);

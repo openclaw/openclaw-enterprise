@@ -1,3 +1,4 @@
+import { administrativeActor } from "../helpers/administrative-actor.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -228,7 +229,7 @@ test(
     const recoveryEmail = `recovery-${suffix}@example.test`;
     const password = "auth-maintenance-test-password";
     const secret = "auth-maintenance-integration-secret-32-characters";
-    const baseURL = "http://127.0.0.1";
+    const baseURL = "https://console.oce.localhost";
     const directory = await privateBootstrapDirectory(context, "openclaw-auth-maintain-");
     await settled(() =>
       ensureDevelopmentBootstrap(context, {
@@ -248,6 +249,7 @@ test(
         mode: "development",
         installationId,
         baseURL,
+        agentDomain: "agents.oce.localhost",
         secret,
         pool,
       });
@@ -353,6 +355,7 @@ test(
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state: new PostgresPlatformState(pool),
@@ -367,6 +370,7 @@ test(
           mode: "development",
           installationId,
           baseURL,
+          agentDomain: "agents.oce.localhost",
           secret,
           pool,
           state,
@@ -442,8 +446,9 @@ test(
         let admin;
         let persistence;
         await withPool(databaseUrl, async (pool) => {
+          const state = new PostgresPlatformState(pool);
           persistence = new PostgresHumanAuthentication(
-            new PostgresPlatformState(pool),
+            state,
             installationId,
             betterAuthIssuer(installationId),
           );
@@ -452,11 +457,11 @@ test(
             snapshot.proof,
             sessionRecord(recoveryUserId),
           );
-          admin = {
+          admin = administrativeActor(state, installationId, {
             userId: recoveryUserId,
             sessionId: session.id,
             principalId: snapshot.proof.principalId,
-          };
+          });
           const target = await persistence.readAccount(orphan.id, admin);
           const moved = await persistence.replaceRecovery(
             orphan.id,
@@ -485,11 +490,13 @@ test(
         assert.match(seeded.stderr, /differs from the recorded recovery designation/);
 
         await withPool(databaseUrl, async (pool) => {
+          const state = new PostgresPlatformState(pool);
           persistence = new PostgresHumanAuthentication(
-            new PostgresPlatformState(pool),
+            state,
             installationId,
             betterAuthIssuer(installationId),
           );
+          admin = administrativeActor(state, installationId, admin);
           const target = await persistence.readAccount(recoveryUserId, admin);
           await persistence.replaceRecovery(
             recoveryUserId,
@@ -509,8 +516,9 @@ test(
       "reset-recovery-password replaces the hash and ends recovery sessions",
       async () => {
         await withPool(databaseUrl, async (pool) => {
+          const state = new PostgresPlatformState(pool);
           const persistence = new PostgresHumanAuthentication(
-            new PostgresPlatformState(pool),
+            state,
             installationId,
             betterAuthIssuer(installationId),
           );
@@ -520,12 +528,12 @@ test(
             sessionRecord(recoveryUserId),
           );
           adminToken = session.token;
-          const admin = {
+          const admin = administrativeActor(state, installationId, {
             userId: recoveryUserId,
             sessionId: session.id,
             principalId: snapshot.proof.principalId,
-          };
-          // Disable an account through the online API so deactivation must account for it.
+          });
+          // Use the guarded persistence operation so deactivation must account for a disabled user.
           const target = await persistence.readAccount(disabledUser.id, admin);
           await persistence.changeAccount(disabledUser.id, "disable", admin, target.version);
         });
@@ -607,6 +615,7 @@ test(
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state,

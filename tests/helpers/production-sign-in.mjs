@@ -13,7 +13,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
@@ -66,7 +66,7 @@ export function memoryLogger() {
 }
 
 export const consoleOrigin = "https://console.oce.example.internal";
-export const sessionCookieName = "__Host-openclaw_occ.session_token";
+export const sessionCookieName = "__Secure-openclaw_occ_shared.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
@@ -80,7 +80,6 @@ export const defaultInstallSettings = Object.freeze({
   OCC_AUTH_BASE_URL: consoleOrigin,
   OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
   OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
-  OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
   OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
 });
 
@@ -101,6 +100,7 @@ export function githubUpgradeSettings(recoveryUserId) {
     OCC_AUTH_GITHUB_CLIENT_SECRET: secretRef("occ-github-login", "client-secret"),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -131,6 +131,7 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
       : { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: allowedDomains.join(",") }),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -175,6 +176,7 @@ export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, 
     ...(extra.displayName === undefined ? {} : { OCC_AUTH_OIDC_DISPLAY_NAME: extra.displayName }),
     OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -230,15 +232,10 @@ export async function productionSignInConfiguration(
     ...(environment.OCC_GATEWAY_API_KEY_PATH === undefined ? {} : { gatewayApiKeyPath: keyFile }),
     ...humanLogin,
     ...(clientAddress === undefined ? {} : { clientAddress }),
-    ...(nativeAdminEnabled
-      ? {
-          nativeAdmin: {
-            enabled: true,
-            domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
-            sharedCookieDomain: environment.OCC_AUTH_COOKIE_DOMAIN,
-          },
-        }
-      : {}),
+    nativeAdmin: {
+      enabled: nativeAdminEnabled,
+      domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+    },
     ...(logger === undefined ? {} : { logger }),
     ...(metrics === undefined ? {} : { metrics }),
     ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
@@ -278,7 +275,7 @@ export function passwordSignIn(app, origin, { email, password }, remoteAddress =
     method: "POST",
     url: "/api/auth/sign-in/email",
     remoteAddress,
-    headers: { origin },
+    headers: { host: new URL(origin).host, origin },
     payload: { email, password },
   });
 }
@@ -288,7 +285,11 @@ export async function signedInHeaders(app, origin, account, remoteAddress) {
   if (response.statusCode !== 200) {
     throw new Error(`Password sign-in failed with ${response.statusCode}: ${response.body}`);
   }
-  return { cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]), origin };
+  return {
+    host: new URL(origin).host,
+    cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]),
+    origin,
+  };
 }
 
 export async function currentSession(app, cookie) {
@@ -428,11 +429,20 @@ export async function serveAsGitHub(t, server) {
  * The authorization code names the GitHub subject: `subject-<id>`; its login is
  * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
  * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
- * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
+ * "active", "pending" or an HTTP status; `fixture.emails(subject)` returns an email
+ * response or HTTP status; `fixture.profile(subject)` overrides the authenticated profile.
+ * `fixture.paths` records each request path.
  */
 export async function startFakeGitHub(t) {
   const server = createServer();
-  const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
+  const fixture = {
+    mode: "up",
+    requests: 0,
+    paths: [],
+    membership: undefined,
+    emails: undefined,
+    profile: undefined,
+  };
   server.on("request", async (request, response) => {
     fixture.requests += 1;
     fixture.paths.push(request.url);
@@ -468,7 +478,23 @@ export async function startFakeGitHub(t) {
         response.end("{}");
         return;
       }
-      response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
+      response.end(
+        JSON.stringify(
+          fixture.profile?.(Number(subject[1])) ?? {
+            id: Number(subject[1]),
+            login: `fixture-${subject[1]}`,
+          },
+        ),
+      );
+    } else if (request.url === "/user/emails?per_page=100") {
+      const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
+      const answer = subject === null ? 401 : await fixture.emails?.(Number(subject[1]));
+      if (answer === undefined || typeof answer === "number") {
+        response.writeHead(answer ?? 404);
+        response.end("{}");
+        return;
+      }
+      response.end(JSON.stringify(answer));
     } else if (fixture.membership !== undefined) {
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
       const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));

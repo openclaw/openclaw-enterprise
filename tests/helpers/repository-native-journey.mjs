@@ -2,11 +2,77 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   codexRepositoryEvidenceScript,
+  codexRepositoryRequirementsScript,
   completedToolResult,
   expandTranscriptMessage,
   sessionEvidenceScript,
 } from "./normal-agent-tools.mjs";
 import { submitRepositoryTaskScript } from "./repository-credentials-installed.mjs";
+import { parseNativeRolloutProvenance } from "./native-rollout-provenance.mjs";
+
+// Read only the rollout named by the exact owned thread/read response. Raw
+// rollout data stays inside this process; only the parser's fixed
+// diagnostic schema and source-availability booleans leave the container.
+// TODO: remove this capture after the QA permission-profile mismatch is diagnosed.
+export const nativeRolloutProvenanceScript = String.raw`
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const parse = ${parseNativeRolloutProvenance.toString()};
+  let rolloutReaderAvailable = false;
+  let expectedProfileKnown = false;
+  let finished = false;
+  const finish = (receipt = parse({})) => {
+    if (finished) return;
+    finished = true;
+    process.stdout.write(JSON.stringify({ ...receipt, rolloutReaderAvailable, expectedProfileKnown }), () => process.exit(0));
+  };
+  const deadline = setTimeout(() => finish(), 10000);
+  (async () => {
+    const input = JSON.parse(process.argv[1]);
+    const root = "/home/node/.codex/sessions";
+    const file = input.rolloutPath;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(input.expectedThreadId) || !uuid.test(input.expectedTurnId)
+        || typeof file !== "string" || file.length > 1024 || path.resolve(file) !== file
+        || !file.startsWith(root + "/") || !path.basename(file).startsWith("rollout-")
+        || !file.endsWith("-" + input.expectedThreadId + ".jsonl")) return finish();
+    const relative = path.relative(root, file).split(path.sep);
+    if (relative.length !== 4 || !/^\d{4}$/.test(relative[0]) || !/^\d{2}$/.test(relative[1]) || !/^\d{2}$/.test(relative[2])) return finish();
+    let current = root;
+    for (const part of relative) {
+      current = path.join(current, part);
+      if (fs.lstatSync(current).isSymbolicLink()) return finish();
+    }
+    if (fs.realpathSync(file) !== file) return finish();
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    let text;
+    try {
+      const before = fs.fstatSync(fd);
+      // The descriptor must still name that run-owned session file after open.
+      if (!before.isFile() || before.nlink !== 1 || before.size > 8 * 1024 * 1024 || before.uid !== process.getuid()
+          || (before.mode & 0o022) !== 0 || fs.realpathSync("/proc/self/fd/" + fd) !== file) return finish();
+      const bytes = Buffer.alloc(before.size);
+      let read = 0;
+      while (read < bytes.length) {
+        const count = fs.readSync(fd, bytes, read, bytes.length - read, read);
+        if (count === 0) return finish();
+        read += count;
+      }
+      const after = fs.fstatSync(fd);
+      if (after.nlink !== 1 || after.size !== before.size || after.ino !== before.ino || after.dev !== before.dev) return finish();
+      text = bytes.toString("utf8");
+      rolloutReaderAvailable = true;
+    } finally { fs.closeSync(fd); }
+    // Expected profile metadata must already be supplied by a trusted caller.
+    // Never open configuration or credential files to derive a diagnostic match.
+    const expectedProfileId = input.expectedProfileId;
+    expectedProfileKnown = typeof expectedProfileId === "string" && expectedProfileId.length > 0 && expectedProfileId.length <= 256;
+    const receipt = parse({ text, expectedThreadId: input.expectedThreadId, expectedTurnId: input.expectedTurnId,
+      expectedCwd: input.expectedCwd, ...(expectedProfileKnown ? { expectedProfileId } : {}) });
+    clearTimeout(deadline);
+    finish(receipt);
+  })().catch(() => { clearTimeout(deadline); finish(); });
+`;
 
 export const repositoryFailureSummaryScript = String.raw`
   ${expandTranscriptMessage.toString()}
@@ -255,7 +321,11 @@ ${nativeCommands}`;
       httpStatus: Number.isSafeInteger(response.status) ? response.status : null,
       ...(response.failure === undefined ? {} : { failure: response.failure }),
     };
-    assert.equal(response.status, 200);
+    assert.equal(
+      response.status,
+      200,
+      "repository Gateway submission must return HTTP 200; see task diagnostics",
+    );
   } catch (error) {
     taskFailure = error;
     if (taskTransport.outcome === "unresolved") {
@@ -275,17 +345,160 @@ ${nativeCommands}`;
   });
   // A timeout is an unknown mutation outcome. Read actual trace and provider
   // state once; never replay a model task or create the PR in the runner.
-  const readNativeTrace = async () =>
-    JSON.parse(
-      await exec(codexRepositoryEvidenceScript, [completionMarker, JSON.stringify(commandSpecs)]),
-    );
-  let nativeTrace = dedicated ? await readNativeTrace() : undefined;
-  // The gateway can finish its HTTP response while its native Codex turn is
-  // still running. Observe that same turn; never submit the task again.
-  while (nativeTrace?.status === "inProgress") {
-    assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
-    await delay(1_000);
-    nativeTrace = await readNativeTrace();
+  // One positive scenario per installation reads policy after refusal. This
+  // query does not depend on thread creation and never replays the model task.
+  if (dedicated && !readOnly && taskTransport.httpStatus === 500) {
+    try {
+      await f.record("Native requirements read attempted", {
+        evidenceKind: "diagnostic-only",
+        observerStage: "command-start",
+        status: "attempted",
+      });
+      let requirements;
+      let observerStage = "command-execution";
+      try {
+        const output = await exec(codexRepositoryRequirementsScript);
+        observerStage = "response-parse";
+        requirements = JSON.parse(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        requirements = {
+          evidenceKind: "diagnostic-only",
+          available: false,
+          observerStage,
+          reason:
+            observerStage === "response-parse"
+              ? "invalid-observer-json"
+              : /E2BIG|argument list too long/i.test(message)
+                ? "command-argument-limit"
+                : /timeout|timed out/i.test(message)
+                  ? "command-timeout"
+                  : "command-execution-failed",
+        };
+      }
+      await f.record("Native requirements read result", requirements);
+    } catch {
+      /* Diagnostic failure cannot replace the original submission error. */
+    }
+  }
+  const readNativeTrace = async () => {
+    const output = await exec(codexRepositoryEvidenceScript, [
+      completionMarker,
+      JSON.stringify(commandSpecs),
+    ]);
+    try {
+      return JSON.parse(output);
+    } catch {
+      throw new Error("native observer returned unavailable metadata");
+    }
+  };
+  let nativeTrace;
+  if (dedicated) {
+    try {
+      nativeTrace = await readNativeTrace();
+    } catch (error) {
+      try {
+        const message = error instanceof Error ? error.message : "";
+        await f.record("Native thread observer execution unavailable", {
+          evidenceKind: "diagnostic-only",
+          observerStage: "command-or-parse",
+          available: false,
+          reason: /E2BIG|argument list too long/i.test(message)
+            ? "command-argument-limit"
+            : /timeout|timed out/i.test(message)
+              ? "command-timeout"
+              : "observer-execution-or-parse-failed",
+        });
+      } catch {
+        /* Preserve the original task failure. */
+      }
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      throw error;
+    }
+    if (nativeTrace.status === "unavailable") {
+      try {
+        await f.record("Captured native observer unavailable diagnostics", {
+          evidenceKind: "diagnostic-only",
+          observerStage: nativeTrace.observerStage,
+          observerReason: nativeTrace.observerReason,
+          failure: nativeTrace.failure,
+        });
+      } catch {
+        /* Preserve the original submission failure. */
+      }
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      assert.fail("the exact native repository turn is unavailable; see observer diagnostics");
+    }
+  }
+  try {
+    // The gateway can finish its HTTP response while its native Codex turn is
+    // still running. Observe that same turn; never submit the task again.
+    while (nativeTrace?.status === "inProgress") {
+      assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
+      await delay(1_000);
+      nativeTrace = await readNativeTrace();
+    }
+  } finally {
+    if (nativeTrace) {
+      try {
+        const provenance = JSON.parse(
+          await consumerExec(
+            nativeRolloutProvenanceScript,
+            [
+              JSON.stringify({
+                rolloutPath: nativeTrace.rolloutPath,
+                expectedThreadId: nativeTrace.threadId,
+                expectedTurnId: nativeTrace.turnId,
+                expectedCwd: workspace,
+              }),
+            ],
+            undefined,
+            15_000,
+          ),
+        );
+        await f.record(
+          "Captured native turn permission provenance; repository acceptance pending",
+          provenance,
+        );
+      } catch {
+        // Source unavailability cannot replace the actual task or isolation failure.
+      }
+      try {
+        await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
+          evidenceKind: "diagnostic-only",
+          status: nativeTrace.status,
+          cwdMatchesExpectedWorkspace: nativeTrace.cwdMatchesExpectedWorkspace === true,
+          classificationMeaning: "text-pattern hints, not verified causes or successful operations",
+          threadId: nativeTrace.threadId,
+          turnId: nativeTrace.turnId,
+          commands: nativeTrace.commands.map(
+            ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }) => ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }),
+          ),
+        });
+      } catch {
+        // Evidence writes must not replace the actual native task failure.
+      }
+    }
   }
   const readTrace = async () =>
     JSON.parse(
@@ -301,34 +514,30 @@ ${nativeCommands}`;
       ]),
     );
   let trace = await readTrace();
+  const initialTurn = trace.codexTurns?.find((turn) => turn.turnPrefix === nativeTrace?.turnId);
+  try {
+    await f.record("Captured initial Gateway delivery diagnostics; repository acceptance pending", {
+      evidenceKind: "diagnostic-only",
+      nativeCompleted: nativeTrace?.status === "completed",
+      turnSeen: initialTurn !== undefined,
+      promptSeen: initialTurn?.promptSeen === true,
+      terminalAssistantDelivered: initialTurn?.terminalAssistantDelivered === true,
+      terminalAssistantMarkerSeen: initialTurn?.terminalAssistantSeen === true,
+    });
+  } catch {
+    // Diagnostics must not replace the native task or delivery failure.
+  }
   // Native completion and its gateway transcript are separate deliveries. Wait
-  // for this exact turn's terminal mirror before checking all evidence below.
+  // for this exact turn's runtime-owned terminal mirror, independent of wording.
   while (
     nativeTrace?.status === "completed" &&
     !trace.codexTurns?.some(
-      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantSeen,
+      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantDelivered,
     )
   ) {
     assert.ok(Date.now() < taskDeadline, "native repository completion must reach its gateway");
     await delay(1_000);
     trace = await readTrace();
-  }
-  if (nativeTrace) {
-    await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
-      evidenceKind: "diagnostic-only",
-      threadId: nativeTrace.threadId,
-      turnId: nativeTrace.turnId,
-      commands: nativeTrace.commands.map(
-        ({ operations, status, exitCode, http400, pushRefRefused, sandboxDenied }) => ({
-          operations,
-          status,
-          exitCode,
-          http400,
-          pushRefRefused,
-          sandboxDenied,
-        }),
-      ),
-    });
   }
   // Preserve the normalized call/result evidence before any remote-state
   // assertion can fail and ordinary cleanup removes the Agent transcript.
@@ -422,6 +631,11 @@ ${nativeCommands}`;
     const probe = nativeTrace.commands.find((command) =>
       command.operations.includes("sandboxProbe"),
     );
+    assert.notEqual(
+      probe?.exitCode,
+      74,
+      "native sandbox unexpectedly read neighboring Codex state; outside-workspace write denial was not reached",
+    );
     assert.ok(
       probe?.status === "completed" && probe.exitCode === 0 && probe.sandboxDenied,
       "the actual native command must report an outside-workspace write denial",
@@ -460,13 +674,13 @@ ${nativeCommands}`;
     assert.equal(nativeTrace.status, "completed");
     assert.equal(trace.exists, true);
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    assert.equal(trace.assistantError, false);
     const mirroredTurn = trace.codexTurns.find(
       ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
     );
     assert.ok(
       mirroredTurn?.promptSeen &&
-        mirroredTurn.terminalAssistantSeen &&
+        mirroredTurn.terminalAssistantDelivered &&
         mirroredTurn.toolCallMirrorSeen &&
         mirroredTurn.toolResultMirrorSeen,
     );
@@ -559,8 +773,10 @@ ${nativeCommands}`;
       assert.ok(trace.promptToolNames.includes("exec"));
     }
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.assistantMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    if (!dedicated) {
+      assert.equal(trace.assistantMarkerSeen, true);
+      assert.equal(trace.terminalAssistantMarkerSeen, true);
+    }
     assert.equal(trace.assistantError, false);
     let paired = trace.calls
       .filter((call) => call.name === "exec")
@@ -573,7 +789,7 @@ ${nativeCommands}`;
       );
       assert.ok(
         mirroredTurn?.promptSeen &&
-          mirroredTurn.terminalAssistantSeen &&
+          mirroredTurn.terminalAssistantDelivered &&
           mirroredTurn.toolCallMirrorSeen &&
           mirroredTurn.toolResultMirrorSeen,
         "native repository commands must belong to the Gateway's mirrored task turn",

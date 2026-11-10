@@ -40,17 +40,15 @@ The filesystem must support SQLite locking, durable `fsync`, and colocated
 database and WAL/SHM files. The Driver checks claim configuration, not filesystem
 guarantees. See [SQLite’s requirements](https://sqlite.org/useovernet.html).
 
-Do not use NFS or SMB/CIFS for gateway databases:
-[SQLite WAL does not support network filesystems](https://sqlite.org/wal.html).
-A network-attached cloud block disk is different: the node mounts its own
-filesystem on that disk.
+Never use NFS or SMB/CIFS for Gateway databases.
+[SQLite WAL requires a local filesystem](https://sqlite.org/wal.html).
+With network-attached block storage, the node mounts its own filesystem.
 
-`ReadWriteOnce` (RWO) means read-write access from one **node**, not one Pod;
-[multiple Pods on that node may still mount it](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes).
-It does not establish SQLite compatibility or single-gateway access. Normal
-gateway replacement uses one replica with `Recreate`; node partitions and
-forced replacements still require operator fencing before permitting another
-writer.
+`ReadWriteOnce` allows one writer **node**.
+[Multiple Pods on that node can mount the claim](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes).
+RWO guarantees neither SQLite compatibility nor exclusive Gateway access.
+Replacement uses one replica with `Recreate`. After a node partition or forced
+replacement, fence the old writer before allowing another.
 
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
@@ -82,25 +80,26 @@ databases and their WAL/SHM siblings:
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
 Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
-The retained database requires the client store’s migration receipt; both persist.
 
-Embedded Gateways mount the claim's `workspace` subpath at
-`/home/node/.openclaw/workspace`, the default workspace under the configured
-`OPENCLAW_STATE_DIR`, retaining the workspace files attested by gateway
-SQLite so a continued turn after Pod replacement does not fail with
-`WorkspaceVanishedError`. Native workspace path overrides are outside this
-persistence contract. In dedicated mode,
-`/home/node/workspace` is a logical Gateway workspace key served by the paired
-node; Gateway does not mount the Harness workspace.
+Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
+Restore both at their original configured paths with private ownership and
+permissions. For OpenClaw backup archives, `openclaw backup restore` validates
+and rebinds the receipt; raw copies must retain a valid binding. The client
+store holds local identities, not model provider credentials. After migration, a missing client store or mismatched
+receipt prevents Gateway startup.
 
-A nonroot init container prepares directories without credentials or extra privileges. The nested
-`agents/main/agent/codex-home` is overmounted from Pod-local `emptyDir` so
-Codex credentials remain ephemeral; the rest of the private runtime home is
-ephemeral.
-The init container creates a node-owned mode-`0700` subdirectory on the
-Pod-local temporary `emptyDir` and mounts it at `/tmp`, preserving private
-temp-workspace ancestry for Gateway and Harness processes; the fsGroup-writable
-volume root is never their runtime temp root.
+Embedded Gateways mount `workspace` at `/home/node/.openclaw/workspace` under
+the configured `OPENCLAW_STATE_DIR`. This preserves the files Gateway SQLite
+attests and prevents `WorkspaceVanishedError` when a turn continues after Pod
+replacement. This covers only the default workspace. In dedicated mode, the
+paired node serves the logical workspace key `/home/node/workspace`. The
+Gateway does not mount the Harness workspace.
+
+A nonroot init container prepares directories without credentials or extra
+privileges. Pod-local `emptyDir` covers `agents/main/agent/codex-home`,
+keeping Codex credentials ephemeral. The remaining private home is ephemeral. Gateway and Harness mount a node-owned `0700` subdirectory of
+their Pod-local `emptyDir` at `/tmp` to keep temporary workspace ancestors
+private despite the fsGroup-writable volume root.
 
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.

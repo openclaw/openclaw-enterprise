@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-10-31
-last_updated_session: bughunt-1031m
+updated: 2026-11-09
+last_updated_session: authoring-run/f324ad31-8ab0-4bf3-aaa2-0df9af461d0a
 ---
 
 # CLI Agent metadata browsing flow
@@ -81,10 +81,16 @@ status. A version without a deployment work record has `null` for both.
 `internal/occcli/cli.go:describeAgentRevisions` reads the Agent to determine its
 selected version, clones each summary, and sets its `active` marker. It keeps
 the listed status and sends no read for each version. A failed Agent read
-ends the command. When a page is full,
-a notice prints the next command with the resolved `--namespace`, the retained
-`--limit` when supplied, and the new `--cursor`. Explicit scope keeps that
-command on the selected Namespace even when `OCC_NAMESPACE` is unset or differs.
+ends the command. When the API returns a next cursor, the notice tells you how
+to continue. If you passed `--url`, `--service-key-file`, `--ca-bundle`,
+`--timeout-seconds`, or `--output`, repeat the same invocation with the new
+`--cursor` so the explicit settings carry over. Otherwise, the notice prints
+the complete continuation command with the resolved `--namespace`, the retained
+`--limit` when supplied, and the new `--cursor`. The explicit Namespace keeps
+that command on the selected Namespace even when `OCC_NAMESPACE` is unset or
+differs. If writing either continuation notice fails, the command returns an
+error after the already printed page. A final page needs no notice and can
+succeed without writable stderr.
 
 Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and
@@ -154,6 +160,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 18:25: Return revision continuation delivery errors. (authoring-run/f324ad31-8ab0-4bf3-aaa2-0df9af461d0a - 2b8973f478478cc9f426daeb4e9de932207544cf)
 
 - 2026-11-01: The version history table shows `superseded` or `stopped` for work a newer version or a Stop ended; structured output keeps the listed status. (ux-superseded-1101)
 
