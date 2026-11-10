@@ -6534,7 +6534,8 @@ test("reject ambiguous or non-failure startup records", async (t) => {
       return true;
     });
   }
-  // The startup stage must survive the actual streaming caller and CI projection.
+  // The startup stage must survive its Kubernetes streaming caller and CI projection.
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
   process.env.OCC_FIXTURE_STARTUP_CASE = "controller-import";
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
 });
