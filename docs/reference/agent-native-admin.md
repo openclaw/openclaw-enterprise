@@ -19,7 +19,7 @@ Repeating **Open Agent UI** reuses a valid handle with the same authority and
 expiry, preserving WebSockets. Otherwise, redemption issues a new handle.
 A version-change refusal on an [eligible HTML navigation](#authorization-and-availability)
 shows HTTP 403 **Agent version changed** with a Console return link. It never
-redirects or transfers access. Other refusals keep their normal handling.
+redirects or transfers access.
 
 ## Who can open it
 
