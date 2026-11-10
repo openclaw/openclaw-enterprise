@@ -1474,6 +1474,140 @@ test("selected released v5 periodic read crosses admission expiry without grant 
   assert.deepEqual(f.errors(), []);
 });
 
+test("online Git withdrawal verifies the original launch and its durable fence without a detach", async (t) => {
+  const { f, store, revision, entry, client, sandbox, activity, lookup } = await heldReleased(t);
+  // The warm fixture supplies a verified online fence to the real Runtime caller.
+  const row = store.rows.get(revision.id);
+  assert.ok(row?.observed);
+  assert.ok(row.retainedLaunchHash);
+  assert.ok(entry.continuity);
+  const owner = entry.continuity;
+  const fence = row.fence;
+  const saved: OpenShellGitExpiry = {
+    observed: structuredClone(row.observed),
+    retainedLaunchHash: row.retainedLaunchHash,
+    onlineWithdrawalFence: fence,
+  };
+  const original = structuredClone(sandbox);
+  const effects = { intents: 0, detaches: 0, confirmations: 0 };
+  const writes = {
+    provider: f.calls.providerWrites,
+    rotate: f.calls.rotate,
+    updates: activity.updates,
+    releases: activity.releases,
+  };
+  Object.assign(store, {
+    async expire() {
+      return structuredClone(saved);
+    },
+    async beginDetach() {
+      effects.intents++;
+      return false;
+    },
+    async confirmDetached() {
+      effects.confirmations++;
+      return false;
+    },
+  } satisfies Pick<OpenShellGitRouteStore, "expire" | "beginDetach" | "confirmDetached">);
+  client.detachSandboxProvider = async () => {
+    effects.detaches++;
+    assert.fail("online withdrawal may not detach");
+  };
+  row.blocked = "withdrawn";
+  const observe = (continuity = owner) =>
+    f.runtime.retireExpiredRepositoryAccess(
+      revision,
+      client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      continuity,
+      t.signal,
+    );
+  assert.equal(await observe(), "withdrawn");
+  const entered = deferred();
+  const resume = deferred();
+  const getProviderStatus = client.getSandboxProviderStatus.bind(client);
+  const heldObservation = t.mock.method(
+    client,
+    "getSandboxProviderStatus",
+    async (...args: Parameters<typeof getProviderStatus>) => {
+      const status = await getProviderStatus(...args);
+      if (args[2] === owner.model) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return status;
+    },
+  );
+  const observing = observe();
+  try {
+    await Promise.race([
+      entered.promise,
+      observing.then(() => assert.fail("withdrawal completed before the model observation")),
+    ]);
+    row.fence++;
+    resume.resolve();
+    assert.equal(await observing, "pending", "a moved fence cannot settle this withdrawal");
+  } finally {
+    resume.resolve();
+    await observing.catch(() => undefined);
+    heldObservation.mock.restore();
+    row.fence = fence;
+  }
+  let observedOffsetMs = -45_000;
+  let evaluatedOffsetMs = 0;
+  const stale = t.mock.method(
+    client,
+    "getSandboxProviderStatus",
+    async (...args: Parameters<typeof getProviderStatus>) => {
+      const status = await getProviderStatus(...args);
+      const now = Date.now();
+      return args[2] === owner.model
+        ? {
+            ...status,
+            state: "PROVIDER_READINESS_STATE_WITHHELD" as const,
+            reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" as const,
+            observedTime: new Date(now + observedOffsetMs).toISOString(),
+            evaluatedTime: new Date(now + evaluatedOffsetMs).toISOString(),
+          }
+        : status;
+    },
+  );
+  try {
+    assert.equal(await observe(), "pending", "stale evidence needs another observation");
+    assert.equal(
+      await observe({ ...owner, workload: async () => "replacement-pods" }),
+      "retire-runtime",
+      "stale evidence cannot mask a replaced workload",
+    );
+    evaluatedOffsetMs = -45_000;
+    assert.equal(await observe(), "pending", "stale observation and evaluation need a fresh read");
+    observedOffsetMs = 0;
+    evaluatedOffsetMs = 5_000;
+    assert.equal(await observe(), "withdrawn", "the existing clock skew allowance still applies");
+    evaluatedOffsetMs = 45_000;
+    assert.equal(
+      await observe(),
+      "retire-runtime",
+      "evaluation beyond the clock skew allowance is unsafe",
+    );
+  } finally {
+    stale.mock.restore();
+  }
+  assert.equal(await lookup(), undefined);
+  assert.deepEqual(sandbox, original);
+  assert.deepEqual(effects, { intents: 0, detaches: 0, confirmations: 0 });
+  assert.deepEqual(
+    {
+      provider: f.calls.providerWrites,
+      rotate: f.calls.rotate,
+      updates: activity.updates,
+      releases: activity.releases,
+    },
+    writes,
+  );
+});
+
 test("finite v5 Git expiry refuses resolver substitution and never replays an uncertain detach", async (t) => {
   async function exercise(
     t: TestContext,
