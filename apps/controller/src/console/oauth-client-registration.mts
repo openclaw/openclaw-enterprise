@@ -1,5 +1,6 @@
 import type {
   ConnectionTemplate,
+  OAuthConnectionTemplateVersion,
   McpAuthorizationMetadata,
   Namespace,
   OAuthClient,
@@ -15,6 +16,13 @@ const methods: readonly OAuthClient["tokenEndpointAuthMethod"][] = [
   "client_secret_post",
   "none",
 ];
+
+export type OAuthTemplate = ConnectionTemplate & {
+  readonly current: OAuthConnectionTemplateVersion;
+};
+export function isOAuthTemplate(template: ConnectionTemplate): template is OAuthTemplate {
+  return template.current.mode === "manual" || template.current.mode === "mcp_discovery";
+}
 
 export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
   return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
@@ -56,10 +64,10 @@ export function openOAuthClientRegistration(
   options: {
     parent: HTMLElement;
     namespaces: readonly Namespace[];
-    templates: readonly ConnectionTemplate[];
-    selected?: ConnectionTemplate;
+    templates: readonly OAuthTemplate[];
+    selected?: OAuthTemplate;
     redirectUri?: string | undefined;
-    createTemplate?: (onSaved: (template: ConnectionTemplate) => void) => void;
+    createTemplate?: (onSaved: (template: OAuthTemplate) => void) => void;
     onClose: (created?: OAuthClient) => void;
   },
 ) {
@@ -154,7 +162,7 @@ export function openOAuthClientRegistration(
   );
   const cancel = button("Cancel", () => dialog.close());
   const register = button("Register OAuth client", () => void submit(), { tone: "primary" });
-  let selected: ConnectionTemplate | undefined;
+  let selected: OAuthTemplate | undefined;
   let pending = false;
   let uncertain = false;
   let created: OAuthClient | undefined;
@@ -178,7 +186,7 @@ export function openOAuthClientRegistration(
     }
   }
   clientType.addEventListener("change", () => showMethods());
-  function select(template: ConnectionTemplate | undefined) {
+  function select(template: OAuthTemplate | undefined) {
     const sameTemplate =
       selected?.id === template?.id && selected?.current.version === template?.current.version;
     const previousMethod = sameTemplate ? method.value : "";

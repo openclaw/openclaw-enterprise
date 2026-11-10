@@ -97,8 +97,94 @@ export function createConnectionTemplateFixture(
           },
         ]
       : [];
+  const providerId = "mpr_00000000-0000-4000-8000-000000000001";
+  const staticId = "ctp_00000000-0000-4000-8000-000000000009";
+  const baseUrl = "https://inference.example.com/v1";
+  const protocol = "openai-responses";
+  const models = [{ id: "qwen3-8b" }, { id: "qwen3-32b" }];
+  const providers: Record<string, unknown>[] =
+    mode === "inference" || mode === "inference-empty-keys"
+      ? [
+          {
+            id: providerId,
+            displayName: "Internal vLLM",
+            baseUrl,
+            protocol,
+            models,
+            defaultModelId: models[0]!.id,
+            connectionTemplateId: staticId,
+          },
+        ]
+      : [];
+  if (providers.length) {
+    oauthTemplates.push({
+      id: staticId,
+      displayName: "Internal inference key",
+      createdAt,
+      current: {
+        templateId: staticId,
+        mode: "static_bearer",
+        version: 1,
+        createdAt,
+        baseUrl,
+        protocol,
+        destinations: [
+          { method: "POST", host: "inference.example.com", port: 443, path: "/v1/responses" },
+        ],
+      },
+    });
+  }
   const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
+    if (
+      method === "GET" &&
+      (path === "/model-providers" || path === "/namespaces/" + namespaceId + "/model-providers")
+    ) {
+      return response(providers);
+    }
+    if (method === "GET" && path === "/namespaces/" + namespaceId + "/connection-templates") {
+      return response(oauthTemplates);
+    }
+    if (
+      providers.length &&
+      method === "GET" &&
+      path === "/namespaces/" + namespaceId + "/credential-sources"
+    ) {
+      const id = "crs_00000000-0000-4000-8000-000000000009";
+      return response(
+        mode === "inference-empty-keys"
+          ? []
+          : [
+              {
+                id,
+                name: "Research inference key",
+                state: "ready",
+                namespaceId,
+                type: "openai",
+                ref: { kind: "credential_source", id, namespaceId },
+                staticKeyGrant: {
+                  connectionTemplateId: staticId,
+                  connectionTemplateVersion: 1,
+                  baseUrl,
+                  protocol,
+                },
+              },
+            ],
+      );
+    }
+    if (isRecord(body) && path === "/model-providers" && method === "POST") {
+      const saved = { ...body, id: nextId("mpr") };
+      providers.push(saved);
+      return response(saved, 201);
+    }
+    if (isRecord(body) && path.startsWith("/model-providers/") && method === "PUT") {
+      const existing = providers.find((p) => path === "/model-providers/" + String(p.id));
+      if (!existing) {
+        return error(404, "NOT_FOUND", "Provider missing.");
+      }
+      Object.assign(existing, body);
+      return response(existing);
+    }
     if (path === "/connection-templates" && method === "GET") {
       return response(oauthTemplates);
     }

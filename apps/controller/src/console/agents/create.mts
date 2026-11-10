@@ -16,6 +16,7 @@ import type {
   SecretMetadata,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
+import { namedProviderChoices } from "./named-provider-choices.mjs";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
@@ -1056,8 +1057,15 @@ function renderAgentForm(
     element("option", { value: "anthropic" }, "Anthropic"),
   );
   nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
+  const namedProviders = namedProviderChoices(context, nativeProvider);
+  const selectedProvider = namedProviders.selected;
+  const providerFamily = () => (nativeProvider.value === "anthropic" ? "anthropic" : "openai");
   const modelChoices = (provider = nativeProvider.value) =>
-    provider === "anthropic" ? MODEL_CHOICES.anthropic : MODEL_CHOICES.openai;
+    provider === "anthropic"
+      ? MODEL_CHOICES.anthropic
+      : provider === "openai"
+        ? MODEL_CHOICES.openai
+        : (selectedProvider()?.models.map((model) => model.id) ?? []);
   const useModelChoices = !binding && typeof initialModel !== "string";
   const model = element("input", {
     id: useModelChoices ? "agent-model-manual" : "agent-model",
@@ -1328,6 +1336,7 @@ function renderAgentForm(
     field("Provider", nativeProvider),
     field("Harness", harness),
     harnessHint,
+    namedProviders.status,
     nativeHarnessWarning,
     nativeWorkersUnavailable,
     openclawModeUnavailable,
@@ -1346,6 +1355,7 @@ function renderAgentForm(
     ...(!binding
       ? [
           modelCredentialField,
+          namedProviders.section,
           oauthLogin.section,
           passwordAuth ? transientCredentialField : null,
           pluginDiscoveryTokenDetails,
@@ -1374,7 +1384,7 @@ function renderAgentForm(
   }
   const currentTemplate = () =>
     JSON.stringify(
-      configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
+      configurationTemplate(harness.value, providerFamily(), model.value.trim()),
       null,
       2,
     );
@@ -1428,7 +1438,7 @@ function renderAgentForm(
     if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
       return true;
     }
-    const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+    const providerId = harness.value === "codex" ? "codex" : providerFamily();
     const catalog = objectFields(
       objectFields(objectFields(values.models).providers)[providerId],
     ).models;
@@ -1449,7 +1459,7 @@ function renderAgentForm(
       return;
     }
     retainPendingModel(values);
-    const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
+    const next = configurationTemplate(harness.value, providerFamily(), model.value.trim());
     const agents = objectFields(values.agents);
     const defaults = objectFields(agents.defaults);
     const models = objectFields(values.models);
@@ -1585,7 +1595,7 @@ function renderAgentForm(
       delete providers.codex;
       Object.assign(providers, next.models?.providers);
     } else if (selectedModel) {
-      const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+      const providerId = harness.value === "codex" ? "codex" : providerFamily();
       const templateProvider = next.models?.providers[providerId];
       const provider = providers[providerId] ?? templateProvider;
       const existingProvider = objectFields(provider);
@@ -1672,7 +1682,11 @@ function renderAgentForm(
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
     const targetHarness =
-      nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+      nativeProvider.value === "anthropic" ||
+      selectedProvider()?.protocol === "openai-completions" ||
+      binding?.method === "runtime"
+        ? "openclaw"
+        : "codex";
     const values = readModelConfiguration(targetHarness);
     if (values === "invalid-allow") {
       // The native select changed before preflight; retain the last applied provider.
@@ -1681,12 +1695,13 @@ function renderAgentForm(
     }
     appliedProvider = nativeProvider.value;
     harness.value = targetHarness;
-    mode.value = harness.value === "codex" ? "dedicated" : "embedded";
+    mode.value = harness.value === "codex" || selectedProvider() ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
+    void namedProviders.loadCredentials();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true, "", values);
+      resetModelChoices(true, selectedProvider()?.defaultModelId ?? "", values);
     } else {
       updateModelConfiguration(true, values);
     }
@@ -1709,7 +1724,8 @@ function renderAgentForm(
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
-    mode.value = harness.value === "codex" ? "dedicated" : defaultOpenClawMode();
+    mode.value =
+      harness.value === "codex" || selectedProvider() ? "dedicated" : defaultOpenClawMode();
     modeDefaulted = true;
     // Service account tokens cannot authenticate OpenClaw; require a new API key.
     if (
@@ -1764,7 +1780,8 @@ function renderAgentForm(
         !savedSecret &&
         !savedCredentialSource &&
         !credentialRegistration &&
-        !hasBoundModelCredential
+        !hasBoundModelCredential &&
+        !namedProviders.named()
       ) {
         const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
         if (
@@ -1783,7 +1800,9 @@ function renderAgentForm(
         }
       }
       model.value = ref.slice(ref.indexOf("/") + 1);
-      if (useModelChoices) {
+      if (namedProviders.named()) {
+        modelChoice.value = model.value;
+      } else if (useModelChoices) {
         manualModel = true;
         modelChoice.value = "";
       }
@@ -2438,12 +2457,19 @@ function renderAgentForm(
   form.addEventListener("change", () => {
     edited = true;
   });
+  const restoredProvider = draft.inputs?.nativeProvider;
+  if (restoredProvider && restoredProvider !== "openai" && restoredProvider !== "anthropic") {
+    nativeProvider.append(
+      element("option", { value: restoredProvider }, "Loading saved provider…"),
+    );
+  }
   const draftInputs = {
     name,
     mode,
     harness,
     nativeProvider,
     authMethod,
+    inferenceCredential: namedProviders.credential,
     model,
     modelChoice,
     configuration,
@@ -2709,7 +2735,7 @@ function renderAgentForm(
   function modelSourceType() {
     const candidates = (credentialSourceTypes ?? []).filter(
       (type) =>
-        type.harnessAuth?.modelProvider === nativeProvider.value &&
+        type.harnessAuth?.modelProvider === providerFamily() &&
         type.harnessAuth.loginMode === (binding?.method ?? authMethod.value) &&
         !type.config.some((field) => field.required) &&
         type.secrets.length === 1 &&
@@ -2867,6 +2893,7 @@ function renderAgentForm(
         expectedStatus: 204,
         body: {
           configuration: { kind: "agent", values },
+          ...(selectedProvider() ? { modelProviderId: selectedProvider()!.id } : {}),
           executionMode: mode.value,
           ...(harnessAuth ? { harnessAuth } : {}),
         },
@@ -2897,9 +2924,11 @@ function renderAgentForm(
   // A member cannot provision, so its form registers the model source and saves a draft that the
   // member deploys (RFC-0026); an administrator's form provisions.
   const credentialSourceRefused = () =>
-    credentialSourceTypes !== undefined &&
-    (binding?.method ?? authMethod.value) !== "credential_source" &&
-    (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType());
+    (namedProviders.named() &&
+      (!selectedProvider() || !modelSourceType() || mode.value !== "dedicated")) ||
+    (credentialSourceTypes !== undefined &&
+      (binding?.method ?? authMethod.value) !== "credential_source" &&
+      (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType()));
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
@@ -2955,6 +2984,7 @@ function renderAgentForm(
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
+    const named = namedProviders.named();
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (usesOAuth && !binding) {
       modelCredentialSource = oauthLogin.source;
@@ -2965,7 +2995,10 @@ function renderAgentForm(
     // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
     // natively disabled. The Codex harness lock is applied below, once its hint is set.
     const modeNativelyDisabled =
-      mode.disabled || nativeProvider.value === "anthropic" || binding?.method === "runtime";
+      mode.disabled ||
+      named ||
+      nativeProvider.value === "anthropic" ||
+      binding?.method === "runtime";
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
     const harnessChoiceLocked =
@@ -3122,8 +3155,9 @@ function renderAgentForm(
     };
     nativeHarnessWarning.hidden =
       harness.value !== "openclaw" || mode.value !== "dedicated" || nativeRefused;
-    codexOption.hidden = nativeProvider.value === "anthropic";
-    codexOption.disabled = nativeProvider.value === "anthropic";
+    codexOption.hidden =
+      nativeProvider.value === "anthropic" || selectedProvider()?.protocol === "openai-completions";
+    codexOption.disabled = codexOption.hidden;
     harnessHint.textContent =
       harnessChoiceLocked && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
@@ -3136,18 +3170,24 @@ function renderAgentForm(
     }
     nativeProvider.disabled ||= providerLocked;
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
-    apiKeyOption.textContent =
-      nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
-    patOption.hidden = harness.value !== "codex";
-    patOption.disabled = harness.value !== "codex";
-    oauthOption.hidden = harness.value !== "codex";
-    oauthOption.disabled = harness.value !== "codex";
+    apiKeyOption.textContent = named
+      ? "Static API key (Bearer)"
+      : nativeProvider.value === "anthropic"
+        ? "Anthropic API key"
+        : "OpenAI API key";
+    patOption.hidden = named || harness.value !== "codex";
+    patOption.disabled = named || harness.value !== "codex";
+    oauthOption.hidden = named || harness.value !== "codex";
+    oauthOption.disabled = named || harness.value !== "codex";
     credentialLabel.textContent = passwordAuth
       ? usesPat
         ? "Service account token"
         : "API key"
       : "Token for plugin discovery";
-    modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
+    namedProviders.section.hidden = !named;
+    namedProviders.credential.disabled = !named || planLocked || saved;
+    namedProviders.credential.required = named;
+    modelCredentialField.hidden = Boolean(named || binding || passwordAuth || usesOAuth);
     transientCredentialField.hidden =
       usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
     if (!ownsSecretRecovery()) {
@@ -3166,9 +3206,10 @@ function renderAgentForm(
     modelCredentialField.querySelector("label")!.textContent = usesPat
       ? "Service account token Secret"
       : "API key Secret";
-    modelCredentialPicker.setRequired(!binding && !passwordAuth && !usesOAuth);
+    modelCredentialPicker.setRequired(!named && !binding && !passwordAuth && !usesOAuth);
     modelCredentialPicker.setDisabled(
-      planLocked ||
+      named ||
+        planLocked ||
         Boolean(
           binding ||
           passwordAuth ||
@@ -3214,12 +3255,13 @@ function renderAgentForm(
       credentialHelp.textContent = credentialSourceRefused()
         ? "This installation requires a supported model Credential Source and Dedicated provisioning. Choose an authentication method offered by its Credential Gateway."
         : "The selected Secret is registered with this installation's Credential Gateway before deployment. The Harness receives a placeholder instead of the real model key.";
-      credentialHelp.hidden = false;
+      credentialHelp.hidden = named;
       if (credentialHelp.parentElement !== authSection) {
         authSection.append(credentialHelp);
       }
     }
-    const sourceType = credentialSourceTypes !== undefined && !usesOAuth ? modelSourceType() : null;
+    const sourceType =
+      credentialSourceTypes !== undefined && !usesOAuth && !named ? modelSourceType() : null;
     if (sourceType !== renderedSourceType) {
       renderedSourceType = sourceType;
       sourceConfigurationFields.replaceChildren();
@@ -3260,6 +3302,13 @@ function renderAgentForm(
     // Shown only while it can act, so no unavailable action sits in the refusal.
     changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
+      choiceField.querySelector("label")!.textContent = named
+        ? "Models offered by this provider"
+        : "Model";
+      choiceField.querySelector(".hint")!.textContent = named
+        ? "Choose a model offered by this provider."
+        : "Choose a model your credential can access, or enter another model ID manually.";
+      toggleModel.hidden = named;
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
       model.required = manualModel;
@@ -3566,6 +3615,19 @@ function renderAgentForm(
       outcome.scrollIntoView({ block: "nearest" });
     }
   }
+  if (useModelChoices && !passwordAuth) {
+    void namedProviders.load(draft.inputs?.inferenceCredential, () => {
+      if (selectedProvider()) {
+        manualModel = false;
+        modelChoice.replaceChildren(
+          element("option", { value: "" }, "Choose a model"),
+          ...modelChoices().map((id) => element("option", { value: id }, id)),
+        );
+        modelChoice.value = model.value;
+      }
+      updateControls();
+    });
+  }
   void loadInstallationCapabilities();
   async function submitProvisioningAttempt(attempt: ProvisioningAttempt, retryUrl?: string) {
     // A retry of a job known to have failed. Read before the request: an admitted first
@@ -3753,6 +3815,9 @@ function renderAgentForm(
   function plannedHarnessAuth(
     usesOAuth: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+    if (selectedProvider() && namedProviders.credential.value) {
+      return { method: "credential_source", sourceId: namedProviders.credential.value };
+    }
     if (usesOAuth) {
       return undefined;
     }
@@ -3826,11 +3891,11 @@ function renderAgentForm(
     const selected = configuredModelSelection(values);
     const primaryModel = modelPrimary(selected);
     const fallbackPrefixes =
-      harness.value === "codex" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
+      harness.value === "codex" ? ["openai/", "codex/"] : [`${providerFamily()}/`];
     // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
     const primaryPrefixes = hasBoundModelCredential
       ? fallbackPrefixes
-      : [harness.value === "codex" ? "codex/" : `${nativeProvider.value}/`];
+      : [harness.value === "codex" ? "codex/" : `${providerFamily()}/`];
     if (
       (!binding || hasBoundModelCredential) &&
       !primaryPrefixes.some((prefix) => primaryModel === `${prefix}${model.value.trim()}`)
@@ -3876,6 +3941,7 @@ function renderAgentForm(
     const repositoryBindings = repositories.bindings();
     const body = {
       name: name.value.trim(),
+      ...(selectedProvider() ? { modelProviderId: selectedProvider()!.id } : {}),
       executionMode: mode.value,
       initialWorkspaceFiles: Object.fromEntries(
         workspaceInputs.map(([filename, input]) => [filename, input.value]),
@@ -3888,6 +3954,7 @@ function renderAgentForm(
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (
+      !namedProviders.named() &&
       !binding &&
       (!passwordAuth || usesOAuth) &&
       modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
@@ -3932,6 +3999,7 @@ function renderAgentForm(
     // Agent refuses it before either exists (findings 2395, 2406).
     const plannedAuth = plannedHarnessAuth(usesOAuth);
     const savesFirst =
+      !namedProviders.named() &&
       !usesOAuth &&
       ((passwordAuth && !savedSecret) ||
         (credentialSourceTypes !== undefined && !savedCredentialSource));
@@ -3946,6 +4014,7 @@ function renderAgentForm(
           expectedStatus: 204,
           body: {
             name: body.name,
+            ...(body.modelProviderId ? { modelProviderId: body.modelProviderId } : {}),
             // The bindings it saves with the values, so a channel token reference without one
             // is refused before anything is saved (finding 2319).
             configuration: { kind: "agent", values, secretBindings: bindings },
@@ -4027,8 +4096,10 @@ function renderAgentForm(
       }
       const selectedCredentialSource =
         passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
-      let harnessAuth = binding ?? selectedHarnessAuth(authMethod.value, selectedCredentialSource);
-      if (credentialSourceTypes !== undefined && !usesOAuth) {
+      let harnessAuth: HarnessAuthBinding = namedProviders.named()
+        ? { method: "credential_source", sourceId: namedProviders.credential.value }
+        : (binding ?? selectedHarnessAuth(authMethod.value, selectedCredentialSource));
+      if (!namedProviders.named() && credentialSourceTypes !== undefined && !usesOAuth) {
         if (!savedCredentialSource) {
           const type = modelSourceType();
           const secret = "source" in harnessAuth ? harnessAuth.source : undefined;

@@ -12,6 +12,7 @@ import type {
 } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { renderModelProviders } from "./model-providers.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -2392,6 +2393,7 @@ async function loadPage({
       shell.view.append(settingsView(session.user));
       if (installationAdmin) {
         shell.view.append(
+          renderModelProviders({ request: viewRequest, isCurrent: viewIsCurrent }),
           renderInstallationConfigurations({
             request,
             isCurrent: viewIsCurrent,

@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: stevenlee-oai
 ---
 
@@ -41,3 +41,5 @@ OpenClaw Control Plane resolves the provider reference into the existing [Harnes
 For a private endpoint, Compute also configures the network access the trusted sender needs, within Installation policy. The sender checks the actual destination and operation before adding the key. Editing the provider or template cannot authorize an existing key for a new destination or operation. A running revision keeps its original settings.
 
 Verify the proposal by deploying two Agents with the same provider. Each should complete a turn in which the private model requests a tool, the Harness executes it, and the model responds to the result. Deploying with a key authorized for a different destination should fail before the endpoint receives the key.
+
+The [implementation plan](../../plans/0034-reusable-model-providers.md) tracks delivery and verification.

@@ -59,7 +59,6 @@ import {
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
   ExecutionAdmission,
-  ModelProvider,
   StaticEgressSource,
   ProxyPlan,
   EgressBinding,
@@ -1877,7 +1876,9 @@ function resolveNamedModelProvider(
   harness: RevisionHarnessDescriptor,
   values: OpenClawConfigurationDocument,
 ) {
-  if (!provider) return undefined;
+  if (!provider) {
+    return undefined;
+  }
   if (!compute.resolveModelProvider) {
     throw new ConfigurationHarnessError(
       "The selected Compute Driver does not support named Model Providers.",
@@ -18002,10 +18003,13 @@ export class OpenClawController {
     state: PlatformReadView,
     id: string | undefined,
   ): Promise<Readonly<ModelProvider> | undefined> {
-    if (id === undefined) return undefined;
+    if (id === undefined) {
+      return undefined;
+    }
     const provider = await state.modelProviders.findModelProvider(id);
-    if (!provider)
+    if (!provider) {
       throw new ResourceStateConflictError("The selected Model Provider is unavailable.");
+    }
     return provider;
   }
 
