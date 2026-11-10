@@ -494,6 +494,8 @@ test("first-Agent deployment failure advice follows the reported cause", async (
           }
           const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
           let data;
+          let status = 200;
+          const meta = { requestId: `req_${suffix}` };
           switch (`${request.method} ${request.url}`) {
             case "GET /installation":
               data = { id: installationId };
@@ -514,9 +516,11 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = secret;
               break;
             case `POST ${base}/credential-sources`:
+              status = 201;
               data = { ...body, id: `cs_${suffix}`, state: "ready" };
               break;
             case `POST ${base}/configurations`:
+              status = 201;
               configuration = {
                 ...body,
                 id: configurationId,
@@ -529,6 +533,7 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = configuration;
               break;
             case `POST ${base}/agents`:
+              status = 201;
               agent = {
                 ...body,
                 id: agentId,
@@ -536,7 +541,7 @@ test("first-Agent deployment failure advice follows the reported cause", async (
                 servicePrincipalId: "sp_agent",
                 backendId: null,
                 activeRevisionId: null,
-                desiredRuntimeState: "running",
+                desiredRuntimeState: "stopped",
               };
               data = agent;
               break;
@@ -544,9 +549,11 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               data = agent;
               break;
             case `POST ${base}/iam/roles`:
+              status = 201;
               data = { ...body, id: "role_test" };
               break;
             case `POST ${base}/iam/access-bindings`:
+              status = 201;
               data = { ...body, id: "binding_test" };
               break;
             case `GET ${agentPath}/runtime-credentials`:
@@ -557,8 +564,11 @@ test("first-Agent deployment failure advice follows the reported cause", async (
               break;
             case `GET ${agentPath}/revisions?limit=1`:
               data = revision ? [{ id: revision.id }] : [];
+              meta.nextCursor = null;
               break;
             case `POST ${agentPath}/deploy`: {
+              status = 202;
+              agent.desiredRuntimeState = "running";
               // Model the admitted snapshot from the helper's actual Configuration,
               // including the existing OpenShell workspace and permission settings.
               const values = withGatewaySecurityDefaults(
@@ -602,11 +612,13 @@ test("first-Agent deployment failure advice follows the reported cause", async (
             default:
               unexpected.push(`${request.method} ${request.url}`);
           }
-          response.writeHead(data === undefined ? 404 : 200, {
+          response.writeHead(data === undefined ? 404 : status, {
             "content-type": "application/json",
           });
           response.end(
-            JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }),
+            JSON.stringify(
+              data === undefined ? { error: { code: "NOT_FOUND" }, meta } : { data, meta },
+            ),
           );
         },
       );
