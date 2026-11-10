@@ -63,7 +63,10 @@ import {
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
-import { agentGrantRehearsal } from "../helpers/agent-grant-rehearsal.ts";
+import {
+  runAgentGrantRehearsal,
+  type AgentGrantRehearsal,
+} from "../helpers/agent-grant-rehearsal.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -514,7 +517,8 @@ function externalGitJourney(
   stopDuringRemoval = false,
   sourceBeforeStop?: "stopped" | "restore-during-bind",
 ) {
-  return async (t: TestContext) => {
+  const modelExecutable = scope === "reducible-installation" && !finiteRemoval ? codex : undefined;
+  const runJourney = async (t: TestContext, rehearsal?: AgentGrantRehearsal) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
     let transport: Awaited<ReturnType<typeof bindRepositoryGitTransport>>;
     let releaseReduction: (() => void) | undefined;
@@ -627,12 +631,10 @@ function externalGitJourney(
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
       broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
     const installationApiOrigin = broad?.gh.origin;
-    const conversation =
-      scope === "reducible-installation" && !finiteRemoval && codex
-        ? await standingGitConversation(t, codex)
-        : undefined;
+    const conversation = modelExecutable
+      ? await standingGitConversation(t, modelExecutable)
+      : undefined;
     let askModel: Awaited<ReturnType<NonNullable<typeof conversation>["launch"]>> | undefined;
-    const rehearsal = conversation && agentGrantRehearsal(t);
     let modelEnvironment: Record<string, string> | undefined;
     let modelCustody: ComputeRevisionContext | undefined;
     let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
@@ -2916,6 +2918,10 @@ function externalGitJourney(
       await f.stop();
     }
   };
+  return (t: TestContext) =>
+    modelExecutable
+      ? runAgentGrantRehearsal(t, (rehearsal) => runJourney(t, rehearsal))
+      : runJourney(t);
 }
 
 // Loopback transport proof: the counterpart, not an apply acknowledgment, owns the policy.

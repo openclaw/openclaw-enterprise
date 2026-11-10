@@ -15,6 +15,13 @@ type GitObject = {
   originRequests: number;
 };
 
+export type AgentGrantRehearsal = {
+  modelBefore(turn: ModelTurn): void;
+  gitFetched(observed: GitObject & { afterSha: string }): void;
+  gitRefused(observed: GitObject & { exitCode: number | null; afterPresent: boolean }): void;
+  modelAfter(turn: ModelTurn): void;
+};
+
 function assertFreshObject({ expectedSha, beforePresent }: GitObject) {
   assert.match(expectedSha, /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u, "origin commit SHA");
   assert.equal(beforePresent, false, "the workload already had the origin commit");
@@ -22,15 +29,19 @@ function assertFreshObject({ expectedSha, beforePresent }: GitObject) {
 
 // Adapters perform the real operations and own their resource cleanup via t.after.
 // Pass independent provider and workload observations, never a synthesized success flag.
-export function agentGrantRehearsal(t: Pick<TestContext, "diagnostic">) {
+export async function runAgentGrantRehearsal(
+  t: Pick<TestContext, "diagnostic">,
+  run: (rehearsal: AgentGrantRehearsal) => void | Promise<void>,
+) {
   let original: ModelTurn | undefined;
   let fetchedSha: string | undefined;
   let refused = false;
+  let continued = false;
   const record = (check: string, facts: object) =>
     t.diagnostic(JSON.stringify({ check, ...facts }));
 
-  return {
-    modelBefore(turn: ModelTurn) {
+  await run({
+    modelBefore(turn) {
       assert.equal(original, undefined, "initial turn already recorded");
       for (const id of [
         turn.agentId,
@@ -45,7 +56,7 @@ export function agentGrantRehearsal(t: Pick<TestContext, "diagnostic">) {
       record("model-before", { turnId: turn.turnId });
     },
 
-    gitFetched(observed: GitObject & { afterSha: string }) {
+    gitFetched(observed) {
       assert.ok(original && !fetchedSha, "fetch follows the initial model turn");
       assertFreshObject(observed);
       assert.equal(observed.afterSha, observed.expectedSha, "fetched commit differs from origin");
@@ -54,7 +65,7 @@ export function agentGrantRehearsal(t: Pick<TestContext, "diagnostic">) {
       record("git-fetched", { sha: fetchedSha, originRequests: observed.originRequests });
     },
 
-    gitRefused(observed: GitObject & { exitCode: number | null; afterPresent: boolean }) {
+    gitRefused(observed) {
       assert.ok(fetchedSha && !refused, "refusal follows the authorized fetch");
       assertFreshObject(observed);
       assert.notEqual(
@@ -69,14 +80,17 @@ export function agentGrantRehearsal(t: Pick<TestContext, "diagnostic">) {
       record("git-refused", { sha: observed.expectedSha, originRequests: observed.originRequests });
     },
 
-    modelAfter(turn: ModelTurn) {
+    modelAfter(turn) {
       assert.ok(original && refused, "continuity follows the withdrawal refusal");
+      assert.equal(continued, false, "continuity already recorded");
       const { turnId, ...identity } = turn;
       const { turnId: originalTurnId, ...originalIdentity } = original;
       assert.deepEqual(identity, originalIdentity, "the original Agent session must continue");
       assert.ok(turnId);
       assert.notEqual(turnId, originalTurnId, "continuity requires a new turn");
+      continued = true;
       record("model-after", { turnId, sameSession: true });
     },
-  };
+  });
+  assert.ok(continued, "rehearsal must observe a new model turn after Git withdrawal");
 }

@@ -81,7 +81,9 @@ replaying it. The local proofs do not replace this installed qualification.
 ### Reuse the rehearsal with another runtime
 
 Use [the scenario helper](../../tests/helpers/agent-grant-rehearsal.ts) from a
-Node test. Register cleanup as each resource is acquired with `t.after`, including
+Node test. Run all four observations inside the `runAgentGrantRehearsal` callback.
+The test fails if the callback returns before `modelAfter` succeeds.
+Register cleanup as each resource is acquired with `t.after`, including
 the Agent process, origin servers, and disposable repository. Keep the operator
 control endpoints and origin repository outside the workload's reach.
 

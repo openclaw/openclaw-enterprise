@@ -730,7 +730,8 @@
       "expectedTests": [
         "grant rehearsal rejects a cached or wrong Git object",
         "grant rehearsal requires a fresh denial without origin traffic or object arrival",
-        "grant rehearsal requires a new model turn on the original Agent session"
+        "grant rehearsal requires a new model turn on the original Agent session",
+        "grant rehearsal fails when an adapter returns after Git refusal"
       ]
     },
     {
