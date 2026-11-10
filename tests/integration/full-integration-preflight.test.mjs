@@ -152,14 +152,21 @@ test("same-SHA reuse waits at most twelve minutes and falls back without delayin
     reused.matrix.map((row) => row.lane),
     ["k3d-observability-demo", "repository-credentials-container"],
   );
-  const workflow = await readFile(
-    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
-    "utf8",
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const workflow = loadYaml(
+    await readFile(
+      new URL("../../.github/workflows/full-integration.yml", import.meta.url),
+      "utf8",
+    ),
   );
   for (const lane of ["docker-model", "k3d-model", "gateway-routing", "slack", "openshell"]) {
-    const job = workflow.split(`\n  ${lane}:`)[1].split(/\n {2}[a-z][a-z-]+:/)[0];
-    assert.match(job, /needs: preflight/);
-    assert.doesNotMatch(job, /needs:.*ci-reuse/);
+    assert.deepEqual(
+      workflow.jobs[lane].needs,
+      lane === "docker-model" ? ["preflight", "runtime-artifact"] : "preflight",
+      lane,
+    );
   }
 });
 
