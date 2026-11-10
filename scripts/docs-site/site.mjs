@@ -113,11 +113,16 @@ document.querySelectorAll("[data-code-copy]").forEach((button) =>
     button.setAttribute("aria-label", "Copied");
   }),
 );
-document.querySelectorAll("[data-heading-anchor]").forEach((button) =>
-  button.addEventListener("click", async () => {
-    const url = new URL(location.href);
-    url.hash = button.dataset.headingAnchor;
-    await navigator.clipboard.writeText(url.href);
+document.querySelectorAll("[data-heading-anchor]").forEach((link) =>
+  link.addEventListener("click", async (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    try {
+      await navigator.clipboard?.writeText(link.href);
+    } catch {
+      // Copying is optional; the link still navigates when clipboard access is denied.
+    }
   }),
 );
 const diagramDialog = document.querySelector("#diagram-dialog");

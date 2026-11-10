@@ -37,10 +37,15 @@ identities containing `@`, so such variants would share one grant.
 Compute renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`
 and `gateway.allowRealIpFallback: true`; CIDR order may differ.
 Conflicting/unsupported settings return `409 RESOURCE_CONFLICT` with setting/requirement,
-never values. Invalid `allowUsers` instead produces fixed provisioning `409`
-text plus an API-log reason, or deployment-preparation `DEPENDENCY_UNAVAILABLE`
-plus `worker.compute-prepare-failed`. `trustedProxy.allowLoopback` must be omitted
-or false; local verification uses the separate password.
+never values. Configuration save refuses an invalid `allowUsers` or a
+`deviceAutoApprove` that is not an object of an optional boolean `enabled` and
+an optional array of nonblank scope strings `scopes` (`400 INVALID_REQUEST`, setting and requirement only);
+deployment refuses a stored one with the same text before it stops a running revision,
+and the Console Agent page holds **Deploy** with that text.
+`trustedProxy.allowLoopback` must be omitted or false; local verification uses the
+separate password. A Dedicated Codex Gateway that applies its workspace node at
+runtime signs in with that password, so save and deployment refuse such an Agent's
+Configuration without it ([Compute admission](../compute-admission.md#kubernetes-compute)).
 
 ```json
 {
@@ -80,9 +85,10 @@ the route removes), and the Gateway refuses any trusted-proxy request without it
 `401` on HTTP, and a WebSocket connect falls back to device authentication. The
 requirement proves the header is present, not who set it: an ingress that forwards
 a client's `x-openclaw-scopes` still lets a person claim `operator.admin` on those
-APIs. The operator HTTPRoute sets the header to `operator.admin` for the machine
-identity. On WebSocket upgrades the header caps the union of device and identity
-grants.
+APIs. The administration HTTPRoute sets the header to `operator.admin` for the
+machine identity. The [OCC browser chat route](../../agent-native-admin.md) uses
+the same identity with `operator.sessions.write`, which includes session reads.
+On WebSocket upgrades the header caps the union of device and identity grants.
 
 Private routing can remain enabled. Its operator HTTPRoute always replaces
 `x-occ-identity` with the machine identity, so human traffic needs a separate

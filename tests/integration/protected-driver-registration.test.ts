@@ -1,16 +1,14 @@
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
-import {
-  openShellGitRuntimeFixture,
-  registry as runtimeRegistry,
-  takeUnloggedRuntimeFields,
-} from "../helpers/openshell-git-runtime.ts";
+import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import {
   OpenShellSandboxDriver,
@@ -20,9 +18,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
-import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
@@ -37,6 +33,7 @@ import type {
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
+  ProxyRevisionContext,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -445,24 +442,19 @@ test("protected Git resolves repository and installation grants without granting
   const directory = await temporaryDirectory(t, "repository-delivery-");
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
-  const compose = () =>
+  const compose = (sessionDurationSeconds = 600, selectedRegistryPath = registryPath) =>
     loadRepositoryPolicy({
       backend: {
         id: registry.backendId,
         type: "github",
-        configuration: { registryPath },
+        configuration: { registryPath: selectedRegistryPath },
         drivers: { repo: "repo" },
       },
       selection: {
         id: "repo",
         implementation: "github",
-        definition: GitHubRepositoryPolicy,
-        configuration: { sessionDurationSeconds: 600 },
+        configuration: { sessionDurationSeconds },
       },
-      policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-        GitHubRepositoryPolicy,
-        { sessionDurationSeconds: 600 },
-      ),
     });
   const access = await compose();
   const resolve = access.resolveRepositoryDelivery;
@@ -609,9 +601,9 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
   assert.ok(capabilities.repositoryTransport);
-  assert.equal(runtime.configuration.protectedExecution, true);
-  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const authority = {} as ProtectedRepositoryGitAuthority;
+  await assert.rejects(runtime.bindRepositoryGit(authority), /requires its selected route store/);
+  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const connect = t.mock.method(runtime, "connectRouteStore");
   const bind = t.mock.method(
     capabilities.proxy as Required<Pick<CredentialProxyDriver, "bindRepositoryGit">>,
@@ -666,38 +658,138 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.equal(bare.sandbox.id, input.sandbox.id);
   assert.equal(bare.repositoryTransport, undefined);
   assert.equal(bare.sandbox.repositoryAccess, undefined);
-});
 
-test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
-  const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
-  let changed = false;
-  const f = openShellGitRuntimeFixture({
-    resolveDelivery: (revision) => {
-      const scope = resolve(revision);
-      return changed
-        ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
-        : scope;
+  await t.test(
+    "bundled saved-plan startup/retry rechecks installation authorization before preparation",
+    async (t) => {
+      const { revision: seed, binding } = repositoryDeliveryFixture();
+      const installation = resolveGitHubRepositoryBinding(registry, {
+        namespaceId: seed.namespaceId,
+        repositoryRef: "installation",
+        profile: "github-installation",
+      });
+      for (const optIn of [false, true]) {
+        await t.test(optIn ? "observed-hook opt-in" : "no preview opt-in", async (t) => {
+          const calls = { discovery: 0 };
+          const gatewayClient = new (class extends GrpcOpenShellGatewayClient {
+            override async getGatewayInfo() {
+              calls.discovery++;
+              return {
+                gateway_version: "0.1.7",
+                extensions: [
+                  {
+                    configured_name: "oce-prepared-git",
+                    kind: 4,
+                    protocol_major: 1,
+                  },
+                ],
+              };
+            }
+          })({ endpoint: "http://127.0.0.1:1" });
+          const bundled = createOpenShellCapabilities({
+            ...input,
+            backend: {
+              ...input.backend,
+              client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient }),
+            },
+            createSandbox: (_options, selection) =>
+              new OpenShellSandboxDriver(configuration, selection),
+            proxy: {
+              ...input.proxy,
+              configuration: {
+                ...input.proxy.configuration,
+                ...(optIn ? { observedHookPreviewWorkspace: "preview-1" } : {}),
+              },
+            },
+          });
+          t.after(() => bundled.close());
+          assert.ok(bundled.proxy instanceof OpenShellCredentialProxyDriver);
+          const owner = new InstalledDriver(input.sandbox, {
+            capabilities: { sandbox: bundled.sandbox, credential_proxy: bundled.proxy },
+          });
+          const release = new ProtectedExecutionDriver(owner);
+          // No replacement implementation: this spy calls the actual bundled preparer.
+          const prepare = t.mock.method(bundled.proxy, "configureRevision");
+          const saved = (
+            version: 5 | 6,
+            selectedBinding: typeof binding,
+            authorization: "online-request" | "request-hook-observed",
+          ): ProxyRevisionContext => {
+            const repositoryGit = { ...seed.repositoryCredentials!, bindings: [selectedBinding] };
+            const plan = {
+              id: "saved-repository-plan",
+              generation: 1,
+              driver: owner.ref,
+              sandboxDriverId: bundled.sandbox.id,
+              egressDriverId: bundled.proxy!.id,
+              execution: {
+                installationId: "installation",
+                namespaceId: seed.namespaceId,
+                agentId: seed.agentId,
+                revisionId: seed.id,
+                servicePrincipalId: seed.servicePrincipalId,
+                executionId: "a".repeat(32),
+              },
+              routes: [],
+              repositoryGit,
+              repositoryGitAuthorization: authorization,
+            };
+            const revision: AgentRevision = {
+              ...seed,
+              repositoryCredentials: repositoryGit,
+              executionAdmission: { version, mode: "protected" },
+              egressPlan: plan,
+            };
+            return {
+              revision,
+              plan,
+              namespace: { id: seed.namespaceId } as Namespace,
+              signal: t.signal,
+            };
+          };
+          const legacy = saved(5, installation, "online-request");
+          assert.equal(release.admits(legacy.revision, "stored"), true);
+          // Kubernetes uses this same call for saved-plan startup and subsequent retries.
+          // Repeating it does not model Worker persistence or migrate the saved revision.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const before = calls.discovery;
+            await assert.rejects(
+              release.configure(legacy),
+              optIn
+                ? {
+                    name: "DependencyUnavailableError",
+                    message:
+                      "The protected Driver no longer supports GitHub installation access or its admitted sender guarantee.",
+                  }
+                : {
+                    name: "CredentialProxyAdmissionError",
+                  },
+            );
+            assert.equal(calls.discovery - before, optIn ? 1 : 0);
+            assert.equal(prepare.mock.callCount(), 0);
+            assert.equal(legacy.revision.executionAdmission.version, 5);
+            assert.equal(legacy.plan.repositoryGitAuthorization, "online-request");
+          }
+          const controls = [saved(5, binding, "online-request")];
+          if (optIn) {
+            const current = saved(6, installation, "request-hook-observed");
+            assert.deepEqual(current.plan.repositoryGit, legacy.plan.repositoryGit);
+            assert.deepEqual(current.plan.execution, legacy.plan.execution);
+            controls.push(current);
+          }
+          for (const context of controls) {
+            assert.equal(release.admits(context.revision, "stored"), true);
+            const before = calls.discovery;
+            const preparedBefore = prepare.mock.callCount();
+            const wiring = await release.configure(context);
+            assert.deepEqual(wiring.plan, context.plan);
+            assert.equal(prepare.mock.callCount(), preparedBefore + 1);
+            assert.equal(calls.discovery - before, 2);
+          }
+        });
+      }
     },
-  });
-  await f.reconcile();
-  assert.ok(await f.lookup());
-  await f.prepare();
-  assert.equal(f.calls.rotate, 1, "same admission does not reinstall material");
-  // A faulty Repo result cannot change the ref used to initialize this recipient.
-  changed = true;
-  await assert.rejects(f.prepare(), /OpenShell Git revision binding is unavailable/);
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined);
-  changed = false;
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined, "restoring policy cannot revive the blocked recipient");
-  assert.equal(f.calls.rotate, 1);
-
-  const foreign = openShellGitRuntimeFixture();
-  foreign.owner.material.repositoryId = "99999";
-  await foreign.reconcile();
-  assert.equal(await foreign.lookup(), undefined);
-  assert.equal(foreign.calls.rotate, 0, "foreign supplier material never reaches the provider");
+  );
 });
 
 test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
@@ -788,6 +880,97 @@ test("repository scope changes invalidate the external Driver identity while a r
       },
     },
   };
+  for (const mode of ["protected", "native"] as const) {
+    await t.test(`${mode} validates policy at the production installation entry`, async () => {
+      const selectedPath = join(directory, `${mode}-policy.json`);
+      const loadPolicy = async (
+        policyConfiguration: object,
+        selectedRegistryPath = registryPath,
+        ownerId = "repo",
+        controlSocket = "/unselected/control.sock",
+      ) => {
+        await writeFile(
+          selectedPath,
+          JSON.stringify({
+            ...modes[mode],
+            repository: {
+              ...configuration.repository,
+              ...(mode === "native"
+                ? {
+                    nativeSender: {
+                      controlSocket,
+                      publicCaPath: certFile,
+                    },
+                  }
+                : {}),
+              configuration: policyConfiguration,
+            },
+            backend: [
+              {
+                ...configuration.backend[0],
+                configuration: { registryPath: selectedRegistryPath },
+                drivers: { repo: ownerId },
+              },
+            ],
+          }),
+        );
+        return loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: selectedPath },
+          packageRoot: directory,
+        });
+      };
+      const inaccessible = join(registryPath, "inaccessible");
+      // The same inaccessible registry distinguishes policy refusal from a read failure.
+      for (const sessionDurationSeconds of [
+        undefined,
+        "600",
+        null,
+        0,
+        1.5,
+        Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1,
+      ]) {
+        await assert.rejects(loadPolicy({ sessionDurationSeconds }, inaccessible), {
+          name: "ConfigurationValidationError",
+        });
+      }
+      await assert.rejects(loadPolicy({ sessionDurationSeconds: 601 }, inaccessible), {
+        code: "ENOTDIR",
+      });
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "other-repo"),
+        /must match the selected repository.id/,
+      );
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: registry.maximumDurationSeconds + 1 }),
+        /Repository credential session duration exceeds the registry policy/,
+      );
+      if (mode === "native") {
+        // The native transport rejects overlong socket bytes before it reads the registry.
+        await assert.rejects(
+          loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "repo", `/${"é".repeat(60)}`),
+          { name: "ConfigurationValidationError" },
+        );
+      }
+      const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
+      t.after(() => runtime.protectedDriver?.close());
+      assert.equal(
+        (
+          await runtime.repositoryPolicy!.resolve({
+            namespaceId: "namespace-a",
+            bindings: [{ repositoryRef: "application", profile: "git-write" }],
+          })
+        ).sessionDurationSeconds,
+        601,
+      );
+      assert.equal(runtime.repositoryOwner!.driverId, "repo");
+      assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
+      if (mode === "native") {
+        assert.equal(runtime.repositoryOwner!.controlSocket, "/unselected/control.sock");
+        assert.ok(runtime.nativeRepositorySender);
+      }
+    });
+  }
   const helper = fileURLToPath(new URL("../helpers/repository-selection-load.ts", import.meta.url));
   for (const [mode, value] of Object.entries(modes)) {
     const selectedPath = join(directory, `${mode}.json`);

@@ -1,6 +1,13 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # What the OpenShell Sandbox suite proves
 
-These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`.
+These checks share [OpenShell workflow fixtures](../../tests/helpers/openshell-sandbox-workflows.mjs)
+and run through the separate files listed in [advisory coverage](ci/qa-advisory.md#openshell-file-coverage).
 Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
 Unless a section says otherwise, the checks run in the default Codex scenario.
 
@@ -63,6 +70,35 @@ network, and credential enforcement. Exact workload identity, approved mounts
 and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+The refresh case's initial Codex turns also emit `openshell-initial-turnover` measurements.
+The fixture enables structured supervisor logs and waits for the configuration to be
+installed before measuring requests. Setup failure leaves the observation incomplete;
+the original turns still run. Full structured events stay out of raw failure diagnostics.
+Bounded reads before and after each original request use Compute's Agent-owned
+`workspace-node.json` binding and authenticated `node.list` to identify the same
+node and its connection timestamp. The measurements retain metadata fingerprints,
+request timing through body and nonce verification, supervisor event occurrence
+times, and whether the bounded Harness log contains a 1006 close. They contain no request payloads, raw node identifiers,
+credentials, or raw logs.
+
+`turn-continuity` requires an in-request provider-environment change with unchanged
+configuration and policy, a structured failure from the Agent Gateway's established
+relay reporting a stale generation, the same node reconnecting, and a successful
+original response. Supervisor occurrence times and the node's connection timestamp
+must be ordered within the original request; queued log delivery timestamps do not
+establish that order. `harness1006LogObserved` also requires a 1006 close in the
+bounded Harness log. That line has no occurrence timestamp and does not establish
+close order or cause.
+Gateway boot identity and Gateway, Harness, and supervisor container identities
+must remain unchanged. Provider snapshots must be ready with all installation flags and show a revision change; all
+settings-change events must corroborate unchanged configuration and policy.
+Missing or contradictory observations cannot qualify.
+`durableCommands: true` additionally records both existing native command checks.
+No matching turnover is `unexercised`; unavailable reads or incomplete correlation
+are `incomplete`. These observations use synchronized host and container clocks.
+They do not prove that a particular workspace read was pending or retried, and
+ordinary refresh success alone is not evidence of read recovery.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
@@ -74,6 +110,16 @@ Agent's Python denial, descriptor discovery, write-free preview, save, confirmed
 application, removal, and isolation from a second Agent. The allowed default
 control remains reachable after revocation. Denial logs and native
 recommendations are checked separately.
+
+If the selected Python command fails its execution guards, the test attempts to
+record an `openshell-policy-probe` measurement. It identifies the control or policy port,
+hashes the expected URI, and records command counts, the selected index, and
+later literal-URI matches across all completed commands. At most eight commands
+have hashes and match flags, starting with the selected command (or the first
+command if none was selected); raw commands and output are omitted. Separate checkpoints identify
+the second Agent's control and denial requests. These diagnostics preserve the
+original assertion and do not establish network enforcement on their own. If
+diagnostic recording fails, the guard still fails without a measurement.
 
 It revokes each required permission after work is queued and checks failure
 before `UpdateConfig`, unchanged loaded provider state, and attributable audit
@@ -174,8 +220,7 @@ The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
-[complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
-trusted pull requests when a maintainer requests it with the `full-qa` label.
+[complete OpenShell advisory lane](ci/qa-advisory.md) uses the triggers and trusted-PR selection described on that page.
 
 ### QA matrix selector
 

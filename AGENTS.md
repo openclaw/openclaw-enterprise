@@ -188,8 +188,9 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - `docs/contributing/` owns onboarding and workflows for people changing the
   platform. Link the root `CONTRIBUTING.md` for contribution policy and the
   relevant reference, flow, or testing page for detailed behavior.
-- The site has six menu sections: **Getting Started**, **Topics**, **Integrations**,
+- The site has seven menu sections: **Getting Started**, **Topics**, **Integrations**,
   **Deploy & Operate**, and **Reference** serve people using or administering the product;
+  **Testing & CI** serves contributors running and interpreting checks;
   **Contribute** serves people changing the platform. Each menu switches sidebars.
   Register each Markdown page once in `docs/docs.json`; put deep implementation
   and testing pages in the owning tab's `hidden` list when an index links them.
@@ -268,7 +269,10 @@ through their generator. Preserve historical decisions, statuses, and Manual Not
 
 Exceeding 2,500 words requires **no logical destination for the excess content**
 and **explicit human approval**. Record the approved scope and reason before
-adding a narrow checker allowance.
+adding `nolimit` to the page's YAML `tags` list. Tagged pages are exempt from
+both length thresholds, but the checker still reports their word counts.
+Use the same tag in the generator for a generated page; do not add path-specific
+exceptions to the checker.
 
 Approved exception: `docs/reference/api.md` may exceed the length thresholds.
 The user approved keeping the complete generated HTTP API reference in one page
@@ -280,6 +284,11 @@ Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
 The user approved keeping CI configuration and test coverage in one guide. The
 checker still reports its word count. This exception applies only to that page.
 
+Approved exception: `docs/guides/deploy/production-installation.md` is exempt
+from the length thresholds. The user approved keeping the production installation
+procedure and its embedded prerequisites in one page. The checker still reports
+its word count. This exception applies only to that page.
+
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
 counts. Exemptions follow the resolved file: an `AGENTS.md` symlink pointing to
@@ -287,7 +296,8 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
-Human-verified documents must include `human_verified: true` in their YAML frontmatter.
+Human-verified documents must include `human_verified` in their YAML `tags` list,
+for example `tags: [human_verified]`. Preserve any other tags.
 
 Before creating, updating, or reviewing documentation and specifications, read
 and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
@@ -482,8 +492,8 @@ controls:
   the relevant phone state; a second recording is useful only when the interaction differs.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video to GitHub, as native attachments or as
-  files in a gist, and show them in the PR's Verification section. Before and
+  Upload screenshots and a short video as native GitHub attachments. Do not use
+  gists for PR evidence. Show the attachments in the PR's Verification section. Before and
   after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
@@ -126,7 +126,6 @@ const agentNativeAdminValues = {
   ...gatewayRoutingValues,
   "agentNativeAdmin.enabled": "true",
   "agentNativeAdmin.domain": "agents.example.invalid",
-  "agentNativeAdmin.sharedCookieDomain": "example.invalid",
 };
 // The sandbox listener's wildcard TLS Secret, on top of gateway routing.
 const sandboxValues = {
@@ -1236,9 +1235,9 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     "Standard OpenClaw",
     "default-codex",
   ]);
-  assert.equal(drivers.pluginDriver.id, "codex-plugin");
-  assert.equal(drivers.pluginDriver.discoveryCredential, "none");
-  const catalog = await drivers.pluginDriver.discoverCatalog({ q: "Linear" });
+  assert.equal(drivers.pluginDrivers[0].id, "codex-plugin");
+  assert.equal(drivers.pluginDrivers[0].discoveryCredential, "none");
+  const catalog = await drivers.pluginDrivers[0].discoverCatalog({ q: "Linear" });
   assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;
@@ -1685,6 +1684,8 @@ test(
 test("production settings coexist in fresh and upgrade chart renders", tooling, async () => {
   const settings = {
     ...agentNativeAdminValues,
+    "installation.attemptId": "eac2f079-cff2-4488-8e2e-3322df9b0bd6",
+    "installation.upgradeAttemptId": "df44c039-3515-4d0e-b2eb-759e177f1ff5",
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
     "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
@@ -1697,6 +1698,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       : values["images.controller"];
     const objects = await resources(
       (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    );
+    // Recovery joins the submitted attempt to all live hooks and its owned Pod;
+    // install-only attribution remains separate when both values are retained.
+    for (const hook of objects.filter((object) => object.metadata.annotations?.["helm.sh/hook"])) {
+      assert.equal(
+        hook.metadata.annotations["openclaw.dev/upgrade-attempt"],
+        isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
+      );
+    }
+    const initializer = objects.find(({ kind }) => kind === "Job");
+    assert.equal(
+      initializer.metadata.annotations["openclaw.dev/installation-attempt"],
+      isUpgrade ? undefined : settings["installation.attemptId"],
+    );
+    assert.equal(
+      initializer.spec.template.metadata.annotations?.["openclaw.dev/upgrade-attempt"],
+      isUpgrade ? settings["installation.upgradeAttemptId"] : undefined,
     );
     const deployment = (component) =>
       objects.find(
@@ -1853,7 +1871,7 @@ test(
     );
     assert.deepEqual(
       apiEnvironment.filter(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"),
-      [{ name: "OCC_AUTH_COOKIE_DOMAIN", value: "example.invalid" }],
+      [],
     );
     assert.ok(!workerEnvironment.some(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")));
     assert.ok(!workerEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
@@ -1870,7 +1888,10 @@ test(
     const disabledApiEnvironment = disabledDeployment("api").spec.template.spec.containers[0].env;
     assert.deepEqual(
       disabledApiEnvironment.filter(({ name }) => name.startsWith("OCC_AGENT_NATIVE_ADMIN_")),
-      [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
+      [
+        { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" },
+        { name: "OCC_AGENT_NATIVE_ADMIN_DOMAIN", value: "agents.example.invalid" },
+      ],
     );
     assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
   },
@@ -2329,6 +2350,8 @@ test(
       valuesFile,
       JSON.stringify({
         images: { controller: values["images.controller"] },
+        gatewayRouting: { enabled: false },
+        agentNativeAdmin: { domain: values["agentNativeAdmin.domain"] },
         auth: {
           baseUrl: values["auth.baseUrl"],
           secretName: values["auth.secretName"],
@@ -2418,7 +2441,7 @@ test(
     }
     await execute(process.env.OCC_YQ_BIN ?? "yq", [
       "-i",
-      ".repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
+      ".gatewayRouting.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
       liveValues,
     ]);
     const installation = join(directory, "installation.json");
@@ -2511,7 +2534,12 @@ case "$*" in
 esac
 `,
       occ: `#!/usr/bin/env bash
-printf '{"id":"ins_test"}'
+[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
+case "$4" in
+  get) printf '{"id":"ins_test"}' ;;
+  deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
+  *) exit 94 ;;
+esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
       node: `#!/usr/bin/env bash
@@ -2652,7 +2680,12 @@ esac
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
       );
       if (!failure) {
-        const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
+        // A failed dry-run has a render but no successful-preparation pointer.
+        const attempts = await readdir(join(evidence, "helm-attempts"));
+        assert.equal(attempts.length, 1);
+        const candidate = await resources(
+          await readFile(join(evidence, "helm-attempts", attempts[0], "rendered.yaml"), "utf8"),
+        );
         const deployment = candidate.find(
           ({ kind, metadata }) =>
             kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
@@ -2910,7 +2943,7 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
 });
 
 test(
-  "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
+  "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
   tooling,
   async () => {
     const { stdout } = await render(controlPlaneSelectorValues);
@@ -2960,7 +2993,18 @@ test(
       false,
     );
 
-    assert.ok(!objects.some(({ kind }) => ["Ingress", "Gateway"].includes(kind)));
+    assert.ok(
+      !objects.some(({ kind }) =>
+        ["Ingress", "Gateway", "EnvoyProxy", "SecurityPolicy", "Certificate", "Issuer"].includes(
+          kind,
+        ),
+      ),
+    );
+    for (const deployment of objects.filter(({ kind }) => kind === "Deployment")) {
+      for (const container of deployment.spec.template.spec.containers) {
+        assert.ok(!container.env.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
+      }
+    }
 
     // Initialization, API, and worker use distinct identities; database credentials remain isolated.
     for (const component of ["initialization", "api", "worker"]) {
@@ -3290,6 +3334,65 @@ test(
     );
   },
 );
+
+test("MCP plugin discovery has independent API HTTPS egress", tooling, async () => {
+  const name = "openclaw-enterprise-api-plugin-discovery-egress";
+  const modelName = "openclaw-enterprise-api-model-discovery-egress";
+  const defaults = await resources((await render()).stdout);
+  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
+
+  const pluginValues = {
+    "api.pluginDiscoveryCidrs[0]": "203.0.113.15/32",
+    "api.pluginDiscoveryCidrs[1]": "203.0.113.16/32",
+  };
+  const pluginOnly = await resources((await render(pluginValues)).stdout);
+  assert.ok(!pluginOnly.some(({ metadata }) => metadata.name === modelName));
+  const policy = pluginOnly.find(
+    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  );
+  assert.ok(policy, "configured MCP hosts must render their own API egress policy");
+  assert.deepEqual(policy.spec, {
+    podSelector: {
+      matchLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "api",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: [{ ipBlock: { cidr: "203.0.113.15/32" } }, { ipBlock: { cidr: "203.0.113.16/32" } }],
+        ports: [{ protocol: "TCP", port: 443 }],
+      },
+    ],
+  });
+
+  // Configuring both lists retains their distinct policies and destinations.
+  const modelValues = { "api.modelDiscoveryCidrs[0]": "198.51.100.25/32" };
+  const modelOnly = await resources((await render(modelValues)).stdout);
+  assert.ok(!modelOnly.some(({ metadata }) => metadata.name === name));
+  const combined = await resources((await render({ ...pluginValues, ...modelValues })).stdout);
+  assert.deepEqual(
+    combined.find(({ metadata }) => metadata.name === name),
+    policy,
+  );
+  assert.deepEqual(
+    combined.find(({ metadata }) => metadata.name === modelName),
+    modelOnly.find(({ metadata }) => metadata.name === modelName),
+  );
+
+  for (const cidr of ["0.0.0.0/0", "203.0.113.0/24", "mcp.example.invalid"]) {
+    await assert.rejects(
+      render({ "api.pluginDiscoveryCidrs[0]": cidr }),
+      /api.pluginDiscoveryCidrs/,
+    );
+  }
+  await assert.rejects(
+    render({ "api.pluginDiscoveryCidrs": "203.0.113.15/32" }),
+    /api.pluginDiscoveryCidrs/,
+  );
+});
 
 test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
   const name = "openclaw-enterprise-api-channel-directory-egress";
@@ -4000,6 +4103,55 @@ test(
         },
       );
     }
+  },
+);
+
+test(
+  "OCC can manage private OAuth client Secrets without access to Secrets in the release namespace",
+  tooling,
+  async () => {
+    const releaseNamespace = "oauth-control-plane";
+    const objects = await resources((await render({}, { namespace: releaseNamespace })).stdout);
+    const privateNamespaces = new Set();
+    for (const [component, verbs] of [
+      ["api", ["get", "create", "update", "delete"]],
+      ["worker", ["get", "delete"]],
+    ]) {
+      const pod = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
+      ).spec.template.spec;
+      const namespace = pod.containers[0].env.find(
+        ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
+      ).value;
+      privateNamespaces.add(namespace);
+      // Check the effective RoleBinding for the ServiceAccount the chart actually deploys.
+      const binding = objects.find(
+        ({ kind, metadata, subjects }) =>
+          kind === "RoleBinding" &&
+          metadata.namespace === namespace &&
+          subjects?.some((subject) => subject.name === pod.serviceAccountName),
+      );
+      assert.notEqual(namespace, releaseNamespace);
+      assert.deepEqual(binding.subjects, [
+        {
+          kind: "ServiceAccount",
+          name: pod.serviceAccountName,
+          namespace: releaseNamespace,
+        },
+      ]);
+      const role = objects.find(
+        ({ kind, metadata }) =>
+          kind === binding.roleRef.kind &&
+          metadata.namespace === namespace &&
+          metadata.name === binding.roleRef.name,
+      );
+      assert.deepEqual(role.rules, [{ apiGroups: [""], resources: ["secrets"], verbs }]);
+      assert.ok(
+        objects.some(({ kind, metadata }) => kind === "Namespace" && metadata.name === namespace),
+      );
+    }
+    assert.equal(privateNamespaces.size, 1);
   },
 );
 
@@ -5077,7 +5229,12 @@ test(
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
-        { "agentNativeAdmin.enabled": "true" },
+        { "agentNativeAdmin.enabled": "true", "agentNativeAdmin.domain": "" },
+      ],
+      [
+        "retired shared cookie domain setting",
+        { "agentNativeAdmin.sharedCookieDomain": "example.invalid" },
+        /agentNativeAdmin.sharedCookieDomain is no longer supported/,
       ],
       [
         "Agent native admin configured with a wildcard DNS suffix",
@@ -5326,7 +5483,6 @@ test(
       "gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr": "0.0.0.0/0",
       "agentNativeAdmin.enabled": "true",
       "agentNativeAdmin.domain": "agents.example.invalid",
-      "agentNativeAdmin.sharedCookieDomain": "example.invalid",
       "executionCluster.enabled": "true",
       "executionCluster.apiCidrs[0]": "10.44.0.2/32",
     };
@@ -5413,8 +5569,21 @@ test(
   },
 );
 
+test("default routing refuses missing operator configuration", tooling, async () => {
+  // Omitting the switch must still require both operator-owned prerequisite names.
+  const options = { omit: ["gatewayRouting.enabled"] };
+  await assert.rejects(
+    render({}, options),
+    /gatewayRouting\.gatewayClassName must reference an operator-created GatewayClass/,
+  );
+  await assert.rejects(
+    render({ "gatewayRouting.gatewayClassName": "eg" }, options),
+    /gatewayRouting\.apiKeySecretName must reference an operator-created Opaque Secret/,
+  );
+});
+
 test(
-  "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
+  "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
   async () => {
     const gatewayName = "oce-agent-gateways";
@@ -5425,7 +5594,12 @@ test(
     const hostname = defaultGatewayHostname(gatewayNamespace, gatewayName, envoyNamespace);
     const rootSecret = rootSecretName(gatewayNamespace, gatewayName);
     const configured = await resources(
-      (await render({ ...gatewayRoutingValues, ...controlPlaneSelectorValues })).stdout,
+      (
+        await render(
+          { ...gatewayRoutingValues, ...controlPlaneSelectorValues },
+          { omit: ["gatewayRouting.enabled"] },
+        )
+      ).stdout,
     );
     const alternateNamespace = "openclaw-alt";
     const alternateObjects = await resources(

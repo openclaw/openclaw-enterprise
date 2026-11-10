@@ -41,9 +41,9 @@ fetches in groups no larger than the configured
 [service limits](../repository-credentials.md#client-routing-and-limits).
 
 A separately selected protected Credential Proxy can authorize a bounded
-`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/access/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
-[transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
+[transport](../../../apps/controller/src/drivers/repo/access/transport/upstream.ts)
 rejects actual trailers (a declaration alone is not one), enforces byte limits before and
 after rewriting, then releases the configured `{ id, full_name }` as fixed JSON with
 no-store headers. Streamed responses cannot make that guarantee.
@@ -87,7 +87,17 @@ Select `repositoryCredentials.authority: prepared-git` in the chart and
 `repository.preparedGitHub` in the Installation. Select the policy ID and session duration
 under `repository.id` and `repository.configuration.sessionDurationSeconds`. Select
 `repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
-explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
+explicitly. Both paths must be absolute and canonical: remove dot segments,
+repeated separators, trailing separators and ASCII control characters
+(`U+0000`–`U+001F` and `U+007F`). The socket path
+must fit in 103 UTF-8 bytes; non-ASCII characters can use more than one byte.
+Native sender validation rejects invalid paths before reading the registry or
+public CA, naming the field without printing its value. Correct that field in the
+Installation; shorten the socket path if it exceeds the byte limit. If startup
+reports only a generic failure, check that both path settings contain nonblank
+strings: the initial Installation reader rejects blank values before native
+sender validation.
+Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
 Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.
@@ -107,8 +117,11 @@ independently known commit, and push a new commit to the allowed review ref. Rea
 the exact commit back independently. In a disposable test repository, also show
 that the broker refuses another writable ref, rather than relying on a client hook.
 
-To withdraw access, remove the repository binding on the running Agent. Confirm a
-new authenticated fetch is denied and chat still works. Withdrawal cannot erase
+To withdraw access, remove the repository binding on the Agent. Finite removal
+remains effective while Stop is pending; re-adding the binding cannot restore the
+original revision’s grant, even if a later deployment supersedes Stop. A denied Stop
+does not prevent Git detachment or authorize shutting down the Agent, including through a due maintenance pass. An earlier unacknowledged policy reduction is observed before Git detachment; it is never reapplied. For an Agent
+that remains running, confirm a new authenticated fetch is denied and chat still works. Withdrawal cannot erase
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 

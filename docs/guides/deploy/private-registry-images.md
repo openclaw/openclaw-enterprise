@@ -21,17 +21,12 @@ and support the target node architectures.
 For the current production example, select a controller supporting the curated
 Codex catalog (`catalogSource: openai-curated`) and the
 [browser request origin check](../../reference/authentication.md#browser-request-origin).
-The historical controller in [Use published images](production-installation.md#use-published-images)
-predates the origin check and is not suitable for the current example, even when
-its digest and source chart match.
 
 Use a clean checkout at that exact commit for the Helm chart, Installation
 examples, and helpers. From the repository root, compare `git rev-parse HEAD`
 with the recorded full source SHA and check `git status --short` for changes.
-The images listed in the installation guide were built from an older commit;
-they are not evidence for a chart from a newer checkout. If a separately
-published chart is available, verify its publication receipt, source commit,
-chart digest, and image annotations against the selected image publication;
+If a separately published chart is available, verify its publication receipt,
+source commit, chart digest, and image annotations against the selected image publication;
 use it only when the release owner confirms compatibility. Chart publication
 is a separate process and is not assumed to have occurred for an image release.
 
@@ -73,15 +68,18 @@ investigating or retrying; start a fresh one and authenticate again. The tag
 lookup below can return the expected `ImageNotFoundException`.
 
 ```bash
-set -o pipefail
-umask 077
-export REGISTRY_AUTH="$(mktemp "${TMPDIR:-/tmp}/oce-registry-auth.XXXXXXXX")"
-trap 'rm -f -- "$REGISTRY_AUTH"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-printf '{"auths":{}}\n' > "$REGISTRY_AUTH"
-aws ecr get-login-password --region "$AWS_REGION" | \
-  skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
+{
+  set -o pipefail
+  umask 077
+  REGISTRY_AUTH="$(mktemp "${TMPDIR:-/tmp}/oce-registry-auth.XXXXXXXX")" || exit 1
+  export REGISTRY_AUTH
+  trap 'rm -f -- "$REGISTRY_AUTH"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '{"auths":{}}\n' > "$REGISTRY_AUTH" || exit 1
+  aws ecr get-login-password --region "$AWS_REGION" | \
+    skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
+}
 ```
 
 Run `aws sts get-caller-identity` and confirm the selected account before writing

@@ -57,9 +57,13 @@ unsupported settings, and unavailable Drivers stop startup before requests run.
 
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
-none. API and worker must use the same trusted value. See
+none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+
+The optional `iam` block declares the
+[Default users](authorization/default-users.md#installation-iam-configuration)
+Roles, Groups, and bindings.
 
 The optional `observability` block sets one external console destination:
 
@@ -189,9 +193,10 @@ that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
 fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
 `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
 optional file list, an `agents.defaults.sandbox.mode` or
-`agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
+`agents.entries.<id>.sandbox.mode` other than `off`, a `tools.exec.host` or
 `agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
-naming the setting. A
+a `plugins.allow` or `plugins.deny` that is not a list of text items,
+and a `$include` key at any depth, naming the setting. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and

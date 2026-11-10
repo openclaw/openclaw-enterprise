@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -9,11 +9,13 @@ import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { privateOwned } from "./lib/private-owned-path.mjs";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
-import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {
+  FirstAgentModelError,
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
@@ -21,6 +23,11 @@ import {
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
+
+import { createFirstAgentApi } from "./first-agent-api.mjs";
+import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.mjs";
+
+let failureDiagnostics;
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -88,24 +95,18 @@ function parseArguments(argv) {
   if (!isName(result.name)) {
     throw new Error(`Provide an Agent name of ${NAME_RULE}.`);
   }
-  if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
+  // The refusal says characters. String.length counts UTF-16 units, so 4,000
+  // emoji (4,000 characters, 8,000 units) was refused. Count code points, as isName does.
+  if (
+    result.prompt !== undefined &&
+    (!result.prompt.trim() || Array.from(result.prompt).length > 4_000)
+  ) {
     throw new Error("The prompt must contain 1–4,000 characters.");
   }
   if (!["openclaw", "codex"].includes(result.harness)) {
     throw new Error("--harness must be openclaw or codex.");
   }
   return result;
-}
-
-async function privateOwned(path, directory = false) {
-  const info = await lstat(path);
-  if (
-    info.uid !== process.geteuid?.() ||
-    (info.mode & 0o077) !== 0 ||
-    (directory ? !info.isDirectory() : !info.isFile())
-  ) {
-    throw new Error(`${path} must be private and owned by the current user.`);
-  }
 }
 
 async function exists(path) {
@@ -200,40 +201,39 @@ async function loadLocalInstallation(harness, controlUi) {
       "The OpenShell first-Agent workflow requires --harness codex so its authenticated app server runs in dedicated mode.",
     );
   }
-  let nativeAdmin;
-  if (state.browserOrigin !== undefined || state.nativeAdminDomain !== undefined) {
-    let browserOrigin;
-    try {
-      browserOrigin = new URL(state.browserOrigin);
-    } catch {
-      throw new Error("The recorded Local Setup browser origin is invalid.");
-    }
-    const cookieDomain = `${state.cluster}.oce.localhost`;
-    const expectedBrowserHost = `console.${cookieDomain}`;
-    const expectedNativeAdminDomain = `agents.${cookieDomain}`;
-    if (
-      state.deploymentMode === "k3d" ||
-      state.sandboxDriver !== "openshell" ||
-      browserOrigin.protocol !== "https:" ||
-      browserOrigin.hostname !== expectedBrowserHost ||
-      browserOrigin.pathname !== "/" ||
-      browserOrigin.username ||
-      browserOrigin.password ||
-      browserOrigin.search ||
-      browserOrigin.hash ||
-      // URL drops the default port. Older Local Setup recorded port 443 explicitly.
-      (state.browserOrigin !== browserOrigin.origin &&
-        state.browserOrigin !== `${browserOrigin.origin}:443`) ||
-      state.nativeAdminDomain !== expectedNativeAdminDomain
-    ) {
-      throw new Error("The recorded Local Setup native admin endpoint is invalid.");
-    }
-    nativeAdmin = { browserOrigin: browserOrigin.origin, domain: state.nativeAdminDomain };
+  let browserOrigin;
+  try {
+    browserOrigin = new URL(state.browserOrigin);
+  } catch {
+    throw new Error("The recorded Local Setup browser origin is invalid.");
   }
-  if (controlUi && nativeAdmin === undefined) {
-    throw new Error(
-      "Local Setup did not enable its durable native admin endpoint. Use the Compose control plane with Kubernetes Compute and the OpenShell Sandbox Driver, then start a new Agent name.",
-    );
+  const cookieDomain = `${state.cluster}.oce.localhost`;
+  const expectedBrowserHost = `console.${cookieDomain}`;
+  const expectedNativeAdminDomain = `agents.${cookieDomain}`;
+  if (
+    !Number.isInteger(state.browserPort) ||
+    state.browserPort < 1 ||
+    state.browserPort > 65535 ||
+    Number(browserOrigin.port || 443) !== state.browserPort ||
+    browserOrigin.protocol !== "https:" ||
+    browserOrigin.hostname !== expectedBrowserHost ||
+    browserOrigin.pathname !== "/" ||
+    browserOrigin.username ||
+    browserOrigin.password ||
+    browserOrigin.search ||
+    browserOrigin.hash ||
+    state.browserOrigin !== browserOrigin.origin ||
+    state.nativeAdminDomain !== expectedNativeAdminDomain
+  ) {
+    throw new Error("The recorded Local Setup native admin endpoint is invalid.");
+  }
+  const nativeAdmin = {
+    browserOrigin: browserOrigin.origin,
+    domain: state.nativeAdminDomain,
+    bootstrapWorkspace: state.deploymentMode === "k3d",
+  };
+  if (controlUi && state.sandboxDriver !== "openshell") {
+    throw new Error("The first-Agent Control UI requires the OpenShell Sandbox Driver.");
   }
   if (state.deploymentMode !== "k3d") {
     await privateOwned(join(directory, "compose.yaml"));
@@ -458,46 +458,6 @@ function run(binary, args, { env, input, timeout = 45_000 } = {}) {
   });
 }
 
-function createApi({ origin, key }) {
-  return async (method, path, body) => {
-    let response;
-    try {
-      response = await fetch(new URL(path, origin), {
-        method,
-        redirect: "error",
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          "x-api-key": key.data.key,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch {
-      throw new Error(
-        `The local controller did not answer ${method} ${path}. Confirm Local Setup is running and retry the same Agent name.`,
-      );
-    }
-    let envelope;
-    try {
-      envelope = await response.json();
-    } catch {
-      throw new Error(
-        `The local controller returned an invalid response (HTTP ${response.status}).`,
-      );
-    }
-    if (!response.ok) {
-      const code = /^[A-Z0-9_]+$/.test(envelope.error?.code ?? "") ? ` ${envelope.error.code}` : "";
-      const requestId = /^req_[a-f0-9-]+$/.test(envelope.meta?.requestId ?? "")
-        ? `; request ${envelope.meta.requestId}`
-        : "";
-      throw new Error(
-        `The local controller rejected ${method} ${path} (HTTP ${response.status}${code}${requestId}).`,
-      );
-    }
-    return envelope.data;
-  };
-}
-
 async function modelKey(authMethod) {
   const variable = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
   const fileVariable = `${variable}_FILE`;
@@ -558,7 +518,7 @@ async function modelKey(authMethod) {
   return value;
 }
 
-function nativeConfiguration(model, harness, nativeAdminOrigin) {
+function nativeConfiguration(model, harness, nativeAdminOrigin, bootstrapWorkspace = false) {
   const selected = `${harness === "codex" ? "codex" : "openai"}/${model}`;
   const provider =
     harness === "codex"
@@ -607,7 +567,7 @@ function nativeConfiguration(model, harness, nativeAdminOrigin) {
       agents: {
         defaults: {
           model: selected,
-          skipBootstrap: true,
+          ...(bootstrapWorkspace ? {} : { skipBootstrap: true }),
           models: { [selected]: { agentRuntime: { id: harness } } },
         },
       },
@@ -871,7 +831,7 @@ async function main(options) {
     }
     throw error;
   }
-  const api = createApi(local);
+  const api = createFirstAgentApi(local);
   const installation = await api("GET", "/installation");
   if (installation.id !== local.key.meta.installationId) {
     throw new Error("The controller Installation does not match Local Setup's administrator key.");
@@ -971,7 +931,12 @@ async function main(options) {
         record.controlUiOrigin = target.origin;
         await save(record);
       }
-      const expected = nativeConfiguration(model, record.harness, record.controlUiOrigin);
+      const expected = nativeConfiguration(
+        model,
+        record.harness,
+        record.controlUiOrigin,
+        record.controlUi && local.nativeAdmin.bootstrapWorkspace,
+      );
       let stored = await api("GET", `${base}/configurations/${record.configurationId}`);
       if (record.controlUi) {
         if (stored.generation === 1) {
@@ -979,6 +944,7 @@ async function main(options) {
           assertManagedConfiguration(stored, record, baseConfiguration);
           progress("Enabling durable native Control UI access...");
           stored = await api("PATCH", `${base}/configurations/${record.configurationId}`, {
+            expectedGeneration: stored.generation,
             values: expected.values,
           });
         }
@@ -1144,12 +1110,44 @@ async function main(options) {
       }
       await save(record);
     }
+    // A later deploy, such as the `occ agent deploy` that Stop's notice suggests, supersedes
+    // the recorded revision, which then never becomes active again (finding 3131). Follow the
+    // newest revision when it passes the same drift check.
+    async function followNewestRevision() {
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      if (newest === undefined || newest.id === record.revisionId) {
+        return false;
+      }
+      const revision = await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`);
+      if (assertManagedRevision(revision, record, expectedConfiguration, revision.id)) {
+        priorPatRevisions.add(revision.id);
+      }
+      progress(
+        `Revision ${record.revisionId} was superseded; following revision ${revision.id}...`,
+      );
+      record.revisionId = revision.id;
+      await save(record);
+      return true;
+    }
+    await followNewestRevision();
     progress("Waiting for the selected revision and Kubernetes gateway...");
     await waitFor("the Agent revision to become active", async () => {
       const [observed, deployment] = await Promise.all([
         api("GET", agentPath),
         api("GET", `${agentPath}/deployments/${record.revisionId}`),
       ]);
+      if (observed.desiredRuntimeState === "stopped") {
+        throw new Error(
+          `Agent ${options.name} is stopped. Run "occ --namespace ${namespace.id} agent deploy ${agent.id}" to start it, then rerun this command with the same Agent name.`,
+        );
+      }
+      if (
+        deployment.status === "failed" &&
+        deployment.error?.code === "REVISION_SUPERSEDED" &&
+        (await followNewestRevision())
+      ) {
+        return false;
+      }
       if (deployment.status === "failed") {
         const code = /^[A-Z0-9_]+$/.test(deployment.error?.code ?? "")
           ? ` (${deployment.error.code})`
@@ -1167,14 +1165,23 @@ async function main(options) {
       namespaceId: namespace.id,
       agentId: agent.id,
       revisionId: record.revisionId,
+      onGatewaySelected: (gateway) => {
+        failureDiagnostics = () =>
+          collectFirstAgentDiagnostics(api, {
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            revisionId: record.revisionId,
+            gateway,
+          });
+      },
       prompt: options.prompt,
       apiKey: suppliedKey,
-      expectProviderKey: record.sandboxDriver !== "openshell",
+      // Only embedded OpenClaw calls the model from the Gateway. Dedicated Codex keeps the
+      // model credential in its Codex Pod or OpenShell Sandbox, never in the Gateway.
+      expectProviderKey: record.harness === "openclaw",
     });
-    const consoleUrl = new URL(
-      `/console/agents/${agent.id}`,
-      local.nativeAdmin?.browserOrigin ?? local.origin,
-    );
+    failureDiagnostics = undefined;
+    const consoleUrl = new URL(`/console/agents/${agent.id}`, local.nativeAdmin.browserOrigin);
     consoleUrl.searchParams.set("namespace", namespace.id);
     // Before the result, so the response on stdout cannot bury it.
     if (priorPatRevisions.has(record.revisionId)) {
@@ -1202,4 +1209,7 @@ try {
 } catch (error) {
   process.stderr.write(`first-agent: ${error.message}\n`);
   process.exitCode = 1;
+  if (error instanceof FirstAgentModelError && failureDiagnostics) {
+    process.stderr.write(`${await failureDiagnostics()}\n`);
+  }
 }

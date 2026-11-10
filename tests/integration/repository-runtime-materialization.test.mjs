@@ -5,7 +5,6 @@ import {
   chmod,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   realpath,
@@ -14,11 +13,10 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -34,10 +32,12 @@ before(async (t) => {
   const build = join(root, "build");
   await mkdir(join(build, "scripts"), { recursive: true });
   await mkdir(join(build, "apps/controller/dist"), { recursive: true });
-  await cp(
-    join(repository, "scripts/build-repository-credentials.mjs"),
-    join(build, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(repository, `scripts/build-repository-credentials.${extension}`),
+      join(build, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   // Like the detached-package suite, use the real artifact builder and this
   // checkout's TypeScript output. A workspace build is a prerequisite.
   await cp(join(repository, "apps/controller/dist"), join(build, "apps/controller/dist"), {
@@ -81,8 +81,7 @@ before(async (t) => {
 });
 
 async function projectionFixture(t, { count = 1, publicCa } = {}) {
-  const root = await mkdtemp(join(await realpath(tmpdir()), "repository-runtime-material-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await temporaryDirectory(t, "repository-runtime-material-"));
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
   await mkdir(sourceRoot);
@@ -176,12 +175,12 @@ test("the actual repository init process turns projected Secrets into private ru
   assert.equal(setting(`http.${client.gatewayOrigin}.followRedirects`), "false\n");
   assert.equal(
     setting(`credential.${client.gatewayOrigin}.helper`),
-    `\n!'/usr/local/bin/node' '/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js' manifest '/run/oce/repository-credentials' '${fixture.descriptor.manifest.generation}'\n`,
+    `\n!'/usr/local/bin/node' '/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js' manifest '/run/oce/repository-credentials' '${fixture.descriptor.manifest.generation}'\n`,
   );
   const nativeConfig = await readFile(gitconfig, "utf8");
   assert.equal(
     setting("core.hooksPath").trim(),
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks",
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/hooks",
   );
   assert.equal(setting("oce.repository.manifestRoot").trim(), "/run/oce/repository-credentials");
   for (const [index, binding] of fixture.descriptor.manifest.bindings.entries()) {

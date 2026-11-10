@@ -1,14 +1,15 @@
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
-import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/access/json-members.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
+import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/access/provider-transport.ts";
 import {
   requestHead,
   serviceConfigurationData,
@@ -263,16 +264,27 @@ test("provider transport pins destination and exact issuance scope before receiv
   const fixture = await startGitHubFixture(t, { clock });
   const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
   t.after(() => key.close());
-  const scope = { installationId: "41", repositoryId: "73", profile: "git-read" };
+  const scope = {
+    id: "grant",
+    isolationId: "revision",
+    appId: "12345",
+    installationId: "41",
+    repositoryId: "73",
+    repository: "fixture/repository",
+    profile: "git-read",
+  };
   for (const { name, origin } of [
     { name: "plaintext origin", origin: "http://localhost" },
     { name: "origin with user info", origin: "https://user@example.test" },
     { name: "origin with path", origin: `${fixture.origin}/path` },
   ]) {
     await t.test(`refuses ${name}`, () => {
-      assert.throws(() => createProviderTransport(origin, fixture.tls.ca, clock, scope), {
-        message: "invalid-provider-origin",
-      });
+      assert.throws(
+        () => createProviderTransport(fixture.tls.ca, clock, prepareProviderScope(origin, scope)),
+        {
+          message: "invalid-provider-origin",
+        },
+      );
     });
   }
   for (const { name, installationId } of [
@@ -284,10 +296,14 @@ test("provider transport pins destination and exact issuance scope before receiv
     await t.test(`refuses installation ${name}`, () => {
       assert.throws(
         () =>
-          createProviderTransport(fixture.origin, fixture.tls.ca, clock, {
-            ...scope,
-            installationId,
-          }),
+          createProviderTransport(
+            fixture.tls.ca,
+            clock,
+            prepareProviderScope(fixture.origin, {
+              ...scope,
+              installationId,
+            }),
+          ),
         { message: "invalid-provider-scope" },
       );
     });
@@ -310,7 +326,11 @@ test("provider transport pins destination and exact issuance scope before receiv
     await t.test(`refuses ${name}`, () => {
       assert.throws(
         () =>
-          createProviderTransport(fixture.origin, fixture.tls.ca, clock, { ...scope, ...changes }),
+          createProviderTransport(
+            fixture.tls.ca,
+            clock,
+            prepareProviderScope(fixture.origin, { ...scope, ...changes }),
+          ),
         refusal,
       );
     });
@@ -322,7 +342,11 @@ test("provider transport pins destination and exact issuance scope before receiv
       return ++installationReads === 1 ? "41" : "42";
     },
   };
-  const transport = createProviderTransport(fixture.origin, fixture.tls.ca, clock, transportScope);
+  const transport = createProviderTransport(
+    fixture.tls.ca,
+    clock,
+    prepareProviderScope(fixture.origin, transportScope),
+  );
   assert.equal(installationReads, 1);
   assert.deepEqual(Object.keys(transport).sort(), ["issue", "revoke"]);
   assert.ok(Object.isFrozen(transport));
@@ -336,9 +360,10 @@ test("provider transport pins destination and exact issuance scope before receiv
     deadlineMonoMs: clock.monotonicNow() + 30000,
     signal: new AbortController().signal,
     assertAdmitted() {},
-    observeDispatch() {},
+    observeDispatch() {
+      dispatches++;
+    },
   });
-  const onDispatch = () => dispatches++;
   const observeResponse = () => observations++;
   for (const { name, authorization } of [
     { name: "header injection", authorization: "unsafe\r\nHeader: value" },
@@ -347,7 +372,7 @@ test("provider transport pins destination and exact issuance scope before receiv
   ]) {
     await t.test(`refuses ${name} before dispatch`, async () => {
       await assert.rejects(
-        transport.issue(authorization, attempt("acquire"), onDispatch, () => {}, observeResponse),
+        transport.issue(authorization, attempt("acquire"), () => {}, observeResponse),
         /provider-unavailable/,
       );
     });
@@ -355,7 +380,7 @@ test("provider transport pins destination and exact issuance scope before receiv
   assert.equal(dispatches, 0);
   assert.equal(fixture.issuesOfTokens.length, 0);
   const issued = await key.withJwt((jwt, assertCurrent) =>
-    transport.issue(jwt, attempt("acquire"), onDispatch, assertCurrent, observeResponse),
+    transport.issue(jwt, attempt("acquire"), assertCurrent, observeResponse),
   );
   let token;
   try {
@@ -374,7 +399,7 @@ test("provider transport pins destination and exact issuance scope before receiv
     checks: "read",
     statuses: "read",
   });
-  const revoked = await transport.revoke(token, attempt("retire"), onDispatch);
+  const revoked = await transport.revoke(token, attempt("retire"));
   try {
     assert.equal(revoked.status, 204);
   } finally {

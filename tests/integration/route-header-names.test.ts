@@ -15,7 +15,8 @@ function createApp() {
     auth: createControllerAuth({
       mode: "development",
       installationId,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: randomBytes(48).toString("base64url"),
     }),
     iamDriver: createNativeIAMDriver({

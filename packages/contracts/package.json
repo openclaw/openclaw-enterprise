@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@openclaw-enterprise/utils": "workspace:*",
-    "typebox": "1.4.2"
+    "typebox": "1.4.3"
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",

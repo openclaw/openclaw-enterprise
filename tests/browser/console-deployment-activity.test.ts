@@ -6,7 +6,8 @@ import type {
   PlatformReadView,
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   detailUrl,
@@ -17,9 +18,10 @@ import {
   login,
   nativeValues,
   newPage,
-  waitForIdleFetches,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+  waitForCondition,
+} from "./console-agents-browser-helpers.ts";
+import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
+import { responseTo } from "./console-action-helpers.ts";
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
@@ -33,6 +35,7 @@ async function deploymentFixture(t: TestContext) {
     unavailable: false,
     claimed: false,
     succeeded: false,
+    repositoryRedeployRequired: false,
     // A permanent failure whose failed preparation queued the version's retire cleanup.
     failed: false,
     cleanup: null as "queued" | "claimed" | "succeeded" | null,
@@ -47,6 +50,9 @@ async function deploymentFixture(t: TestContext) {
           ...view,
           operations: {
             ...view.operations,
+            async hasRepositoryExecutionRedeployRequired(owner) {
+              return owner.revisionId === revisionId && control.repositoryRedeployRequired;
+            },
             async findWork(key: string) {
               if (key === cleanupKey && control.cleanup !== null) {
                 // The cleanup row the worker would enqueue for this revision, in its states.
@@ -243,6 +249,42 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
       assert.equal((await repeated).status(), 200);
       await waitForIdleFetches(page);
       assert.deepEqual(counts, { record: 1, agent: 0, revisions: 0 });
+      if (source === "selected") {
+        // A later repository renewal condition does not rewrite the successful deployment.
+        // Exercise the real controller projection through the existing refresh control.
+        const mutations: string[] = [];
+        page.on("request", (request) => {
+          if (request.method() !== "GET") {
+            mutations.push(`${request.method()} ${new URL(request.url()).pathname}`);
+          }
+        });
+        control.repositoryRedeployRequired = true;
+        const refreshed = page.waitForResponse(url);
+        await refresh.press("Enter");
+        const repositoryAccess = (await (await refreshed).json()).data.repositoryAccess;
+        assert.equal(repositoryAccess.code, "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED");
+        await waitForIdleFetches(page);
+        assert.match(await card.innerText(), /Recorded outcome: Completed/);
+        assert.match(await activity.innerText(), /Recorded status: Completed/);
+        assert.equal(
+          await card.getByText(repositoryAccess.message, { exact: true }).isVisible(),
+          true,
+        );
+        assert.equal(
+          await activity.getByText(repositoryAccess.message, { exact: true }).isVisible(),
+          true,
+        );
+
+        // Another admitted version has no condition. Browsing it cannot inherit the old
+        // version's notice or request a deployment.
+        const next = await fixture.deployAgent(namespace.id, agent.id);
+        await activity.getByRole("button", { name: "Refresh deployment" }).click();
+        await page.getByLabel("Viewing version").selectOption(next.id);
+        await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+        await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
+        assert.equal(await card.getByText(repositoryAccess.message, { exact: true }).count(), 0);
+        assert.deepEqual(mutations, []);
+      }
     },
   );
 }
@@ -349,10 +391,7 @@ for (const viewport of [
           responses.push(response.status());
         }
       });
-      const next = () =>
-        page.waitForResponse(
-          (response) => response.url() === url && response.request().method() === "GET",
-        );
+      const next = () => responseTo(page, "GET", url);
       let recordedLabel = "Queued";
       type Outcome = "queued" | "running" | "succeeded" | 503 | 404;
       async function received(
@@ -465,8 +504,8 @@ for (const viewport of [
       // Distinguishes the old collision: both 503 and 404 used to stamp "///false".
       // Start with the first folded reader position, before later phases can scroll.
       const original = await focusDiagnostics(true);
-      async function readerPosition() {
-        return original.evaluate((node) => {
+      async function readerPosition(control = original) {
+        return control.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return {
             focused: node.isConnected && node === document.activeElement,
@@ -551,6 +590,39 @@ for (const viewport of [
       // An explicit refresh is not an instruction to expand unchanged healthy evidence.
       // Reuse the same controller and page, including a completed terminal record.
       for (const outcome of ["running", "succeeded"] as const) {
+        if (outcome === "succeeded") {
+          // Before an explicit Refresh, let the existing running poll discover completion.
+          const focused = await focusDiagnostics(true);
+          assert.equal(await isOpen(), false);
+          // A reader can scroll back toward the summary without moving keyboard focus.
+          const wheel = await focused.evaluate((node) => {
+            const delta = Math.min(
+              0,
+              Math.round(node.getBoundingClientRect().bottom - innerHeight + 10),
+            );
+            return { delta, target: Math.max(0, scrollY + delta) };
+          });
+          if (wheel.delta < 0) {
+            await page.mouse.wheel(0, wheel.delta);
+            await waitForCondition(
+              () => page.evaluate((target) => Math.abs(scrollY - target) <= 1, wheel.target),
+              "Diagnostics wheel scroll reaches its target before the deployment poll",
+            );
+          }
+          const before = await readerPosition(focused);
+          assert.ok(
+            before.focused && before.hit && before.top >= 0 && before.bottom <= before.viewport,
+          );
+          control.succeeded = true;
+          await poll("succeeded");
+          assert.equal(await isOpen(), true, "terminal evidence still opens automatically");
+          const after = await readerPosition(focused);
+          assert.equal(after.focused, true, "the original diagnostics button retains focus");
+          assert.ok(
+            after.hit && after.top >= 0 && after.bottom <= after.viewport,
+            "the original diagnostics button stays visible when terminal evidence opens",
+          );
+        }
         await t.test(`unchanged ${outcome} refresh respects a manual fold`, async () => {
           control.succeeded = outcome === "succeeded";
           const established = next();
@@ -650,10 +722,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   const run = page
     .locator(".version-deployment-record")
     .getByRole("button", { name: "Refresh record", exact: true });
-  const next = () =>
-    page.waitForResponse(
-      (response) => response.url() === url && response.request().method() === "GET",
-    );
+  const next = () => responseTo(page, "GET", url);
   async function received(pending: ReturnType<typeof next>, cleanup: string | null) {
     const response = await pending;
     if (cleanup === null) {
@@ -774,8 +843,11 @@ for (const refusal of [403, 404] as const) {
     assert.equal(refusedBody.data, undefined);
     assert.equal(refusedBody.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
     if (refusal === 403) {
-      assert.match(refusedBody.error.message, /^Not authorized: /);
-      assert.match(refusedBody.error.message, /Ask an Installation administrator to grant it\./);
+      // The denial names the read the Restriction blocks and the version ID the URL carried.
+      assert.equal(
+        refusedBody.error.message,
+        callerDenied("AgentRevision read", `AgentRevision ${revisionId}`),
+      );
     }
     // Named denials are shown verbatim; do not restore the old generic refusal copy.
     const notice =

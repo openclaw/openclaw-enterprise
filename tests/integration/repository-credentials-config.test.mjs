@@ -14,7 +14,9 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
     await import("../../apps/controller/src/composition/repository-credentials/check-config.ts");
   const directory = await temporaryDirectory(t, "repository-configuration-");
   const tls = await createTlsMaterial(t);
-  const controlDirectory = await socketDirectory(t, "rcs-config-");
+  const controlDirectory = await socketDirectory(t, "rcs-config-", {
+    longest: "prepared-git-use.sock",
+  });
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -98,13 +100,13 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   const { loadConfiguration } =
     await import("../../apps/controller/src/composition/repository-credentials/config.ts");
   const { createSystemClock } =
-    await import("../../apps/controller/src/drivers/repo/credentials/clock.ts");
+    await import("../../apps/controller/src/drivers/repo/access/clock.ts");
   const loaded = await loadConfiguration(file, createSystemClock());
   try {
     assert.equal(loaded.repositoryDescriptions, undefined);
     assert.equal("resolve" in loaded.factory, false);
     const { createCredentialService } =
-      await import("../../apps/controller/src/drivers/repo/credentials/service.ts");
+      await import("../fixtures/repository-credentials/service.ts");
     const service = createCredentialService({
       config: loaded.config,
       factory: loaded.factory,
@@ -356,7 +358,7 @@ test("production deployment inputs never name the development token authority", 
 
 test("service admission bounds are finite and retain an explicit long-task policy", async () => {
   const { validateServiceConfig } =
-    await import("../../apps/controller/src/drivers/repo/credentials/configuration.ts");
+    await import("../../apps/controller/src/drivers/repo/access/configuration.ts");
   const input = {
     gateway: {
       publicOrigin: "https://credentials.example",

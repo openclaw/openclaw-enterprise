@@ -10,8 +10,12 @@ import { once } from "node:events";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
-import { imageConfigDigest } from "./image-config-digest.mjs";
+import {
+  skipperFailureSummary,
+  skipperInstalledProof,
+  skipperImageScope,
+} from "./skipper-release.ts";
+import { imageConfigDigest } from "./image-config-digest.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,
@@ -63,20 +67,7 @@ const privateResult = join(directory, "selected-test-result.json");
 const registry = env.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER;
 assert.match(registry, /^[a-f0-9]{64}$/);
 const cleanup = [() => run("docker", ["rm", "--force", "--volumes", registry])];
-const proof = [
-  "deployed-revision-gateway-and-harness-ready",
-  "chat-before-private-git-verified",
-  "prepared-before-native-git",
-  ...(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1"
-    ? teamReviewProof
-    : ["native-commit-confirmed-by-independent-fetch"]),
-  "wrong-repository-hook-refusal-and-broker-denied-mixed-push",
-  "native-authenticated-post-after-withdrawal-refused",
-  "fresh-authenticated-fetch-after-effective-withdrawal-refused",
-  "same-compute-owned-skipper-chat-after-git-withdrawal-verified",
-  "same-compute-owned-skipper-chat-git-and-live-withdrawal-observed",
-  "owned-agent-retired-cluster-cleanup-still-required",
-];
+const proof = skipperInstalledProof(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1");
 const progress = (name) => console.log("Private Git acceptance: " + name);
 const noCluster = async () => {
   const names = await output("docker", ["ps", "-a", "--format", "{{.Names}}"]);
@@ -309,10 +300,11 @@ try {
   if (runner.status !== 0) {
     // Report only a known phase, source location, or failure category. Both raw streams
     // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
     const text =
       String(runner.stderr) +
       String(runner.stdout) +
-      (await readFile(privateResult, "utf8").catch(() => "")) +
+      resultText +
       (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
         () => "",
       ));
@@ -347,6 +339,28 @@ try {
         tlsErrors,
       );
     }
+    if (records.includes("repository-binding-withdrawn-discovery-released")) {
+      console.error("Repository binding withdrawn and held discovery released.");
+    }
+    const completion = entries.find((e) => e.phase === "native-command-completion-mismatch");
+    if (completion) {
+      console.error("Native command chat completion did not match the expected marker.");
+      const { modelDiagnosticsAvailable, modelRequests, modelResults, markerSeen } = completion;
+      if (
+        modelDiagnosticsAvailable === true &&
+        [modelRequests, modelResults].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+        typeof markerSeen === "boolean"
+      ) {
+        console.error(
+          "Synthetic model requests=%d, results=%d, completion marker seen in native result=%s.",
+          modelRequests,
+          modelResults,
+          markerSeen,
+        );
+      } else {
+        console.error("Synthetic model completion diagnostics unavailable.");
+      }
+    }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
       "create-synthetic-model-secret",
@@ -354,20 +368,15 @@ try {
       "observe-installed-agent-readonly-skill-directories",
       "gateway-chat-refused",
       "native-command-started",
+      "repository-binding-withdrawn-discovery-released",
+      "native-command-completion-mismatch",
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    const site = text.match(
-      /(?:skipper-prepared-compute|skipper-prepared-git-installed\.test)\.mjs:\d+:\d+/,
-    )?.[0];
-    const category = text.match(
-      /RTM_NEWADDR|bwrap|native command failed|missing-env|test-timeout|expected-test-not-passed|selected-zero|timed out:|ERR_ASSERTION/,
-    )?.[0];
     console.error(
-      "Installed test failed after %s (%s, %s, exit=%s)",
+      "Installed test failed after %s (%s, exit=%s)",
       last,
-      site ?? "location unavailable",
-      category ?? "unclassified",
+      skipperFailureSummary(resultText, process.cwd(), text),
       runner.code ?? "unknown",
     );
     assert.fail("selected test runner failed");
@@ -434,6 +443,7 @@ if (failed) {
     counts,
     exitCode,
     imageDigests,
+    imageScope: skipperImageScope,
     files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };

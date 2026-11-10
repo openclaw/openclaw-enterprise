@@ -1,6 +1,12 @@
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import {
+  NAMESPACE_NAME_CONFLICT,
+  PRESET_NAME_CONFLICT,
+  SECRET_NAME_CONFLICT,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -116,7 +122,13 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       gateway: { controlUi: { enabled: false } },
     },
     harnessAuth: { ...apiKeyBinding, secretDriverId: harnessSecret.driverId },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: {
       id: "compute-contract",
       implementation: "deterministic-contract",
@@ -459,17 +471,71 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ["null Harness descriptor", { harness: null }],
     [
       "array Harness descriptor",
-      { harness: Object.assign([], { id: "openclaw", version: "1.0.0", mode: "embedded" }) },
+      {
+        harness: Object.assign([], {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+        }),
+      },
     ],
-    ["missing Harness version", { harness: { id: "openclaw", mode: "embedded" } }],
-    ["missing Harness mode", { harness: { id: "openclaw", version: "1.0.0" } }],
-    ["unsupported Harness mode", { harness: { id: "openclaw", version: "1.0.0", mode: "remote" } }],
-    ["empty Harness identity", { harness: { id: " ", version: "1.0.0", mode: "embedded" } }],
-    ["empty Harness version", { harness: { id: "openclaw", version: " ", mode: "embedded" } }],
+    [
+      "missing Harness version",
+      { harness: { overrides: {}, configuration: {}, id: "openclaw", mode: "embedded" } },
+    ],
+    [
+      "missing Harness mode",
+      { harness: { overrides: {}, configuration: {}, id: "openclaw", version: "1.0.0" } },
+    ],
+    [
+      "unsupported Harness mode",
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "remote",
+        },
+      },
+    ],
+    [
+      "empty Harness identity",
+      {
+        harness: { overrides: {}, configuration: {}, id: " ", version: "1.0.0", mode: "embedded" },
+      },
+    ],
+    [
+      "empty Harness version",
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: " ",
+          mode: "embedded",
+        },
+      },
+    ],
     [
       "unexpected Harness property",
-      { harness: { id: "openclaw", version: "1.0.0", mode: "embedded", unexpected: true } },
+      {
+        harness: {
+          overrides: {},
+          configuration: {},
+          id: "openclaw",
+          version: "1.0.0",
+          mode: "embedded",
+          unexpected: true,
+        },
+      },
     ],
+    ["missing Harness overrides", { harness: { ...revision.harness, overrides: undefined } }],
+    ["null Harness overrides", { harness: { ...revision.harness, overrides: null } }],
+    ["missing Harness settings", { harness: { ...revision.harness, configuration: undefined } }],
+    ["array Harness settings", { harness: { ...revision.harness, configuration: [] } }],
     ["missing Compute descriptor", { compute: undefined }],
     ["null Compute descriptor", { compute: null }],
     [
@@ -948,7 +1014,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     configurationGeneration: accountConfiguration.generation,
     servicePrincipalId: accountAgent.servicePrincipalId,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     harnessAuth: {
       method: "codex_pat",
       source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
@@ -1099,8 +1165,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ),
     {
       name: "ResourceStateConflictError",
-      message:
-        "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      message: SERVICE_ACCOUNT_NAME_CONFLICT,
     },
     "ServiceAccount names must be unique within their Namespace.",
   );
@@ -1655,25 +1720,25 @@ async function verifyDuplicateNameContract(store) {
     [
       (transaction) =>
         transaction.namespaces.createNamespace({ ...namespace, id: identifier("ns") }),
-      "A Namespace with this name already exists. Choose a different name.",
+      NAMESPACE_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.secrets.createSecret({ ...secret, id: identifier("sec") }),
-      "A Secret with this name already exists in this Namespace. Choose a different name.",
+      SECRET_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.presets.createPreset({ ...preset, id: identifier("pre") }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.presets.updatePreset(namespace.id, otherPreset.id, { name: preset.name }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
-      "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      SERVICE_ACCOUNT_NAME_CONFLICT,
     ],
     [
       (transaction) =>
@@ -3164,7 +3229,7 @@ async function verifyCredentialSourceContract(
     id: identifier("rev"),
     agentId: externalAgent.id,
     servicePrincipalId: externalAgent.servicePrincipalId,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
     sandboxDriverId: "sandbox-contract",
     credentialSources: [
       {

@@ -10,8 +10,9 @@ import {
   DependencyUnavailableError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
@@ -145,8 +146,7 @@ test("a dependency error answered with its own code logs no dependency warning",
     }),
   );
   const response = await createConfiguration(fixture, namespace);
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.equal(response.body.error.code, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
+  assertApiError(response, 503, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 

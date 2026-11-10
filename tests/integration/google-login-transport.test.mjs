@@ -245,14 +245,17 @@ test(
           issueSession: async (_proof, session) => {
             issued = {
               ...session,
+              resultExpiresAt: createdAt.getTime() + 120_000,
               createdAt,
               updatedAt: createdAt,
               expiresAt: new Date(createdAt.getTime() + 28_800_000),
             };
             return issued;
           },
-          currentSession: async (token) =>
-            issued?.token === token ? { ...issued, user } : undefined,
+          consumeLoginResult: async (token, receipt) =>
+            issued.token === token &&
+            issued.id === receipt.sessionId &&
+            issued.resultExpiresAt === receipt.expiresAt,
         });
         const started = await login.start();
         const { url, attemptId } = await started.json();
@@ -280,7 +283,6 @@ test(
         assert.equal(exchanged.status, 200);
         const { sessionKey } = await exchanged.json();
         assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
-        await expectDenied(await login.result(attemptId, cookies));
         assertNoSecrets(login, cookies, sessionKey);
       },
     );

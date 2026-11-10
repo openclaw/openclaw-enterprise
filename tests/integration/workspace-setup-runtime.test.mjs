@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -10,7 +9,6 @@ import {
   symlinkSync,
   linkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -23,13 +21,13 @@ import {
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const executable = process.env.OCC_TEST_WORKSPACE_OPENCLAW_PATH;
 const image = executable === undefined ? process.env.OCC_TEST_RUNTIME_IMAGE : undefined;
 const identity = { id: "setup-one", namespaceId: "namespace-one", agentId: "agent-one" };
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "oce-workspace-test-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = temporaryDirectorySync(t, "oce-workspace-test-");
   mkdirSync(join(root, "home"));
   const workspace = join(root, "workspace");
   const env = {

@@ -68,7 +68,10 @@ export async function credentialFreeOnlineGrantFixture(t, { appFactory } = {}) {
       if (request.sandboxId !== sandboxId || request.bindingId !== bindingId || signal.aborted) {
         return "deny";
       }
-      const { method, reportedScheme, host, path } = request.target;
+      const { method, reportedScheme, host, port, path, query } = request.target;
+      if (port !== 443 || method !== "GET" || query !== "" || request.body.byteLength !== 0) {
+        return "deny";
+      }
       const result = await controller.observeCredentialFreeMetadataGrant(route.binding, {
         method,
         origin: reportedScheme + "://" + host,
@@ -92,16 +95,17 @@ export async function credentialFreeOnlineGrantFixture(t, { appFactory } = {}) {
     bindingId,
     registration,
     wrongBearer: signed("different-sandbox"),
-    evaluate(change = {}) {
+    evaluate(change = {}, body = new Uint8Array()) {
       return invoke(
         wire.client,
         "EvaluateHttpRequest",
         {
           phase: 1,
           middleware_name: registration,
-          context: { sandbox_id: sandboxId, request_id: randomUUID() },
+          context: { sandbox_id: sandboxId, request_id: randomUUID(), workspace: "synthetic" },
           config: { fields: { binding_id: { stringValue: bindingId } } },
           target: { ...target, ...change },
+          body,
         },
         bearer,
       );

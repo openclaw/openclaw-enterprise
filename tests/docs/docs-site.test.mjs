@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
   createDocsFixture,
@@ -70,7 +70,7 @@ test("docs build renders every authored page and preserves repository ownership"
     assert.doesNotMatch(chrome, /ask-molty|docs\.openclaw\.ai|discord\.gg/);
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
-  assert.match(index, /href="\/guides\/quickstart\//);
+  assert.match(index, /href="\/guides\/deploy\/local-setup\//);
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
     join(root, "dist/docs/contributing/specifications/index.html"),

@@ -11,6 +11,15 @@ const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { readMigrationFiles } = dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
 
+export class UnsupportedPostgresVersionError extends Error {
+  constructor() {
+    super(
+      "PostgreSQL versions before 17 cannot run OCE migration catalog checks (MAINTAIN privilege required). " +
+        "Stopped before migration. Use the validated PostgreSQL 18.6 baseline, preserve any existing database, and rerun --check before installing or upgrading.",
+    );
+  }
+}
+
 function refuse(reason) {
   const error = new Error(`Unsupported migration history: ${reason}.`);
   error.code = "MIGRATION_HISTORY_UNSUPPORTED";
@@ -138,6 +147,39 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 25) {
     return "main";
+  }
+  if (count === 65 && completedCount > 65) {
+    return "preAgentDeployIntent";
+  }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
+  if (count === 67 && completedCount > 67) {
+    return "preAgentPluginDriver";
+  }
+  if (count === 68 && completedCount > 68) {
+    return "preConnectionTemplates";
+  }
+  if (count === 69 && completedCount > 69) {
+    return "preSavedConnections";
+  }
+  if (count === 70 && completedCount > 70) {
+    return "preDefaultUsers";
+  }
+  if (count === 71 && completedCount > 71) {
+    return "preHarnessOverrides";
+  }
+  if (count === 72 && completedCount > 72) {
+    return "preAccountAdministrationPolicy";
+  }
+  if (count === 73 && completedCount > 73) {
+    return "preFiniteRepositorySessionWithdrawal";
+  }
+  if (count === 74 && completedCount > 74) {
+    return "preHumanAuthenticationResults";
+  }
+  if (count === 75 && completedCount > 75) {
+    return "preNativeBrowserAccess";
   }
   if (count === completedCount) {
     return "completed";
@@ -321,11 +363,20 @@ async function preflight(client, manifest) {
   return shape;
 }
 
-export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty = false } = {}) {
+export async function migrateWithHistory(
+  pool,
+  { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
+) {
   const { manifest, migrations } = await readManifest();
   const client = await pool.connect();
   let locked = false;
   try {
+    const { rows } = await client.query(
+      "SELECT pg_catalog.current_setting('server_version_num')::pg_catalog.int4 >= 170000 AS compatible",
+    );
+    if (rows[0]?.compatible !== true) {
+      throw new UnsupportedPostgresVersionError();
+    }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
     const history = await preflight(client, manifest);
@@ -338,6 +389,17 @@ export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty 
       );
       error.code = "MIGRATION_HISTORY_NOT_EMPTY";
       throw error;
+    }
+    if (requireCurrent) {
+      if (history !== "completed") {
+        const error = new Error(
+          "The separate database deployment has not completed the candidate migration history. " +
+            "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+        );
+        error.code = "MIGRATION_HISTORY_PENDING";
+        throw error;
+      }
+      return history;
     }
     if (!checkOnly) {
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable

@@ -51,22 +51,7 @@ function denial(result: OpenShellOnlineDecision): Wire {
 const boundedId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{22,128}$/.test(value);
 
-/** The target is the supervisor's reported, normalized view, not proof of an exact wire request. */
-export interface OpenShellOnlineRequest {
-  readonly sandboxId: string;
-  readonly bindingId: string;
-  readonly requestId: string;
-  readonly target: {
-    readonly reportedScheme: "https";
-    readonly host: string;
-    readonly port: 443;
-    readonly method: "GET";
-    readonly path: string;
-    readonly query: "absent_or_empty";
-  };
-}
-
-export interface OpenShellOnlineAuthorityOptions {
+export interface OpenShellOnlineHttpAuthorityOptions {
   readonly identity: Pick<
     OpenShellEgressIdentityOptions,
     "issuer" | "audience" | "keyId" | "publicKey"
@@ -80,12 +65,12 @@ export interface OpenShellOnlineAuthorityOptions {
    * or replacement under its admitted authority. Refuse release if these cannot be enforced.
    * Independently establish a mandatory, fail-closed TLS-only path: the reported scheme does not
    * prove TLS. Deny unknown, ambiguous, withdrawn or unsupported state. Never persist or reuse an
-   * allow. The view excludes headers and carries no body bytes. Stock cannot distinguish an absent query from
-   * a bare trailing query delimiter; allow only if both forms are authorized. Policies requiring
-   * header, framing or exact original-target identity are unsupported by this adapter. Honor abort.
+   * allow. Stock cannot distinguish an absent query from a bare trailing query delimiter; allow
+   * only if both forms are authorized. Omitted headers, framing and exact original-target identity
+   * cannot be authorized from the normalized view. Honor abort.
    */
   readonly authorize: (
-    request: OpenShellOnlineRequest,
+    request: OpenShellOnlineHttpRequest,
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
@@ -114,16 +99,6 @@ export interface OpenShellOnlineHttpRequest {
   readonly headers: readonly (readonly [string, string])[];
   readonly body: Uint8Array;
   readonly deadlineAt: string;
-}
-
-export interface OpenShellOnlineHttpAuthorityOptions extends Omit<
-  OpenShellOnlineAuthorityOptions,
-  "authorize"
-> {
-  readonly authorize: (
-    request: OpenShellOnlineHttpRequest,
-    signal: AbortSignal,
-  ) => Promise<OpenShellOnlineDecision>;
 }
 
 function httpMethod(value: unknown): value is OpenShellOnlineHttpRequest["target"]["method"] {
@@ -215,15 +190,6 @@ function httpRequestView(
   };
 }
 
-/** Private composition seam: only a trusted operation owner may opt into body inspection. */
-export function createOpenShellOnlineHttpAuthority(
-  options: OpenShellOnlineHttpAuthorityOptions,
-): Server {
-  return createAuthority(options, (request, sandbox, deadline) =>
-    httpRequestView(request, sandbox, deadline, options.httpPolicySet !== undefined),
-  );
-}
-
 function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
   const value = record(fields.binding_id);
@@ -255,60 +221,9 @@ function supervisor(claims: Wire | undefined): string | undefined {
     : undefined;
 }
 
-function requestView(request: Wire, sandboxId: string): OpenShellOnlineRequest | undefined {
-  const context = record(request.context);
-  const target = record(request.target);
-  const id = bindingId(request.config);
-  if (
-    request.phase !== 1 ||
-    context.sandbox_id !== sandboxId ||
-    typeof context.request_id !== "string" ||
-    !context.request_id ||
-    context.request_id.length > 256 ||
-    !id ||
-    target.scheme !== "https" ||
-    target.port !== 443 ||
-    typeof target.host !== "string" ||
-    target.host.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
-      target.host,
-    ) ||
-    isIP(target.host) !== 0 ||
-    target.method !== "GET" ||
-    (request.body !== undefined &&
-      (!(request.body instanceof Uint8Array) || request.body.byteLength !== 0)) ||
-    typeof target.path !== "string" ||
-    !/^\/[\x21-\x7e]{0,4095}$/.test(target.path) ||
-    /[?#]/.test(target.path) ||
-    (target.query !== undefined && target.query !== "")
-  ) {
-    return undefined;
-  }
-  return {
-    sandboxId,
-    bindingId: id,
-    requestId: context.request_id,
-    target: {
-      reportedScheme: "https",
-      host: target.host,
-      port: 443,
-      method: target.method,
-      path: target.path,
-      query: "absent_or_empty",
-    },
-  };
-}
-
-/** Unregistered stock protocol adapter; it has no material, send, or exact-exchange authority. */
-export function createOpenShellOnlineAuthority(options: OpenShellOnlineAuthorityOptions): Server {
-  return createAuthority(options, requestView);
-}
-
-function createAuthority<T>(
-  options: Omit<OpenShellOnlineAuthorityOptions, "authorize"> & {
-    readonly authorize: (request: T, signal: AbortSignal) => Promise<OpenShellOnlineDecision>;
-  },
-  view: (request: Wire, sandboxId: string, deadlineAt: string) => T | undefined,
+/** Private composition seam: only a trusted operation owner may opt into body inspection. */
+export function createOpenShellOnlineHttpAuthority(
+  options: OpenShellOnlineHttpAuthorityOptions,
 ): Server {
   const verifier = new OpenShellExtensionJwtVerifier(options.identity);
   const budgetMs = options.budgetMs ?? 400;
@@ -390,10 +305,11 @@ function createAuthority<T>(
       const request =
         sandboxId &&
         !expired() &&
-        view(
+        httpRequestView(
           call.request,
           sandboxId,
           new Date(Date.now() + Math.max(0, expiresAt - performance.now())).toISOString(),
+          options.httpPolicySet !== undefined,
         );
       if (
         !sandboxId ||

@@ -5,6 +5,7 @@ import { fixtureAppId, fixtureRepositoryId } from "./metadata.mjs";
 export function createTokenAuthority({
   clock,
   publicKey,
+  /** Milliseconds, or a function of the 1-based token index. */
   lifetimeMs,
   repositoryId = fixtureRepositoryId,
   expectedRepositoryIds = [repositoryId],
@@ -93,8 +94,9 @@ export function createTokenAuthority({
       "issuance requires an exact supported permission map",
     );
     const token = `fixture_access_${randomBytes(24).toString("hex")}`;
-    const expires = clock.wallNow() + lifetimeMs;
     const index = tokens.size + 1;
+    const expires =
+      clock.wallNow() + (typeof lifetimeMs === "function" ? lifetimeMs(index) : lifetimeMs);
     tokens.set(token, {
       index,
       expires,

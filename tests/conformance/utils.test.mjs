@@ -16,8 +16,8 @@ import {
   numericLastLabel,
   sha256Hex,
 } from "../../packages/utils/src/index.ts";
-import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
-import { MAX_TIMER_DELAY_MS as clockMaxTimerDelayMs } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/access/client-contracts.ts";
+import { MAX_TIMER_DELAY_MS as clockMaxTimerDelayMs } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 
 test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   const original = { identity: { namespaceId: "tenant-a" }, roles: ["reader"] };

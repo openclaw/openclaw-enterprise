@@ -1,3 +1,4 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
@@ -18,7 +19,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { jsonRequestInit } from "../helpers/inject-json.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -146,15 +147,15 @@ function forwarder(identity, target) {
 
 async function createSharedApp(implementation) {
   const installationId = `ins_${randomUUID()}`;
-  // The port is part of the auth base URL and origin, so hold it until the app binds it; a
-  // released probe port can be taken by another socket while the account and app are built.
+  // Reserve the loopback test socket while accounts and the application are built.
   const reservation = await reservePort();
   cleanup.push(reservation.release);
   const origin = `http://127.0.0.1:${reservation.port}`;
   const auth = createControllerAuth({
     installationId,
     mode: "development",
-    baseURL: origin,
+    baseURL: "https://console.oce.localhost",
+    agentDomain: "agents.oce.localhost",
     secret: `runtime-credential-test-secret-${randomUUID()}`,
     memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
   });
@@ -165,7 +166,15 @@ async function createSharedApp(implementation) {
       name,
     };
     const seed = auth.principalSeed(await auth.createAccount(credentials), { grant });
-    return { seed, signIn: () => signInWithEmailPassword({ origin, ...credentials }) };
+    return {
+      seed,
+      signIn: () =>
+        signInWithEmailPassword({
+          origin,
+          headers: { origin: "https://console.oce.localhost" },
+          ...credentials,
+        }),
+    };
   };
   const administrator = await createAccount(
     "runtime-admin",
@@ -199,8 +208,8 @@ async function createSharedApp(implementation) {
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId },
-    publicOrigin: origin,
+    development: { enabled: true, installationId, browserOrigin: "https://console.oce.localhost" },
+    publicOrigin: "https://console.oce.localhost",
     computeDriver: forwarder(
       { id: "runtime-credential-compute", capability: "compute", implementation },
       () => running.computeDriver,
@@ -246,14 +255,14 @@ async function createSharedApp(implementation) {
   async function request(
     method,
     path,
-    { session = adminSession, body, origin: requestOrigin = origin } = {},
+    { session = adminSession, body, origin: requestOrigin = "https://console.oce.localhost" } = {},
   ) {
-    const mutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-    const response = await fetch(
+    const response = await fetchLoopback(
       `${origin}${path}`,
       jsonRequestInit(method, body, {
         ...authenticatedHeaders(session),
-        ...(mutation ? { origin: requestOrigin } : {}),
+        host: "console.oce.localhost",
+        origin: requestOrigin,
       }),
     );
     const text = await response.text();
@@ -268,7 +277,7 @@ async function createSharedApp(implementation) {
   const installed = await request("POST", "/installation/bootstrap", {
     body: { name: "Runtime credential test" },
   });
-  assert.equal(installed.status, 201);
+  assert.equal(installed.status, 201, JSON.stringify(installed));
 
   async function bootstrapAgent(values = createHarnessConfiguration("openclaw", "gpt-4.1")) {
     const namespace = await request("POST", "/namespaces", {
@@ -880,8 +889,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const failed = await driverFailureFixture.request("POST", failedPath, {
     body: {},
   });
-  assert.equal(failed.status, 503);
-  assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(failed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(failed.body).includes(leakedDriverValue), false);
   assert.equal(
     JSON.stringify(driverFailureFixture.auditSink.events).includes(leakedDriverValue),
@@ -907,8 +915,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const auditFailed = await auditFailureFixture.request("POST", auditPath, {
     body: {},
   });
-  assert.equal(auditFailed.status, 503);
-  assert.equal(auditFailed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(auditFailed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(auditFailed.body).includes(leakedAuditValue), false);
   assert.equal(
     JSON.stringify(auditFailureFixture.auditSink.events).includes(leakedAuditValue),
@@ -1002,8 +1009,7 @@ for (const [name, diagnostics] of [
       "POST",
       `${agentPath}/deployments/${revision.data.id}/diagnostics`,
     );
-    assert.equal(result.status, 503);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(JSON.stringify(result.body).includes(marker), false);
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
   });
@@ -1063,8 +1069,7 @@ test("deployment diagnostics reject invalid Driver evidence", async () => {
   ]) {
     diagnosticOptions.diagnosticsResult = diagnosticsResult;
     const result = await fixture.request("POST", path);
-    assert.equal(result.status, 503, name);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE", name);
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE", name);
     assert.equal(JSON.stringify(result.body).includes("private token value"), false, name);
   }
 });

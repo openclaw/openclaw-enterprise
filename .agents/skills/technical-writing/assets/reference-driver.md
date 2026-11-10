@@ -4,6 +4,18 @@ kind: reference/driver
 
 # [Driver name] contract
 
+**Interface contents**
+
+- [Properties](#properties)
+  - [`<required property>`](#property-required-property)
+  - [`<optional property>`](#property-optional-property)
+- [Methods](#methods)
+  - [`<required method>`](#method-required-method)
+  - [`<optional method>`](#method-optional-method)
+
+<!-- Keep this list in table order. Replace sample labels and anchors with stable
+property-<name> and method-<name> IDs on the matching table cells. -->
+
 ## Overview
 
 [Name the caller, the capability this Driver owns, and the result it produces.
@@ -18,17 +30,17 @@ default, fallback, or unavailable feature in the value or behavior column.]
 
 ### Properties
 
-| Property              | Requirement | Value and meaning                           |
-| --------------------- | ----------- | ------------------------------------------- |
-| `<required property>` | Required    | [Value and what it identifies or declares.] |
-| `<optional property>` | Optional    | [Meaning and default when omitted.]         |
+| Property                                                     | Requirement | Value and meaning                           |
+| ------------------------------------------------------------ | ----------- | ------------------------------------------- |
+| <a id="property-required-property"></a>`<required property>` | Required    | [Value and what it identifies or declares.] |
+| <a id="property-optional-property"></a>`<optional property>` | Optional    | [Meaning and default when omitted.]         |
 
 ### Methods
 
-| Method              | Requirement | Caller and behavior                                     |
-| ------------------- | ----------- | ------------------------------------------------------- |
-| `<required method>` | Required    | [Caller, inputs, result, and effect.]                   |
-| `<optional method>` | Optional    | [When the caller needs it and what happens if omitted.] |
+| Method                                                 | Requirement | Caller and behavior                                     |
+| ------------------------------------------------------ | ----------- | ------------------------------------------------------- |
+| <a id="method-required-method"></a>`<required method>` | Required    | [Caller, inputs, result, and effect.]                   |
+| <a id="method-optional-method"></a>`<optional method>` | Optional    | [When the caller needs it and what happens if omitted.] |
 
 [Omit empty groups. Add Interface subsections for facets, input types, or
 operations that need more detail.]
@@ -59,6 +71,22 @@ sequenceDiagram
 
 [Briefly explain any retry or cleanup rules the diagram needs. Distinguish the
 Driver instance from the resources it manages.]
+
+## Configuration
+
+[Identify the configuration scope and when changes take effect. List required
+settings before optional settings, using only `Required` or `Optional` in the
+Requirement column. Include defaults, constraints, and omission behavior in the
+last column. Use separate tables for Installation and per-resource settings.]
+
+| Setting              | Type     | Requirement | Value, default, and constraints                    |
+| -------------------- | -------- | ----------- | -------------------------------------------------- |
+| `<required setting>` | `<type>` | Required    | [Meaning and accepted values; no default.]         |
+| `<optional setting>` | `<type>` | Optional    | [Meaning, constraints, and behavior when omitted.] |
+
+[Link the shared selection and configuration contract. Keep implementation-specific
+fields and examples in the implementation references. If there are no shared
+settings, say so and omit the empty table.]
 
 ## Limits
 

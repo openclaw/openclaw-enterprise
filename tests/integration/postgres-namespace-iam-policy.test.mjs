@@ -9,6 +9,7 @@ import {
 import { AuthorizationDeniedError, OpenClawController } from "../../packages/occ/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -647,7 +648,7 @@ test(
           },
         ),
       ),
-      /the ServicePrincipal of a live Agent here/,
+      { message: BINDING_SUBJECT_INELIGIBLE },
     );
 
     assert.equal(
@@ -1236,7 +1237,13 @@ test(
         configurationGeneration: configuration.generation,
         gatewayManagedMode: agent.gatewayManagedMode,
         configuration: {},
-        harness: { id: "test-harness", version: "1.0.0", mode: "embedded" },
+        harness: {
+          id: "test-harness",
+          version: "1.0.0",
+          mode: "embedded",
+          overrides: {},
+          configuration: {},
+        },
         compute: { id: "test-compute", implementation: "test" },
         executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },

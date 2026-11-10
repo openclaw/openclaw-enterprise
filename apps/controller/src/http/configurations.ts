@@ -1,5 +1,15 @@
 import type { OpenClawConfigurationDocument, SecretBindings } from "@openclaw-enterprise/contracts";
+import {
+  MUTATION_BACKEND_BUDGET_MS,
+  withMutationDeadline,
+} from "../admission/mutation-deadline.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
+
+// A create, update or delete sends no Configuration or Secret backend call later than
+// MUTATION_BACKEND_BUDGET_MS after the handler starts, so a slow cluster fails the request with
+// 503 instead of committing it long after an ingress answered 504 (finding 3106). The audit
+// append and the commit run after the budget. Only the forward path runs under the deadline:
+// the transaction's compensations run after it.
 
 export const configurationHandlers = {
   async createConfiguration({
@@ -11,15 +21,18 @@ export const configurationHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const configuration = await controller.transact(async (unit) => {
-      const created = await controller.createConfiguration(context.actorId, {
-        namespaceId,
-        kind: body?.kind as "agent",
-        values: body?.values as OpenClawConfigurationDocument,
-        ...(body?.secretBindings === undefined
-          ? {}
-          : { secretBindings: body.secretBindings as SecretBindings }),
-      });
+      const created = await withMutationDeadline(deadline, () =>
+        controller.createConfiguration(context.actorId, {
+          namespaceId,
+          kind: body?.kind as "agent",
+          values: body?.values as OpenClawConfigurationDocument,
+          ...(body?.secretBindings === undefined
+            ? {}
+            : { secretBindings: body.secretBindings as SecretBindings }),
+        }),
+      );
       await unit.audit.append(
         mutationEvent({ kind: "configuration", id: created.id, namespaceId }),
       );
@@ -45,18 +58,21 @@ export const configurationHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const configuration = await controller.transact(async (unit) => {
-      const updated = await controller.updateConfiguration(context.actorId, {
-        namespaceId,
-        configurationId: params.configurationId as string,
-        values: body?.values as OpenClawConfigurationDocument,
-        ...(body?.secretBindings === undefined
-          ? {}
-          : { secretBindings: body.secretBindings as SecretBindings }),
-        ...(body?.expectedGeneration === undefined
-          ? {}
-          : { expectedGeneration: body.expectedGeneration as number }),
-      });
+      const updated = await withMutationDeadline(deadline, () =>
+        controller.updateConfiguration(context.actorId, {
+          namespaceId,
+          configurationId: params.configurationId as string,
+          values: body?.values as OpenClawConfigurationDocument,
+          ...(body?.secretBindings === undefined
+            ? {}
+            : { secretBindings: body.secretBindings as SecretBindings }),
+          ...(body?.expectedGeneration === undefined
+            ? {}
+            : { expectedGeneration: body.expectedGeneration as number }),
+        }),
+      );
       await unit.audit.append(
         mutationEvent({ kind: "configuration", id: updated.id, namespaceId }),
       );
@@ -65,11 +81,14 @@ export const configurationHandlers = {
     reply.send({ data: configuration, meta: { requestId: request.id } });
   },
   async deleteConfiguration({ controller, context, reply, params, namespaceId, mutationEvent }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     await controller.transact(async (unit) => {
-      const removed = await controller.deleteConfiguration(
-        context.actorId,
-        namespaceId,
-        params.configurationId as string,
+      const removed = await withMutationDeadline(deadline, () =>
+        controller.deleteConfiguration(
+          context.actorId,
+          namespaceId,
+          params.configurationId as string,
+        ),
       );
       await unit.audit.append(
         mutationEvent(

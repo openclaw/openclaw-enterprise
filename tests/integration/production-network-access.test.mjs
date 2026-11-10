@@ -94,5 +94,130 @@ test(
       });
       await access.verify({ source: "oldreader", deny: ["publicReader", "publicReaderWrongPort"] });
     });
+
+    await t.test(
+      "the public OpenShell quickstart preserves scoped management access across tenants",
+      async (t) => {
+        // Real listeners, Services, renderer output and CNI enforce this boundary. These
+        // probes do not run OpenShell, an Agent lifecycle, or a model turn.
+        await access.installOpenShellManagement(0);
+        const ports = {
+          allow: ["management"],
+          deny: ["managementWrongPort"],
+          controlSource: "management",
+        };
+        // Observe isolation before checking grants so policy propagation cannot make
+        // an unrestricted connection look like a successful renderer allowance. The
+        // same-release initialization Pod must not inherit the API/worker grant.
+        for (const source of [
+          "ordinary",
+          "foreignsupervisor",
+          "supervisor1",
+          "managementinitialization",
+        ]) {
+          await access.verify({
+            source,
+            deny: ["management", "managementWrongPort"],
+            controlSource: "management",
+          });
+        }
+        for (const source of ["supervisor0", "gateway0", "managementapi", "managementworker"]) {
+          await access.verify({ source, ...ports });
+        }
+
+        // Wait for the second tenant's grant before rechecking the first. An overwritten
+        // policy must not pass while the CNI still serves the previous policy.
+        await access.installOpenShellManagement(1);
+        for (const source of ["supervisor1", "gateway1", "supervisor0", "gateway0"]) {
+          await access.verify({ source, ...ports });
+        }
+        await access.verify({
+          source: "foreignsupervisor",
+          deny: ["management"],
+          controlSource: "management",
+        });
+
+        await access.confirmManagementPortControls();
+
+        await t.test(
+          "Git-enabled management egress preserves DNS and current API endpoints",
+          async () => {
+            await access.installManagementRepositoryAccess();
+            const allowed = [
+              "dns",
+              "dnsTcp",
+              "kubernetesApi",
+              "managementApi",
+              "withdrawnManagementApi",
+              "managementGit",
+              "managementGitService",
+            ];
+            const denied = [
+              "managementApiWrongPort",
+              "withdrawnManagementApiWrongPort",
+              "managementGitWrongPort",
+              "unexpected",
+            ];
+            await access.verify({ source: "management", allow: allowed, deny: denied });
+            // The Agent's tenant gateway must not inherit management-only API or Git
+            // grants even though repository_network also emits supervisor policies.
+            await access.verify({
+              source: "gateway0",
+              deny: [
+                "managementApi",
+                "withdrawnManagementApi",
+                "managementGit",
+                "managementGitService",
+              ],
+            });
+            await access.withdrawManagementApiEndpoint();
+            await access.verify({
+              source: "management",
+              allow: allowed.filter((name) => name !== "withdrawnManagementApi"),
+              deny: [...denied, "withdrawnManagementApi"],
+            });
+            // A controlled discovery snapshot contains only the acknowledged
+            // proxy slice; the native cluster API endpoints remain unchanged.
+            // Re-admit both backends before each withdrawal: readiness=false and
+            // an empty placeholder slice must each remove previously live grants.
+            for (const empty of [false, true]) {
+              await access.useOwnedManagementApiDiscovery();
+              await access.verify({
+                source: "management",
+                allow: allowed.filter((name) => name !== "kubernetesApi"),
+                deny: denied,
+              });
+              await access.withdrawAllManagementApiEndpoints({ empty });
+              await access.verify({
+                source: "management",
+                allow: ["dns", "dnsTcp", "managementGit", "managementGitService"],
+                deny: [...denied, "managementApi", "withdrawnManagementApi"],
+              });
+            }
+          },
+        );
+
+        // Withdrawing one supervisor policy must preserve both the other tenant and
+        // the independent per-Agent gateway grant.
+        await access.withdrawSupervisorGrant(1);
+        await access.verify({
+          source: "supervisor1",
+          deny: ["management"],
+          controlSource: "management",
+        });
+        for (const source of ["supervisor0", "gateway1"]) {
+          await access.verify({ source, ...ports });
+        }
+
+        // A namespace that loses its tenant label must lose access even while its
+        // named policies and Pods still exist and source egress still permits 8080.
+        await access.removeTenantOwnership(0);
+        for (const source of ["supervisor0", "gateway0"]) {
+          await access.verify({ source, deny: ["management"], controlSource: "management" });
+        }
+        // Uninstall consumes the policy sets recorded by both deployments.
+        await access.removeRecordedServicePolicies();
+      },
+    );
   },
 );

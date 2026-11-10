@@ -296,6 +296,10 @@ Missing worker permissions keep provisioning pending; missing API permissions
 prevent Configuration access. Docker and external Compute Drivers reject
 existing-namespace selection with `409`.
 
+When the controller cannot create namespaces, bind one operator-created
+namespace with the Helm value
+[`preprovisionedNamespace`](preprovisioned-namespace.md).
+
 Workload Pods use the restricted
 [Pod and container hardening](../../security.md#pod-and-container-hardening),
 including the optional `runtime.codexSeccompProfile`, which applies only to the

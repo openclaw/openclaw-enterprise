@@ -21,7 +21,7 @@ import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox
 import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -32,7 +32,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
@@ -40,7 +39,7 @@ import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
@@ -51,6 +50,8 @@ import {
   BROKER_PROXY_EMPTY_HOST,
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
+  callerDenied,
+  CODEX_NEEDS_DEDICATED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_GIT_ALONE,
@@ -61,6 +62,7 @@ import {
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   REPOSITORY_SETTINGS_MISSING,
+  runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -316,7 +318,11 @@ async function fixture(
       resolveHarness: resolveApprovedHarness,
       auditSink,
       auth: auth.auth,
-      development: { enabled: true, installationId: installation.id },
+      development: {
+        enabled: true,
+        installationId: installation.id,
+        browserOrigin: "https://console.oce.localhost",
+      },
     });
     t.after(() => app.close());
     const request = await createAuthenticatedControllerRequest(app, auth);
@@ -1078,9 +1084,18 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message, atSave } of [
+  for (const { harness, executionMode, status, code, message, atSave, storedPastSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
-    { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
+    // Configuration save refuses it (finding 3020), so only a row an older release stored
+    // reaches deployment.
+    {
+      harness: "unknown",
+      executionMode: "embedded",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: runtimeIdUnsupported('agents.defaults.models["openai/gpt-5.1"]'),
+      storedPastSave: true,
+    },
     // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
     // refuses this Harness/mode pair before deployment admission.
     {
@@ -1088,7 +1103,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "dedicated",
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message: /cannot deliver repository credentials to this Harness topology/,
+      message: COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
       atSave: true,
     },
     // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
@@ -1098,12 +1113,16 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
-      message: /selects the Codex Harness, which needs dedicated execution/,
+      message: CODEX_NEEDS_DEDICATED,
       atSave: true,
     },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
-      const f = await fixture(t, { harness });
+      const configurationDriver = createTestConfigurationDriver();
+      const f = await fixture(t, {
+        harness: storedPastSave ? "openclaw" : harness,
+        configurationDriver,
+      });
       if (atSave) {
         const refused = await f.request("POST", f.collection, {
           name: `Repository Agent ${randomUUID()}`,
@@ -1113,19 +1132,26 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
         });
         assert.equal(refused.status, status, JSON.stringify(refused));
         assert.equal(refused.error.code, code);
-        assert.match(refused.error.message, message);
+        assert.equal(refused.error.message, message);
         assert.deepEqual((await f.request("GET", f.collection)).data, []);
         return;
       }
       const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
       await f.prepareDeployment(agent);
+      if (storedPastSave) {
+        // Written past OCC, as an older release's Configuration save stored it.
+        const values = createHarnessConfiguration(harness, "gpt-5.1");
+        delete values.gateway.auth;
+        await configurationDriver.update({
+          ...configurationDriver.stored({ namespaceId: f.namespace.id, id: f.configuration.id }),
+          values,
+        });
+      }
       const path = `${f.collection}/${agent.id}`;
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
-      if (message) {
-        assert.match(denied.error.message, message);
-      }
+      assert.equal(denied.error.message, message);
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
     });
   }
@@ -1177,7 +1203,19 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
       const path = `${f.collection}/${agent.id}`;
       const deployed = await f.request("POST", `${path}/deploy`);
       assert.equal(deployed.status, 202, JSON.stringify(deployed));
-      assert.deepEqual(deployed.data.harness, { id: "codex", version: "1.0.0", mode: "dedicated" });
+      assert.deepEqual(deployed.data.harness, {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+      });
       assert.deepEqual(deployed.data.repositoryCredentials.bindings, bindings);
       const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
       assert.deepEqual(historical.data.repositoryCredentials, deployed.data.repositoryCredentials);
@@ -1286,7 +1324,7 @@ test("Agent save and deployment refuse a Codex network proxy that blocks the rep
   assert.equal(unbound.status, 202, JSON.stringify(unbound));
 });
 
-test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Codex Plugin Driver", async (t) => {
+test("Embedded OpenClaw skips the Codex broker proxy and refuses Codex plugin selections", async (t) => {
   const f = await fixture(t);
   const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
     kind: "agent",
@@ -1303,15 +1341,13 @@ test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Code
   // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
   const plain = await create();
   assert.equal(plain.status, 201, JSON.stringify(plain));
-  // With the Codex Plugin Driver, the Gateway's Codex carries the broker traffic.
+  // Enabling the Codex catalog does not install a Codex bridge on an OpenClaw Harness.
   const driver = new CodexPluginDriver();
   f.controller.registerDriver(driver);
   f.controller.selectDriver("plugin", driver.id);
-  assertBrokerProxyRefused(
-    await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }),
-    BROKER_PROXY_DISABLED,
-    "embedded Codex plugins",
-  );
+  const refused = await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } });
+  assert.equal(refused.status, 400, JSON.stringify(refused));
+  assert.match(refused.error.message, /Plugin Driver.*openclaw Harness/i);
 });
 
 test("Provisioning refuses a Codex network proxy that blocks the repository broker before queueing", async (t) => {
@@ -1616,7 +1652,10 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
     repositoryBindings: selection,
   });
   assert.equal(hidden.status, 403, JSON.stringify(hidden));
-  assert.match(hidden.error.message, /needs SandboxPolicy read on /);
+  assert.equal(
+    hidden.error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${granted.data.id}`),
+  );
   assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
   // An Agent with no saved additions has nothing to name, so its binding saves without read.
   const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
@@ -1779,7 +1818,7 @@ async function protectedOpenShellComposition(
   const git =
     installationAccess &&
     new OpenShellGitRuntime(
-      { protectedExecution: true },
+      {},
       createGitHubRepositoryDeliveryResolver(
         validateGitHubRepositoryRegistry(f.registry, backendId),
       ),
@@ -1954,10 +1993,13 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
     { repositoryRef: "project", profile: "git-write" },
     { repositoryRef: "second-project", profile: "git-read" },
   ];
-  for (const [name, bindings] of [
-    ["git-read", [{ repositoryRef: "project", profile: "git-read" }]],
-    ["git-full", [{ repositoryRef: "project", profile: "git-full" }]],
-    ["two bindings", several],
+  // A lone unsupported binding and a mixed selection need different fixes. The mixed one must
+  // point to github-repository, which delivers several repositories, not say they are refused.
+  const lone = /cannot deliver this repository's Git access level/u;
+  for (const [name, bindings, message] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }], lone],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }], lone],
+    ["two bindings", several, /To use more than one repository, .*`github-repository`/u],
   ]) {
     for (const advertised of [false, true]) {
       const label = `${name}${advertised ? " with the execution profile" : ""}`;
@@ -1966,7 +2008,7 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
       });
       assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
       assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
-      assert.equal(response.error.message, RepositoryGitProfileUnsupportedError.description);
+      assert.match(response.error.message, message, label);
       assert.deepEqual(revisions, [], label);
       assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
     }

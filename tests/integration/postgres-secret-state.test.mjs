@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -151,7 +152,13 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
       secretDriverId: storedSecret.driverId,
     },
     configuration: { models: { providers: { codex: {} } } },
-    harness: { id: "codex", version: "1.0.0", mode: agent.executionMode },
+    harness: {
+      id: "codex",
+      version: "1.0.0",
+      mode: agent.executionMode,
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "compute-test", implementation: "deterministic-test" },
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
@@ -222,7 +229,7 @@ async function exerciseRepository(store) {
     ),
     {
       name: "ResourceStateConflictError",
-      message: "A Secret with this name already exists in this Namespace. Choose a different name.",
+      message: SECRET_NAME_CONFLICT,
     },
   );
 
@@ -603,7 +610,13 @@ test(
             configuration_kind: "agent",
             configuration_generation: 1,
             draft_spec: {},
-            harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+            harness: {
+              id: "openclaw",
+              version: "1.0.0",
+              mode: "embedded",
+              overrides: {},
+              configuration: {},
+            },
             compute: { id: "compute-test", implementation: "deterministic-test" },
             secret_driver_id: "kubernetes-secret",
             secret_bindings: bindingFor(sqlSecret),

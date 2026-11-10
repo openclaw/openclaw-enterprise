@@ -3,7 +3,7 @@
 Use these guides to understand how Agents run, control what they can access,
 and decide which changes require a new deployment. If you are new to OpenClaw
 Enterprise, start with [Concepts](../concepts.md) or
-[deploy your first Agent](../first-agent.md).
+[set up an OpenShell Codex Agent](../deploy/local-setup.md).
 
 ## Agent
 

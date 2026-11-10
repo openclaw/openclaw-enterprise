@@ -6,8 +6,8 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
-import { openShellInstallationGitProviderPrefix } from "../repo/credentials/protected-repository-git-installation.ts";
-import { isGitHubWireCredential } from "../repo/github/credentials/wire-credential.ts";
+import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,

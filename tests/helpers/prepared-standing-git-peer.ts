@@ -1,5 +1,5 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -9,9 +9,9 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import type { Clock } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
@@ -32,6 +32,7 @@ export function clockBehind(behindMs: number): Clock {
 }
 
 export interface SelectedRepositories {
+  allowStandingApproval?: true;
   selectedRepositoryIds: readonly string[];
   entries: readonly { repositoryRef: string; repositoryId: string; repository: string }[];
   permissions: Readonly<Record<string, "read" | "write">>;
@@ -40,10 +41,12 @@ export interface SelectedRepositories {
 export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
-  tokenLifetimeMs = 135_000,
+  tokenLifetimeMs: number | ((index: number) => number) = 135_000,
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
   selection?: SelectedRepositories,
+  draftPull = false,
+  pushRef = "refs/heads/review",
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
@@ -54,6 +57,9 @@ export async function standingGitOrigin(
     tokenLifetimeMs,
     beforeIssue,
     installationAccess,
+    ...(draftPull && {
+      additionalPermissions: [{ metadata: "read", contents: "write", pull_requests: "write" }],
+    }),
     ...(selection && {
       expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
       additionalRepositories: selection.entries.slice(1),
@@ -61,7 +67,6 @@ export async function standingGitOrigin(
     }),
   });
   const tls = gh.tls;
-  const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
   const registrationName = "oce-prepared-git";
   const registry = validateGitHubRepositoryRegistry({
@@ -70,7 +75,7 @@ export async function standingGitOrigin(
     providerInstanceId: "fixture-provider",
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: selection ? 600 : 180,
+    maximumDurationSeconds: selection || draftPull ? 600 : 180,
     allowStandingApprovals: true,
     ...(installationAccess && {
       installationAccess: {
@@ -82,7 +87,12 @@ export async function standingGitOrigin(
       ? selection.entries.map((entry) => ({
           ...entry,
           namespaces: [
-            { namespaceId, profiles: ["github-repository"], permissions: selection.permissions },
+            {
+              namespaceId,
+              profiles: ["github-repository"],
+              permissions: selection.permissions,
+              ...(selection.allowStandingApproval && { allowStandingApproval: true }),
+            },
           ],
         }))
       : [
@@ -94,7 +104,8 @@ export async function standingGitOrigin(
               {
                 namespaceId,
                 profiles: ["git-write"],
-                transport: "git-only",
+                transport: draftPull ? "git-and-draft-pr" : "git-only",
+                ...(draftPull && { pullRequestBase: "main" }),
                 allowStandingApproval: true,
                 pushRefAllowlist: [pushRef],
               },
@@ -143,8 +154,10 @@ export async function preparedStandingGitPeer(
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
-    /** GitHub's token lifetime, by the system clock. */
-    tokenLifetimeMs?: number;
+    draftPull?: boolean;
+    pushRef?: string;
+    /** GitHub's token lifetime by the system clock, or a function of the 1-based token index. */
+    tokenLifetimeMs?: number | ((index: number) => number);
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
     ownerClock?: Clock;
   } = {},
@@ -167,6 +180,8 @@ export async function preparedStandingGitPeer(
     options.beforeIssue,
     options.installationAccess,
     options.selection,
+    options.draftPull,
+    options.pushRef,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
@@ -197,24 +212,25 @@ export async function preparedStandingGitPeer(
     transport.mock.restore();
     syncBuiltinESMExports();
   });
-  const prepared = await startPreparedGitHubGitOwner(
-    {
-      registry,
-      pool,
-      driverId: backendId,
-      implementation: "github",
-      backendId,
-      privateKeyPath,
-      custodyKeyPath,
-      ca: tls.ca,
-      startWorker: false,
-      ...(options.driver && {
-        protectedGitDriver: options.driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
-      }),
-    },
-    options.ownerClock,
-  );
+  const startOwner = (selectedRegistry = registry) =>
+    startPreparedGitHubGitOwner(
+      {
+        registry: selectedRegistry,
+        pool,
+        driverId: backendId,
+        implementation: "github",
+        backendId,
+        privateKeyPath,
+        custodyKeyPath,
+        ca: tls.ca,
+        startWorker: false,
+        repositoryGitCustody: options.driver
+          ? selectBundledRepositoryGitCustody(options.driver)
+          : { kind: "unavailable" },
+      },
+      options.ownerClock,
+    );
+  const prepared = await startOwner();
   // The directory is private to this case. No receipt service, broker, session bearer, or
   // prepared-use socket exists before, during, or after either Git transfer.
   const noBroker = async () => {
@@ -290,6 +306,7 @@ export async function preparedStandingGitPeer(
   return {
     registry,
     prepared,
+    startOwner,
     origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {

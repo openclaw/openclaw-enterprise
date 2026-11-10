@@ -10,9 +10,17 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const sourceRoot = fileURLToPath(new URL("../../apps/controller/src/", import.meta.url));
 const sharedFields = "composition/installation-fields.ts";
 const installation = "drivers/repo/github/installation.ts";
-const preparedConfiguration = "drivers/repo/github/credentials/prepared-configuration.ts";
-const preparedGit = "drivers/repo/github/credentials/prepared-repository-git.ts";
-const entrypoints = ["repository-credentials.ts", "repository-credentials.mjs", sharedFields];
+const preparedConfiguration = "drivers/repo/github/access/prepared-configuration.ts";
+const preparedGit = "drivers/repo/github/access/prepared-repository-git.ts";
+const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const custodySelection = "composition/repository-credentials/custody-selection.ts";
+const evidenceImport = "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const entrypoints = [
+  "repository-credentials.ts",
+  "repository-credentials.mjs",
+  sharedFields,
+  openShellEvidence,
+];
 
 async function appendSource(root, file, source, check) {
   const path = join(root, file);
@@ -51,6 +59,21 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   for (const [label, file, source] of [
     [
+      "OpenShell evidence admits its exact contract symbol",
+      openShellEvidence,
+      'import { repositoryGitRecipientFields as fields } from "@openclaw-enterprise/contracts"; void fields;',
+    ],
+    [
+      "custody selection admits only its reviewed evidence symbols",
+      custodySelection,
+      `import { openShellGitRecipientEvidence as evidence, openShellPreviewEnded as ended } from "${evidenceImport}"; void evidence; void ended;`,
+    ],
+    [
+      "adjacent adapter source remains outside the credential scan",
+      "drivers/egress-proxy/boundary-unscanned.ts",
+      'import { request } from "node:https"; void request;',
+    ],
+    [
       "shared fields admit their exact pure dependencies",
       sharedFields,
       'import { asRecord as record, isNonEmptyString as nonemptyString } from "@openclaw-enterprise/utils"; import { isAbsolute as absolute } from "node:path"; void record; void nonemptyString; void absolute;',
@@ -63,7 +86,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "repository installation admits its exact field helpers",
       installation,
-      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository;',
+      'import { object as record, closed as check, nonempty as text } from "../../../composition/installation-fields.ts"; void record; void check; void text;',
     ],
     [
       "prepared Git admits its existing transaction class and worker identity",
@@ -71,14 +94,14 @@ test("credential source boundary rejects new raw capabilities in the real source
       'import { CredentialDeliveries as Deliveries } from "@openclaw-enterprise/occ"; import { randomUUID as uuid } from "node:crypto"; void Deliveries; void uuid;',
     ],
     [
-      "repository installation admits hashing and its recipient error",
-      installation,
-      'import { createHash as hash } from "node:crypto"; import { SandboxRepositoryRecipientUnverifiedError as RecipientError } from "@openclaw-enterprise/occ"; void hash; void RecipientError;',
+      "repository credential registry admits hashing",
+      "drivers/repo/github/access/registry.ts",
+      'import { createHash as hash } from "node:crypto"; void hash;',
     ],
 
     [
       "type-only imports and ordinary object methods remain valid",
-      "drivers/repo/credentials/boundary-types.ts",
+      "drivers/repo/access/boundary-types.ts",
       `import type * as Http from "node:http";
        import type { RequestOptions } from "node:https";
        export type { Socket } from "node:net";
@@ -89,14 +112,14 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "the outgoing header owner can validate names and values",
-      "drivers/repo/credentials/transport/request-headers.ts",
+      "drivers/repo/access/transport/request-headers.ts",
       `import { validateHeaderName as checkName, validateHeaderValue as checkValue } from "node:http";
        checkName("accept"); checkValue("accept", "application/json");`,
     ],
     [
       "the platform Driver can render portable session files",
       "drivers/repo/github/driver.ts",
-      'import { encodeRepositoryCredentialSessionFiles as encodeFiles } from "./credentials/client/config.js"; void encodeFiles;',
+      'import { encodeRepositoryCredentialSessionFiles as encodeFiles } from "./access/client/config.js"; void encodeFiles;',
     ],
     [
       "the bootstrap can load only the emitted process main",
@@ -109,7 +132,7 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   for (const file of [
     "composition/repository-credentials",
-    "drivers/repo/credentials",
+    "drivers/repo/access",
     "drivers/repo/github",
     "backends/repository-credentials",
     ...entrypoints,
@@ -141,7 +164,7 @@ test("credential source boundary rejects new raw capabilities in the real source
   }
 
   await t.test("a symlinked credential source fails closed", async () => {
-    const path = join(root, "drivers/repo/credentials/linked.ts");
+    const path = join(root, "drivers/repo/access/linked.ts");
     await symlink("sessions.ts", path);
     try {
       await assert.rejects(verify(root), {
@@ -167,12 +190,134 @@ test("credential source boundary rejects new raw capabilities in the real source
     }
   });
 
+  for (const replacement of ["symlink", "directory"]) {
+    await t.test(`OpenShell evidence cannot be replaced with a ${replacement}`, async () => {
+      const path = join(root, openShellEvidence);
+      const saved = join(temporary, "openshell-evidence.ts");
+      await rename(path, saved);
+      try {
+        if (replacement === "symlink") {
+          await symlink(saved, path);
+        } else {
+          await mkdir(path);
+        }
+        await assert.rejects(verify(root), {
+          message: `Invalid credential entrypoint: ${openShellEvidence}`,
+        });
+      } finally {
+        await rm(path, { recursive: true });
+        await rename(saved, path);
+      }
+    });
+  }
+
   const cases = [
+    // These mutations must be rejected at the evidence file itself: merely
+    // exempting the selector's import or ignoring this file cannot pass.
+    ...[
+      ["file IO", 'import { readFile } from "node:fs/promises";'],
+      ["network IO", 'import { request } from "node:https";'],
+      ["ordinary builtin expansion", 'import { hostname } from "node:os";'],
+      [
+        "adjacent contract symbol",
+        'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+      ],
+      ["credential material", 'import * as material from "../repo/github/access/material.ts";'],
+      [
+        "additional loader",
+        'import { loadPublicCa } from "../../composition/repository-credentials/public-ca.ts";',
+      ],
+      ["adapter source", 'import "./openshell.ts";'],
+      ["side-effect import", 'import "@openclaw-enterprise/contracts";'],
+      ["namespace import", 'import * as contracts from "@openclaw-enterprise/contracts";'],
+      ["inline type side effect", 'import { type Extra } from "@openclaw-enterprise/contracts";'],
+      ["dynamic import", 'void import("@openclaw-enterprise/contracts");'],
+      [
+        "dependency re-export",
+        'export { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";',
+      ],
+      [
+        "relative dependency expansion",
+        'import { extra } from "../repo/access/protected-repository-git-installation.ts";',
+      ],
+    ].map(([label, source]) => [
+      `OpenShell evidence rejects ${label}`,
+      source,
+      /unreviewed OpenShell evidence/,
+      openShellEvidence,
+    ]),
+    [
+      "OpenShell evidence rejects raw network globals",
+      'void fetch("https://example.invalid");',
+      /raw global fetch/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence rejects process access",
+      "void process.env;",
+      /raw process capability env/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence rejects CommonJS loading",
+      'require("node:fs");',
+      /raw global require/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence cannot re-export a local dependency",
+      "export { repositoryGitRecipientFields };",
+      /raw I\/O binding cannot be re-exported/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence cannot re-export a local relative dependency",
+      "export { recipient };",
+      /raw I\/O binding cannot be re-exported/,
+      openShellEvidence,
+    ],
+    [
+      "new non-selector importer cannot acquire OpenShell evidence",
+      `import { openShellGitRecipientEvidence, openShellPreviewEnded } from "${evidenceImport}";`,
+      /openshell-repository-git-evidence.ts is not reviewed for/,
+      "composition/repository-credentials/new-evidence-consumer.ts",
+    ],
+    ...[
+      [
+        "extra symbol",
+        `import { openShellGitRecipientEvidence as allowed, protectedRepositoryGitInstallationSql } from "${evidenceImport}";`,
+      ],
+      ["namespace import", `import * as evidence from "${evidenceImport}";`],
+      ["side-effect import", `import "${evidenceImport}";`],
+      ["dynamic import", `void import("${evidenceImport}");`],
+      ["direct re-export", `export { openShellGitRecipientEvidence } from "${evidenceImport}";`],
+      [
+        "emitted extra symbol",
+        `import { protectedRepositoryGitInstallationSql } from "${evidenceImport.replace(/\.ts$/, ".js")}";`,
+      ],
+    ].map(([label, source]) => [
+      `custody selection rejects evidence ${label}`,
+      source,
+      /openshell-repository-git-evidence.ts is not reviewed for/,
+      custodySelection,
+    ]),
+    [
+      "custody selection cannot re-export local evidence",
+      "export { openShellGitRecipientEvidence };",
+      /raw I\/O binding cannot be re-exported/,
+      custodySelection,
+    ],
+    [
+      "custody selection still cannot load adjacent adapter source",
+      'import "../../drivers/egress-proxy/openshell.ts";',
+      /runtime import has no scanned credential source/,
+      custodySelection,
+    ],
     [
       "issuer trust identity cannot import private keys",
       'import { createPrivateKey } from "node:crypto";',
       /unreviewed runtime import from node:crypto \(createPrivateKey\)/,
-      "drivers/repo/github/credentials/origin.ts",
+      "drivers/repo/github/access/origin.ts",
     ],
     [
       "shared fields reject direct file IO",
@@ -206,7 +351,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "shared fields reject relative sender",
-      'import { sendProviderRequest } from "../drivers/repo/github/credentials/provider-transport/request.ts";',
+      'import { sendProviderRequest } from "../drivers/repo/github/access/provider-transport/request.ts";',
       /unreviewed shared field validation/,
       sharedFields,
     ],
@@ -391,35 +536,53 @@ test("credential source boundary rejects new raw capabilities in the real source
       preparedGit,
     ],
     [
+      "repository installation rejects the old OpenShell parser",
+      'import { openShellRepositoryConfiguration } from "../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation import from \.\.\/\.\.\/\.\.\/composition\/installation-fields\.ts/,
+      installation,
+    ],
+    [
+      "repository installation rejects hashing",
+      'import { createHash } from "node:crypto";',
+      /unreviewed runtime import from node:crypto \(createHash\)/,
+      installation,
+    ],
+    [
+      "repository installation rejects the old recipient error",
+      'import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";',
+      /unreviewed runtime import from @openclaw-enterprise\/occ \(SandboxRepositoryRecipientUnverifiedError\)/,
+      installation,
+    ],
+    [
       "configuration hash cannot be re-exported locally",
       "export { createHash };",
       /raw I\/O binding cannot be re-exported/,
-      installation,
+      "drivers/repo/github/access/registry.ts",
     ],
 
     [
       "shared client metadata cannot acquire network authority",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "drivers/repo/credentials/client-contracts.ts",
+      "drivers/repo/access/client-contracts.ts",
     ],
     [
       "the native hook dispatcher cannot open credential files directly",
       'import { readFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises/,
-      "drivers/repo/github/credentials/client/hook-dispatch.ts",
+      "drivers/repo/github/access/client/hook-dispatch.ts",
     ],
     [
       "the native hook dispatcher cannot create a network sender",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "drivers/repo/github/credentials/client/hook-dispatch.ts",
+      "drivers/repo/github/access/client/hook-dispatch.ts",
     ],
     [
       "client code cannot load a service owner",
-      'import { bearerDigest } from "../../../credentials/sessions.ts";',
-      /client runtime cannot load service owner drivers\/repo\/credentials\/sessions.ts/,
-      "drivers/repo/github/credentials/client/router.ts",
+      'import { bearerDigest } from "../../../access/sessions.ts";',
+      /client runtime cannot load service owner drivers\/repo\/access\/sessions.ts/,
+      "drivers/repo/github/access/client/router.ts",
     ],
     [
       "configuration composition cannot open files outside the protected reader",
@@ -441,7 +604,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "the anonymous reader cannot load token custody",
-      'import "../credentials/material.js";',
+      'import "../access/material.js";',
       /public GitHub reader and repository credential owners cannot load one another/,
       "drivers/repo/github/public-read/server.ts",
     ],
@@ -449,7 +612,7 @@ test("credential source boundary rejects new raw capabilities in the real source
       "credential owners cannot delegate to the anonymous listener",
       'import "../public-read/server.js";',
       /public GitHub reader and repository credential owners cannot load one another/,
-      "drivers/repo/github/credentials/static-token.ts",
+      "drivers/repo/github/access/static-token.ts",
     ],
     [
       "the anonymous reader cannot read credential files",
@@ -467,7 +630,7 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the shared protected Git installation predicate cannot become a sender",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "drivers/repo/credentials/protected-repository-git-installation.ts",
+      "drivers/repo/access/protected-repository-git-installation.ts",
     ],
     [
       "new Backend source is scanned",
@@ -573,22 +736,22 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "raw upstream helper",
       'import { createUpstreamSender } from "./transport/upstream.ts";',
-      /raw sender drivers\/repo\/credentials\/transport\/upstream.ts/,
+      /raw sender drivers\/repo\/access\/transport\/upstream.ts/,
     ],
     [
       "a reviewed sender consumer cannot re-export the sender",
       'export { createUpstreamSender } from "./upstream.ts";',
-      /raw sender drivers\/repo\/credentials\/transport\/upstream.ts is not reviewed for drivers\/repo\/credentials\/transport\/agent.ts/,
-      "drivers/repo/credentials/transport/agent.ts",
+      /raw sender drivers\/repo\/access\/transport\/upstream.ts is not reviewed for drivers\/repo\/access\/transport\/agent.ts/,
+      "drivers/repo/access/transport/agent.ts",
     ],
     [
       "raw provider helper through emitted extension",
-      'import { sendProviderRequest } from "../github/credentials/provider-transport/request.js";',
-      /raw sender drivers\/repo\/github\/credentials\/provider-transport\/request.ts/,
+      'import { sendProviderRequest } from "../github/access/provider-transport/request.js";',
+      /raw sender drivers\/repo\/github\/access\/provider-transport\/request.ts/,
     ],
     [
       "client command owner",
-      'import { launchClient } from "../github/credentials/client/launch.ts";',
+      'import { launchClient } from "../github/access/client/launch.ts";',
       /service code cannot load client command owner/,
     ],
     [
@@ -600,13 +763,13 @@ test("credential source boundary rejects new raw capabilities in the real source
       "listener cannot become sender",
       'import { request as rawRequest } from "node:https";',
       /unreviewed runtime import from node:https \(request\)/,
-      "drivers/repo/credentials/server.ts",
+      "drivers/repo/access/server.ts",
     ],
     [
       "header validator cannot become sender",
       'import { request as rawRequest } from "node:http";',
       /unreviewed runtime import from node:http \(request\)/,
-      "drivers/repo/credentials/transport/request-headers.ts",
+      "drivers/repo/access/transport/request-headers.ts",
     ],
     [
       "unrelated controller source is not part of the credential boundary",
@@ -615,13 +778,13 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "the platform Driver cannot load private client files",
-      'import { readClientConfiguration as readClient } from "./credentials/client/config.ts";',
+      'import { readClientConfiguration as readClient } from "./access/client/config.ts";',
       /service code cannot load client command owner/,
       "drivers/repo/github/driver.ts",
     ],
     [
       "the encoder exception cannot re-export client code",
-      'export { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";',
+      'export { encodeRepositoryCredentialSessionFiles } from "./access/client/config.ts";',
       /service code cannot load client command owner/,
       "drivers/repo/github/driver.ts",
     ],
@@ -629,13 +792,13 @@ test("credential source boundary rejects new raw capabilities in the real source
     // guards its single-name rule.
     [
       "the encoder exception cannot carry other client bindings",
-      'import { encodeRepositoryCredentialSessionFiles as encode, readClientConfiguration as readClient } from "./credentials/client/config.ts";',
+      'import { encodeRepositoryCredentialSessionFiles as encode, readClientConfiguration as readClient } from "./access/client/config.ts";',
       /service code cannot load client command owner/,
       "drivers/repo/github/driver.ts",
     ],
     [
       "the platform Driver cannot spawn client commands",
-      'import { launchClient } from "./credentials/client/launch.ts";',
+      'import { launchClient } from "./access/client/launch.ts";',
       /service code cannot load client command owner/,
       "drivers/repo/github/driver.ts",
     ],
@@ -684,12 +847,12 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the journal client cannot send HTTPS traffic",
       'import { request as sendHttps } from "node:https";',
       /unreviewed runtime import from node:https/,
-      "drivers/repo/credentials/receipt-client.ts",
+      "drivers/repo/access/receipt-client.ts",
     ],
     [
       "the journal client is available only to its reviewed consumer",
       'import { RepositoryReceiptClient } from "./receipt-client.ts";',
-      /raw sender drivers\/repo\/credentials\/receipt-client.ts/,
+      /raw sender drivers\/repo\/access\/receipt-client.ts/,
     ],
     [
       "the journal listener cannot create outbound HTTP requests",
@@ -718,23 +881,23 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the broker use client cannot load the worker App and custody key owner",
       'await import("../../../../backends/repository-credentials/prepared-git-owner.js");',
       /prepared-git-owner.ts is not reviewed for/,
-      "drivers/repo/github/credentials/warm-use.ts",
+      "drivers/repo/github/access/warm-use.ts",
     ],
     [
       "credential code cannot bypass the prepared Git owner to use its store",
-      'import { PreparedRepositoryGitStore } from "../github/credentials/prepared-repository-git.js";',
+      'import { PreparedRepositoryGitStore } from "../github/access/prepared-repository-git.js";',
       /prepared-repository-git.ts is not reviewed for/,
     ],
     [
       "credential code cannot acquire a prepared Git use outside its selected factory",
-      'import { authorizePreparedGitSend } from "../github/credentials/warm-use.js";',
+      'import { authorizePreparedGitSend } from "../github/access/warm-use.js";',
       /warm-use.ts is not reviewed for/,
     ],
     [
       "the prepared use client cannot export its raw HTTP capability",
       "export { request };",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/warm-use.ts",
+      "drivers/repo/github/access/warm-use.ts",
     ],
     [
       "configuration cannot replace the public CA loader with an unbounded file read",
@@ -746,6 +909,11 @@ test("credential source boundary rejects new raw capabilities in the real source
       "an unreviewed caller cannot acquire the projected public CA reader",
       'import { loadPublicCa } from "../../../composition/repository-credentials/public-ca.js";',
       /public-ca.ts is not reviewed for/,
+    ],
+    [
+      "an unreviewed caller cannot acquire the public file snapshot reader",
+      'import { readPublicFile } from "../../../composition/repository-credentials/public-file.js";',
+      /public-file.ts is not reviewed for/,
     ],
     [
       "registry loading cannot write files",
@@ -769,7 +937,7 @@ test("credential source boundary rejects new raw capabilities in the real source
       "socket recovery cannot create raw listeners",
       'import { createServer as rawServer } from "node:net";',
       /unreviewed runtime import from node:net/,
-      "drivers/repo/credentials/server.ts",
+      "drivers/repo/access/server.ts",
     ],
     [
       "the platform composition cannot re-export its local control client",
@@ -793,13 +961,13 @@ test("credential source boundary rejects new raw capabilities in the real source
       "the Provider transport cannot re-export its local raw sender",
       "export { sendProviderRequest };",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/provider-transport.ts",
+      "drivers/repo/github/access/provider-transport.ts",
     ],
     [
       "the Agent transport cannot expose its local sender through a type assertion",
       "export const rawSender = createUpstreamSender as typeof createUpstreamSender;",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/credentials/transport/agent.ts",
+      "drivers/repo/access/transport/agent.ts",
     ],
     [
       "an emitted-extension alias cannot hide a restricted default export",
@@ -811,26 +979,26 @@ test("credential source boundary rejects new raw capabilities in the real source
       "approved sender cannot re-export raw HTTPS",
       "export { httpsRequest as rawRequest };",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/provider-transport/request.ts",
+      "drivers/repo/github/access/provider-transport/request.ts",
     ],
     [
       "a type assertion cannot hide an exported raw sender",
       "export const rawRequest = httpsRequest as typeof httpsRequest;",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/provider-transport/request.ts",
+      "drivers/repo/github/access/provider-transport/request.ts",
     ],
     [
       "a default export cannot hide an asserted raw sender",
       "export default httpsRequest satisfies typeof httpsRequest;",
       /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/provider-transport/request.ts",
+      "drivers/repo/github/access/provider-transport/request.ts",
     ],
   ];
   for (const [
     label,
     source,
     expected,
-    file = "drivers/repo/credentials/boundary-regression.ts",
+    file = "drivers/repo/access/boundary-regression.ts",
   ] of cases) {
     await t.test(label, () =>
       appendSource(root, file, source, () =>

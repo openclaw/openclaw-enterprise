@@ -14,30 +14,49 @@ async function load(t, plugin) {
 
 test("Installation startup selects one bundled Agent PluginDriver or leaves it absent", async (t) => {
   const absent = await load(t);
-  assert.equal(absent.pluginDriver, undefined);
+  assert.deepEqual(absent.pluginDrivers, []);
   for (const id of ["occ-plugin", "codex-plugin"]) {
-    const loaded = await load(t, { id, configuration: {} });
-    assert.equal(loaded.pluginDriver.id, id);
-    assert.equal(loaded.pluginDriver.capability, "plugin");
-    assert.equal(loaded.installation.drivers.plugin.id, id);
+    const loaded = await load(t, [{ id, configuration: {} }]);
+    assert.equal(loaded.pluginDrivers[0].id, id);
+    assert.equal(loaded.pluginDrivers[0].capability, "plugin");
+    assert.equal(loaded.installation.drivers.plugin[0].id, id);
     assert.equal(
-      loaded.installation.drivers.plugin.implementation,
-      loaded.pluginDriver.implementation,
+      loaded.installation.drivers.plugin[0].implementation,
+      loaded.pluginDrivers[0].implementation,
     );
   }
 });
 
+test("Installation startup registers each configured plugin catalog and rejects duplicate owners", async (t) => {
+  const selections = [
+    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+    { id: "occ-plugin", configuration: {} },
+  ];
+  const { pluginDrivers } = await load(t, selections);
+  assert.deepEqual(
+    pluginDrivers.map(({ id, harnessId }) => [id, harnessId]),
+    [
+      ["codex-plugin", "codex"],
+      ["occ-plugin", "openclaw"],
+    ],
+  );
+  await assert.rejects(load(t, selections[0]), /drivers\.plugin must be an array/);
+  await assert.rejects(load(t, [selections[0], selections[0]]), /duplicates another Plugin Driver/);
+});
+
 test("Installation startup accepts explicit native Codex catalog reader configuration", async (t) => {
-  const loaded = await load(t, {
-    id: "codex-plugin",
-    configuration: {
-      codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
-      codexHome: "/tmp/codex-plugin-catalog-home",
-      requestTimeoutMs: 30_000,
+  const loaded = await load(t, [
+    {
+      id: "codex-plugin",
+      configuration: {
+        codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
+        codexHome: "/tmp/codex-plugin-catalog-home",
+        requestTimeoutMs: 30_000,
+      },
     },
-  });
-  assert.equal(loaded.pluginDriver.id, "codex-plugin");
-  assert.deepEqual(loaded.installation.drivers.plugin.configuration, {
+  ]);
+  assert.equal(loaded.pluginDrivers[0].id, "codex-plugin");
+  assert.deepEqual(loaded.installation.drivers.plugin[0].configuration, {
     codexExecutable: "/tmp/codex-plugin-catalog-bin/codex",
     codexHome: "/tmp/codex-plugin-catalog-home",
     requestTimeoutMs: 30_000,
@@ -50,9 +69,9 @@ test("Installation selects hosted discovery by default and can select the curate
     [{ catalogSource: "hosted" }, "required"],
     [{ catalogSource: "openai-curated" }, "none"],
   ]) {
-    const loaded = await load(t, { id: "codex-plugin", configuration });
-    assert.equal(loaded.pluginDriver.discoveryCredential, credential);
-    assert.deepEqual(loaded.installation.drivers.plugin.configuration, configuration);
+    const loaded = await load(t, [{ id: "codex-plugin", configuration }]);
+    assert.equal(loaded.pluginDrivers[0].discoveryCredential, credential);
+    assert.deepEqual(loaded.installation.drivers.plugin[0].configuration, configuration);
   }
 });
 
@@ -61,11 +80,11 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
   for (const [selection, expected] of [
     [
       { id: "unknown-plugin-driver", configuration: {} },
-      /drivers\.plugin\.id must select occ-plugin or codex-plugin/,
+      /drivers\.plugin\[0\]\.id must select occ-plugin or codex-plugin/,
     ],
     [
       { id: "occ-plugin", package: "@untrusted/driver", configuration: {} },
-      /drivers\.plugin contains unsupported option package/,
+      /drivers\.plugin\[0\] contains unsupported option package/,
     ],
     [
       { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
@@ -103,9 +122,9 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
     ],
   ]) {
     if (expected instanceof RegExp) {
-      await assert.rejects(load(t, selection), expected);
+      await assert.rejects(load(t, [selection]), expected);
     } else {
-      await assert.rejects(load(t, selection), (error) => {
+      await assert.rejects(load(t, [selection]), (error) => {
         assert.ok(error instanceof ConfigurationValidationError);
         assert.deepEqual(error.error.details, expected);
         return true;

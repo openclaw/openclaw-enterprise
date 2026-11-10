@@ -36,7 +36,9 @@ const (
 	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63"
 	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
-	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
+	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
+	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -146,26 +148,51 @@ func prepareOpenShellAdmission(directory string) (string, error) {
 	return path, nil
 }
 
-func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (*openShellDevelopmentAssets, error) {
+func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (_ *openShellDevelopmentAssets, resultErr error) {
+	started := time.Now()
+	operationStarted := started
+	stage := "openshell-image-selection"
+	var manifestOutcome manifestFailure
+	advance := func(next string) {
+		stage, operationStarted = next, time.Now()
+	}
+	defer func() {
+		// A failed operation can reflect sibling cancellation, not the primary cause.
+		// Never include its error, arguments or output in the timing record.
+		if resultErr == nil {
+			stage, operationStarted = "openshell-prepare", started
+		}
+		outcome := ""
+		if stage == "openshell-agent-sandbox-manifest" && resultErr != nil && manifestOutcome != "" {
+			outcome = "\n[occ-dev-outcome] stage=openshell-agent-sandbox-manifest outcome=" + string(manifestOutcome)
+		}
+		fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t%s\n", stage, time.Since(operationStarted).Milliseconds(), resultErr != nil, outcome)
+	}()
 	images, err := r.selectOpenShellImages(state.SandboxDriver)
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-image-validation")
 	if err := r.validateOpenShellImageRevisions(ctx, images); err != nil {
 		return nil, err
 	}
+	advance("openshell-assets-directory")
 	root := filepath.Join(state.directory, "openshell")
 	if err := os.Mkdir(root, 0700); err != nil {
 		return nil, err
 	}
+	advance("openshell-charts")
 	gatewayChart, workspaceChart, err := r.openShellCharts(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := r.agentSandboxManifest(ctx, root)
+	advance("openshell-agent-sandbox-manifest")
+	manifest, failure, err := r.agentSandboxManifest(ctx, root)
+	manifestOutcome = failure
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-runtime-class")
 	runtimeClass := filepath.Join(root, "runtime-class.yaml")
 	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{
 		"apiVersion: node.k8s.io/v1",
@@ -180,9 +207,11 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if err := r.run(ctx, "kubectl", "apply", "-f", runtimeClass); err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-apply")
 	if err := r.run(ctx, "kubectl", "apply", "-f", manifest); err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-rollout")
 	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/agent-sandbox-controller", "--namespace", "agent-sandbox-system", "--timeout", timeout.String()); err != nil {
 		r.captureAgentSandboxRollout(state)
 		return nil, err
@@ -192,6 +221,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if state.PlatformNamespace != "" {
 		gatewayNamespace = state.PlatformNamespace
 	}
+	advance("openshell-workspace-render")
 	assets.workspaceResources, err = r.renderOpenShellWorkspaceResources(ctx, workspaceChart, gatewayNamespace)
 	if err != nil {
 		return nil, err
@@ -205,6 +235,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		{"sandbox", images.sandbox, &assets.sandboxImage},
 		{"supervisor", images.supervisor, &assets.supervisorImage},
 	} {
+		advance("openshell-" + selected.component + "-import")
 		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
 		if err != nil {
 			return nil, err
@@ -301,18 +332,9 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, source, platform)
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, source, platform, stagingTag)
 	if err != nil {
 		return "", err
-	}
-	if resolved != source {
-		if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-			return "", err
-		}
 	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
@@ -325,7 +347,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == source {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)
@@ -376,32 +398,34 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	return runtimeReference, nil
 }
 
+// Kubernetes-only installations always authenticate the Gateway.
+// Compose keeps its existing profile.
+func (state *developmentState) authenticatedOpenShell() bool {
+	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
+}
+
 func (r *runner) installOpenShellGateway(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, namespace string, timeout time.Duration) error {
 	if _, err := r.output(ctx, "kubectl", "get", "namespace", namespace); err != nil {
 		if err := r.run(ctx, "kubectl", "create", "namespace", namespace); err != nil {
 			return err
 		}
 	}
-	if !state.ProtectedEgress {
+	if !state.authenticatedOpenShell() {
 		if err := r.ensureOpenShellJWTSecret(ctx, state, namespace); err != nil {
 			return err
 		}
 	}
-	var protectedValues string
-	if state.ProtectedEgress {
+	var gatewayValues string
+	if state.authenticatedOpenShell() {
 		var err error
-		protectedValues, err = r.writeProtectedOpenShellValues(state)
+		gatewayValues, err = r.writeOpenShellGatewayValues(state)
 		if err != nil {
 			return err
 		}
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
-	// The registry contacts OCC at startup. Install both releases before waiting
-	// for the protected Gateway; native PKI hooks still complete synchronously.
-	if !state.ProtectedEgress {
-		args = append(args, "--wait")
-	}
-	args = append(args, openShellGatewayValues(state, assets, protectedValues)...)
+	args = append(args, "--wait")
+	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err
 	}
@@ -417,7 +441,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	return nil
 }
 
-func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, protectedValues string) []string {
+func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, gatewayValues string) []string {
 	values := []string{
 		"--set-string=fullnameOverride=" + openShellGatewayService,
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
@@ -436,8 +460,8 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
 	}
-	if protectedValues != "" {
-		values = append(values, "-f", protectedValues)
+	if gatewayValues != "" {
+		values = append(values, "-f", gatewayValues)
 	} else {
 		values = append(values, "--set=pkiInitJob.enabled=false", "--set=server.disableTls=true", "--set=server.auth.allowUnauthenticatedUsers=true")
 	}

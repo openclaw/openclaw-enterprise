@@ -19,14 +19,13 @@ test(
   async (context) => {
     const selection = selectQaMatrix();
     validateQaInputs(selection);
-    const { createQaInstallation, prepareQaPreset, createQaAgent } =
+    const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
     const { protectedText } = await import("../helpers/qa-secrets.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
       await import("../helpers/qa-repository.mjs");
-    const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -47,6 +46,7 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
+        ...selection.exclusions,
         ...(selection.linearRead
           ? []
           : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
@@ -56,6 +56,19 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    for (const exclusion of selection.exclusions) {
+      context.diagnostic(`Excluded: ${exclusion}`);
+    }
+    if (selection.oidcAgentChat) {
+      const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "OIDC sign-in, owner setup, real chat and administrative denial",
+        () => runOidcAgentChatScenario(context),
+        "oidc-agent-chat",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
@@ -72,6 +85,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "selected native plugin installation",
         () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.harnessOverrides) {
+      const { verifyQaHarnessOverrides } = await import("../helpers/qa-harness-overrides.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenShell",
+        "revision-owned model destinations and withdrawal",
+        () => verifyQaHarnessOverrides(context, artifacts, selection.presets),
+        "harness-overrides",
       );
     }
     if (selection.linearRead) {
@@ -94,11 +117,19 @@ test(
           const f = await stage(
             installationContext,
             installation,
-            "shipped startup, default Namespace and presets",
-            () =>
-              createQaInstallation(installationContext, installation, artifacts, {
-                repositoryInputs: selection.repository,
-              }),
+            "shipped startup, default Namespace, presets and both plugin catalogs",
+            async () => {
+              const fixture = await createQaInstallation(
+                installationContext,
+                installation,
+                artifacts,
+                {
+                  repositoryInputs: selection.repository,
+                },
+              );
+              await prepareQaPluginCatalogs(fixture);
+              return fixture;
+            },
           );
           const cells = selection.cells.filter(
             (cell) => cell.installation === installation && cell.scenarios.length > 0,
@@ -133,11 +164,26 @@ test(
               `Standard ${preset}`,
               { timeout: 3_000_000 },
               async (cellContext) => {
-                const ready = await stage(cellContext, cell, "prepare preset runtime", async () => {
-                  assert.ok(f, "blocked by installation startup failure");
-                  await prepareQaPreset(f, preset);
-                  return true;
-                });
+                const ready = await stage(
+                  cellContext,
+                  cell,
+                  "check preset prerequisites",
+                  async () => {
+                    assert.ok(f, "blocked by installation startup failure");
+                    assert.ok(
+                      !f.retained && f.pendingRepositories.size === 0,
+                      "blocked by unresolved repository cleanup",
+                    );
+                    if (selectedCell.scenarios.includes("codex-search-config")) {
+                      f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                        protocol: "openai-responses",
+                        baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                      };
+                      await f.saveInstallation(f.configuration);
+                    }
+                    return true;
+                  },
+                );
                 async function runScenario(parent, name, work) {
                   // Keep the preset's overall deadline; a shorter worker deadline
                   // could interrupt cleanup after individually valid stage durations.
@@ -150,7 +196,9 @@ test(
                         "preset deployment and supported authentication",
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
-                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix);
+                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
+                            apiKeyAuth: name === "codex-search-config",
+                          });
                         },
                       );
                       await work(agent, (title, action) =>
@@ -192,10 +240,15 @@ test(
                       );
                     },
                   ],
-                  [
+                ];
+                if (preset === "OpenClaw") {
+                  scenarios.push([
                     "model-ui",
                     async (agent, step) => {
-                      await step(
+                      // Retain the exact revision's redacted cause before ordinary Agent cleanup.
+                      const modelStep = (title, action) =>
+                        step(title, () => agent.native.withRuntimeFailureLogs(agent, action));
+                      await modelStep(
                         "real model nonce, unauthenticated denial and exact identity",
                         async () => {
                           const gateway = await f.gatewayUrl(agent);
@@ -207,11 +260,7 @@ test(
                               nonce,
                               secrets: [
                                 await protectedText(
-                                  process.env[
-                                    preset === "Codex"
-                                      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-                                      : "OCC_TEST_QA_OPENAI_KEY_FILE"
-                                  ],
+                                  process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
                                   "model credential",
                                 ),
                               ],
@@ -230,14 +279,12 @@ test(
                               ).activeRevisionId,
                               agent.revision.id,
                             );
-                            const nativePod =
-                              preset === "Codex" ? await f.pod(agent, "agent") : gateway.pod;
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
                               gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
-                              nativePodUid: nativePod.metadata.uid,
+                              nativePodUid: gateway.pod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(
                                 ({ name, imageID }) => ({
                                   name,
@@ -252,65 +299,63 @@ test(
                           }
                         },
                       );
-                      if (preset === "OpenClaw") {
-                        await step(
-                          "embedded configured-provider Secret and real model turn",
-                          async () => {
-                            // Keep the admitted model and Secret, changing only the logical provider.
-                            const values = structuredClone(agent.configuration.values);
-                            const selected = values.agents.defaults.model;
-                            const primary =
-                              typeof selected === "string" ? selected : selected.primary;
-                            const id = primary.slice(primary.indexOf("/") + 1);
-                            const custom = `configured/${id}`;
-                            values.models.providers = {
-                              configured: {
-                                ...values.models.providers.openai,
-                                apiKey: {
-                                  source: "env",
-                                  provider: "default",
-                                  id: "OCE_MODEL_API_KEY",
-                                },
-                              },
-                            };
-                            values.agents.defaults.model = custom;
-                            values.agents.defaults.models = {
-                              [custom]: {
-                                ...values.agents.defaults.models[primary],
-                                agentRuntime: { id: "openclaw" },
-                              },
-                            };
-                            await f.api(
-                              "PATCH",
-                              `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
-                              { values },
-                            );
-                            await f.deployAndWait(agent);
-                            const gateway = await f.gatewayUrl(agent);
-                            try {
-                              await assertGatewayModelTurn({
-                                gatewayUrl: gateway.url,
-                                gatewayPassword: gateway.gatewayPassword,
-                                nonce: `QA_CUSTOM_${randomUUID()}`,
-                                secrets: [
-                                  await protectedText(
-                                    process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
-                                    "model credential",
-                                  ),
-                                ],
-                              });
-                            } finally {
-                              await gateway.close();
-                            }
-                            await f.record("embedded-configured-provider", {
-                              agentId: agent.id,
-                              revisionId: agent.revision.id,
-                              model: custom,
-                            });
-                          },
-                        );
-                      }
                       await step(
+                        "embedded configured-provider Secret and real model turn",
+                        async () => {
+                          // Keep the admitted model and Secret, changing only the logical provider.
+                          const values = structuredClone(agent.configuration.values);
+                          const selected = values.agents.defaults.model;
+                          const primary =
+                            typeof selected === "string" ? selected : selected.primary;
+                          const id = primary.slice(primary.indexOf("/") + 1);
+                          const custom = `configured/${id}`;
+                          values.models.providers = {
+                            configured: {
+                              ...values.models.providers.openai,
+                              apiKey: {
+                                source: "env",
+                                provider: "default",
+                                id: "OCE_MODEL_API_KEY",
+                              },
+                            },
+                          };
+                          values.agents.defaults.model = custom;
+                          values.agents.defaults.models = {
+                            [custom]: {
+                              ...values.agents.defaults.models[primary],
+                              agentRuntime: { id: "openclaw" },
+                            },
+                          };
+                          await f.api(
+                            "PATCH",
+                            `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
+                            { values },
+                          );
+                          await f.deployAndWait(agent);
+                          const gateway = await f.gatewayUrl(agent);
+                          try {
+                            await assertGatewayModelTurn({
+                              gatewayUrl: gateway.url,
+                              gatewayPassword: gateway.gatewayPassword,
+                              nonce: `QA_CUSTOM_${randomUUID()}`,
+                              secrets: [
+                                await protectedText(
+                                  process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                  "model credential",
+                                ),
+                              ],
+                            });
+                          } finally {
+                            await gateway.close();
+                          }
+                          await f.record("embedded-configured-provider", {
+                            agentId: agent.id,
+                            revisionId: agent.revision.id,
+                            model: custom,
+                          });
+                        },
+                      );
+                      await modelStep(
                         "trusted native UI and live WebSocket model response",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
@@ -318,39 +363,91 @@ test(
                         },
                       );
                     },
-                  ],
-                  [
-                    "git-write",
-                    async (agent, step) => {
-                      await step(
-                        "native repository clone/edit/commit/push to the granted branch and disposal",
-                        async () => {
-                          assert.ok(repositoryReady, "blocked by repository setup failure");
-                          await verifyQaRepository(f, agent);
-                        },
-                      );
-                    },
-                  ],
-                ];
-                if (preset === "Codex") {
+                  ]);
+                } else {
                   scenarios.push(
                     [
-                      "calendar",
+                      "git-write",
                       async (agent, step) => {
                         await step(
-                          "Calendar read, allow-once, subsequent denial and disabled tool",
+                          "native repository clone/edit/commit/push to the granted branch and disposal",
                           async () => {
-                            const credential = {
-                              accessToken: await protectedText(
-                                process.env.OCC_TEST_QA_CODEX_TOKEN_FILE,
-                                "Codex service-account credential",
-                              ),
-                            };
-                            await verifyCalendarReviewPolicy(
-                              { ...f, ...agent.native },
-                              agent,
-                              credential,
+                            assert.ok(repositoryReady, "blocked by repository setup failure");
+                            await verifyQaRepository(f, agent);
+                          },
+                        );
+                      },
+                    ],
+                    [
+                      "codex-search-config",
+                      async (agent, step) => {
+                        const readConfig = async () =>
+                          (
+                            await f.execRole(agent, "agent", [
+                              "node",
+                              "-e",
+                              "process.stdout.write(require('node:fs').readFileSync(require('node:path').join(process.env.CODEX_HOME,'config.toml'),'utf8'))",
+                            ])
+                          ).stdout;
+                        let baseline;
+                        await step(
+                          "installed API-key Agent starts without a search declaration",
+                          async () => {
+                            baseline = await readConfig();
+                            assert.equal(
+                              baseline.includes("supports_standalone_web_search"),
+                              false,
                             );
+                            assert.ok(baseline.includes('model_provider = "openai-compatible"'));
+                            assert.equal(agent.harnessAuth.method, "api_key");
+                          },
+                        );
+                        for (const enabled of [false, true]) {
+                          await step(
+                            `search declaration ${enabled} through supported stop and deploy`,
+                            async () => {
+                              await stopQaAgent(f, agent);
+                              f.configuration.drivers.compute.configuration.runtime.modelProvider.supportsStandaloneWebSearch =
+                                enabled;
+                              await f.saveInstallation(f.configuration);
+                              await f.deployAndWait(agent);
+                              const actual = await readConfig();
+                              const expected = enabled
+                                ? baseline.replace(
+                                    "supports_websockets = false\n",
+                                    "supports_websockets = false\nsupports_standalone_web_search = true\n",
+                                  )
+                                : baseline;
+                              assert.equal(
+                                actual === expected,
+                                true,
+                                "only the explicit capability declaration changes",
+                              );
+                            },
+                          );
+                        }
+                        await step(
+                          "enabled declaration survives another supported stop and deploy",
+                          async () => {
+                            const before = await f.pod(agent, "agent");
+                            const config = await readConfig();
+                            await stopQaAgent(f, agent);
+                            await f.deployAndWait(agent);
+                            assert.notEqual(
+                              (await f.pod(agent, "agent")).metadata.uid,
+                              before.metadata.uid,
+                            );
+                            assert.equal((await readConfig()) === config, true);
+                            await f.record("codex-search-config", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              omitted: false,
+                              explicitFalse: false,
+                              explicitTrue: true,
+                              persistedAfterRedeploy: true,
+                              proof:
+                                "installed user configuration and native startup, not live search",
+                            });
                           },
                         );
                       },

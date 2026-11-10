@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  OCCPluginDriver,
+  CodexPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -30,7 +33,12 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  createDenied,
+  PRESET_NAME_CONFLICT,
+  unsupportedChannelRefusal,
+} from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -308,11 +316,7 @@ describe("Presets", { concurrency: 2 }, () => {
     ]) {
       const conflict = await fixture.request(method, path, { body });
       assertApiError(conflict, 409, "RESOURCE_CONFLICT", method);
-      assert.equal(
-        conflict.body.error.message,
-        "A Preset with this name already exists in this Namespace. Choose a different name.",
-        method,
-      );
+      assert.equal(conflict.body.error.message, PRESET_NAME_CONFLICT, method);
     }
 
     const limited = await fixture.createAccountWithPolicy("preset-reader", (principal) => {
@@ -435,14 +439,16 @@ describe("Presets", { concurrency: 2 }, () => {
       /[A-Za-z .]/g,
       (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-    const escaped = await fetch(fixture.origin + collection(namespace.id), {
-      method: "POST",
-      headers: {
-        ...authenticatedHeaders(await fixture.signIn()),
-        "content-type": "application/json",
-      },
-      body: encoded,
-    });
+    const escaped = await fixture.fetch(
+      new Request(fixture.origin + collection(namespace.id), {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(await fixture.signIn()),
+          "content-type": "application/json",
+        },
+        body: encoded,
+      }),
+    );
     assert.equal(escaped.status, 201, await escaped.text());
 
     const oversized = structuredClone(template);
@@ -499,6 +505,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const auditStart = fixture.audit.events.length;
       const refused = await partialWrite({
         origin: fixture.origin,
+        transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
         method,
         path,
         session,
@@ -827,7 +834,7 @@ describe("Presets", { concurrency: 2 }, () => {
             values: { ...openaiModel, channels: { discord: { enabled: true } } },
           },
         },
-        "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+        unsupportedChannelRefusal("channels.discord"),
       ],
       [
         {
@@ -882,9 +889,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
     await deletePreset(fixture, namespace.id, unplugged.id);
-    const pluginDriver = new OCCPluginDriver();
-    fixture.controller.registerDriver(pluginDriver);
-    fixture.controller.selectDriver("plugin", pluginDriver.id);
+    fixture.controller.installPluginDrivers([new OCCPluginDriver(), new CodexPluginDriver()]);
     const cases = [
       [
         { agent: { executionMode: "turbo" } },

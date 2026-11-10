@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-29
-last_updated_session: authoring-run/833462ab-9c82-438a-95c4-53d1dbb2e7e9
+updated: 2026-11-03
+last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ---
 
 # Credential source lifecycle Flow
@@ -77,19 +77,29 @@ intermediate State record before calling `registerSource` or `removeSource`.
 
 The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`.
 One transaction authorizes `credential_source:create`, locks the Namespace,
-requires a selected gateway (`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`) and a
-ready Namespace, then reads `listSourceTypes`. Before effects, an unoffered type
-returns `CredentialSourceTypeNotOfferedError` (`409`); unknown or missing fields
-return `ScopeViolationError` (`404`). Side-effect-free `validateSourceConfig`
-rejects invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`)
-before Secret reads, record creation, or gateway writes. OCC checks any returned
-normalized configuration against the catalog and stores it in the source record.
+requires its selected source Driver and a ready Namespace, then reads the type catalog.
+An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
+or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
+before Secret reads, record creation, or gateway writes. OCC checks normalized
+configuration against the catalog and stores it in the source record.
 
-`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` and
-OpenShell's `normalizedSourceBaseUrl` enforce the
-[endpoint restrictions](../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
-OpenShell requires an exact DNS host; Compute also accepts IP hosts.
-Registration and attachment validate endpoints; cleanup uses owned identity.
+`apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` shares
+OpenShell's strict destination authorization decision between request validation and stored-source
+use. Requests retain field-specific `400` errors; invalid stored endpoints retain `409`
+errors. Explicit URLs are normalized; an omitted URL stays omitted. Sources require an
+exact DNS host; Compute and Proxy provider normalization keep their broader URL rules.
+
+OpenShell's internal validator receives a lazy placement callback. Static OpenAI
+validation does not consult backend Gateway placement. OAuth2 validation resolves it
+to reject token endpoints in the Gateway's own Namespace; registration repeats that
+check with tenant placement. Source ownership and cleanup remain with the recorded Driver.
+
+For a fresh static source, `packages/occ/src/index.ts:staticEgressProvider` selects
+the first catalog entry for the requested type, then resolves its exact reference.
+Duplicate registrations for that ID and generation return `409` before a Secret
+payload read. Distinct providers of the same type retain catalog order. Updates
+resolve the recorded reference. Admission retains the provider and its callbacks
+and rechecks them, including identity uniqueness, around material resolution.
 
 ### 2. Read Secret values
 
@@ -205,14 +215,25 @@ this check; their saved snapshots remain readable after legitimate source deleti
 `apps/controller/src/worker.ts:authorizeRevision`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks the deploying actor's and Agent principal's
-`credential_source:operate` (`AUTHORIZATION_DENIED` on refusal). It matches
-the selected Gateway or Proxy to the snapshot (`CREDENTIAL_GATEWAY_MISMATCH`),
-then checks the live source, owner and type. Failure returns
-`HARNESS_AUTH_SOURCE_UNAVAILABLE` for the Harness source or
-`CREDENTIAL_SOURCE_UNAVAILABLE` for another source. Withdrawn sources stay
-detached. Compute checks the snapshot again before
+The worker rechecks the deploying actor's and Agent's
+`credential_source:operate` (`AUTHORIZATION_DENIED`), the selected Gateway/Proxy
+snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
+Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
+`CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
+snapshot checks before
 [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+
+`apps/controller/src/composition/installation-config.ts` shares the internal
+`OpenShellCredentialAttachments` handler only with bundled Sandbox/Gateway
+instances on one Backend; Compute verifies those exact instances.
+`staticOpenAiAttachmentsForRevision` selects it for unprotected dedicated
+Codex/OpenClaw revisions without an egress plan or additional admitted sources:
+one admitted `openai`/`api_key` Harness source on the selected Gateway. The
+source must match Namespace and snapshot, without an egress binding.
+Refusal never retries through Gateway methods.
+
+`apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts` implements
+`attachForRevision`, `attachmentStatus` and `withdraw`, shared with public Gateway attachment consumers.
 
 For `chatgptAuthTokens`, `credentialSourceEnvironment` forwards trusted metadata
 and a placeholder into ephemeral `auth.json`. OpenShell's `sandboxCommand` wraps
@@ -269,45 +290,43 @@ updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotat
 `packages/occ/src/index.ts:withdrawAgentCredentialSource`,
 `apps/controller/src/worker.ts:processCredentialWithdrawal`,
 `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`,
-`apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
+`apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts:withdraw`
 
-The API authorizes `agent:operate` and requires the selected version to list the
-source in `credential_sources`. For that version, each later version
-admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by version
-and source unless one exists. It makes the caller `requested_by` of
-each pending row and queues version-scoped work with target `credentials_withdrawn`
-(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`) or
-expedites outstanding work. That work never deploys the version.
+The API requires `agent:operate` and the source in the selected version's
+`credential_sources`. It records a `pending` `credential_withdrawals` row per
+version/source, if absent, for the selected version, later versions admitted with that source,
+and earlier unretired versions. It reassigns pending rows' `requested_by` to the
+caller and queues or expedites version-scoped `credentials_withdrawn` work
+(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`). It
+never deploys a version.
 
-The worker rechecks `agent:operate` for each pending withdrawal's
-`requested_by` and calls Compute's
-`withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
-otherwise a denied requester fails it after the others are revoked, unless a
-replay reassigned it. Revocations are audited per requester when confirmed;
-denials and failures, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
-on the `harnessResource` Sandbox and reads the receipt's status.
-`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
-sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay
-or, for a candidate, its activation, which queues one attempt. Each
-attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
-also marks the row `revoked` and appends
-`openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
-backoff. The read
-(`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) prefers these
-versions' exhausted rows, then `pending` ones, the selected version's first. Without Compute maintenance, failed work queues
-at most 15 recovery series (`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery`). `withdrawalInProgress` reflects outstanding
-work; `false` means replay or maintenance must queue another attempt.
+The worker rechecks each requester's `agent:operate` and calls Compute's
+`withdrawCredentialSource` for authorized requesters in admission order. Authorized but unconfirmed withdrawals
+retry; denied requesters fail after other revocations, unless replay reassigns them.
+Revocations audit each requester on confirmation; denials and failures audit once at claim
+end. Compute uses the admitted attachment selection above for withdrawal and rechecks.
+The shared OpenShell handler calls `DetachSandboxProvider` on the `harnessResource`
+Sandbox and reads its receipt status.
 
-Maintenance runs only with a Compute or repository credential interval. It stops
-preparing the selected version after its Harness source is withdrawn
-(`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). The chain
-continues until every withdrawal is `revoked`. Deploy and repair work never re-attach a withdrawn source:
-a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
-pending withdrawals with no work outstanding, the other versions' too
-(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
-or refused waits for a replay. `authorizeRevision` skips the
-`operate` recheck for withdrawn sources, so removing their grants cannot end
-maintenance.
+`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` sends protected
+reductions only for the selected version. Other versions await replay or candidate
+activation, which queues one attempt. Claim completion records `last_reason` and
+`last_attempt_at`; `revoked` or `absent` also marks the row revoked and audits
+`openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with backoff.
+`packages/occ/src/index.ts:readAgentCredentialWithdrawal` prefers exhausted rows,
+then pending ones, with the selected version first. Without Compute maintenance,
+`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery` caps recovery at
+15 series. A false `withdrawalInProgress` requires replay or maintenance to queue more work.
+
+Maintenance requires a Compute or repository credential interval.
+`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance` stops preparing
+a version whose Harness source was withdrawn. The chain continues until all
+withdrawals are revoked. Deploy and repair never reattach a withdrawn source;
+a withdrawn Harness source fails with `CREDENTIAL_WITHDRAWN`. Either maintenance
+pass requeues pending withdrawals without outstanding work, including other versions
+(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`);
+denied or refused withdrawals await replay. `authorizeRevision` skips withdrawn
+sources' `operate` check so removing grants cannot end maintenance.
 
 An absent Sandbox counts as revoked, but a previously accepted create can still land.
 `recheckRevokedCredentialSources` rechecks every preparation and withdrawn-Harness pass;
@@ -349,7 +368,15 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Changelog
 
+- 2026-11-03 16:57: Correct catalog-field refusal status. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 82a04653d)
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
+
+- 2026-10-30 02:05: Resolve fresh static provider identities consistently with source updates. (authoring-run/ddbd21a8-0432-4c61-b4ad-e48d12268c8c - 262a2188226cbcd2ee22630040617f6c39969352)
+
 - 2026-10-29 21:40: Validate an owned revision snapshot under ordered storage locks. (authoring-run/833462ab-9c82-438a-95c4-53d1dbb2e7e9 - a9884d11bf325a39f3308f787a5ea266ebab5144)
+
+- 2026-10-29 20:41: Validate static source endpoints without Gateway placement. (authoring-run/cf8bb25e-ffb8-4349-9770-a0b07d6bf50f - 2eed3c36a)
 
 - 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
 

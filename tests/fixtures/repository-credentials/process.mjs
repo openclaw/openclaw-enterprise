@@ -26,6 +26,8 @@ export function cleanEnvironment(extra = {}) {
   };
 }
 
+export class FixtureCommandTimeoutError extends Error {}
+
 export async function run(
   command,
   args,
@@ -106,6 +108,9 @@ export async function run(
     const code = await closed;
     // Do not serialize command arguments, output, or cancellation reasons:
     // any of them can contain credentials supplied by the client.
+    if (failure === "timeout") {
+      throw new FixtureCommandTimeoutError("command failed (timeout)");
+    }
     if (failure || (code !== 0 && !allowFailure)) {
       throw new Error(`command failed (${failure ?? `exit ${code}`})`);
     }

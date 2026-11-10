@@ -1,5 +1,6 @@
 import {
   ADMISSION_LIMIT_DETAILS,
+  POD_LABELS_NOT_PERMITTED_DETAILS,
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
@@ -15,7 +16,11 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  SandboxRevisionUnsupportedError,
+  gatewayEndpointRewritesIpv4,
+} from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -28,6 +33,7 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
+  serviceCodexPatStatus,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -148,8 +154,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 
@@ -488,6 +495,12 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Initializes a dedicated Codex process and observes only its PAT authentication status. */
+  serviceCodexPatStatus(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<"unavailable" | "starting" | "serving">;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -1366,6 +1379,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
+  async serviceCodexPatStatus(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<"unavailable" | "starting" | "serving"> {
+    return serviceCodexPatStatus(this.serviceTransportOptions(), serviceUrl, bearer, signal);
+  }
+
   private serviceRootCertificate: Buffer | undefined;
 
   private serviceTransportOptions() {
@@ -2018,7 +2039,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // Protobuf omits empty repeated fields. Preserve every field that was returned.
+    return storedProviderProfile({ endpoints: [], credentials: [], ...profile }, profile.id);
   }
 
   async listProviderProfiles(
@@ -2663,6 +2685,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                 details.startsWith(ADMISSION_LIMIT_DETAILS)
               ) {
                 reject(new OpenShellAdmissionLimitError(method, error));
+              } else if (
+                method === "CreateSandbox" &&
+                code === grpc.status.INVALID_ARGUMENT &&
+                typeof details === "string" &&
+                details.startsWith(POD_LABELS_NOT_PERMITTED_DETAILS)
+              ) {
+                // The gateway's configuration refuses these label keys on every create, so
+                // retrying cannot help; the operator must extend allowed_pod_labels.
+                reject(
+                  new SandboxRevisionUnsupportedError(
+                    "SANDBOX_POD_LABELS_NOT_PERMITTED",
+                    `OpenShell refused the Harness Pod labels ${details.slice(POD_LABELS_NOT_PERMITTED_DETAILS.length)}; add them to the gateway's Kubernetes driver allowed_pod_labels.`,
+                  ),
+                );
               } else if (
                 [
                   grpc.status.NOT_FOUND,

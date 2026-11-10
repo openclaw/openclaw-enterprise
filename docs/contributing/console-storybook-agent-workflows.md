@@ -156,7 +156,9 @@ turns.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844
-and 390×640, check scrolling and reachable pagination. **Add Calendar**, edit a
+and 390×640, check scrolling and reachable pagination. In **Short window plugin
+picker** at 1440×480, plugin names stay readable with setup open or closed;
+scroll the catalog browser to reach every control. **Add Calendar**, edit a
 tool, then **Done**: **Plugin selections JSON** shows the draft. **Search plugins**
 queries the catalog; **Filter tools** filters locally. Credential changes clear
 the catalog and keep selections.
@@ -222,7 +224,12 @@ None proves a deployed Gateway's steering.
 
 In **Enable gateway password access**, Cancel discards the staged reference.
 To apply it, save Configuration, then deploy. Compare configured, save-denied,
-and save-in-progress stories; none proves credential delivery or login.
+and save-in-progress stories; none proves credential delivery or login. The
+unreadable-reference story shows a saved reference without a provider: the
+refusal, the button and a disabled **Deploy new version**. The refused-alias
+story shows an upper-case `secrets.defaults.env`: the alias refusal, no button
+and a disabled **Deploy new version**. The allowlist story shows a default env
+alias whose `allowlist` omits the variable: the reason and no button.
 
 ## Stop
 

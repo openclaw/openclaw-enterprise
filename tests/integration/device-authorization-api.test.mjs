@@ -36,9 +36,11 @@ const plugin = {
   },
 };
 
-async function createFixture(t, { logger, ...gatewayOptions } = {}) {
+async function createFixture(
+  t,
+  { logger, auditSink = new InMemoryAuditSink(), ...gatewayOptions } = {},
+) {
   const clock = createControlledClock();
-  const auditSink = new InMemoryAuditSink();
   const secretDriver = createTestSecretDriver();
   const { gateway, refresh } = createDeviceCredentialDrivers({
     now: () => clock.wallNow(),
@@ -157,6 +159,7 @@ function deviceTestSandbox() {
 }
 
 function assertNoCredentials(fixture) {
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes("CODE-12345"), false);
   const publicOutput = JSON.stringify([fixture.responses, fixture.auditSink.events]);
   for (const value of [DEVICE_ACCESS_TOKEN, "device-private-handle-"]) {
     assert.equal(
@@ -195,6 +198,26 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   const fixture = await createFixture(t, { approve: async () => approved });
   const login = await fixture.start();
   assertDeviceAudit(fixture, "start");
+  const startRequestId = fixture.responses.at(-1).meta.requestId;
+  const sourceId = (await fixture.stored(login)).sourceId;
+  const startEvents = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.agents.device_authorization.start",
+  );
+  // A completed start records each saved phase once and ties the private session to its source.
+  assert.deepEqual(
+    startEvents.map((event) => event.details?.phase),
+    ["source_registering", "source_ready", "session_pending"],
+  );
+  for (const event of startEvents) {
+    assert.equal(event.actorId, fixture.policy.identities[0].id);
+    assert.equal(event.requestId, startRequestId);
+    assert.equal(event.details.sourceId, sourceId);
+    assert.deepEqual(event.resource, {
+      kind: event.details.phase === "session_pending" ? "agent" : "credential_source",
+      id: event.details.phase === "session_pending" ? fixture.namespace.id : sourceId,
+      namespaceId: fixture.namespace.id,
+    });
+  }
   assert.equal(login.verificationUrl, "https://auth.openai.com/codex/device");
   assert.equal(login.intervalSeconds, 5);
   assert.equal((await fixture.poll(login)).data.status, "pending");
@@ -226,12 +249,12 @@ test("Gateway device login saves a source-backed Agent and reuses discovery afte
   assert.equal(JSON.stringify(stored).includes(DEVICE_ACCESS_TOKEN), false);
 
   const list = await fixture.request("POST", fixture.pluginsPath, {
-    body: { credentialSource: ready.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: ready.source, q: "knowledge" },
   });
   assert.equal(list.status, 200, JSON.stringify(list.body));
   assert.equal(list.data.plugins[0].remoteId, plugin.id);
   const details = await fixture.request("POST", `${fixture.pluginsPath}/details`, {
-    body: { credentialSource: ready.source, pluginId: plugin.id },
+    body: { harnessId: "codex", credentialSource: ready.source, pluginId: plugin.id },
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.equal(details.data.tools[0].id, "fixture-app/search");
@@ -366,7 +389,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     (
       await fixture.request("POST", fixture.pluginsPath, {
         session: otherSession,
-        body: { credentialSource: login.source, q: "knowledge" },
+        body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
       })
     ).status,
     200,
@@ -381,7 +404,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
   });
   const denied = await fixture.request("POST", fixture.pluginsPath, {
     session: otherSession,
-    body: { credentialSource: login.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
   });
   assert.equal(denied.status, 403, JSON.stringify(denied.body));
 
@@ -390,7 +413,7 @@ test("login handles are actor and Agent scoped while source discovery uses exact
     [{ ...login.source, id: `cs_${crypto.randomUUID()}` }, 409],
   ]) {
     const refused = await fixture.request("POST", fixture.pluginsPath, {
-      body: { credentialSource, q: "knowledge" },
+      body: { harnessId: "codex", credentialSource, q: "knowledge" },
     });
     assert.equal(refused.status, status, JSON.stringify(refused.body));
   }
@@ -608,7 +631,7 @@ test("expiry closes the login handle without removing the ready source or its di
   assert.equal(stored.phase, "cancelled");
   assert.equal(stored.privateState, undefined);
   const discovery = await fixture.request("POST", fixture.pluginsPath, {
-    body: { credentialSource: login.source, q: "knowledge" },
+    body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
   });
   assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
   // Explicit source deletion, unlike session closure, invokes external removal.
@@ -620,7 +643,7 @@ test("expiry closes the login handle without removing the ready source or its di
   assert.equal(
     (
       await fixture.request("POST", fixture.pluginsPath, {
-        body: { credentialSource: login.source, q: "knowledge" },
+        body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
       })
     ).status,
     409,
@@ -678,6 +701,22 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
     1,
     "an uncertain external login remains visible for source management",
   );
+  const evidence = fixture.auditSink.events.filter(
+    (event) => event.action === "openclaw.agents.device_authorization.start",
+  );
+  assert.deepEqual(
+    evidence.map((event) => event.details.phase),
+    ["source_registering", "source_ready"],
+  );
+  for (const event of evidence) {
+    assert.equal(event.actorId, fixture.policy.identities[0].id);
+    assert.equal(event.requestId, response.body.meta.requestId);
+    assert.deepEqual(event.resource, {
+      kind: "credential_source",
+      id: sources.data[0].id,
+      namespaceId: fixture.namespace.id,
+    });
+  }
   // Source deletion fences uncertain external registration before final removal.
   await fixture.clock.advance(71_000);
   assert.equal(
@@ -687,6 +726,60 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   assert.equal(fixture.gateway.sources.size, 0);
   assertNoCredentials(fixture);
 });
+
+for (const { phase, retainedSources, eventCount } of [
+  { phase: "source_registering", retainedSources: 0, eventCount: 0 },
+  { phase: "source_ready", retainedSources: 1, eventCount: 1 },
+  { phase: "session_pending", retainedSources: 1, eventCount: 2 },
+]) {
+  test(`device start fails closed when ${phase} audit cannot commit`, async (t) => {
+    class FailingAuditSink extends InMemoryAuditSink {
+      async append(event) {
+        if (
+          event.action === "openclaw.agents.device_authorization.start" &&
+          (event.details?.phase === phase || event.details?.phase === undefined)
+        ) {
+          throw new Error("Synthetic audit storage failure");
+        }
+        await super.append(event);
+      }
+    }
+    const fixture = await createFixture(t, { auditSink: new FailingAuditSink() });
+    const response = await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } });
+    assert.equal(response.status, 503, JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    const sources = (await fixture.request("GET", fixture.sourcesPath)).data;
+    const secrets = (await fixture.request("GET", `/namespaces/${fixture.namespace.id}/secrets`))
+      .data;
+    assert.deepEqual(secrets, [], "a rejected start cannot leave a login Secret");
+    assert.equal(sources.length, retainedSources);
+    const evidence = fixture.auditSink.events.filter(
+      (event) => event.action === "openclaw.agents.device_authorization.start",
+    );
+    assert.equal(evidence.length, eventCount);
+    for (const event of evidence) {
+      assert.equal(event.actorId, fixture.policy.identities[0].id);
+      assert.equal(event.requestId, response.body.meta.requestId);
+      assert.equal(event.resource.id, sources[0].id);
+    }
+    const loginCreates = fixture.secretDriver.calls.filter((call) => call.operation === "create");
+    if (phase === "session_pending") {
+      // The private Driver value must be compensated as well as its OCC metadata.
+      assert.equal(loginCreates.length, 1);
+      assert.equal(fixture.secretDriver.has(loginCreates[0].identity), false);
+    } else {
+      assert.equal(loginCreates.length, 0);
+      assert.equal(
+        fixture.gateway.calls.some((call) => call.operation === "startDeviceAuthorization"),
+        false,
+      );
+    }
+    if (phase === "source_registering") {
+      assert.equal(fixture.gateway.sources.size, 0, "audit failure precedes Gateway registration");
+    }
+    assertNoCredentials(fixture);
+  });
+}
 
 // Finding D762: an Installation that does not select both Drivers device login needs names them
 // and who selects them, after the caller's grants and before any Gateway I/O.

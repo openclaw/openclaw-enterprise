@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+import { PRESET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { startController, request } from "../helpers/postgres-platform-state.mjs";
 
 const identifier = (kind) => `${kind}_${randomUUID()}`;
@@ -67,7 +68,7 @@ async function exercisePresets(store, reopened = store) {
   // A duplicate name names the taken kind; only server-chosen identity collisions stay generic.
   const presetNameConflict = {
     name: "ResourceStateConflictError",
-    message: "A Preset with this name already exists in this Namespace. Choose a different name.",
+    message: PRESET_NAME_CONFLICT,
   };
   const { name, message } = contenders.find((result) => result.status === "rejected").reason;
   assert.deepEqual({ name, message }, presetNameConflict);

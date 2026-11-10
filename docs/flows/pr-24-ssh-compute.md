@@ -117,6 +117,14 @@ Namespace still holds it while retrying cleanup of remaining owned accounts.
 Before host work, `sshGatewayConfigurationDocument` admits only the supported
 authentication fields and modes. Omitted auth mode renders explicit password mode with a
 managed environment SecretRef; explicit trusted proxy retains its configured trust.
+`sshGatewayAuthentication` reads an authored password with the shared reader
+(`gatewayPasswordRequirement`). An unset password, `${OPENCLAW_GATEWAY_PASSWORD}`
+and a `default`-provider SecretRef render as the managed reference, as before. Any
+other readable environment SecretRef to that variable renders as written. When the
+managed reference is unreadable under the Configuration's `secrets`, admission
+refuses it. The refusal offers the reference on the default env alias only if the
+reader accepts that reference. Verify, stop and retire check only the password's
+shape and render it the same way, so the snapshot hash still matches.
 
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
@@ -218,6 +226,8 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31: Trace authored password rendering, the alias-aware refusal offer and shape-only teardown checks. (fix-3064, findings 3064, 3065)
 
 - 2026-10-14 12:23: Document stdout retention and local-client settlement on overflow. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

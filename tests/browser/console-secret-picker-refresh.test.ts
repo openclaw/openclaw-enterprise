@@ -4,7 +4,7 @@ import type {
   SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
@@ -20,8 +20,10 @@ import {
   selectSecret,
   settlePageRequests,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+  writeRequests,
+} from "./console-agents-browser-helpers.ts";
+import { responseTo } from "./console-action-helpers.ts";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 
 test("refreshing a Secret picker keeps staged choices and finds a Secret created in another tab", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker refresh", {
@@ -39,8 +41,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   const member = await fixture.createNamespaceMember("picker-member", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () =>
-    page.waitForResponse((r) => r.url() === collection && r.request().method() === "GET");
+  const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();
   await login(
     page,
@@ -57,13 +58,11 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   await waitForInputValue(botField, bot.name);
   await settlePageRequests(page);
   // Observe only this editor after login settles; the other tab owns its intentional create.
-  const writes: { method: string; path: string }[] = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin === fixture.origin && !["GET", "HEAD", "OPTIONS"].includes(request.method())) {
-      writes.push({ method: request.method(), path: url.pathname });
-    }
-  });
+  const requests = apiRequests(page, fixture.origin);
+  const writes = () =>
+    writeRequests(requests)
+      .filter(({ method }) => !["HEAD", "OPTIONS"].includes(method))
+      .map(({ method, path }) => ({ method, path }));
   await selectSecret(page, "Slack app token", staged);
   const laterName = "Later library Secret";
   await botField.fill(laterName);
@@ -77,9 +76,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   const dialog = other.getByRole("dialog", { name: "Create Secret", exact: true });
   await dialog.getByLabel("Secret name", { exact: true }).fill(laterName);
   await dialog.getByLabel("Value", { exact: true }).fill("synthetic-later");
-  const created = other.waitForResponse(
-    (r) => r.url() === collection && r.request().method() === "POST",
-  );
+  const created = responseTo(other, "POST", collection);
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   const response = await created;
   assert.equal(response.status(), 201);
@@ -95,7 +92,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   await botField.focus();
   await page.getByText("No matching Secrets.", { exact: true }).waitFor();
   await settlePageRequests(page);
-  assert.deepEqual(writes, []);
+  assert.deepEqual(writes(), []);
   // Use the combobox keyboard, preserving its query and DOM focus through the read.
   const refresh = page.getByRole("option", { name: "Refresh Secret list", exact: true });
   await refresh.waitFor({ timeout: 5000 });
@@ -122,7 +119,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   assert.equal(await appField.inputValue(), staged.name);
   assert.equal(await hasFocus(originalInput), true);
   await settlePageRequests(page);
-  assert.deepEqual(writes, []);
+  assert.deepEqual(writes(), []);
   // Create keeps its established position before Refresh.
   await botField.press("ArrowUp");
   assert.equal(
@@ -145,12 +142,10 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   );
   assert.equal(await appField.inputValue(), staged.name);
   await settlePageRequests(page);
-  assert.deepEqual(writes, []);
+  assert.deepEqual(writes(), []);
 
   const configuration = `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const saved = page.waitForResponse(
-    (r) => r.url() === configuration && r.request().method() === "PATCH",
-  );
+  const saved = responseTo(page, "PATCH", configuration);
   await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
   const save = await saved;
   assert.equal(save.status(), 200);
@@ -172,7 +167,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   for (const [key, id] of Object.entries(expected)) {
     assert.equal(final[key].source.id, id);
   }
-  assert.deepEqual(writes, [{ method: "PATCH", path: new URL(configuration).pathname }]);
+  assert.deepEqual(writes(), [{ method: "PATCH", path: new URL(configuration).pathname }]);
   t.diagnostic(
     "Two tabs; later create 201; refresh 200; no editor writes before Save; one exact PATCH and independent GET confirm both exact IDs.",
   );
@@ -199,8 +194,7 @@ test("a real list refusal clears readable metadata but preserves staged referenc
   const member = await fixture.createNamespaceMember("revoked-picker", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () =>
-    page.waitForResponse((r) => r.url() === collection && r.request().method() === "GET");
+  const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();
   await login(
     page,

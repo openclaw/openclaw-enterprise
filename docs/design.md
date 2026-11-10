@@ -4,7 +4,9 @@ authors:
   - Kevin Lin
 created: 2026-07-08
 last_updated: 2026-10-26
-human_verified: true
+tags: [human_verified]
+# Backfilled from the verification tag recorded in f90fbc2ef.
+last_verified: "2026-10-26"
 ---
 
 # OpenClaw Enterprise architecture
@@ -114,9 +116,10 @@ platform state, IAM policy, controller work, and audit evidence.
 
 The API authenticates human sessions and non-Agent service keys, resolves an
 explicitly provisioned identity, and authorizes exact resource operations.
-The console at `/console/` uses these same APIs. GitHub and Google sign-in require
-administrator-enrolled identities; neither sign-in nor Namespace membership
-grants permissions. See [authentication](reference/authentication.md) and
+The console at `/console/` uses these same APIs. External sign-in uses enrolled
+identities. GitHub optionally enrolls verified team members into an operator-selected
+native IAM Group; its existing bindings determine access. Namespace membership
+does not grant permissions. See [authentication](reference/authentication.md) and
 [authorization](reference/authorization.md).
 
 Resource mutations, queued work, and audit records commit together. The worker
@@ -222,11 +225,13 @@ release cannot enforce this path; qualify the exact pair before rollout.
 
 ### Native admin pilot exception
 
-Trusted human operators with exact-Agent `administer` permission can enter the
-[stock OpenClaw admin UI](reference/agent-native-admin.md) through an opt-in pilot.
-OCC checks admission and session retention, but does not authorize or audit each
-native command. Operators share the selected gateway's exposed conversations
-and credentials; this grants no access to another Agent or platform IAM.
+Human sessions with exact-Agent `operate` can enter native chat; `administer`
+selects the [stock OpenClaw admin UI](reference/agent-native-admin.md). OCC checks
+admission and session retention and selects an administrative route or a chat
+route capped at `operator.sessions.write` under the shared native identity.
+The runtime enforces that ceiling; OCC does not authorize or audit
+each native command. Users share the selected gateway’s exposed conversations;
+this grants no access to another Agent or platform IAM.
 
 Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
 to the shared Agent. This path does not grant OCC access.

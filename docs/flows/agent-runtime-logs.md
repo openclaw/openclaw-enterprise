@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: "2026-10-30"
-last_updated_session: fix-3012
+updated: 2026-11-08
+last_updated_session: authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b
 ---
 
 # Agent runtime logs flow
@@ -192,6 +192,7 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 `apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and `runtimeLogDownloadBody`
 reject reserved `content`. Container headers label `instance` without Pods. Console and `runtimeLogDownloadFileName`
 take `-previous.log` from the request.
+Console saves a file only for HTTP 200 plain text; other successful formats show retry feedback without saving a file, and JSON error envelopes retain applicable guidance.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
@@ -203,10 +204,24 @@ A reread that a newer Agent state overtakes, such as this page's Stop, is droppe
 The view repeats the recovery card's failure line without its code (`deployment-recovery.mts:show`), in place, until a later deployment succeeds.
 For a version the reader cannot read, the view also says in place that a stop was requested or that the version is no longer selected for service (`detail.mts:servingChange`, 3012).
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
+A same-selection refresh checks the fields it needs and prepares every row before replacing the
+loaded output. An unreadable page reports the read error and keeps the current rows and cursor
+so the next valid page can recover. Follow likewise appends no rows and keeps its cursor if a page
+cannot be prepared. A changed selection or loss of log access still clears old output.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
-CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
-[CLI reference](../reference/cli.md#runtime-status-and-logs). Cancellation succeeds only for `runAgentLogs --follow`.
+See the [CLI reference](../reference/cli.md#runtime-status-and-logs) for flags,
+polling and `Retry-After` (`internal/occclient/transport.go:apiError`).
+Cancellation succeeds only for `runAgentLogs --follow`.
+
+When an Agent has no active revision, a failed fallback notice stops
+`agentRevision` before the CLI reads status or logs. `runAgentLogs` and `printRuntimeLogPage` return
+text-mode stderr errors for no-Pod, gap or withheld notices.
+`cmd/occ/main.go:main` exits nonzero on these errors.
+
+`cmd/occ/main.go:main` restores default signal handling after the first
+cancellation. A subsequent Ctrl-C or `SIGTERM` can terminate a command blocked
+on local I/O or cleanup; that forced exit does not guarantee completed cleanup.
 Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
 
 ## Debugging and Verification
@@ -233,6 +248,17 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-11-09 02:46: Propagate fallback notice errors. (authoring-run/f0458286-baf0-414b-845d-eb460e02a598 - 23136d13b45ab43688ea14e771971bfc66378edf)
+
+- 2026-11-08 03:13: Document CLI exits on text notice write errors. (authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b - 143419c5a957dfacc399e72fccceeb9f3ebfa403)
+
+- 2026-11-04 22:52: Restore signal termination after initial CLI cancellation. (PR #4640 - f9c0fb4398a33099bdbeec7a83d18b99b0861933)
+
+- 2026-11-04 18:33: Keep loaded Console output when a log page cannot be prepared. (authoring-run/dcd46e24-f282-428e-8b71-91a98d9290a6 - d59eff6dc3b51e87eac86bb47eb4df3fd55846bb)
+
+- 2026-10-31 18:30: Mask values after literal escapes and percent-encoded separators. (3053, 3055)
+- 2026-10-31 17:30: Mask values after spacing controls and quoted keys. (3051, 3052)
+- 2026-10-31 16:00: Show a line break inside a message as one space, not joined words. (3048)
 - 2026-10-30 21:30: Say a stop in Logs of an unreadable version; keep the view in place. (3012)
 - 2026-10-30 20:30: Reread the Agent in Logs after a fresh status refusal. (3010)
 - 2026-10-30 20:00: Reread the Agent in Logs whose status denial is remembered. (3005)

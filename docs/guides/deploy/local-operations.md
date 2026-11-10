@@ -75,7 +75,10 @@ These references work in this cluster and retain `requireImmutableDigest: true`.
 Use the generated directory in place of `/secure/occ` in the production commands;
 keep its image values and kubeconfig instead of copying the templates again.
 Set the remaining database, HTTPS, network, and storage inputs for your trial
-(k3d's default StorageClass is `local-path`). The images alone do not configure
+(k3d's default StorageClass is `local-path`). Before Helm installation, prepare
+[private routing](workspace-routing.md#requirements), including its controllers,
+CRDs, GatewayClass, service-key Secret, and matching Installation settings.
+The images alone do not configure
 those dependencies or prove an Agent model turn. When finished with the trial,
 run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
 

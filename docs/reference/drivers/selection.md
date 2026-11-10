@@ -23,9 +23,8 @@ images; individual Agents cannot choose their own implementations.
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
    worker with the same file and controller image. Follow the
    [deployment guide](../../guides/deploy.md) for the chosen environment.
-4. Verify the Agent on the selected Driver. On local Kubernetes,
-   [deploy your first Agent](../../guides/first-agent.md). On production
-   Kubernetes, [verify an existing Agent's model response](../../guides/operate/model-verification.md).
+4. Verify the Agent on the selected Driver. On Kubernetes,
+   [verify the Agent's model response](../../guides/operate/model-verification.md).
    On SSH, follow the [host-managed credential requirements](ssh-compute.md#credentials-and-supported-boundaries)
    and send a model request through the host's configured gateway or channel;
    the Kubernetes verification commands do not apply. OCC startup or gateway
@@ -60,7 +59,7 @@ Sandbox packages in trusted YAML in either mode.
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
-| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                                                          |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 | `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
 
 Installed packages run unsandboxed with control-plane authority and
@@ -103,6 +102,10 @@ recipient before release.
 | v5        | Online authorization returns a decision by `replyBy`. Bundled OpenShell supports selected repository sets and single `git-write` grants with a verified mandatory pre-credentials binding. An authorized request may finish after withdrawal. |
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
+
+Observed OpenShell Git routes keep the original launch acknowledgment during credential
+rotation. They reopen only after the model provider observation matches the new
+shared provider environment; stale or incomplete observations leave the route pending.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
@@ -351,10 +354,12 @@ checkout, readable only by its owner. Local dependency installation can select
 it through `NPM_CONFIG_USERCONFIG`; image builds accept it as the ephemeral
 BuildKit secret `id=npmrc`, not as a build argument or copied source file.
 
-The Dockerfile runs `pnpm install --frozen-lockfile --prod --ignore-scripts` and
-mounts the npmrc only for that installation. `.dockerignore` excludes npmrc
-files. Registry tokens must not enter source, image layers, lockfiles, Helm
-values, startup YAML, logs, or runtime Pods.
+The controller image mounts npmrc only for `pnpm install --frozen-lockfile --prod --ignore-scripts`.
+`.dockerignore` excludes npmrc files. Keep registry tokens out of source, image
+layers, lockfiles, Helm values, startup YAML, logs, and runtime Pods.
+
+For image builds that also need to download pnpm from a mirror, follow the
+[registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 
 ## Loading, updates, and startup failures
 

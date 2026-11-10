@@ -201,7 +201,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 
 | Setting                        | Default or requirement                                                                                                                                    |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                      | `false`; enable to render routing resources and API mounts.                                                                                               |
+| `enabled`                      | `true`; renders routing resources and API mounts. Explicit `false` omits them.                                                                            |
 | `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
 | `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
 | `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |
@@ -273,7 +273,7 @@ Agent native admin UI access reuses the same private Envoy routing primitive as
 workspace files. The public browser hosts are operator-owned wildcard names
 served by the OCC API process, using `agentNativeAdmin.domain`; Envoy and Agent
 gateway Services remain private ClusterIP resources. The Agent hosts share the
-ordinary OCE session cookie through the configured `agentNativeAdmin.sharedCookieDomain`,
+ordinary OCE session cookie through the automatically derived common Console and Agent DNS suffix,
 so every matching console and Agent subdomain must be a trusted OCE ingress
 endpoint. OCC authenticates and authorizes the human session before proxying,
 then strips browser cookies and credentials before forwarding to Envoy.

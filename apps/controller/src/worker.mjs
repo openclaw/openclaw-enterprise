@@ -5,10 +5,8 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "./composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -26,6 +24,7 @@ import {
   startupDependencyFailure,
   startupConfigurationFailure,
   startupListenerFailure,
+  installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
@@ -76,19 +75,9 @@ function workerStartupFailureCode(error) {
   if (/PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
-  if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
-      message,
-    )
-  ) {
-    return "OBSERVABILITY_URL_INVALID";
-  }
-  if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
-      message,
-    )
-  ) {
-    return "RUNTIME_IMAGE_INVALID";
+  const settingCode = installationSettingFailureCode(message);
+  if (settingCode !== undefined) {
+    return settingCode;
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -199,8 +188,8 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
-      report: (code, context) =>
-        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+      report: (code, context, severity = "error") =>
+        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
@@ -254,7 +243,9 @@ try {
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
+  );
 
   let closing = false;
   async function shutdown() {

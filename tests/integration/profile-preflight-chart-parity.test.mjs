@@ -40,6 +40,7 @@ function input(controlPlane) {
       clusterName: "profile-qualification",
       controllerImage: `registry.example.invalid/openclaw-enterprise/controller@sha256:${"a".repeat(64)}`,
       authBaseUrl: "https://console.oce.example.internal",
+      agentNativeAdminDomain: "agents.oce.example.internal",
       adminEmail: "admin@example.invalid",
       bootstrapPasswordClaimName: "occ-bootstrap-admin-password",
       apiClients: [{ namespace: "operator-tools", podLabels: { app: "occ-operator" } }],
@@ -734,6 +735,39 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
 });
 
 test(
+  "a DNS Pod selector without the chart's default label selects only the labelled DNS Pods",
+  { skip: helmSkip },
+  () => {
+    // OpenShift DNS Pods have no k8s-app label. Helm merges values over chart defaults, so the
+    // rendered values must drop that default or the DNS egress rule matches no Pod.
+    const podLabels = { "dns.operator.openshift.io/daemonset-dns": "default" };
+    return withProfile(
+      input({ dns: { namespace: "openshift-dns", podLabels } }),
+      async ({ directory, renderer }) => {
+        assert.equal(renderer.ok, true, renderer.output);
+        const chart = await helmTemplate([join(directory, "values.yaml")]);
+        assert.equal(chart.ok, true, chart.output);
+        const peers = chart.output
+          .split(/^---$/m)
+          .filter((document) => document.includes("kind: NetworkPolicy"))
+          .map((document) => loadYaml(document))
+          .flatMap((policy) => policy.spec.egress ?? [])
+          .flatMap((rule) => rule.to ?? [])
+          .filter(
+            (peer) =>
+              peer.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] ===
+              "openshift-dns",
+          );
+        assert.notEqual(peers.length, 0);
+        for (const peer of peers) {
+          assert.deepEqual(peer.podSelector.matchLabels, podLabels);
+        }
+      },
+    );
+  },
+);
+
+test(
   "external sign-in credential keys get the same verdict from preflight and the chart",
   { skip: helmSkip },
   () => {
@@ -1067,29 +1101,31 @@ test(
 // The chart checks the percent-decoded host for invisible characters that Node's host
 // parser drops.
 const invisibleHost = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
+const sharedDnsSuffix =
+  /auth\.baseUrl and agentNativeAdmin\.domain must share a non-public DNS suffix/;
 fieldParity("auth base URLs get the same verdict from preflight and the chart", {
   cases: [
-    ["https://[::1]", true],
-    ["https://[::192.0.2.1]", true],
-    ["https://[64:ff9b::192.0.2.1]:8443", true],
-    ["https://[::ffff:1:2:3]", true],
-    ["https://ex%C3%A4.com", true],
+    ["https://[::1]", false, sharedDnsSuffix],
+    ["https://[::192.0.2.1]", false, sharedDnsSuffix],
+    ["https://[64:ff9b::192.0.2.1]:8443", false, sharedDnsSuffix],
+    ["https://[::ffff:1:2:3]", false, sharedDnsSuffix],
+    ["https://ex%C3%A4.oce.example.internal", true],
     ...["%C2%AD", "%E2%80%8B", "%E2%81%A0", "%EF%BB%BF", "%E1%A0%8E", "%F0%9D%85%B3"].map(
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
     ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
     // A joiner may sit inside a label, encoded or not, but not at the start or end of the URL.
-    ["https://\u0915\u094d\u200d\u0937.example", true],
-    ["https://\u0915\u094d%E2%80%8D\u0937.example", true],
+    ["https://\u0915\u094d\u200d\u0937.oce.example.internal", true],
+    ["https://\u0915\u094d%E2%80%8D\u0937.oce.example.internal", true],
     [
       "https://example.\u0915\u094d\u200d",
       false,
       /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/,
     ],
-    // Only ::ffff:0:0/96 is IPv4-mapped.
-    ["https://[::1:ffff:c000:201]", true],
+    // Unmapped IPv6 still cannot share a DNS cookie scope.
+    ["https://[::1:ffff:c000:201]", false, sharedDnsSuffix],
     // An uppercase scheme still gets the IPv4 and percent-escape checks.
-    ["HTTPS://192.0.2.10", true],
+    ["HTTPS://192.0.2.10", false, sharedDnsSuffix],
     ["HTTPS://ex%61mple.com", false, /invalid URL escape "%61"/],
     // Sprig urlParse refuses every ASCII escape in the host, in either hex case.
     ["https://ex%7Eample.com", false, /invalid URL escape "%7E"/],
@@ -1112,8 +1148,8 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
 });
 
 // Helm built with Go 1.24.9 (Helm 3.19.2) refuses an IPv4-mapped IPv6 host in any spelling
-// as an invalid IPv6 host; Helm built with newer Go accepts it. Preflight refuses it, so the
-// outcome does not depend on the Helm build.
+// as an invalid IPv6 host; newer Go reaches shared DNS scope validation. Both layers
+// refuse IP-based browser origins regardless of the Helm build.
 test(
   "IPv4-mapped auth base URL hosts fail preflight under every Helm build",
   { skip: helmSkip },
@@ -1134,9 +1170,12 @@ test(
             await baselineValues(),
             writeOverride(directory, { auth: { baseUrl: url } }),
           ]);
-          if (!chart.ok) {
-            assert.match(chart.output, /invalid IPv6 host/, url);
-          }
+          assert.equal(chart.ok, false, `${url}: helm template\n${chart.output}`);
+          assert.match(
+            chart.output,
+            /invalid IPv6 host|auth\.baseUrl and agentNativeAdmin\.domain must share a non-public DNS suffix/,
+            url,
+          );
         }),
     ),
 );

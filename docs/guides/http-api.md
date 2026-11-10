@@ -106,9 +106,8 @@ occ_get "/namespaces/$OCC_NAMESPACE"
 
 Expect HTTP `200` and a single Namespace in `data`, including its `id`, `name`,
 and `status`. The [API resources index](../reference/api.md#resources) lists
-other operations. If you are working on your own local Installation, follow
-[Deploy your first Agent locally](first-agent.md). For a shared or production
-Kubernetes Installation, follow [Deploy and verify production Agents](deploy/production-agents.md);
+other operations. To create an Agent on this Installation, follow
+[Deploy and verify Agents](deploy/production-agents.md);
 operators using trusted-proxy gateways can then [verify a model response](operate/model-verification.md).
 
 ## Troubleshoot

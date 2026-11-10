@@ -1,3 +1,4 @@
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -18,6 +19,82 @@ import {
 } from "./kubernetes-real.mjs";
 
 const execute = promisify(execFile);
+
+// Stock OpenShell shorthand timestamps describe rendering, not event occurrence. This
+// bounded tail inventory is deliberately uncorrelated with the failed curl request.
+export async function assertAllowedCredentialRoute(
+  { probe, sourceType, destination, capture, write = (text) => process.stderr.write(text) },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  try {
+    assert.equal(
+      probe.httpStatus,
+      "200",
+      "a command Codex runs must authenticate at the allowed source endpoint.",
+    );
+  } catch (failure) {
+    const unavailable = { status: "unavailable" };
+    const supervisorTail = await withinDiagnosticDeadline(
+      async () => {
+        try {
+          const logs = await capture();
+          if (typeof logs !== "string") {
+            return unavailable;
+          }
+          let providerEnvironmentChanges = 0;
+          let selectedDestinationStaleGenerationDenials = 0;
+          for (const line of logs.split("\n")) {
+            // Exact v0.1.6 shorthand grammar; discard both rendering/CRI timestamps.
+            const record = line.match(/^(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z ){1,2}OCSF (.*)$/u)?.[1];
+            if (
+              /^CONFIG:DETECTED \[INFO\] Settings poll: config change detected \[old_revision:\d+ new_revision:\d+ policy_changed:(?:true|false) provider_env_changed:true\]$/u.test(
+                record ?? "",
+              )
+            ) {
+              providerEnvironmentChanges++;
+            }
+            const closed = record?.match(
+              /^NET:OPEN \[MED\] DENIED (\S+) \[reason:L7 tunnel closed before inspection because policy changed: policy generation is stale \[captured_generation:\d+ current_generation:\d+\]\]$/u,
+            );
+            if (closed !== null && closed !== undefined && closed[1] === destination) {
+              selectedDestinationStaleGenerationDenials++;
+            }
+          }
+          return {
+            status:
+              providerEnvironmentChanges + selectedDestinationStaleGenerationDenials > 0
+                ? "recognized"
+                : "no_match",
+            providerEnvironmentChanges,
+            selectedDestinationStaleGenerationDenials,
+          };
+        } catch {
+          return unavailable;
+        }
+      },
+      { timeoutMs, timedOut: unavailable },
+    );
+    const status = (value) => (typeof value === "string" && /^\d{3}$/u.test(value) ? value : null);
+    try {
+      write(
+        `OpenShell integration: allowed credential route failure ${JSON.stringify({
+          sourceType: ["codex-pat", "openai"].includes(sourceType) ? sourceType : null,
+          httpStatus: status(probe.httpStatus),
+          connectStatus: status(probe.connectStatus),
+          exitCode:
+            Number.isInteger(probe.exitCode) && probe.exitCode >= 0 && probe.exitCode <= 255
+              ? probe.exitCode
+              : null,
+          uncorrelatedSupervisorTail: supervisorTail,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostic output failure must not replace the original route assertion.
+    }
+    throw failure;
+  }
+}
+
 const sandboxApiResource = "sandboxes.agents.x-k8s.io";
 const harnessPort = 18790;
 const gatewayPort = 8080;
@@ -408,8 +485,8 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken, 
 // Model egress comes only from the credential source's profile, bound to native Codex.
 // Match either architecture of the pinned image, independent of the test runner's host.
 const openshellCodexBinaries = Object.freeze([
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
 export function createOpenShellInstallationConfiguration({
@@ -1029,7 +1106,7 @@ export function createOpenShellKubernetesFixture({
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
       // The gateway rejects every Sandbox template label it does not allow; Harness
       // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      '--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]',
+      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -1439,6 +1516,9 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let phase = "connect";
+      let receivedMessages = 0;
+      let completedCommands = 0;
       let failedCommands = 0;
       let approvalRequests = 0;
       // Whether the turn began anything that can act: a command, file change, tool call or
@@ -1499,6 +1579,9 @@ export function createOpenShellKubernetesFixture({
             : (error?.stack || String(error)));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          // These method names come only from this client, never server payloads or prompts.
+          phase, pendingRequests: [...pending.values()].map(({ method }) => method),
+          receivedMessages, completedCommands, actionSeen,
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
           retrySafe,
@@ -1547,6 +1630,7 @@ export function createOpenShellKubernetesFixture({
 
       function request(method, params = {}) {
         const id = nextId++;
+        phase = method;
         return new Promise((resolve, reject) => {
           pending.set(id, { method, resolve, reject });
           socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
@@ -1601,6 +1685,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
+        receivedMessages += 1;
         const message = JSON.parse(String(data));
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
@@ -1646,6 +1731,7 @@ export function createOpenShellKubernetesFixture({
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
         }
         if (ending) {
+          completedCommands += 1;
           pendingCommands.delete(item.id);
           if (commandDeadline && !pendingCommands.size) finish();
           return;
@@ -1665,6 +1751,7 @@ export function createOpenShellKubernetesFixture({
               const id = message.result?.turn?.id;
               if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
               turnId = id;
+              phase = "turn";
             }
             entry.resolve(message.result);
           }

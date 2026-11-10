@@ -1,22 +1,27 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Kubernetes tests
 
 ## Overview
 
-Run Kubernetes installation and runtime tests on a disposable local k3d cluster with enforcing NetworkPolicies. The fixture suite excludes a real gateway and model. The runtime suite includes them.
+Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real gateways/models; runtime tests include them.
 
 ## Local Kubernetes installation
 
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
-Use a disposable container engine with enough capacity to build images. The
+Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. From the root of a trusted repository checkout,
-install the dependencies and build the CLI before running:
+the standalone Keycloak lane. Run these commands from the trusted checkout root:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
 pnpm cli:build
-OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test --test-concurrency=1 tests/integration/dev-up-k3d-real.test.mjs tests/integration/dev-up-k3d-refusals-real.test.ts tests/integration/dev-up-k3d-keycloak-real.test.ts
 ```
 
 The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
@@ -25,10 +30,9 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 
 ## Kubernetes HTTP fixture
 
-Install Docker, k3d and `kubectl`, and prepare the dedicated migrated database
-in [PostgreSQL](postgresql.md#other-postgresql-suites). Use Kubernetes 1.35 or
-later. Choose a new cluster name if `oce` exists. These commands do not change
-the default kubeconfig or context.
+Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
+[dedicated migrated database](postgresql.md#other-postgresql-suites). Choose a new
+cluster name if `oce` exists. These commands preserve the default kubeconfig and context.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -52,26 +56,37 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
     tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-All fixture cases must pass without skips. Missing all cluster selectors skips;
-partial selectors fail. A missing database skips database cases. Run files
-sequentially: they share a database. The suite checks API, worker, Driver, RBAC,
-storage, lifecycle and network isolation, not live OAuth/models, cloud volume
-detach or node fencing.
+Run all cases sequentially against the shared database and require zero skips.
+Absent selectors or database skip their cases. Partial selectors fail. Coverage
+includes API, worker, Driver, RBAC, storage, lifecycle and network isolation.
+Cloud volume detach and node fencing require separate proof.
 
-External OAuth credentials use OpenShell, not Kubernetes bootstrap Jobs or a
-native OAuth store. A green fixture result does not prove live OAuth refresh: the
-[OpenShell OAuth proof](openshell-oauth.md) and the credentialed
-[OpenShell runtime lane](openshell.md) cover it, outside ordinary CI.
-
-When finished, delete only the cluster you created:
+For live OAuth, use the [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md) suites. Delete only your disposable cluster:
 
 ```sh
 k3d cluster delete oce
 ```
 
+### Installation handoff
+
+With Helm, `yq`, the `go.mod` toolchain, and the cluster above:
+
+```sh
+OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
+OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
+  node --test tests/integration/installation-handoff-k3d-real.test.ts
+```
+
+Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
+quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
+remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
+runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
+after interruption before and after UID capture.
+
 ### Production workload network access
 
-With the fixture cluster and image above, install Helm and `yq`, then run:
+Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` available. Install Helm and `yq`, then run:
 
 ```sh
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
@@ -80,10 +95,11 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-This needs no database or model credential. It checks the chart's actual
-NetworkPolicies with reachable controls. It does not prove controller startup,
-database authentication, provider behavior, or a production Helm installation.
-Policies for other releases are outside the chart's selectors.
+Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
+destinations, and grant withdrawal. TLS-preserving API proxies verify withdrawal;
+a controlled discovery snapshot tests removal of the last backend. Its CI lane owns
+a separate cluster and awaits slice and namespace cleanup. No database or model credentials
+are required.
 
 ## Kubernetes model turns and Secrets
 
@@ -151,9 +167,10 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-All six non-Slack cases must pass: dedicated Codex, dedicated Skill source
-uploads, embedded OpenClaw, Secret lifecycle, and startup-failure evidence with
-plugins disabled and enabled. The Skill source case needs local `zip`. A
+Seven non-Slack cases must pass: dedicated Codex, dedicated Skill source
+uploads, embedded OpenClaw, Secret lifecycle, Default user deploy, and
+startup-failure evidence with and without plugins. The Skill source case needs
+local `zip`. A
 selected suite fails on missing prerequisites; an unselected suite skips. The
 suite does not install OCC with Helm. Credentials belong only in the selected
 runtime Pods, not controllers, logs, or shell history. For private workspace
@@ -209,11 +226,11 @@ container, private files, and the line it added. If passwordless `sudo` is
 unavailable, add this line yourself before preparation and remove it afterward:
 
 ```sh
-echo '127.0.0.1 keycloak.oce.localhost' | sudo tee -a /etc/hosts
+echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-The hostname must resolve to exactly `127.0.0.1`; a resolver that returns `::1`
-can cause failure. For preparation errors, check the named step: image pull,
+Resolve both names to `127.0.0.1`, optionally also `::1`, with no nonloopback
+answers. Readiness uses IPv4 to match Docker. For preparation errors, check the named step: image pull,
 port availability, placeholders, hosts resolution, or the printed Keycloak log
 for readiness errors.
 
@@ -276,10 +293,12 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 
 ### Native Gateway sharing
 
-Run the `gateway-routing` lane as shown above; it selects
-`tests/integration/native-admin-k3d-real.test.mjs`. Its sharing case checks
-Agent grants, denied access, model turns, and WebSocket revocation. It does not
-qualify account enrollment, per-chat authority, Git, or OpenShell.
+The `gateway-routing` lane checks native browser access, `agent:operate` chat,
+administration denial, and WebSocket closure after permission withdrawal or
+session expiry. Its combined QA journey adds real Keycloak sign-in. See
+[Native Agent browser tests](native-agent-browser.md) for selection, prerequisites,
+cleanup, and proof boundaries. These tests do not qualify automatic account
+enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 

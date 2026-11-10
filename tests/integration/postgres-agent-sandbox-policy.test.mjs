@@ -17,6 +17,7 @@ import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/driver
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
+import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 
 async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
@@ -1021,7 +1022,7 @@ test(
         {
           path: "/additions/0",
           code: "OUTSIDE_CEILING",
-          message: "The grant exceeds the Installation delegation ceiling.",
+          message: GRANT_EXCEEDS_CEILING,
         },
       ]);
     }
@@ -1068,7 +1069,10 @@ test(
     assert.equal(unreadableApply.statusCode, 403, unreadableApply.body);
     assert.equal(Object.hasOwn(unreadableApply.json().error, "details"), false);
     // The refusal names the grant the API contract and the CLI list for apply.
-    assert.match(unreadableApply.json().error.message, /needs SandboxPolicy read on /);
+    assert.equal(
+      unreadableApply.json().error.message,
+      callerDenied("SandboxPolicy read", `SandboxPolicy ${previous.id}`),
+    );
     // Update alone still saves. Apply returns the saved policy, so read is required even when
     // the saved version has no additions to admit.
     const emptied = await inject("PUT", path, { expectedVersion: 2, additions: [] }, app);
