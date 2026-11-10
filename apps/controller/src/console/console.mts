@@ -3058,6 +3058,18 @@ function retryableAgentRecheck(error: unknown) {
   return status !== undefined && status >= 500 && status < 600 && retryAfterSeconds === undefined;
 }
 
+async function settleAgentRecheckRead<T>(read: Promise<T>) {
+  try {
+    return { status: "fulfilled", value: await read } as const;
+  } catch (reason) {
+    const { status } = requestFailure(reason);
+    if (status === 401 || isAccessRefusal(status)) {
+      throw reason;
+    }
+    return { status: "rejected", reason } as const;
+  }
+}
+
 async function revalidateMountedAgent(current: Route) {
   const key = routeKey(current);
   const state = mountedViewState;
@@ -3269,27 +3281,28 @@ async function revalidateMountedAgent(current: Route) {
                   (responseFields(meta).nextCursor ?? null) === null &&
                   !data.some((item) => responseFields(item).id === selected),
               ))));
-        const [versionResult, snapshotResult] = await Promise.allSettled([
-          versions,
-          shownUnreadable()
-            .then((unreadable) => (unreadable || !isCurrent() ? undefined : request(snapshotPath)))
-            .catch((error: unknown) => {
-              // Initial admission can show an Agent with its draft Configuration denied. Keep
-              // that same refusal, but scrub a page whose previously readable data was revoked.
-              if (selected === "draft" && requestFailure(error).status === 403 && refusalSettled) {
-                return;
-              }
-              detailFailure(error);
-            }),
+        const snapshotRead = shownUnreadable()
+          .then((unreadable) => (unreadable || !isCurrent() ? undefined : request(snapshotPath)))
+          .catch((error: unknown) => {
+            // Initial admission can show an Agent with its draft Configuration denied. Keep
+            // that same refusal, but scrub a page whose previously readable data was revoked.
+            if (selected === "draft" && requestFailure(error).status === 403 && refusalSettled) {
+              return;
+            }
+            detailFailure(error);
+          });
+        // Refusals end admission promptly. Other failures settle together so Retry can honor
+        // every applicable deadline.
+        const [versionResult, snapshotResult] = await Promise.all([
+          settleAgentRecheckRead(versions),
+          settleAgentRecheckRead(snapshotRead),
         ]);
         if (versionResult.status === "rejected" || snapshotResult.status === "rejected") {
           const errors = [versionResult, snapshotResult].flatMap((result) =>
             result.status === "rejected" ? [result.reason as unknown] : [],
           );
-          // A refusal or throttled read governs the batch regardless of result order.
+          // A throttled read governs retry regardless of result order.
           throw (
-            errors.find((error) => requestFailure(error).status === 401) ??
-            errors.find((error) => isAccessRefusal(requestFailure(error).status)) ??
             errors.find((error) => requestFailure(error).status === 429) ??
             errors.find((error) => requestFailure(error).retryAfterSeconds !== undefined) ??
             errors.find((error) => !retryableAgentRecheck(error)) ??

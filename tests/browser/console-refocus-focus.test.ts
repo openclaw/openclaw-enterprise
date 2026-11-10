@@ -1091,6 +1091,7 @@ test("persistent refocus failure leaves a local warning and Retry checks fresh a
     draft,
     requests,
     readCount,
+    agentPath,
     configurationPath,
   } = await openRefocusDraft(t);
   const configurationUrl = fixture.origin + configurationPath;
@@ -1155,11 +1156,23 @@ test("persistent refocus failure leaves a local warning and Retry checks fresh a
     namespaceId: namespace.id,
     resourceId: agent.configurationId,
   });
+  const revisions = await holdRequests(t, page, `${fixture.origin}${agentPath}/revisions`, {
+    once: true,
+    method: "GET",
+  });
   const beforeRefusal = readCount(configurationPath);
   const refused = responseTo(page, "GET", configurationUrl);
   await refocus(page);
-  assert.equal((await refused).status(), 403);
-  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  try {
+    await revisions.requested;
+    assert.equal((await refused).status(), 403);
+    await page
+      .getByRole("heading", { name: "Access denied", exact: true })
+      .waitFor({ timeout: 5_000 });
+  } finally {
+    revisions.release();
+  }
+  await waitForIdleFetches(page);
   assert.equal(await editor.count(), 0);
   assert.equal(await retry.count(), 0);
   assert.equal(readCount(configurationPath) - beforeRefusal, 1, "access refusal is never retried");
