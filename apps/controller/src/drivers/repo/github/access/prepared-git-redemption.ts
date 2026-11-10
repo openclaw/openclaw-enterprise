@@ -6,7 +6,7 @@ import type {
   RequestCredentialMaterial,
 } from "@openclaw-enterprise/contracts";
 import type { postgresRequestCredentialApprovals } from "@openclaw-enterprise/occ";
-import type { InstalledGitMaterial } from "./prepared-repository-git.ts";
+import type { InstalledGitRoute } from "./prepared-repository-git.ts";
 
 /** Private, worker-local port. Existing protected senders cannot invoke grant redemption. */
 export const preparedGitRedemption = Symbol("preparedGitRedemption");
@@ -16,7 +16,10 @@ export type PreparedGitGrantRequest = PreparedGitHubRepositoryUseRequest & {
   readonly operation: "advertise-upload-pack" | "upload-pack";
 };
 
-export type PreparedGitGrantMaterial = Omit<ProtectedGitHubRepositoryMaterial, "value">;
+export type PreparedGitGrantBinding = Omit<
+  ProtectedGitHubRepositoryMaterial,
+  "value" | "preparationAttemptId" | "materialVersion"
+>;
 
 export function allowsPreparedGitGrantRead(scope: {
   readonly repositories: readonly unknown[];
@@ -36,21 +39,19 @@ export type PreparedGitGrantApproval = Pick<
 > & { readonly credentialIdentity: string };
 
 export interface PreparedGitRedemption {
-  readMaterial(
+  readBinding(
     route: RepositoryGitInstallationFence,
     signal: AbortSignal,
-  ): Promise<
-    PreparedGitGrantMaterial | { readonly absent: "withdrawn" | "unprepared" } | undefined
-  >;
+  ): Promise<PreparedGitGrantBinding | { readonly absent: "withdrawn" | "unprepared" } | undefined>;
   approve(
     request: PreparedGitGrantRequest,
-    installed: InstalledGitMaterial,
+    installed: InstalledGitRoute,
     approval: PreparedGitGrantApproval,
     signal: AbortSignal,
   ): Promise<string | undefined>;
   redeem(
     request: PreparedGitGrantRequest,
-    installed: InstalledGitMaterial,
+    installed: InstalledGitRoute,
     grant: RequestCredentialGrant,
     signal: AbortSignal,
   ): Promise<RequestCredentialMaterial | undefined>;

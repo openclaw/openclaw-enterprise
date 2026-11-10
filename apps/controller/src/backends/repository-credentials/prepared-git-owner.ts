@@ -21,8 +21,14 @@ import {
 import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
-import type { PreparedGitGrantApprovals } from "../../drivers/repo/github/access/prepared-git-redemption.ts";
+import {
+  PreparedRepositoryGitStore,
+  type PreparedRepositoryGitSource,
+} from "../../drivers/repo/github/access/prepared-repository-git.ts";
+import {
+  allowsPreparedGitGrantRead,
+  type PreparedGitGrantApprovals,
+} from "../../drivers/repo/github/access/prepared-git-redemption.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -35,7 +41,7 @@ import {
   installationGitAdoption,
   selectedGitAdoption,
 } from "../../drivers/repo/access/protected-repository-git-installation.ts";
-import { TokenService } from "../token-service/service.ts";
+import { runPreparation, TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
 export interface PreparedRepositoryGitConfiguration {
@@ -71,6 +77,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
   gitGrantApprovals?: PreparedGitGrantApprovals;
+  /** Only the opt-in grant-delivery profile prepares its selected read token at redemption. */
+  prepareGitOnDemand?: boolean;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -194,7 +202,7 @@ async function appSigningKey(path: string, appId: string, clock: Clock) {
 }
 
 /** A single owner of App issuance, renewal, durable uncertainty and retirement.
- * No Git request can call maintain, and neither the broker nor API needs either key mount.
+ * The broker can request its approved family, while neither the broker nor API holds the keys.
  * The worker passes no clock; `clock` is a separate argument so that parsed configuration,
  * which is spread into `options`, can never select it. */
 export async function startPreparedGitHubGitOwner(
@@ -349,6 +357,90 @@ export async function startPreparedGitHubGitOwner(
                 )
               : use(input, signal),
         );
+  const onDemand = (source: PreparedRepositoryGitSource) =>
+    options.prepareGitOnDemand &&
+    source.grant.profile === "github-repository" &&
+    allowsPreparedGitGrantRead(source.grant);
+  async function withAppKey(
+    use: (
+      key: Awaited<ReturnType<typeof appSigningKey>>["owner"],
+      version: string,
+    ) => Promise<void>,
+  ) {
+    const { keyObject, owner: key } = await appSigningKey(
+      options.privateKeyPath,
+      registry.appId,
+      clock,
+    );
+    try {
+      const version = createHash("sha256")
+        .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
+        .digest("hex");
+      await use(key, version);
+    } finally {
+      key.close();
+    }
+  }
+  async function prepare(
+    source: PreparedRepositoryGitSource,
+    key: Awaited<ReturnType<typeof appSigningKey>>["owner"],
+    version: string,
+    run: (owner: ReturnType<typeof createGitHubPreparationOwner>) => Promise<string>,
+  ) {
+    const admission = await store.claimGit(source, version);
+    if (!admission) {
+      return;
+    }
+    const outcome = await run(
+      createGitHubPreparationOwner({
+        admission,
+        store: store.store(source, null),
+        clock,
+        apiOrigin,
+        getKey: async () => key,
+        ...(ca ? { ca } : {}),
+        renewBeforeMs: 600_000,
+        minimumValidityMs: 60_000,
+        observe: ({ error, ...diagnostic }) =>
+          options.report?.(
+            "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+            {
+              ...diagnostic,
+              ...(error ? { errorClass: error } : {}),
+              revisionId: source.session.revisionId,
+            },
+            "info",
+          ),
+      }),
+    );
+    if (outcome === "quarantined" || outcome === "blocked") {
+      options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
+        reason: outcome,
+        namespaceId: source.session.namespaceId,
+        revisionId: source.session.revisionId,
+        repositoryRef: source.session.binding.repositoryRef,
+      });
+    }
+  }
+  const preparing = new Map<string, Promise<void>>();
+  function prepareApproved(source: PreparedRepositoryGitSource) {
+    stop.signal.throwIfAborted();
+    if (!onDemand(source)) {
+      throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
+    }
+    const family = source.key.source.id;
+    const pending = preparing.get(family);
+    if (pending) {
+      return pending;
+    }
+    // All waiters share the issuance owner. Cancellation can stop a caller's release,
+    // but the owner still settles a provider request it already dispatched.
+    const work = withAppKey((key, version) =>
+      prepare(source, key, version, (owner) => runPreparation(owner, stop.signal)),
+    ).finally(() => preparing.delete(family));
+    preparing.set(family, work);
+    return work;
+  }
   let sources: Awaited<ReturnType<typeof store.discover>> = [];
   const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
     async discover() {
@@ -365,54 +457,15 @@ export async function startPreparedGitHubGitOwner(
       if (!sources.length) {
         return;
       }
-      const { keyObject, owner: key } = await appSigningKey(
-        options.privateKeyPath,
-        registry.appId,
-        clock,
-      );
-      try {
-        const version = createHash("sha256")
-          .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-          .digest("hex");
+      await withAppKey(async (key, version) => {
         for (const source of sources) {
-          const admission = await store.claimGit(source, version);
-          if (!admission) {
-            continue;
-          }
-          const owner = createGitHubPreparationOwner({
-            admission,
-            store: store.store(source, null),
-            clock,
-            apiOrigin,
-            getKey: async () => key,
-            ...(ca ? { ca } : {}),
-            renewBeforeMs: 600_000,
-            minimumValidityMs: 60_000,
-            observe: ({ error, ...diagnostic }) =>
-              options.report?.(
-                "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
-                {
-                  ...diagnostic,
-                  ...(error ? { errorClass: error } : {}),
-                  revisionId: source.session.revisionId,
-                },
-                "info",
-              ),
-          });
-          const outcome = await run(owner);
-          if (outcome === "quarantined" || outcome === "blocked") {
-            // Say which binding needs recovery (finding 2135); the provider's answer stays out.
-            options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
-              reason: outcome,
-              namespaceId: source.session.namespaceId,
-              revisionId: source.session.revisionId,
-              repositoryRef: source.session.binding.repositoryRef,
-            });
+          if (onDemand(source)) {
+            await store.observeGitInput(source, version);
+          } else {
+            await prepare(source, key, version, run);
           }
         }
-      } finally {
-        key.close();
-      }
+      });
     },
     // A key that went bad after startup (a rotated Secret) logs the same code and fixed
     // reason as the startup refusal, never key bytes or its path.
@@ -427,6 +480,7 @@ export async function startPreparedGitHubGitOwner(
   const protectedGit: ProtectedRepositoryGitAuthority | undefined = store.protectedAuthority(
     stop.signal,
     useRequest,
+    options.prepareGitOnDemand ? prepareApproved : undefined,
   );
   return {
     protectedGit,
@@ -445,6 +499,7 @@ export async function startPreparedGitHubGitOwner(
         await server?.close();
       } finally {
         await maintenance.close();
+        await Promise.allSettled(preparing.values());
         custody.fill(0);
       }
     },

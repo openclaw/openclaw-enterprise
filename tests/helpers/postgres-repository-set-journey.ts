@@ -119,6 +119,8 @@ type SelectedReadJourney = Pick<
     readonly ca: string;
   };
   evaluateRequest: (input: object) => ReturnType<typeof invoke>;
+  waitForIssuance: () => Promise<unknown>;
+  finishIssuance: () => void;
 };
 
 export async function selectedReadGitJourney(
@@ -451,6 +453,7 @@ async function repositoryGitJourney(
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
+    prepareGitOnDemand: !!selectedRead,
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
@@ -1035,40 +1038,46 @@ async function repositoryGitJourney(
       transformDrivers: selectDrivers,
     });
   const readyGit = async () => {
-    // Hold the real provider request until the runtime has observed absent material.
-    // This makes the pending state deterministic without a sleep or a fabricated token.
-    let issuanceError: unknown;
-    const issuing = peer.prepared.maintain().catch((error: unknown) => {
-      issuanceError = error;
-    });
-    try {
-      await waitFor(
-        "the admitted issuer request",
-        () => {
-          if (issuanceError) {
-            throw issuanceError;
-          }
-          return issuanceStarted ? true : undefined;
-        },
-        { timeoutMs: 10_000 },
-      );
-      const pending = await reconcile();
-      assert.equal(pending.installed, undefined);
-      assert.equal(pending.pending, "material_unavailable");
-      assert.equal(pending.absent, "unprepared");
-      assert.equal(peer.gh.issuesOfTokens.length, 0, "held issuance returns no token");
-      assert.equal(acked, false);
-      assert.equal(runtime.previewReleased(revision.id), false);
-      assert.equal((await evaluate(probe)).decision, 2, "pending issuance cannot authorize Git");
-    } finally {
-      issuanceRelease.resolve();
-      await issuing;
-    }
-    if (issuanceError) {
-      throw issuanceError;
+    if (selectedRead) {
+      // Discovery and background maintenance must leave the pull profile cold at activation.
+      await peer.prepared.maintain();
+      assert.equal(peer.gh.issuesOfTokens.length, 0, "deployment never mints a pull token");
+    } else {
+      // Hold the real provider request until the runtime has observed absent material.
+      // This makes the pending state deterministic without a sleep or a fabricated token.
+      let issuanceError: unknown;
+      const issuing = peer.prepared.maintain().catch((error: unknown) => {
+        issuanceError = error;
+      });
+      try {
+        await waitFor(
+          "the admitted issuer request",
+          () => {
+            if (issuanceError) {
+              throw issuanceError;
+            }
+            return issuanceStarted ? true : undefined;
+          },
+          { timeoutMs: 10_000 },
+        );
+        const pending = await reconcile();
+        assert.equal(pending.installed, undefined);
+        assert.equal(pending.pending, "material_unavailable");
+        assert.equal(pending.absent, "unprepared");
+        assert.equal(peer.gh.issuesOfTokens.length, 0, "held issuance returns no token");
+        assert.equal(acked, false);
+        assert.equal(runtime.previewReleased(revision.id), false);
+        assert.equal((await evaluate(probe)).decision, 2, "pending issuance cannot authorize Git");
+      } finally {
+        issuanceRelease.resolve();
+        await issuing;
+      }
+      if (issuanceError) {
+        throw issuanceError;
+      }
     }
     const entry = await waitFor(
-      "maintained repository material to be installed",
+      "repository delivery to be verified",
       async () => {
         await peer.prepared.maintain();
         const current = await reconcile();
@@ -1085,8 +1094,14 @@ async function repositoryGitJourney(
       { timeoutMs: 10_000, intervalMs: 20 },
     );
     assert.ok(entry.installed);
-    assert.equal(peer.gh.issuesOfTokens.length, 1, "readiness retains one issuance");
-    order.push("material-installed");
+    assert.equal(
+      peer.gh.issuesOfTokens.length,
+      selectedRead ? 0 : 1,
+      "pull readiness needs only a verified route; prepared delivery retains one issuance",
+    );
+    if (!selectedRead) {
+      order.push("material-installed");
+    }
     assert.equal(acked, false);
     assert.equal(runtime.previewReleased(revision.id), false);
     const blocked = await evaluate(probe);
@@ -1251,6 +1266,9 @@ async function repositoryGitJourney(
               input,
               token(keys, "supervisor", wire.world.id, "repository-set"),
             ),
+          waitForIssuance: () =>
+            waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),
+          finishIssuance: () => issuanceRelease.resolve(),
           removeBinding: () =>
             f.controller.updateAgent(f.actor.id, {
               namespaceId: f.namespace.id,
@@ -1260,6 +1278,7 @@ async function repositoryGitJourney(
             }),
         });
       } finally {
+        issuanceRelease.resolve();
         await f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id);
         await peer.prepared.maintain();
       }
@@ -1831,7 +1850,7 @@ async function repositoryGitJourney(
         let calls = 0;
         runtime["lookup"] = async (...args) => {
           const live = await original.apply(runtime, args);
-          assert.ok(live);
+          assert.ok(live && live.installed.materialVersion !== undefined);
           calls++;
           return fault === "material"
             ? { ...live, installed: { ...live.installed, materialVersion: randomUUID() } }

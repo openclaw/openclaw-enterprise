@@ -29,10 +29,17 @@ type DraftClaim = Pick<
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
 
-test(
-  "Git HTTPS grant consumes one signed request and refuses withdrawal before redemption",
-  { ...requiresPostgres, timeout: 90_000 },
-  async (t) => {
+for (const { name, withdrawWhileIssuing } of [
+  {
+    name: "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
+    withdrawWhileIssuing: false,
+  },
+  {
+    name: "cold Git HTTPS grant refuses token release after withdrawal during issuance",
+    withdrawWhileIssuing: true,
+  },
+]) {
+  test(name, { ...requiresPostgres, timeout: 90_000 }, async (t) => {
     await selectedReadGitJourney(
       t,
       import.meta.url,
@@ -46,6 +53,8 @@ test(
         removeBinding,
         grant: authority,
         evaluateRequest,
+        waitForIssuance,
+        finishIssuance,
       }) => {
         const bindingId = revision.egressPlan!.execution.executionId;
         const original = await runtime.lookup(
@@ -57,7 +66,7 @@ test(
           (
             await pool.query(
               `SELECT observed->>'credentialState' AS state, preparation_attempt_id, material_version
-             FROM occ.credential_deliveries WHERE revision_id=$1`,
+               FROM occ.credential_deliveries WHERE revision_id=$1`,
               [revision.id],
             )
           ).rows,
@@ -143,18 +152,13 @@ test(
           (
             await pool.query<{ operation: string }>(
               `SELECT operation FROM occ.prepared_repository_git_uses u
-         JOIN occ.repository_session_attempts s USING (admission_id)
-         WHERE s.revision_id=$1 ORDER BY authorization_reply_by`,
+           JOIN occ.repository_session_attempts s USING (admission_id)
+           WHERE s.revision_id=$1 ORDER BY authorization_reply_by`,
               [revision.id],
             )
           ).rows.map(({ operation }) => operation);
         const issuance = peer.gh.issuesOfTokens.length;
-        assert.equal(issuance, 1);
-        assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
-        assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
-          metadata: "read",
-          contents: "read",
-        });
+        assert.equal(issuance, 0, "the selected route starts before any installation token exists");
         const foreignRepository = await approve(false, "fixture/unselected");
         assert.equal(foreignRepository.decision, 2);
         assert.equal((await grant(foreignRepository.requestId, assertion())).status, 403);
@@ -176,10 +180,44 @@ test(
           403,
         );
         assert.equal((await grant(discovery.requestId, assertion(), "wrong-binding")).status, 403);
+        assert.equal(peer.gh.issuesOfTokens.length, 0, "authorization and bad grants never mint");
         const signedGrant = assertion();
-        const allowed = await grant(discovery.requestId, signedGrant);
+        const originBeforeIssuance = peer.originCalls();
+        const redemption = grant(discovery.requestId, signedGrant);
+        try {
+          await waitForIssuance();
+          assert.deepEqual(await receipts(), [], "held issuer has not released material");
+          if (withdrawWhileIssuing) {
+            await removeBinding();
+          }
+        } finally {
+          finishIssuance();
+        }
+        const allowed = await redemption;
+        if (withdrawWhileIssuing) {
+          assert.deepEqual(allowed, { status: 403, value: undefined });
+          assert.equal(
+            peer.gh.issuesOfTokens.length,
+            1,
+            "the controlled provider completed its issue",
+          );
+          assert.deepEqual(await receipts(), [], "no use is recorded after withdrawal");
+          assert.equal(
+            peer.originCalls(),
+            originBeforeIssuance,
+            "no Git traffic reached the origin",
+          );
+          assert.equal((await grant(discovery.requestId, assertion())).status, 403);
+          return;
+        }
         assert.equal(allowed.status, 200);
         assert.ok(allowed.value);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+        assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+          metadata: "read",
+          contents: "read",
+        });
         assert.equal((await peer.send(allowed.value, false)).status, 200);
         assert.deepEqual(await receipts(), ["advertise-upload-pack"]);
         assert.equal((await grant(discovery.requestId, signedGrant)).status, 403);
@@ -198,6 +236,22 @@ test(
         assert.equal((await peer.send(fetched.value, true)).status, 200);
         const before = await receipts();
         assert.deepEqual(before, ["advertise-upload-pack", "upload-pack"]);
+
+        // Rotation must still fence a warm token, while maintenance cannot mint its successor.
+        await peer.rotateAppKey();
+        await peer.prepared.maintain();
+        assert.deepEqual(
+          (
+            await pool.query(
+              `SELECT custody FROM occ.prepared_github_attempts
+               WHERE source_id IN (SELECT 'repository-git:' || admission_id
+                 FROM occ.repository_session_attempts WHERE revision_id=$1)`,
+              [revision.id],
+            )
+          ).rows,
+          [{ custody: "retire" }],
+        );
+        assert.equal(peer.gh.issuesOfTokens.length, 1, "rotation does not prewarm a replacement");
         const pending = await approve(true);
         assert.equal(pending.decision, 1);
         const traffic = peer.originCalls();
@@ -217,18 +271,18 @@ test(
         assert.equal(peer.originCalls(), traffic);
         assert.equal(
           peer.gh.issuesOfTokens.length,
-          issuance,
-          "lookup, approval and redemption never mint",
+          1,
+          "later redemptions reuse the committed token and withdrawal prevents issuance",
         );
         await peer.prepared.maintain();
         assert.deepEqual(
           (
             await pool.query(
               `SELECT custody, sealed IS NULL AS erased FROM occ.prepared_github_attempts
-             WHERE source_id IN (
-               SELECT 'repository-git:' || admission_id FROM occ.repository_session_attempts
-               WHERE revision_id=$1
-             )`,
+               WHERE source_id IN (
+                 SELECT 'repository-git:' || admission_id FROM occ.repository_session_attempts
+                 WHERE revision_id=$1
+               )`,
               [revision.id],
             )
           ).rows,
@@ -237,8 +291,8 @@ test(
         );
       },
     );
-  },
-);
+  });
+}
 
 for (const { name, action, expectedDenial } of [
   {

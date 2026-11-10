@@ -2,7 +2,7 @@ import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/com
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { access, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
@@ -152,6 +152,7 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
+    prepareGitOnDemand?: boolean;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
@@ -226,6 +227,7 @@ export async function preparedStandingGitPeer(
         ca: tls.ca,
         startWorker: false,
         gitGrantApprovals: postgresRequestCredentialApprovals,
+        prepareGitOnDemand: options.prepareGitOnDemand ?? false,
         repositoryGitCustody: options.driver
           ? selectBundledRepositoryGitCustody(options.driver)
           : { kind: "unavailable" },
@@ -309,6 +311,10 @@ export async function preparedStandingGitPeer(
     registry,
     prepared,
     startOwner,
+    async rotateAppKey() {
+      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }));
+    },
     origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {

@@ -31,7 +31,6 @@ import type {
 import {
   allowsPreparedGitGrantRead,
   preparedGitRedemption,
-  type PreparedGitGrantMaterial,
   type PreparedGitRedemption,
 } from "../repo/github/access/prepared-git-redemption.ts";
 import {
@@ -243,6 +242,7 @@ interface Entry extends OpenShellGitObservationEntry {
   /** The loss of material the route had was reported (on the first request it refused). */
   materialLost?: true | undefined;
   material?: MaterialIdentity;
+  grantReadyAt?: number;
   /**
    * The material this route last verified installed, and the wall-clock time of that
    * verification. OpenShell resets every connection of the Sandbox when it installs a
@@ -343,6 +343,8 @@ export class OpenShellGitRouteBlockedError extends Error {
  */
 function lookupReasonCode(reason: string, entry: Entry): OpenShellOnlineGitReasonCode | undefined {
   switch (reason) {
+    case "access_withdrawn":
+      return "access_withdrawn";
     case "execution_mismatch":
       return undefined;
     case "route_blocked":
@@ -1453,6 +1455,9 @@ export class OpenShellGitRuntime {
   materialInstalledAt(revisionId: string): number | undefined {
     const entry = this.states.get(revisionId)?.entry;
     const installed = entry?.materialInstalled;
+    if (this.configuration.grantRedemption) {
+      return entry?.installed && !entry.blocked ? entry.grantReadyAt : undefined;
+    }
     if (
       entry?.installed === undefined ||
       entry.blocked !== undefined ||
@@ -1767,12 +1772,30 @@ export class OpenShellGitRuntime {
             ? githubInstallationProfile
             : undefined;
       const grant = this.configuration.grantRedemption && owner.grant;
-      const readInstalledMaterial = (route = install) =>
+      if (grant) {
+        // The attached pull profile and mandatory hook are the startup dependency.
+        // An admitted sandbox never receives a provider token during activation.
+        if (entry.binding.credentialState === "bootstrap") {
+          entry.binding = entry.provider.activateGrant(
+            entry.binding,
+            new Date(entry.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
+          );
+        }
+        const installed = await this.observation(entry, signal, { adopt: true });
+        if (installed?.credentialState !== "active" || entry.blocked || signal.aborted) {
+          this.pending(entry, "unverified");
+          return;
+        }
+        if (!isDeepStrictEqual(entry.installed, installed)) {
+          entry.grantReadyAt = Date.now();
+        }
+        await this.persist(entry, signal);
+        this.installedNow(entry, installed);
+        return;
+      }
+      const readMaterial = (route = install) =>
         owner.readOpenShellMaterial(entry.revision.id, signal, route, scopeName);
-      const readMaterial = async (): Promise<
-        Awaited<ReturnType<MaterialReader["readOpenShellMaterial"]>> | PreparedGitGrantMaterial
-      > => (grant ? install && grant.readMaterial(install, signal) : readInstalledMaterial());
-      const material = await read(readMaterial, signal);
+      const material = await read(() => readMaterial(), signal);
       if (!material || "absent" in material) {
         entry.absent = material?.absent;
         if (entry.material) {
@@ -1830,28 +1853,6 @@ export class OpenShellGitRuntime {
         this.pending(entry, "material_unavailable");
         return;
       }
-      if (grant) {
-        if ("value" in material) {
-          throw new Error("OpenShell Git grant observation returned secret material.");
-        }
-        // Advance only the worker's local custody witness. The attached profile and
-        // provider revisions stay fixed, including across ordinary token rotation.
-        if (entry.binding.credentialState === "bootstrap") {
-          entry.binding = entry.provider.activateGrant(
-            entry.binding,
-            new Date(entry.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
-          );
-        }
-        const installed = await this.observation(entry, signal, { adopt: true });
-        if (installed?.credentialState !== "active" || entry.blocked || signal.aborted) {
-          this.pending(entry, "unverified");
-          return;
-        }
-        entry.material = material;
-        await this.persist(entry, signal);
-        this.installedNow(entry, installed);
-        return;
-      }
       if (!("value" in material) || typeof material.value !== "string") {
         throw new Error("OpenShell Git static delivery requires prepared credential material.");
       }
@@ -1885,7 +1886,7 @@ export class OpenShellGitRuntime {
                   "Preview credential recipient changed before installation.",
                 );
               }
-              const current = await read(() => readInstalledMaterial(reservedInstall), signal);
+              const current = await read(() => readMaterial(reservedInstall), signal);
               if (
                 current &&
                 !("absent" in current) &&
@@ -2051,7 +2052,8 @@ export class OpenShellGitRuntime {
         reason = "route_pending";
         break;
       }
-      if (!entry.installed || !entry.material) {
+      const grant = this.configuration.grantRedemption && this.owner.grant;
+      if (!entry.installed || (!grant && !entry.material)) {
         // A route that had material and lost it names that, so an operator can tell a
         // retired credential (recovery required) from a version still verifying.
         reason = entry.unobserved
@@ -2074,7 +2076,7 @@ export class OpenShellGitRuntime {
         }
         break;
       }
-      const material = entry.material;
+      const recordedMaterial = entry.material;
       try {
         // A worker another worker replaced admits nothing more (finding 2128). A store
         // that does not answer denies this request and leaves the route as the worker's
@@ -2093,7 +2095,7 @@ export class OpenShellGitRuntime {
           reason = entry.blocked ? "route_blocked" : "lookup_aborted";
           break;
         }
-        if (entry.material !== material) {
+        if (entry.material !== recordedMaterial) {
           reason = "material_rotated";
           break;
         }
@@ -2104,7 +2106,18 @@ export class OpenShellGitRuntime {
           reason = "installation_changed";
           break;
         }
-        if (!this.materialIsLive(entry.revision, material.expiresAt)) {
+        const route = entry.revision.egressPlan?.repositoryGit
+          ? { revisionId: entry.revision.id, fence: entry.fence, observed: entry.supervisor }
+          : undefined;
+        const selected = grant && route ? await grant.readBinding(route, signal) : recordedMaterial;
+        if (!selected || "absent" in selected || signal.aborted || entry.blocked) {
+          reason =
+            selected && "absent" in selected && selected.absent === "withdrawn"
+              ? "access_withdrawn"
+              : "route_pending";
+          break;
+        }
+        if (!this.materialIsLive(entry.revision, selected.expiresAt)) {
           reason = "material_expired";
           break;
         }
@@ -2113,40 +2126,37 @@ export class OpenShellGitRuntime {
           bindingId: identity.bindingId,
           workspace: identity.workspace,
           executionId: entry.revision.id,
-          sessionId: material.sessionId,
-          providerInstanceId: material.providerInstanceId,
-          grantId: material.grantId,
-          ...("scope" in material
+          sessionId: selected.sessionId,
+          providerInstanceId: selected.providerInstanceId,
+          grantId: selected.grantId,
+          ...("scope" in selected
             ? {
-                installationId: material.installationId,
-                ...(material.scope === "github-repository"
-                  ? { scope: material.scope, repositories: material.repositories }
-                  : { scope: material.scope }),
+                installationId: selected.installationId,
+                ...(selected.scope === "github-repository"
+                  ? { scope: selected.scope, repositories: selected.repositories }
+                  : { scope: selected.scope }),
               }
             : {
-                repositoryId: material.repositoryId,
-                repository: material.repository,
-                pushRef: material.pushRef,
-                ...(material.pullRequestBase && { pullRequestBase: material.pullRequestBase }),
+                repositoryId: selected.repositoryId,
+                repository: selected.repository,
+                pushRef: selected.pushRef,
+                ...(selected.pullRequestBase && { pullRequestBase: selected.pullRequestBase }),
               }),
-          apiOrigin: material.apiOrigin,
+          apiOrigin: selected.apiOrigin,
           ...(this.configuration.grantRedemption && {
             grantCredentialIdentity: openShellGrantCredentialIdentity(
               observed.providerId,
               "installation_token",
             ),
           }),
-          installed: {
-            ...(entry.revision.egressPlan?.repositoryGit && {
-              route: {
-                revisionId: entry.revision.id,
-                fence: entry.fence,
-                observed: entry.supervisor,
-              },
-            }),
-            preparationAttemptId: material.preparationAttemptId,
-            materialVersion: material.materialVersion,
-          },
+          installed:
+            route && grant
+              ? { route }
+              : {
+                  ...(route && { route }),
+                  preparationAttemptId: recordedMaterial!.preparationAttemptId,
+                  materialVersion: recordedMaterial!.materialVersion,
+                },
         };
       } catch (error) {
         if (signal.aborted && !(error instanceof OpenShellGitRouteError)) {

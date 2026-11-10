@@ -26,6 +26,8 @@ export type RepositoryTransportEmit = (event: Readonly<Record<string, unknown>>)
 export interface RepositoryTransportBinding {
   /** Supply existing API storage for read-only assessment; never start the sender. */
   connectRestartObservation?(pool: PostgresPool): void;
+  /** The paired sender can redeem without a preinstalled repository credential. */
+  readonly prepareGitOnDemand?: true;
   bind(
     authority: ProtectedRepositoryGitAuthority,
     pool: PostgresPool,
