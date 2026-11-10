@@ -33,7 +33,8 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
-  serviceCodexPatStatus,
+  serviceCodexReadinessStatus,
+  type OpenShellCodexReadiness,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -187,6 +188,33 @@ export interface OpenShellProfileCredentialRefresh {
   }[];
 }
 
+// OpenShell uses a wire discriminator for client_credentials with a Gateway assertion.
+export const OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE = 3;
+
+export function matchesOpenShellGatewayAssertionGrant(
+  value: unknown,
+  tokenEndpoint: string,
+  audience: string,
+): boolean {
+  const grant = asRecord(value);
+  const ttl = asRecord(grant?.cache_ttl);
+  return (
+    grant?.grant_type === OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE &&
+    grant.token_endpoint === tokenEndpoint &&
+    grant.audience === audience &&
+    ttl !== undefined &&
+    Number(ttl.seconds ?? 0) === 0 &&
+    Number(ttl.nanos ?? 0) === 0 &&
+    (grant.jwt_svid_audience === undefined || grant.jwt_svid_audience === "") &&
+    (grant.client_assertion_type === undefined || grant.client_assertion_type === "") &&
+    grant.subject_token == null &&
+    !grant.requested_token_type &&
+    (grant.audience_overrides === undefined ||
+      (Array.isArray(grant.audience_overrides) && grant.audience_overrides.length === 0)) &&
+    (grant.scopes === undefined || (Array.isArray(grant.scopes) && grant.scopes.length === 0))
+  );
+}
+
 /** The subset of an upstream ProviderProfile that OpenClaw Enterprise defines. */
 export interface OpenShellProviderProfile {
   readonly id: string;
@@ -200,6 +228,22 @@ export interface OpenShellProviderProfile {
     readonly headerName: string;
     readonly stablePlaceholder?: boolean;
     readonly refresh?: OpenShellProfileCredentialRefresh;
+    readonly tokenGrant?: {
+      readonly token_endpoint: string;
+      readonly audience: string;
+      readonly cache_ttl: { readonly seconds: 0; readonly nanos: 0 };
+    } & (
+      | {
+          readonly grant_type?: never;
+          readonly jwt_svid_audience: string;
+          readonly client_assertion_type: string;
+        }
+      | {
+          readonly grant_type: typeof OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE;
+          readonly jwt_svid_audience?: never;
+          readonly client_assertion_type?: never;
+        }
+    );
   }[];
   readonly files?: readonly {
     readonly path: string;
@@ -495,12 +539,13 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
-  /** Initializes a dedicated Codex process and observes only its PAT authentication status. */
-  serviceCodexPatStatus(
+  /** Reads the dedicated Codex process’s permission policy and, if needed, PAT status. */
+  serviceCodexReadinessStatus(
     serviceUrl: string,
     bearer: string,
+    requirePat: boolean,
     signal: AbortSignal,
-  ): Promise<"unavailable" | "starting" | "serving">;
+  ): Promise<OpenShellCodexReadiness>;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -642,6 +687,7 @@ type OpenShellMethod =
   | "DeleteProvider"
   | "GetProviderProfile"
   | "ListProviderProfiles"
+  | "LintProviderProfiles"
   | "ImportProviderProfiles"
   | "UpdateProviderProfiles"
   | "DeleteProviderProfile"
@@ -853,6 +899,30 @@ function stringMap(value: unknown, description: string): Readonly<Record<string,
   return Object.freeze({ ...(record as Record<string, string>) });
 }
 
+/** Keep output-only grant ownership separate from policy submitted or compared by OCC. */
+function takeTokenGrantOwners(policy: unknown): Readonly<Record<string, readonly unknown[]>> {
+  const owners: Record<string, readonly unknown[]> = {};
+  for (const [name, rule] of Object.entries(asRecord(asRecord(policy)?.network_policies) ?? {})) {
+    const endpoints = asRecord(rule)?.endpoints;
+    if (!Array.isArray(endpoints)) {
+      continue;
+    }
+    const stamps = endpoints.map((value: unknown) => {
+      const endpoint = asRecord(value);
+      if (!endpoint) {
+        return undefined;
+      }
+      const stamp = endpoint.token_grant_owner;
+      delete endpoint.token_grant_owner;
+      return stamp;
+    });
+    if (stamps.some(Boolean)) {
+      owners[name] = stamps;
+    }
+  }
+  return owners;
+}
+
 function storedProviderProfile(profile: RecordValue, id: string): OpenShellStoredProviderProfile {
   return Object.freeze({
     id,
@@ -890,6 +960,12 @@ function providerResponse(value: unknown, operation: string): OpenShellProviderR
   });
 }
 
+function usesGatewayAssertion(profile: OpenShellProviderProfile): boolean {
+  return profile.credentials.some(
+    ({ tokenGrant }) => tokenGrant?.grant_type === OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
+  );
+}
+
 function profileMessage(profile: OpenShellProviderProfile): RecordValue {
   return {
     id: profile.id,
@@ -904,6 +980,7 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       ...(credential.stablePlaceholder === undefined
         ? {}
         : { stable_placeholder: credential.stablePlaceholder }),
+      ...(credential.tokenGrant && { token_grant: credential.tokenGrant }),
       ...(credential.refresh === undefined
         ? {}
         : {
@@ -1303,6 +1380,13 @@ async function loadGrpc(): Promise<{
   }
 }
 
+const GATEWAY_ASSERTION_PROFILE_METHODS: ReadonlySet<OpenShellMethod> = new Set([
+  "GetProviderProfile",
+  "ListProviderProfiles",
+  "ImportProviderProfiles",
+  "UpdateProviderProfiles",
+]);
+
 export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   private readonly options: OpenShellGatewayClientOptions;
   private readonly requestTimeoutMs: number;
@@ -1379,12 +1463,19 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
-  async serviceCodexPatStatus(
+  async serviceCodexReadinessStatus(
     serviceUrl: string,
     bearer: string,
+    requirePat: boolean,
     signal: AbortSignal,
-  ): Promise<"unavailable" | "starting" | "serving"> {
-    return serviceCodexPatStatus(this.serviceTransportOptions(), serviceUrl, bearer, signal);
+  ): Promise<OpenShellCodexReadiness> {
+    return serviceCodexReadinessStatus(
+      this.serviceTransportOptions(),
+      serviceUrl,
+      bearer,
+      requirePat,
+      signal,
+    );
   }
 
   private serviceRootCertificate: Buffer | undefined;
@@ -1625,12 +1716,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
-  async getSandboxConfig(workspace: string, sandbox: string, signal: AbortSignal) {
-    return this.unary(
+  async getSandboxConfig(
+    workspace: string,
+    sandbox: string,
+    signal: AbortSignal,
+  ): Promise<RecordValue> {
+    const response = await this.unary(
       "GetSandboxConfig",
       { name: sandbox, workspace_scope: { workspace } },
       signal,
     );
+    return { ...response, tokenGrantOwners: takeTokenGrantOwners(response.policy) };
   }
 
   async getSandboxPolicyStatus(
@@ -1638,11 +1734,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     sandbox: string,
     signal: AbortSignal,
   ): Promise<RecordValue> {
-    return this.unary(
+    const response = await this.unary(
       "GetSandboxPolicyStatus",
       { sandbox, workspace_scope: { workspace }, version: 0 },
       signal,
     );
+    takeTokenGrantOwners(asRecord(response.loaded_policy_observation)?.effective_policy);
+    return response;
   }
 
   async getWorkspace(
@@ -2074,10 +2172,27 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     profile: OpenShellProviderProfile,
     signal: AbortSignal,
   ): Promise<void> {
+    const profiles = [{ profile: profileMessage(profile), source: "openclaw-enterprise" }];
+    if (usesGatewayAssertion(profile)) {
+      const lint = await this.unary(
+        "LintProviderProfiles",
+        { profiles, workspace_scope: { workspace } },
+        signal,
+      );
+      if (lint.supports_openshell_gateway_assertion_source !== true) {
+        throw new OpenShellGatewayFailure(
+          "OpenShell does not support Gateway assertions in provider profiles.",
+        );
+      }
+      profileDiagnosticsFailure(lint, "LintProviderProfiles");
+      if (lint.valid !== true) {
+        throw new OpenShellGatewayFailure("OpenShell did not validate the provider profile.");
+      }
+    }
     const response = await this.unary(
       "ImportProviderProfiles",
       {
-        profiles: [{ profile: profileMessage(profile), source: "openclaw-enterprise" }],
+        profiles,
         workspace_scope: { workspace },
         request_id: randomUUID(),
       },
@@ -2095,6 +2210,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     expectedResourceVersion: string,
     signal: AbortSignal,
   ): Promise<void> {
+    if (usesGatewayAssertion(profile)) {
+      throw new OpenShellGatewayFailure(
+        "Gateway assertion profiles are immutable. Create a new Agent revision.",
+      );
+    }
     const response = await this.unary(
       "UpdateProviderProfiles",
       {
@@ -2641,6 +2761,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const { grpc, client } = await this.ensureClient();
     signal.throwIfAborted();
     const headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
+    if (GATEWAY_ASSERTION_PROFILE_METHODS.has(method)) {
+      headers.set("openshell-profile-openshell-gateway-assertion-source", "1");
+    }
     signal.throwIfAborted();
     return new Promise<RecordValue>((resolve, reject) => {
       let call: ClientUnaryCall | undefined;

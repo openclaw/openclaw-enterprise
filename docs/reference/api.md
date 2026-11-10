@@ -3098,6 +3098,7 @@ Get the complete authorized Agent deployment inventory
 | `data.namespaces[].agents[].desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.namespaces[].agents[].executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.namespaces[].agents[].id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaces[].agents[].repositoryWorkerRestart` | `"original-worker-required" or "reverification-supported" or "not-applicable" or "unknown"` | No | — |
 | `data.namespaces[].agents[].status` | `"active" or "deleting"` | Yes | — |
 | `data.namespaces[].id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaces[].status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
@@ -9969,6 +9970,7 @@ Register a credential source with the selected Credential Gateway
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `authorization` | `"online-request"` | No | Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile. |
 | `config` | `object<string, string>` | No | Non-secret source configuration keyed by catalog field name. |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secrets` | `object<string, object>` | No | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |

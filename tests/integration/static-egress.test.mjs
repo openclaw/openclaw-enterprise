@@ -508,6 +508,22 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   });
   assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
   assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
+  // A missing online provider is a different authorization profile, not an older
+  // generation of this strict provider. Re-adoption consent must not switch it.
+  await f.controller.transact(async ({ credentialSources: sources }) => {
+    const { egress } = await sources.findCredentialSource(namespaceId, id);
+    await sources.admitEgressSource(namespaceId, id, egress.key.source.generation, {
+      ...egress,
+      key: {
+        ...egress.key,
+        source: { id, generation: egress.key.source.generation + 1 },
+        provider: { id: "openai-online-request", generation: 1 },
+      },
+    });
+  });
+  const reads = f.secretReads;
+  assert.equal((await f.request("PATCH", path, { body: consent })).status, 409);
+  assert.equal(f.secretReads, reads, "profile changes must refuse before reading material");
   const bound = await f.request("PATCH", `${f.path}/${f.source.id}`, {
     body: { adoption: "live" },
   });
@@ -1173,6 +1189,68 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   progress.response.output = [structuredClone(laterProgress.at(-2).item)];
   laterProgress.splice(2, 0, progress);
   await check.events(laterProgress, false, "later in_progress snapshot");
+});
+
+test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const events = responseEvents();
+  const assistant = events.at(-1).response.output[0];
+  assistant.content[0].logprobs = [];
+  const tool = {
+    type: "custom_tool_call",
+    id: "ct_local",
+    call_id: "call_local",
+    name: "fixture_custom_0",
+    input: "fixture input",
+  };
+  events.splice(
+    -1,
+    0,
+    { type: "response.output_item.added", output_index: 1, item: { ...tool, input: "" } },
+    { type: "response.output_item.done", output_index: 1, item: tool },
+  );
+  events.at(-1).response.output.push(tool);
+  const initial = {
+    ...wire.request,
+    tools: [...wire.request.tools, { type: "custom", name: tool.name }],
+  };
+  // The local tool call and assistant message must pass the response policy before replay.
+  await check.events(events, false, "the first exchange releases a local call", true, initial);
+
+  const output = {
+    type: "custom_tool_call_output",
+    call_id: tool.call_id,
+    output: [{ type: "input_text", text: "fixture result" }],
+  };
+  const followup = {
+    ...initial,
+    input: [...initial.input, assistant, tool, output],
+  };
+  await check.events(responseEvents(), false, "the follow-up admits the replay", true, followup);
+  assert.deepEqual(f.providerRequests.at(-1).body, followup);
+
+  const [part] = assistant.content;
+  const withPart = (content) => ({ ...assistant, content: [content] });
+  // Keep the metadata confined to replayed assistant output text.
+  const deniedInputs = [
+    ...["system", "developer", "user"].map((role) => [{ ...assistant, role }, tool, output]),
+    [assistant, tool, { ...output, output: [part] }],
+    [withPart({ ...part, type: "input_text" }), tool, output],
+    [withPart({ ...part, annotations: [{}] }), tool, output],
+    [withPart({ ...part, logprobs: [{}] }), tool, output],
+    [withPart({ ...part, annotations: null }), tool, output],
+    [withPart({ ...part, logprobs: null }), tool, output],
+    [withPart({ ...part, unknown: [] }), tool, output],
+  ];
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const input of deniedInputs) {
+    const request = { ...followup, input: [...initial.input, ...input] };
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported metadata cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
 });
 
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {

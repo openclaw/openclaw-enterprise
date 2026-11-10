@@ -17,7 +17,10 @@ import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
-import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import {
+  openShellGitChartListener,
+  openShellGitGrantChartListener,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -127,6 +130,8 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
+        environment(server, "OCC_TOKEN_GRANT_PORT"),
+        environment(server, openShellGitGrantChartListener.variable),
         ...("gatewayRouting.enabled" in values
           ? [environment(server, "OCC_CHART_GATEWAY_ROUTING")]
           : []),
@@ -138,6 +143,8 @@ test(
         "egressAuthority.enabled" in values ? "9444" : "disabled",
       );
       assert.equal(environment(check, "OCC_OPENSHELL_GIT_PORT").value, "disabled");
+      assert.equal(environment(check, "OCC_TOKEN_GRANT_PORT").value, "disabled");
+      assert.equal(environment(check, openShellGitGrantChartListener.variable).value, "disabled");
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
       if (theme) {
@@ -365,8 +372,12 @@ test(
       const [check] = (await render(values, true)).hook.initContainers;
       return Object.fromEntries(
         check.env
-          .filter(
-            ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+          .filter(({ name }) =>
+            [
+              "OCC_EGRESS_AUTHORITY_PORT",
+              "OCC_OPENSHELL_GIT_PORT",
+              "OCC_TOKEN_GRANT_PORT",
+            ].includes(name),
           )
           .map(({ name, value }) => [name, value]),
       );
@@ -379,6 +390,61 @@ test(
       const accepted = await runCheck(t, reachable, {}, () => enabled);
       assert.equal(accepted.status, 0, accepted.stderr);
       assert.equal(accepted.stdout, "installation-startup-ready\n");
+    }
+
+    // The same preflight guards the request token listener before a Recreate upgrade stops the API.
+    const requestCredentials = structuredClone(reachable);
+    requestCredentials.drivers.credential_proxy.configuration.tokenGrant = {
+      endpoint: "https://authority.example.test:9445/token",
+      port: 9445,
+      trustDomain: "example.test",
+      bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+    };
+    const tokenEnvironment = await chartEnvironment({
+      ...preparedGitHubValues,
+      "egressAuthority.tokenGrant.enabled": "true",
+      "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+    });
+    const acceptedToken = await runCheck(t, requestCredentials, {}, () => tokenEnvironment);
+    assert.equal(acceptedToken.status, 0, acceptedToken.stderr);
+    const gatewayCredentials = structuredClone(requestCredentials);
+    gatewayCredentials.drivers.credential_proxy.configuration.tokenGrant = {
+      endpoint: "https://authority.example.test:9445/token",
+      port: 9445,
+      bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+      assertionSource: "openshell_gateway",
+      issuer: "openshell-gateway:fixture",
+    };
+    const acceptedGateway = await runCheck(t, gatewayCredentials, {}, () => tokenEnvironment);
+    assert.equal(acceptedGateway.status, 0, acceptedGateway.stderr);
+    gatewayCredentials.drivers.credential_proxy.configuration.tokenGrant.trustDomain =
+      "example.test";
+    const mixedTrust = await runCheck(t, gatewayCredentials, {}, () => tokenEnvironment);
+    assert.equal(mixedTrust.status, 1);
+    assert.match(
+      mixedTrust.stderr,
+      /Invalid OpenShell request-credential token grant configuration/,
+    );
+    const wrongBundle = structuredClone(requestCredentials);
+    wrongBundle.drivers.credential_proxy.configuration.tokenGrant.bundlePath =
+      "/unmounted/bundle.json";
+    for (const [configuration, environment, diagnostic] of [
+      [requestCredentials, enabled, /Helm egressAuthority.tokenGrant.enabled is false/],
+      [
+        requestCredentials,
+        { ...tokenEnvironment, OCC_TOKEN_GRANT_PORT: "9555" },
+        /Helm egressAuthority.tokenGrant.port is 9555/,
+      ],
+      [
+        wrongBundle,
+        tokenEnvironment,
+        /bundlePath must be \/etc\/openclaw\/egress\/token-grant\/bundle.json/,
+      ],
+    ]) {
+      const refused = await runCheck(t, configuration, {}, () => environment);
+      assert.equal(refused.status, 1);
+      assert.match(refused.stderr, /CHART_LISTENER_MISMATCH/);
+      assert.match(refused.stderr, diagnostic);
     }
 
     const loopback = structuredClone(reachable);
@@ -433,22 +499,26 @@ test(
         });
     // The paths startup compares are the ones the chart renders, for both listeners.
     const api = await pod(preparedGitHubValues, "openclaw-enterprise-api");
-    const worker = await pod(
-      {
-        ...repositoryCredentialValues,
-        "repositoryCredentials.enabled": "false",
-        "openshellGit.enabled": "true",
-        "openshellGit.tlsSecretName": "openshell-git-tls",
-        "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
-        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-          "openshell-system",
-        "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
-      },
-      "openclaw-enterprise-worker",
-    );
+    const gitValues = {
+      ...repositoryCredentialValues,
+      "repositoryCredentials.enabled": "false",
+      "openshellGit.enabled": "true",
+      "openshellGit.tlsSecretName": "openshell-git-tls",
+      "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+      "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+      "openshellGit.tokenGrant.enabled": "true",
+      "openshellGit.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+      "openshellGit.tokenGrant.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "openshellGit.tokenGrant.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+    };
+    const worker = await pod(gitValues, "openclaw-enterprise-worker");
     for (const [listener, files] of [
       [chartListeners.egressAuthority, mounted(api, "api")],
       [openShellGitChartListener, mounted(worker, "worker")],
+      [openShellGitGrantChartListener, mounted(worker, "worker")],
     ]) {
       for (const [path] of Object.values(listener.files)) {
         assert.ok(files.includes(path), `${listener.chart}: ${path} in ${files.join(", ")}`);
@@ -492,6 +562,37 @@ test(
       // Only the chart's path is named; the configured path is the operator's layout.
       assert.equal(refused.stderr, `${prefix}: ${message}\n`);
     }
+
+    // The hook validates the whole Installation, including Worker listeners. Only the
+    // Worker binds the Git token port and mounts its trust bundle.
+    const { hook: gitHook, api: gitApi } = await render(gitValues, true);
+    const [gitCheck] = gitHook.initContainers;
+    const gitGrantPort = openShellGitGrantChartListener.variable;
+    const declaration = gitCheck.env.find(({ name }) => name === gitGrantPort);
+    assert.equal(declaration.value, "9446");
+    const gitGrantBundle = openShellGitGrantChartListener.files.bundlePath[0];
+    assert.ok(!mounted(gitApi, "api").includes(gitGrantBundle));
+    assert.ok(
+      !gitApi.containers.some((container) =>
+        container.ports?.some(({ name }) => name === "git-token-grant"),
+      ),
+    );
+    const grant = { host: "0.0.0.0", port: 9446, bundlePath: gitGrantBundle };
+    requireChartListener(
+      grant,
+      { [gitGrantPort]: declaration.value },
+      openShellGitGrantChartListener,
+    );
+    assert.throws(
+      () =>
+        requireChartListener(grant, { [gitGrantPort]: "disabled" }, openShellGitGrantChartListener),
+      {
+        name: "ChartListenerMismatchError",
+        path: "/repository/openShell/grantRedemption/port",
+        message:
+          "repository.openShell.grantRedemption.port is 9446, but Helm openshellGit.tokenGrant.enabled is false, so no chart Service reaches it.",
+      },
+    );
 
     // The repository transport compares its own block with the openshellGit mounts.
     const transport = {

@@ -301,6 +301,9 @@ with external sign-in enabled last eight hours. Native Agent activity does not
 refresh them. An Agent revision change closes native WebSockets without expiring
 the OCE login.
 
+If a refreshed tab says **Agent version changed**, choose **Return to console**,
+then open the Agent again. The old session cannot cross a deployment.
+
 If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select

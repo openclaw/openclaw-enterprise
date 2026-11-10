@@ -48,6 +48,7 @@
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-prepared-git-route-selection.test.ts",
     "tests/integration/postgres-openshell-online-git-journey.test.ts",
+    "tests/integration/postgres-shared-github-issuance.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
@@ -67,7 +68,8 @@
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
-    "tests/integration/postgres-harness-overrides.test.ts"
+    "tests/integration/postgres-harness-overrides.test.ts",
+    "tests/integration/credential-proxy-request-transport.test.ts"
   ],
   "files": [
     {
@@ -412,9 +414,19 @@
     {
       "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
+        "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
+        "cold Git HTTPS grant refuses token release after withdrawal during issuance",
+        "Git HTTPS redemption reuses a committed shared-family token and denies withdrawal while warm",
+        "shared Git HTTPS redemption refuses token release after withdrawal during issuance",
         "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
         "another fixture cannot inherit a stopped Agent's custody",
         "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-shared-github-issuance.test.ts",
+      "expectedTests": [
+        "PostgreSQL shares one mint across admitted source members and retains it after one withdrawal"
       ]
     },
     {
@@ -540,7 +552,12 @@
       "path": "tests/integration/credential-proxy-withdrawal.test.ts",
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
-        "Git reduction v7 preserves earlier admission meanings and rejects widening"
+        "Git reduction v7 preserves earlier admission meanings and rejects widening",
+        "online model requests redeem current material once after durable policy authorization (PostgreSQL)",
+        "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
+        "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",
+        "online release expires on database time while a slow replica reads Secrets (PostgreSQL)",
+        "online release serializes configured role revocation with its final Secret read (PostgreSQL)"
       ]
     },
     {
@@ -664,6 +681,15 @@
       "path": "tests/integration/postgres-harness-overrides.test.ts",
       "expectedTests": [
         "PostgreSQL preserves Harness destinations across restart and default replacement"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-request-transport.test.ts",
+      "expectedTests": [
+        "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
+        "Gateway provider assertion redeems once through the existing PostgreSQL HTTPS grant",
+        "model-only request admission uses the registered request profile without strict capabilities",
+        "model request installation survives a material epoch change but fences policy and recipient drift"
       ]
     }
   ]

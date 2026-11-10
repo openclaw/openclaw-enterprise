@@ -182,6 +182,18 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNativeBrowserAccess";
   }
   if (count === 76 && completedCount > 76) {
+    return "preRequestCredentialApprovals";
+  }
+  if (count === 77 && completedCount > 77) {
+    return "preRequestCredentialAssertions";
+  }
+  if (count === 78 && completedCount > 78) {
+    return "preSharedGitHubIssuance";
+  }
+  if (count === 79 && completedCount > 79) {
+    return "preGitHubPullApiCustody";
+  }
+  if (count === 80 && completedCount > 80) {
     return "preProxyHarnessSnapshot";
   }
   if (count === completedCount) {

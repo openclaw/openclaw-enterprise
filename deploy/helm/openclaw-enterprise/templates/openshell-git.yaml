@@ -1,13 +1,34 @@
+{{- if and .Values.openshellGit.tokenGrant.enabled (not .Values.openshellGit.enabled) }}
+{{- fail "openshellGit.tokenGrant requires openshellGit.enabled" }}
+{{- end }}
 {{- if .Values.openshellGit.enabled }}
 {{- $git := .Values.openshellGit }}
-{{- if .Values.egressAuthority.enabled }}
-{{- fail "openshellGit cannot be combined with egressAuthority" }}
+{{- if and .Values.egressAuthority.enabled (not .Values.egressAuthority.tokenGrant.enabled) }}
+{{- fail "openshellGit cannot be combined with egressAuthority unless tokenGrant is enabled" }}
 {{- end }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tlsSecretName" "value" (required "openshellGit.tlsSecretName is required" $git.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.issuerPublicKeyConfigMapName" "value" (required "openshellGit.issuerPublicKeyConfigMapName is required" $git.issuerPublicKeyConfigMapName)) }}
 {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.port" "value" $git.port "port" true) | int }}
 {{- if or (lt $port 1024) (gt $port 65535) (eq $port 8443) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "openshellGit.port must be an unprivileged TCP port distinct from repository and metrics listeners" }}
+{{- end }}
+{{- $grant := $git.tokenGrant }}
+{{- $grantPort := 0 }}
+{{- if $grant.enabled }}
+{{- $grantPort = include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.tokenGrant.port" "value" $grant.port "port" true) | int }}
+{{- if or (lt $grantPort 1024) (gt $grantPort 65535) (eq $grantPort $port) (eq $grantPort 8443) (and .Values.metrics.enabled (eq $grantPort (int .Values.metrics.port))) }}
+{{- fail "openshellGit.tokenGrant.port must be a distinct unprivileged TCP port" }}
+{{- end }}
+{{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tokenGrant.bundleConfigMapName" "value" (required "openshellGit.tokenGrant.bundleConfigMapName is required" $grant.bundleConfigMapName)) }}
+{{- if or (not (kindIs "slice" $grant.clients)) (not $grant.clients) }}
+{{- fail "openshellGit.tokenGrant.clients must select trusted supervisor callers" }}
+{{- end }}
+{{- range $index, $client := $grant.clients }}
+{{- if or $client.ipBlock (not $client.namespaceSelector) (not $client.namespaceSelector.matchLabels) (not $client.podSelector) (not $client.podSelector.matchLabels) }}
+{{- fail "openshellGit.tokenGrant.clients require namespaceSelector.matchLabels and podSelector.matchLabels, without ipBlock" }}
+{{- end }}
+{{- include "openclaw.networkPolicy.peer" (dict "name" (printf "openshellGit.tokenGrant.clients[%d]" $index) "value" $client) }}
+{{- end }}
 {{- end }}
 {{- if or (not (kindIs "slice" $git.clients)) (not $git.clients) }}
 {{- fail "openshellGit.clients must select trusted supervisor callers" }}
@@ -35,6 +56,12 @@ spec:
       port: {{ $port }}
       targetPort: openshell-git
       protocol: TCP
+    {{- if $grant.enabled }}
+    - name: git-token-grant
+      port: {{ $grantPort }}
+      targetPort: git-token-grant
+      protocol: TCP
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -53,4 +80,11 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+    {{- if $grant.enabled }}
+    - from:
+        {{- toYaml $grant.clients | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $grantPort }}
+    {{- end }}
 {{- end }}

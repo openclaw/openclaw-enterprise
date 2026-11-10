@@ -27,6 +27,7 @@ interface Selection {
   readonly audience: string;
   readonly modelProvider: string;
   readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
+  readonly usesTokenGrant?: boolean;
   readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly signal: AbortSignal;
 }
@@ -99,6 +100,7 @@ export async function previewPolicyAndRecipient({
   workload,
   signal,
   mandatory,
+  usesTokenGrant,
 }: Selection): Promise<string | undefined> {
   const admission = sandbox.configurationAdmission;
   const started = sandbox.mainProcessStartedAt;
@@ -121,6 +123,17 @@ export async function previewPolicyAndRecipient({
     return;
   }
   const c = await client.getSandboxConfig?.(o.workspace, sandbox.name, signal);
+  const grantOwners = asRecord(c?.tokenGrantOwners)?.[gitRule.name];
+  if (
+    usesTokenGrant &&
+    (!Array.isArray(grantOwners) ||
+      grantOwners.length !== gitRule.endpoints.length ||
+      grantOwners.some(
+        (owner) => typeof owner !== "string" || !/^grant-owner:v1:[a-f0-9]{64}$/.test(owner),
+      ))
+  ) {
+    return;
+  }
   const policy = asRecord(c?.policy);
   const source = asRecord(sandbox.spec?.policy);
   // The paired Sandbox already verified this entire spec. Select only its actual model,

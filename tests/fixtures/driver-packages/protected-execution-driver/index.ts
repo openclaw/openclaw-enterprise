@@ -173,7 +173,7 @@ export function createDriver({
           const exchange = connect(owner);
           if (
             Object.keys(exchange).sort().join(",") !==
-            "authorizeSend,beginResponse,protectResponse,renewResponse,resolve"
+            "acquireRequestAuthentication,authorizeRequestCredential,authorizeSend,beginResponse,protectResponse,renewResponse,resolve,resolveRequestCredential"
           ) {
             throw new Error("Expected only the exchange authority");
           }

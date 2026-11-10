@@ -1,3 +1,7 @@
+import {
+  requestCredentialBinding,
+  authorizeOpenShellRequest,
+} from "./openshell-request-credential.ts";
 import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -104,19 +108,19 @@ export function describeOpenShellMiddleware(
   audience: string,
   implementation: "static-egress" | "online-request-authorization",
   httpPolicySet?: OpenShellHttpPolicySet,
+  requestTimeCredentials = false,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
-  const profile = execution
-    ? [contractCapability, ...openShellExchangeCapabilities]
-    : [contractCapability];
   const peer = record(gateway);
   const supported = peer.supported_capabilities;
   const required = peer.required_capabilities;
+  const strictExecution = execution && advertisesOpenShellExecutionProfile(supported);
+  const profile = [contractCapability, ...(strictExecution ? openShellExchangeCapabilities : [])];
   if (
     record(peer.protocol_version).major !== 1 ||
     !Array.isArray(supported) ||
     !supported.includes(contractCapability) ||
-    (execution && !advertisesOpenShellExecutionProfile(supported)) ||
+    (execution && !strictExecution && !requestTimeCredentials) ||
     // Describe precedes protected-policy selection; only the base contract is required here.
     !Array.isArray(required) ||
     !required.includes(contractCapability) ||
@@ -127,8 +131,12 @@ export function describeOpenShellMiddleware(
   const bindings = execution
     ? [
         [1, 1],
-        [4, 1],
-        [3, 2],
+        ...(strictExecution
+          ? [
+              [4, 1],
+              [3, 2],
+            ]
+          : []),
       ]
     : httpPolicySet
       ? [
@@ -154,15 +162,29 @@ export function describeOpenShellMiddleware(
   };
 }
 
-/** Actual gRPC adapter for the supervisor's exclusive static-credential authority. */
+function emptyMiddlewareConfig(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  const config = asRecord(value);
+  const fields = asRecord(config?.fields);
+  return (
+    config !== undefined &&
+    Object.keys(config).every((key) => key === "fields") &&
+    (config.fields === undefined || (fields !== undefined && Object.keys(fields).length === 0))
+  );
+}
+
+/** Authenticated request hooks and the unchanged strict exchange share one installed authority. */
 export function createOpenShellEgressAuthority(
   identity: OpenShellEgressIdentity,
   controller: {
     createCredentialProxy: (owner: OpenShellEgressIdentity) => CredentialProxyExchange;
   },
+  registrationName?: string,
 ): Server {
-  // The verifier owns acceptance on the actual stream. No separate synthetic owner,
-  // bearer-only profile or caller-selected response destination can enter this composition.
+  // Strict exchange streams retain possession and response-custody checks. The optional
+  // request hook has its own authenticated input and cannot manufacture a strict exchange.
   const forwarder = controller.createCredentialProxy(identity);
   const { service, definition } = loadOpenShellMiddleware();
   const server = new Server({
@@ -183,11 +205,21 @@ export function createOpenShellEgressAuthority(
           callback({ code: status.UNAVAILABLE, message: "Egress authority unavailable." }, null),
       );
     };
+  const authorize = forwarder.authorizeRequestCredential?.bind(forwarder);
+  const requestTimeCredentials = !!registrationName && !!authorize;
   server.addService(service.SupervisorMiddleware!.service, {
     Describe: unary(async (call) => {
       const description =
-        identity.verifyControl(middlewareBearer(call.metadata)) &&
-        describeOpenShellMiddleware(call.request.gateway, identity.audience, "static-egress");
+        (identity.verifyControl(middlewareBearer(call.metadata)) ||
+          (requestTimeCredentials &&
+            identity.credentialSandbox(middlewareBearer(call.metadata)))) &&
+        describeOpenShellMiddleware(
+          call.request.gateway,
+          identity.audience,
+          "static-egress",
+          undefined,
+          requestTimeCredentials,
+        );
       if (!description) {
         throw new Error("Unsupported or unauthenticated counterpart.");
       }
@@ -195,13 +227,44 @@ export function createOpenShellEgressAuthority(
     }),
     ValidateConfig: unary(async (call) => ({
       valid:
-        identity.verifyControl(middlewareBearer(call.metadata)) &&
-        Object.keys(record(record(call.request.config).fields)).length === 0,
+        (identity.verifyControl(middlewareBearer(call.metadata)) &&
+          emptyMiddlewareConfig(call.request.config)) ||
+        (requestTimeCredentials &&
+          call.request.middleware_name === registrationName &&
+          !!requestCredentialBinding(call.request.config) &&
+          (identity.verifyControl(middlewareBearer(call.metadata)) ||
+            !!identity.credentialSandbox(middlewareBearer(call.metadata)))),
     })),
-    EvaluateHttpRequest: unary(async (call) => ({
-      decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,
-      reason_code: "egress_identity",
-    })),
+    EvaluateHttpRequest: unary(async (call) => {
+      // Malformed request-bound configuration cannot fall back to the strict identity check.
+      if (!emptyMiddlewareConfig(call.request.config)) {
+        const denied = { decision: 2, reason_code: "request_credential_denied" };
+        if (!registrationName || !authorize) {
+          return denied;
+        }
+        const release = forwarder.acquireRequestAuthentication?.();
+        if (!release) {
+          return denied;
+        }
+        try {
+          return await authorizeOpenShellRequest(
+            call,
+            identity,
+            registrationName,
+            (input, signal) => {
+              release();
+              return authorize(input, signal);
+            },
+          );
+        } finally {
+          release();
+        }
+      }
+      return {
+        decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,
+        reason_code: "egress_identity",
+      };
+    }),
   });
   const resolve = async (call: AuthorityCall): Promise<Wire> => {
     if (call.request.audience !== identity.audience) {

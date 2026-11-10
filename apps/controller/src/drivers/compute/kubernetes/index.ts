@@ -17,6 +17,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
+  type HarnessEgressEnrollment,
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
   signComputeExecutionRelease,
@@ -111,6 +112,7 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
+  RepositoryWorkerRestartDisposition,
   ProxyRevisionContext,
   SelectedDriverRegistration,
   ConfigurationValidationOptions,
@@ -294,6 +296,7 @@ import {
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
+  nativeWorkerEntrypoint,
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
@@ -1114,6 +1117,7 @@ interface PreparedHarnessAuth {
 
 interface NativeRuntimeSnapshot {
   readonly configuration: string;
+  readonly enrollment?: HarnessEgressEnrollment;
 }
 
 /** One rendering step; neither credential values nor backend lookups belong here. */
@@ -3198,18 +3202,52 @@ function nativeRuntimeConfiguration(
   };
 }
 
+function nativeOnlineModelPlan(revision: Readonly<AgentRevision>) {
+  const plan = revision.egressPlan;
+  if (
+    revision.harness.id === "openclaw" &&
+    revision.harness.mode === "dedicated" &&
+    plan?.authorization === "online-request" &&
+    (plan.repositoryGit === undefined ||
+      (plan.repositoryGitAuthorization === "online-request" &&
+        plan.repositoryGit.bindings.length === 1 &&
+        plan.repositoryGit.bindings[0]?.profile === "github-repository"))
+  ) {
+    return plan;
+  }
+}
+
 function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot | undefined {
   if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
     return undefined;
   }
+  const configuration = nativeRuntimeConfiguration(
+    revision.configuration,
+    preparationSettingError,
+    revision.harnessAuth.method,
+  );
+  const plan = nativeOnlineModelPlan(revision);
+  if (!plan) {
+    return { configuration: JSON.stringify(configuration) };
+  }
+  const [route] = plan.routes;
+  if (
+    plan.routes.length !== 1 ||
+    route?.binding.grant.kind !== "inference" ||
+    route.binding.grant.providerTools !== "none" ||
+    route.path !== "/v1/responses" ||
+    configuration.models.providers.openai.models.some(
+      ({ api, baseUrl }) =>
+        api !== "openai-responses" || baseUrl !== new URL("/v1", route.origin).href,
+    )
+  ) {
+    throw new ConfigurationFailure(
+      "Protected native OpenClaw startup requires the admitted HTTPS Responses endpoint.",
+    );
+  }
   return {
-    configuration: JSON.stringify(
-      nativeRuntimeConfiguration(
-        revision.configuration,
-        preparationSettingError,
-        revision.harnessAuth.method,
-      ),
-    ),
+    configuration: JSON.stringify(configuration),
+    enrollment: harnessEgressEnrollment(plan),
   };
 }
 
@@ -6383,7 +6421,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const execution = plan.execution;
     if (
-      revision.harness.id !== "codex" ||
+      (revision.harness.id !== "codex" && nativeOnlineModelPlan(revision) === undefined) ||
       revision.harness.mode !== "dedicated" ||
       revision.sandboxDriverId !== plan.sandboxDriverId ||
       !context?.currentEgressInstallation ||
@@ -6456,6 +6494,37 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return "validated";
   }
 
+  async repositoryWorkerRestartDisposition(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition> {
+    if (
+      signal.aborted ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      return "unknown";
+    }
+    try {
+      return await withComputeAbortSignal(signal, async () => {
+        if (revision.repositoryCredentials === undefined) {
+          if (
+            revision.egressPlan?.repositoryGit !== undefined ||
+            revision.egressPlan?.repositoryGitAuthorization !== undefined
+          ) {
+            return "unknown";
+          }
+          const namespace = await this.ownedRepositoryNamespace(revision);
+          return namespace !== undefined && !signal.aborted ? "not-applicable" : "unknown";
+        }
+        const owned = await this.repositoryAccessContext(revision, signal);
+        return owned?.access.repositoryWorkerRestartDisposition?.(owned.context) ?? "unknown";
+      });
+    } catch {
+      return "unknown";
+    }
+  }
+
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
     const owned = await this.repositoryAccessContext(revision, signal);
     return owned?.access.verifyExecution(owned.context);
@@ -6503,12 +6572,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.egressPlan) {
       this.validateExecutionAdmission(revision, "stored");
     }
-    const { name, external } = await this.resolveNamespace(revision.namespaceId);
-    const namespace = await this.getNamespace(name);
-    if (!namespace) {
+    const name = await this.ownedRepositoryNamespace(revision);
+    if (name === undefined) {
       return;
     }
-    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
     const context = await this.sandboxNamespaceContext(
       this.sandboxNamespaceForRevision(revision, name),
       name,
@@ -6517,6 +6584,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       access,
       context: { ...context, revision, signal: AbortSignal.any([context.signal, signal]) },
     };
+  }
+
+  /** Existing placement and ownership are prerequisites even when no Git grant is present. */
+  private async ownedRepositoryNamespace(revision: Readonly<AgentRevision>) {
+    const { name, external } = await this.resolveNamespace(revision.namespaceId);
+    const namespace = await this.getNamespace(name);
+    if (!namespace) {
+      return;
+    }
+    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+    return name;
   }
 
   async prepareRevision(
@@ -7295,7 +7373,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             pluginRuntime?.workspaceEntrypoint,
           );
         } else {
-          this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
+          this.addNativeWorker(
+            agentDeployment,
+            node.name,
+            node.ca,
+            workspaceSetup,
+            nativeRuntime.enrollment,
+          );
         }
       }
       if (
@@ -7453,7 +7537,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         let heldForRepositoryGitMaterial = false;
-        if (egressContext !== undefined) {
+        if (egressContext !== undefined && nativeRuntime !== undefined && nodeEnrolled) {
+          // The node has enrolled and the Sandbox removes its temporary transport.
+          // Recheck the installed boundary without reopening that exposure.
+          await this.protectedExecution!.current(egressContext, context!, () =>
+            this.preparedEgressReady(egressContext),
+          );
+        } else if (egressContext !== undefined) {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
             this.protectedExecution!.enroll(
               egressContext,
@@ -8148,7 +8238,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 pluginRuntime?.workspaceEntrypoint,
               );
             } else {
-              this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup);
+              this.addNativeWorker(
+                replacement,
+                node.name,
+                node.ca,
+                workspaceSetup,
+                nativeRuntime.enrollment,
+              );
             }
           }
           if (nodeSetupFile) {
@@ -8190,7 +8286,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
         throw new Error("The exact AgentRevision workload is not ready.");
       }
-      if (nativeRuntime === undefined && sandboxDriver.harnessEndpoint !== undefined) {
+      if (
+        revision.egressPlan !== undefined ||
+        (nativeRuntime === undefined && sandboxDriver.harnessEndpoint !== undefined)
+      ) {
         const sandboxContext = await this.sandboxNamespaceContext(
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
@@ -8206,24 +8305,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.preparedEgressReady(egress),
           );
         }
-        providerEndpoint = await sandboxDriver.harnessEndpoint({
-          ...sandboxContext,
-          revision,
-          requirements,
-        });
-        // Preparation saw the Harness serving; activate only while it still is.
-        if (
-          sandboxDriver.harnessStatus !== undefined &&
-          (
-            await sandboxDriver.harnessStatus({
-              ...sandboxContext,
-              revision,
-              requirements,
-              transportToken: await this.sandboxTransportTokenText(revision),
-            })
-          ).state !== "serving"
-        ) {
-          throw new Error("The exact AgentRevision workload is not ready.");
+        if (nativeRuntime === undefined && sandboxDriver.harnessEndpoint !== undefined) {
+          providerEndpoint = await sandboxDriver.harnessEndpoint({
+            ...sandboxContext,
+            revision,
+            requirements,
+          });
+          // Preparation saw the Harness serving; activate only while it still is.
+          if (
+            sandboxDriver.harnessStatus !== undefined &&
+            (
+              await sandboxDriver.harnessStatus({
+                ...sandboxContext,
+                revision,
+                requirements,
+                transportToken: await this.sandboxTransportTokenText(revision),
+              })
+            ).state !== "serving"
+          ) {
+            throw new Error("The exact AgentRevision workload is not ready.");
+          }
         }
       }
     }
@@ -12474,6 +12575,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     name: string,
     ca: string | undefined,
     workspaceSetup: WorkspaceSetup | undefined,
+    enrollment?: HarnessEgressEnrollment,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, false);
     variables.push(
@@ -12494,7 +12596,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       (workspaceSetup === undefined
         ? ""
         : workspaceSetupVerifier(workspaceSetup, { environment: "OPENCLAW_WORKSPACE_DIR" })) +
-        NATIVE_WORKER_ENTRYPOINT,
+        (enrollment === undefined ? NATIVE_WORKER_ENTRYPOINT : nativeWorkerEntrypoint(enrollment)),
     );
   }
 
@@ -17142,7 +17244,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           nativeRuntime === undefined
             ? (pluginRuntime?.entrypoint ??
               (providerOwnsHarness ? AGENT_RUNTIME_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT))
-            : NATIVE_WORKER_ENTRYPOINT;
+            : nativeWorkerEntrypoint(nativeRuntime.enrollment);
       }
     }
     return {

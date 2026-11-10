@@ -8,6 +8,7 @@ import {
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
 import { preparedGitHubConfiguration } from "../repo/github/access/prepared-configuration.ts";
+import { validTokenGrantConfiguration } from "./openshell-token-grant.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -25,6 +26,18 @@ export const openShellGitChartListener = {
   },
 } as const;
 
+export const openShellGitGrantChartListener = {
+  path: "repository.openShell.grantRedemption",
+  chart: "openshellGit.tokenGrant",
+  variable: "OCC_OPENSHELL_GIT_TOKEN_GRANT_PORT",
+  files: {
+    bundlePath: [
+      "/etc/openclaw/openshell-git/token-grant/bundle.json",
+      "openshellGit.tokenGrant.bundleConfigMapName",
+    ],
+  },
+} as const;
+
 export function openShellRepositoryConfiguration(
   input: unknown,
   mode: "development" | "production",
@@ -33,14 +46,30 @@ export function openShellRepositoryConfiguration(
     return undefined;
   }
   const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
+  closed(value, ["registrationName", "authority", "grantRedemption"], "repository.openShell");
+  const authority = egressAuthorityConfiguration(
+    value.authority,
+    mode,
+    "repository.openShell.authority",
+  );
+  const grant = value.grantRedemption;
+  if (
+    grant !== undefined &&
+    (!validTokenGrantConfiguration(grant) ||
+      grant.assertionSource !== "openshell_gateway" ||
+      new URL(grant.endpoint).pathname !== "/token" ||
+      !authority ||
+      authority.port === grant.port ||
+      authority.issuer !== grant.issuer)
+  ) {
+    throw new Error(
+      "OpenShell Git grant redemption requires its own HTTPS token listener and the selected Gateway issuer.",
+    );
+  }
   return {
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(
-      value.authority,
-      mode,
-      "repository.openShell.authority",
-    ),
+    authority,
+    ...(grant === undefined ? {} : { grantRedemption: grant }),
   };
 }
 
@@ -51,8 +80,49 @@ export function openShellProxyConfiguration(
   repository: OpenShellGitRuntimeConfiguration | undefined,
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
+  const requestCredentials =
+    egress.tokenGrant === undefined
+      ? undefined
+      : (() => {
+          if (!validTokenGrantConfiguration(egress.tokenGrant)) {
+            throw new Error("Invalid OpenShell request-credential token grant configuration.");
+          }
+          const authority = egressAuthorityConfiguration(
+            egress.authority,
+            mode,
+            "drivers.credential_proxy.configuration.authority",
+          );
+          const middlewareName = nonempty(
+            egress.middlewareName,
+            "drivers.credential_proxy.configuration.middlewareName",
+          );
+          if (!authority || authority.port === egress.tokenGrant.port) {
+            throw new Error(
+              "OpenShell request credentials require distinct authority and token-grant listeners.",
+            );
+          }
+          return { authority, middlewareName, tokenGrant: egress.tokenGrant };
+        })();
   if (repository) {
-    closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
+    closed(
+      egress,
+      ["observedHookPreviewWorkspace", "middlewareName", "authority", "tokenGrant"],
+      "drivers.credential_proxy.configuration",
+    );
+    if (
+      !requestCredentials &&
+      (egress.middlewareName !== undefined || egress.authority !== undefined)
+    ) {
+      throw new Error("Repository model authority requires explicit tokenGrant configuration.");
+    }
+    if (requestCredentials?.middlewareName === repository.registrationName) {
+      throw new Error("Model and repository requests require distinct middleware registrations.");
+    }
+    if (repository.grantRedemption && egress.observedHookPreviewWorkspace !== undefined) {
+      throw new Error(
+        "OpenShell Git grant redemption cannot be enabled for observed preview access.",
+      );
+    }
     const preview =
       egress.observedHookPreviewWorkspace === undefined
         ? {}
@@ -63,9 +133,23 @@ export function openShellProxyConfiguration(
             ),
           };
     return {
+      prepared: undefined,
       repository: { ...repository, ...preview },
+      ...(requestCredentials && {
+        authority: requestCredentials.authority,
+        tokenGrant: requestCredentials.tokenGrant,
+      }),
       policy: {
-        middlewareName: repository.registrationName,
+        middlewareName: requestCredentials?.middlewareName ?? repository.registrationName,
+        ...(requestCredentials && {
+          requestCredentials: {
+            audience: requestCredentials.authority.audience,
+            tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+            ...(requestCredentials.tokenGrant.assertionSource && {
+              assertionSource: requestCredentials.tokenGrant.assertionSource,
+            }),
+          },
+        }),
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
         ...preview,
@@ -74,12 +158,25 @@ export function openShellProxyConfiguration(
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub"],
+    ["middlewareName", "authorityScope", "authority", "preparedGitHub", "tokenGrant"],
     "drivers.credential_proxy.configuration",
   );
-  const { authority, preparedGitHub, ...policy } = egress;
+  const { authority, preparedGitHub, tokenGrant: _tokenGrant, ...policy } = egress;
   return {
-    policy,
+    repository: undefined,
+    policy: {
+      ...policy,
+      ...(requestCredentials && {
+        requestCredentials: {
+          audience: requestCredentials.authority.audience,
+          tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+          ...(requestCredentials.tokenGrant.assertionSource && {
+            assertionSource: requestCredentials.tokenGrant.assertionSource,
+          }),
+        },
+      }),
+    },
+    ...(requestCredentials && { tokenGrant: requestCredentials.tokenGrant }),
     authority: egressAuthorityConfiguration(
       authority,
       mode,

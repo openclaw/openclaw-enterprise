@@ -86,6 +86,13 @@ spec:
             secretName: {{ $.Values.egressAuthority.issuerSecretName | quote }}
             items:
               - {key: public.pem, path: issuer.pub}
+        {{- if $.Values.egressAuthority.tokenGrant.enabled }}
+        - name: token-grant-bundle
+          configMap:
+            name: {{ $.Values.egressAuthority.tokenGrant.bundleConfigMapName | quote }}
+            items:
+              - {key: bundle.json, path: bundle.json}
+        {{- end }}
         {{- end }}
         {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
         - name: openshell-git
@@ -101,6 +108,12 @@ spec:
                   name: {{ $.Values.openshellGit.issuerPublicKeyConfigMapName | quote }}
                   items:
                     - {key: gateway-public.pem, path: gateway-public.pem}
+              {{- if $.Values.openshellGit.tokenGrant.enabled }}
+              - configMap:
+                  name: {{ $.Values.openshellGit.tokenGrant.bundleConfigMapName | quote }}
+                  items:
+                    - {key: bundle.json, path: token-grant/bundle.json}
+              {{- end }}
         {{- end }}
         {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
         - name: console-theme
@@ -487,6 +500,10 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) | quote }}
             - name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
+            {{- if ne $.Values.worker.githubSharedIssuanceGeneration nil }}
+            - name: OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.githubSharedIssuanceGeneration" "value" $.Values.worker.githubSharedIssuanceGeneration) | quote }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             {{- if $.Values.backend.openshell.clientSecretName }}
@@ -501,6 +518,11 @@ spec:
             - name: egress-authority-issuer
               mountPath: /etc/openclaw/egress/issuer
               readOnly: true
+            {{- if $.Values.egressAuthority.tokenGrant.enabled }}
+            - name: token-grant-bundle
+              mountPath: /etc/openclaw/egress/token-grant
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
             - name: openshell-git
@@ -594,6 +616,10 @@ spec:
             {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
             - name: openshell-git
               containerPort: {{ $.Values.openshellGit.port }}
+            {{- if $.Values.openshellGit.tokenGrant.enabled }}
+            - name: git-token-grant
+              containerPort: {{ $.Values.openshellGit.tokenGrant.port }}
+            {{- end }}
             {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: metrics
@@ -605,6 +631,10 @@ spec:
             {{- if $.Values.egressAuthority.enabled }}
             - name: egress-tls
               containerPort: {{ $.Values.egressAuthority.port }}
+            {{- if $.Values.egressAuthority.tokenGrant.enabled }}
+            - name: token-grant
+              containerPort: {{ $.Values.egressAuthority.tokenGrant.port }}
+            {{- end }}
             {{- end }}
             {{- end }}
           {{- end }}

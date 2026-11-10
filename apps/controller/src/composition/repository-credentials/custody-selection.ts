@@ -26,6 +26,8 @@ const controllerWitness: CustodyPolicy = Object.freeze({
   evidence: registeredGitRecipientEvidence,
   // Fixed session-query alias. Unknown and observed-hook modes cannot become peer claims.
   expectedExecutionAdmissionVersion: `CASE
+    WHEN p.installation #>> '{plan,authorization}' = 'online-request'
+      AND p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '9'
     WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
     WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
     WHEN NOT (p.installation->'plan' ? 'repositoryGitAuthorization') THEN '4'
@@ -37,6 +39,8 @@ const openShellSnapshot: CustodyPolicy = Object.freeze({
   [trustedPolicy]: true as const,
   evidence: openShellGitRecipientEvidence,
   expectedExecutionAdmissionVersion: `CASE
+    WHEN p.installation #>> '{plan,authorization}' = 'online-request'
+      AND p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '9'
     WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
     WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
     WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
@@ -86,5 +90,9 @@ export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
         kind:
           drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
       };
-  return { tokenService, repositoryGitCustody };
+  return {
+    tokenService,
+    repositoryGitCustody,
+    prepareGitOnDemand: repositoryTransport?.prepareGitOnDemand ?? false,
+  };
 }

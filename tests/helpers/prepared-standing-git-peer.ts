@@ -2,12 +2,13 @@ import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/com
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { access, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
+import { postgresRequestCredentialApprovals } from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
@@ -151,6 +152,8 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
+    prepareGitOnDemand?: boolean;
+    sharedGitIssuanceGeneration?: number;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
@@ -224,6 +227,11 @@ export async function preparedStandingGitPeer(
         custodyKeyPath,
         ca: tls.ca,
         startWorker: false,
+        gitGrantApprovals: postgresRequestCredentialApprovals,
+        prepareGitOnDemand: options.prepareGitOnDemand ?? false,
+        ...(options.sharedGitIssuanceGeneration !== undefined && {
+          sharedGitIssuanceGeneration: options.sharedGitIssuanceGeneration,
+        }),
         repositoryGitCustody: options.driver
           ? selectBundledRepositoryGitCustody(options.driver)
           : { kind: "unavailable" },
@@ -307,6 +315,10 @@ export async function preparedStandingGitPeer(
     registry,
     prepared,
     startOwner,
+    async rotateAppKey() {
+      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }));
+    },
     origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {

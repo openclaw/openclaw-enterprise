@@ -1,3 +1,9 @@
+import {
+  modelRequestProviderName,
+  openShellModelRequestPolicy,
+  verifyModelRequestPolicy,
+  verifyModelRequestProfile,
+} from "./openshell-model-request-policy.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -17,6 +23,7 @@ import {
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
+  assertExecutionAdmission,
   requireConfiguration,
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
@@ -79,6 +86,7 @@ import {
   PatchStrategy,
 } from "@kubernetes/client-node";
 import {
+  ActivationFailedError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
@@ -842,6 +850,19 @@ function harnessRuntimeFiles(
         "Protected Harness startup must match the admitted egress plan.",
       );
     }
+    if (plan?.authorization === "online-request") {
+      const endpoint = asRecord(manifest.modelEndpoint);
+      const route = plan.routes[0];
+      if (
+        !route ||
+        endpoint?.modelProvider !== "openai-compatible" ||
+        endpoint.baseUrl !== new URL("/v1", route.origin).href
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Online model authorization requires the admitted custom Responses endpoint.",
+        );
+      }
+    }
     configurationObject(manifest.selections, "Codex plugin-runtime selections");
     if (manifest.repositoryBrokerNetworkPolicy !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
@@ -907,14 +928,20 @@ function harnessRuntimeFiles(
   };
   return {
     config,
-    profile: {
-      ...profileBase,
-      annotations: {
-        // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
-        // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
-        [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
-          RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(profileBase)),
-      },
+    profile: managedRuntimeProfile(profileBase),
+  };
+}
+
+function managedRuntimeProfile(
+  profile: Omit<OpenShellProviderProfile, "annotations">,
+): OpenShellProviderProfile {
+  return {
+    ...profile,
+    annotations: {
+      // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
+      // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
+      [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
+        RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(profile)),
     },
   };
 }
@@ -3223,10 +3250,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const egressPolicy =
       plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
-    if (plan !== undefined && context.revision.harness.id !== "codex") {
+    const modelRequest =
+      plan && this.options.egress
+        ? openShellModelRequestPolicy(plan, this.options.egress, context.revision)
+        : undefined;
+    if (
+      plan !== undefined &&
+      context.revision.harness.id !== "codex" &&
+      (!modelRequest || (plan.repositoryGit && !this.openShellGit?.configuration.grantRedemption))
+    ) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "Protected inference startup enrollment requires the dedicated Codex Harness.",
+        "This protected egress plan requires the dedicated Codex Harness.",
       );
     }
     if (
@@ -3287,6 +3322,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         gitRouteOverlapMessage(gitOverlap),
       );
     }
+    if (modelRequest) {
+      await this.prepareModelRequestProvider(context);
+    }
     const git =
       context.revision.repositoryCredentials === undefined
         ? undefined
@@ -3297,7 +3335,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             sandbox.resourceName,
             context.signal,
             sandboxDataMount(this.options, context.requirements).mount_path,
-            sandboxProviders(this.options, context.requirements),
+            [
+              ...(modelRequest ? [modelRequest.provider.name] : []),
+              ...sandboxProviders(this.options, context.requirements),
+            ],
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),
             ),
@@ -3309,9 +3350,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const checkEffectivePolicy = async () => {
       const config =
-        plugin || mcpPolicies.length
+        plugin || mcpPolicies.length || modelRequest
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
+      if (modelRequest) {
+        verifyModelRequestProfile(
+          await client.getProviderProfile(workspace, modelRequest.provider.name, context.signal),
+          modelRequest.provider.profile,
+          workspace,
+        );
+        verifyModelRequestPolicy(config, modelRequest, workspace);
+      }
       if (plugin) {
         verifyPluginRequestGuard(config, plugin, workspace);
       }
@@ -3386,6 +3435,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ),
       serviceExposures,
     };
+    if (modelRequest) {
+      create.spec.providers.unshift(modelRequest.provider.name);
+      Object.assign(create.spec.environment, modelRequest.environment);
+    }
     // Check the final composition against the independently validated setup binding,
     // including absence; a supplied auxiliary rule cannot establish its own authority.
     const expectedWorkspacePolicy =
@@ -3432,10 +3485,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Only the independent model attachment selected by this revision can survive Git expiry.
       const auth = context.revision.harnessAuth;
       const originalModel =
-        auth?.method === "credential_source" &&
-        context.requirements.credentialAttachments.some(
-          (a) => a.sourceId === auth.sourceId && a.ref === continuity?.model,
-        );
+        (modelRequest !== undefined && modelRequest.provider.name === continuity?.model) ||
+        (auth?.method === "credential_source" &&
+          context.requirements.credentialAttachments.some(
+            (a) => a.sourceId === auth.sourceId && a.ref === continuity?.model,
+          ));
       await this.openShellGit!.bind(
         context.revision.id,
         (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
@@ -3634,10 +3688,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const auth = revision.harnessAuth;
     // Never substitute the runtime-files provider: it confers no independent inference authority.
     const plan = revision.egressPlan;
+    const modelRequest =
+      plan && this.options.egress
+        ? openShellModelRequestPolicy(plan, this.options.egress, revision)
+        : undefined;
     const retained =
-      auth?.method === "credential_source" &&
-      (!plan || (plan.repositoryGit && isDeepStrictEqual(plan.harnessCredentialSource, auth))) &&
-      openShellProviderName(auth.sourceId);
+      modelRequest?.provider.name ||
+      (auth?.method === "credential_source" &&
+        (!plan || (plan.repositoryGit && isDeepStrictEqual(plan.harnessCredentialSource, auth))) &&
+        openShellProviderName(auth.sourceId));
     if (
       !retained ||
       revision.namespaceId !== context.namespace.id ||
@@ -3826,13 +3885,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         preview &&
         !(
-          (document.status === 400 || document.status === 404) &&
           this.openShellGit?.previewReleased(context.revision.id) &&
-          (await client.serviceWebSocketHandshake(
-            service.url,
-            context.transportToken,
-            context.signal,
-          ))
+          (context.revision.harness.id === "openclaw"
+            ? [400, 404, 502].includes(document.status)
+            : (document.status === 400 || document.status === 404) &&
+              (await client.serviceWebSocketHandshake(
+                service.url,
+                context.transportToken,
+                context.signal,
+              )))
         )
       ) {
         throw new OpenShellSandboxConfigurationFailure(
@@ -4070,8 +4131,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Observes the Harness through its bearer-passthrough exposure, as the Agent Gateway reaches a
    * Codex Harness. A Harness holding a startup failure (for example a failed model probe) serves
    * that failure on the exposed port in place of Codex, or in place of the dedicated OpenClaw
-   * worker's node. Provider-managed Codex PATs also require the serving process's auth status;
-   * other modes need the authenticated WebSocket handshake.
+   * worker's node. Dedicated Codex also checks the serving process's permission requirements.
+   * Provider-managed PATs additionally require the serving process's authentication status.
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
@@ -4089,31 +4150,39 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
       const auth = context.revision.harnessAuth;
-      const providerManagedPat =
-        context.revision.harness.id === "codex" &&
-        auth?.method === "credential_source" &&
-        auth.loginMode === "codex_pat";
-      if (providerManagedPat) {
-        const status = await client.serviceCodexPatStatus(
+      if (context.revision.harness.id === "codex") {
+        const status = await client.serviceCodexReadinessStatus(
+          service.url,
+          context.transportToken,
+          auth?.method === "credential_source" && auth.loginMode === "codex_pat",
+          context.signal,
+        );
+        context.signal.throwIfAborted();
+        if (status === "permission-refused") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+            "The Codex Harness reports managed permission requirements incompatible with activation.",
+          );
+        }
+        if (status === "requirements-too-large") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+            "The Codex Harness requirements reply exceeds the supported size limit.",
+          );
+        }
+        if (status !== "unavailable") {
+          return Object.freeze({ state: status });
+        }
+      } else {
+        const serving = await client.serviceWebSocketHandshake(
           service.url,
           context.transportToken,
           context.signal,
         );
         context.signal.throwIfAborted();
-        if (status !== "unavailable") {
-          return Object.freeze({ state: status });
+        if (serving) {
+          return Object.freeze({ state: "serving" });
         }
-      }
-      const serving =
-        !providerManagedPat &&
-        (await client.serviceWebSocketHandshake(
-          service.url,
-          context.transportToken,
-          context.signal,
-        ));
-      context.signal.throwIfAborted();
-      if (serving) {
-        return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
         service.url,
@@ -4281,6 +4350,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace, provider, context.signal);
         }
       }
+      if (context.revision.egressPlan?.authorization === "online-request") {
+        const name = modelRequestProviderName(context.revision.id);
+        const provider = await refused(() => client.getProvider(workspace, name, context.signal));
+        if (provider) {
+          verifyRuntimeProvider(
+            provider,
+            name,
+            name,
+            runtimeProviderLabels(context.namespace, context.revision),
+            {},
+          );
+          if (provider.workspace !== workspace || provider.profileWorkspace !== workspace) {
+            throw new OpenShellSandboxConfigurationFailure(
+              "Model provider belongs to another Workspace.",
+            );
+          }
+          await client.deleteProvider(workspace, name, context.signal);
+        }
+        await this.deleteRuntimeProfileIfUnused(client, workspace, name, context.signal);
+      }
       const git = this.openShellGit;
       const revision = context.revision;
       if (git !== undefined && revision.repositoryCredentials !== undefined) {
@@ -4317,6 +4406,33 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ) {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
+      }
+      for (const profile of await client.listProviderProfiles(workspace.name, context.signal)) {
+        if (
+          !/^oce-model-[a-f0-9]{32}$/.test(profile.id) ||
+          !isManagedRuntimeProfile(profile) ||
+          profile.definition?.scope !== "workspace"
+        ) {
+          continue;
+        }
+        const provider = providers.find((item) => item.name === profile.id);
+        if (provider) {
+          if (
+            provider.type !== profile.id ||
+            provider.workspace !== workspace.name ||
+            provider.profileWorkspace !== workspace.name ||
+            provider.labels[OPENSHELL_MANAGED_BY_LABEL] !== OPENSHELL_MANAGED_BY ||
+            provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] !== context.namespace.id ||
+            modelRequestProviderName(provider.labels[RUNTIME_PROVIDER_REVISION_LABEL] ?? "") !==
+              profile.id
+          ) {
+            throw new OpenShellSandboxConfigurationFailure(
+              "Refusing model provider without Namespace ownership.",
+            );
+          }
+          await client.deleteProvider(workspace.name, provider.name, context.signal);
+        }
+        await this.deleteRuntimeProfileIfUnused(client, workspace.name, profile.id, context.signal);
       }
       // Revisions cleaned up before finding 2206's fix left their Git providers behind.
       await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
@@ -4838,6 +4954,75 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return this.backend.client.clientForNamespace(namespace);
   }
 
+  /** Prepare an admitted revision's empty provider before operator registration or Sandbox attachment. */
+  async prepareModelRequestProvider(
+    context: Pick<SandboxHarnessContext, "namespace" | "revision" | "signal">,
+  ): Promise<{ readonly name: string; readonly id?: string } | undefined> {
+    const { namespace, revision, signal } = context;
+    if (!revision.egressPlan || !this.options.egress) {
+      return undefined;
+    }
+    const policy = openShellModelRequestPolicy(revision.egressPlan, this.options.egress, revision);
+    if (!policy) {
+      return undefined;
+    }
+    this.requireOperatorWorkspaceMode("prepare a model request provider");
+    const gatewayAssertion = policy.registration.assertionSource === "openshell_gateway";
+    if (
+      (gatewayAssertion && revision.sandboxDriverId !== this.id) ||
+      revision.namespaceId !== namespace.id
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Model provider preparation requires the selected Sandbox Driver and Namespace.",
+      );
+    }
+    const { name, profile } = policy.provider;
+    const workspace = workspaceName(namespace);
+    const client = this.gatewayClientForNamespace(namespaceName(namespace));
+    if (gatewayAssertion) {
+      assertExecutionAdmission(revision);
+      const active = await client.getWorkspace(workspace, signal);
+      if (!active) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Model provider requires its active Workspace.",
+        );
+      }
+      verifyActiveWorkspace(active, namespace);
+    }
+    await this.ensureRuntimeProfile(client, workspace, managedRuntimeProfile(profile), signal);
+    verifyModelRequestProfile(
+      await client.getProviderProfile(workspace, name, signal),
+      profile,
+      workspace,
+    );
+    const provider = await this.ensureRuntimeProvider(
+      client,
+      workspace,
+      context,
+      name,
+      {},
+      {},
+      {},
+      name,
+    );
+    if (gatewayAssertion) {
+      const current = await client.getProvider(workspace, name, signal);
+      if (
+        !provider.id ||
+        !current ||
+        current.id !== provider.id ||
+        current.workspace !== workspace ||
+        current.profileWorkspace !== workspace
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Model provider has no matching immutable OpenShell ID.",
+        );
+      }
+      verifyRuntimeProvider(current, name, name, runtimeProviderLabels(namespace, revision), {});
+    }
+    return { name, ...(provider.id === undefined ? {} : { id: provider.id }) };
+  }
+
   private async ensureRuntimeProfile(
     client: OpenShellGatewayClient,
     workspace: string,
@@ -4884,13 +5069,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private async ensureRuntimeProvider(
     client: OpenShellGatewayClient,
     workspace: string,
-    context: SandboxHarnessContext,
+    context: Pick<SandboxHarnessContext, "namespace" | "revision" | "signal">,
     profileId: string,
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
-  ): Promise<{ readonly name: string; readonly created: boolean }> {
-    const name = runtimeProviderName(context.revision.id);
+    name = runtimeProviderName(context.revision.id),
+  ): Promise<{ readonly name: string; readonly created: boolean; readonly id?: string }> {
     const expectedLabels = runtimeProviderLabels(context.namespace, context.revision);
     let provider = await client.getProvider(workspace, name, context.signal);
     let created = false;
@@ -4938,7 +5123,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
-    return Object.freeze({ name, created });
+    if (
+      name === modelRequestProviderName(context.revision.id) &&
+      (provider.workspace !== workspace || provider.profileWorkspace !== workspace)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Model provider belongs to another Workspace.",
+      );
+    }
+    return Object.freeze({
+      name,
+      created,
+      ...(provider.id === undefined ? {} : { id: provider.id }),
+    });
   }
 
   private async deleteRuntimeProfileIfUnused(

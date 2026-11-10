@@ -17,6 +17,7 @@ import type {
   ProtectedRepositoryGitMaterial,
   RepositoryGitInstallationFence,
   RepositoryGitSendDecision,
+  RequestCredentialGrant,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveries,
@@ -28,7 +29,18 @@ import type { OperationReceipt } from "../../access/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postgres.ts";
+import { SharedPreparedRepositoryGit } from "./shared-prepared-git.ts";
+import type { InstalledTokenVersion } from "../../../../backends/token-service/material.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
+import {
+  allowsPreparedGitGrantRead,
+  preparedGitRedemption,
+  type PreparedGitGrantApproval,
+  type PreparedGitGrantApprovals,
+  type PreparedGitGrantBinding,
+  type PreparedGitGrantRequest,
+  type PreparedGitRedemption,
+} from "./prepared-git-redemption.ts";
 import {
   legacyAdoption,
   protectedGitAdoption,
@@ -108,6 +120,10 @@ export interface PreparedRepositorySession {
   readonly driver: RepositoryRevisionState["driver"];
   readonly binding: RepositoryRevisionState["bindings"][number];
   readonly bindings?: RepositoryRevisionState["bindings"];
+  readonly credentialProxyExecution?: {
+    readonly executionId: string;
+    readonly sandboxId: string;
+  };
 }
 
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
@@ -206,6 +222,12 @@ const active = (sessions: string) =>
   `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;
 
 /** Identifies the actual installed sender observation to the transaction recording possible use. */
+export interface InstalledGitRoute {
+  readonly route: RepositoryGitInstallationFence;
+  readonly preparationAttemptId?: never;
+  readonly materialVersion?: never;
+}
+
 export interface InstalledGitMaterial {
   readonly preparationAttemptId: string;
   readonly materialVersion: string;
@@ -300,10 +322,39 @@ type LockedSession = {
   authorization: "online-request" | "request-hook-observed" | null;
 };
 type Authorization = LockedSession["authorization"];
+type PrepareApprovedGit = (
+  source: PreparedRepositoryGitSource,
+  deadline: number,
+  signal: AbortSignal,
+) => Promise<void | InstalledTokenVersion>;
+
+type GitGrantDecision =
+  | { readonly kind: "approve"; readonly approval: PreparedGitGrantApproval }
+  | { readonly kind: "redeem"; readonly grant: RequestCredentialGrant }
+  | {
+      readonly kind: "release";
+      readonly grant: RequestCredentialGrant;
+      readonly source: PreparedRepositoryGitSource;
+      readonly sharedVersion?: InstalledTokenVersion;
+    };
 type GitUse = Pick<
   RepositoryGitSendPermit,
   "exchangeId" | "requestDigestSha256" | "preparationAttemptId" | "materialVersion"
 >;
+type GitUseDecision =
+  | (GitUse & {
+      readonly decisionBy: string;
+      readonly open: (() => Buffer) | undefined;
+    })
+  | OperationReceipt
+  | { readonly kind: "approved"; readonly decisionBy: string }
+  | {
+      readonly kind: "redeemed";
+      readonly source: PreparedRepositoryGitSource;
+      readonly decisionBy: string;
+      readonly needsPreparation: boolean;
+      readonly releaseLifetimeMs: number;
+    };
 const sendPermit = (use: GitUse, sendStartBy: string) =>
   ({ ...use, kind: "permit", sendStartBy }) as const;
 const onlineAllow = (use: GitUse, replyBy: string) => ({ ...use, kind: "allow", replyBy }) as const;
@@ -349,6 +400,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly policy: Policy;
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
+  private readonly grantApprovals: PreparedGitGrantApprovals | undefined;
+  readonly shared?: SharedPreparedRepositoryGit;
 
   constructor(
     pool: PostgresPool,
@@ -356,6 +409,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     authority: string,
     policy: Policy,
     custody: RepositoryGitCustody,
+    grantApprovals?: PreparedGitGrantApprovals,
+    sharedOwner?: Readonly<{
+      apiOrigin: string;
+      repositoryBackendId: string;
+      providerInstanceId: string;
+      issuerGeneration: number;
+    }>,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
@@ -386,6 +446,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.adoption = adoption;
     this.authority = authority;
     this.policy = policy;
+    this.grantApprovals = grantApprovals;
+    if (sharedOwner) {
+      if (!driver || !installationRecipient(proxy)) {
+        throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_SELECTED_DRIVER");
+      }
+      this.shared = new SharedPreparedRepositoryGit({
+        pool,
+        custodyKey: key,
+        issuerAuthority: authority,
+        driver,
+        liveSessions: sessionQuery(proxy),
+        ...sharedOwner,
+      });
+    }
   }
 
   /** Background discovery only. Admission and key lookup are not reachable from use().
@@ -435,9 +509,42 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     return sources;
   }
 
-  async claimGit(
+  /** Recheck the originating session before attaching it to a shared issuance family. */
+  async attachSharedGit(source: PreparedRepositoryGitSource, issuerGeneration: string) {
+    const shared = this.shared;
+    if (!shared) {
+      return undefined;
+    }
+    return this.transaction(async (c) => {
+      const current = await lockLiveSession(
+        c,
+        "live_revision_id",
+        source.session.revisionId,
+        this.proxy,
+      );
+      if (
+        current?.authorization !== "online-request" ||
+        !isDeepStrictEqual(this.policy(current.session), source)
+      ) {
+        return undefined;
+      }
+      return shared.attach(c, source, issuerGeneration);
+    });
+  }
+
+  async claimGit(source: PreparedRepositoryGitSource, version: string) {
+    return this.observeGitIssuer(source, version, true);
+  }
+
+  /** Fence material from an old signing key without enrolling or preparing a cold family. */
+  async observeGitInput(source: PreparedRepositoryGitSource, version: string): Promise<void> {
+    await this.observeGitIssuer(source, version, false);
+  }
+
+  private async observeGitIssuer(
     source: PreparedRepositoryGitSource,
     version: string,
+    prepare: boolean,
   ): Promise<GitHubPreparationAdmission | undefined> {
     const sessions = sessionQuery(this.proxy);
     const live = active(sessions);
@@ -451,13 +558,15 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grant: source.grant,
     };
     return this.transaction(async (c) => {
-      await c.query(
-        `INSERT INTO ${families}(source_id,source,issuer,admission)
-        SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
-        FROM (${sessions}) l WHERE l.session=$2::jsonb->'session'
-        ON CONFLICT (source_id) DO NOTHING`,
-        [familyId, source, admission],
-      );
+      if (prepare) {
+        await c.query(
+          `INSERT INTO ${families}(source_id,source,issuer,admission)
+          SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
+          FROM (${sessions}) l WHERE l.session=$2::jsonb->'session'
+          ON CONFLICT (source_id) DO NOTHING`,
+          [familyId, source, admission],
+        );
+      }
       // A rotated App key fences the old material. It never clears an uncertain preparation attempt.
       await c.query(
         `WITH rotated AS (
@@ -470,6 +579,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         WHERE a.source_id=r.source_id AND custody='current'`,
         [familyId, source, version, this.authority],
       );
+      if (!prepare) {
+        return;
+      }
       const { rows } = await c.query(
         `UPDATE ${families} f SET next_check_at=clock_timestamp() + interval '60 seconds'
         WHERE source_id=$1 AND enabled AND source=$2::jsonb AND admission->>'inputVersion'=$3 AND admission->>'issuerAuthority'=$4
@@ -523,7 +635,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       (input: unknown, scope: "github-installation"): PreparedGitHubInstallationUseRequest;
       (input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
     },
-  ): ProtectedRepositoryGitAuthority | undefined {
+    prepareApproved?: PrepareApprovedGit,
+  ):
+    | (ProtectedRepositoryGitAuthority & {
+        readonly [preparedGitRedemption]?: PreparedGitRedemption;
+      })
+    | undefined {
     if (this.proxy?.kind !== "selected") {
       return;
     }
@@ -580,8 +697,32 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           ),
       } satisfies RepositoryGitAuthority<Allow>);
     };
+    const lifetime = (signal: AbortSignal) => AbortSignal.any([stopped, signal]);
+    const grantPort: PreparedGitRedemption = {
+      readBinding: (route, signal) =>
+        this.readRecipientMaterial(
+          route,
+          lifetime(signal),
+          "github-repository",
+          "online-request",
+          false,
+        ),
+      approve: (request, installed, approval, signal) => {
+        checkRequest(request, "github-repository");
+        return this.approveGitGrant(request, installed, approval, lifetime(signal));
+      },
+      redeem: (request, installed, grant, signal) => {
+        checkRequest(request, "github-repository");
+        return this.redeemGitGrant(request, installed, grant, lifetime(signal), prepareApproved);
+      },
+    };
     return Object.freeze({
       recipients: this.recipients,
+      ...(this.grantApprovals &&
+        prepareApproved &&
+        this.proxy.policy.evidence.grantReady && {
+          [preparedGitRedemption]: Object.freeze(grantPort),
+        }),
       ...delivery(null, sendPermit),
       online: delivery("online-request", onlineAllow),
       ...(this.proxy.policy?.observedHook && {
@@ -713,12 +854,21 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private async readRecipientMaterial(
     route: RepositoryGitInstallationFence,
     signal: AbortSignal,
+    scope: "github-repository",
+    mode: Authorization,
+    includeValue: false,
+  ): Promise<PreparedGitGrantBinding | RepositoryGitMaterialAbsence | undefined>;
+  private async readRecipientMaterial(
+    route: RepositoryGitInstallationFence,
+    signal: AbortSignal,
     scope?: "github-installation" | "github-repository",
     mode: Authorization = null,
+    includeValue = true,
   ): Promise<
     | ProtectedRepositoryGitMaterial
     | ProtectedGitHubInstallationMaterial
     | ProtectedGitHubRepositoryMaterial
+    | PreparedGitGrantBinding
     | RepositoryGitMaterialAbsence
     | undefined
   > {
@@ -763,16 +913,40 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
             (source.adoption === installationGitAdoption ||
               source.adoption === selectedGitAdoption) ||
           (wide && grant.profile !== scope) ||
-          (wide && !installationRecipient(this.proxy))
+          (wide && !installationRecipient(this.proxy)) ||
+          (!includeValue &&
+            (grant.profile !== "github-repository" || !allowsPreparedGitGrantRead(grant)))
         ) {
           return unprepared;
+        }
+        const sessionExpires = Number(current.end_ms);
+        const apiOrigin = this.authority.split("#")[0]!;
+        const sessionId = current.session.sessionId;
+        if (!includeValue) {
+          if (
+            grant.profile !== "github-repository" ||
+            signal.aborted ||
+            Date.now() >= sessionExpires
+          ) {
+            return unprepared;
+          }
+          return {
+            scope: grant.profile,
+            repositories: grant.repositories,
+            expiresAt: new Date(sessionExpires).toISOString(),
+            sessionId,
+            apiOrigin,
+            installationId: grant.installationId,
+            grantId: grant.id,
+            providerInstanceId: current.session.binding.grant.providerInstanceId,
+          };
         }
         const material = await this.tokens.readWarm(c, source);
         if (!material) {
           return unprepared;
         }
         const { preparationAttemptId, materialVersion } = material;
-        const until = Math.min(Number(current.end_ms), material.usableUntil);
+        const until = Math.min(sessionExpires, material.usableUntil);
         if (signal.aborted || !(Date.now() < until)) {
           return unprepared;
         }
@@ -781,8 +955,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           expiresAt: new Date(until).toISOString(),
           preparationAttemptId,
           materialVersion,
-          sessionId: current.session.sessionId,
-          apiOrigin: this.authority.split("#")[0]!,
+          sessionId,
+          apiOrigin,
           ...(grant.profile === "github-installation" || grant.profile === "github-repository"
             ? {
                 ...(grant.profile === "github-repository"
@@ -804,13 +978,112 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!result || "absent" in result) {
         return result;
       }
-      if (!bytes || Date.now() >= Date.parse(result.expiresAt)) {
+      if (!includeValue && "scope" in result && result.scope === "github-repository") {
+        return Date.now() < Date.parse(result.expiresAt) ? Object.freeze(result) : unprepared;
+      }
+      if (!bytes || !("materialVersion" in result) || Date.now() >= Date.parse(result.expiresAt)) {
         return unprepared;
       }
       return Object.freeze({
         ...result,
         value: bytes.toString("utf8"),
       });
+    } finally {
+      bytes?.fill(0);
+    }
+  }
+
+  private async approveGitGrant(
+    q: PreparedGitGrantRequest,
+    installed: InstalledGitRoute,
+    approval: PreparedGitGrantApproval,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const result = await this.transaction((c) =>
+      this.recordUse(c, q, signal, installed, "online-request", { kind: "approve", approval }),
+    );
+    if (
+      "kind" in result &&
+      result.kind === "approved" &&
+      !signal.aborted &&
+      Date.now() < Date.parse(result.decisionBy)
+    ) {
+      return result.decisionBy;
+    }
+  }
+
+  private async redeemGitGrant(
+    q: PreparedGitGrantRequest,
+    installed: InstalledGitRoute,
+    grant: RequestCredentialGrant,
+    signal: AbortSignal,
+    prepareApproved: PrepareApprovedGit | undefined,
+  ) {
+    const startedAt = performance.now();
+    let bytes: Buffer | undefined;
+    try {
+      // Consume the correlated approval and assertion before any provider operation.
+      // No transaction or live-admission lock crosses the provider call.
+      const authorized = await this.transaction((c) =>
+        this.recordUse(c, q, signal, installed, "online-request", { kind: "redeem", grant }),
+      );
+      if (!("kind" in authorized) || authorized.kind !== "redeemed") {
+        return;
+      }
+      const { releaseLifetimeMs } = authorized;
+      const deadline = Date.parse(authorized.decisionBy);
+      const active = () =>
+        !signal.aborted &&
+        Date.now() < deadline &&
+        performance.now() - startedAt < releaseLifetimeMs;
+      if (!Number.isFinite(releaseLifetimeMs) || releaseLifetimeMs > 30_000 || !active()) {
+        return;
+      }
+      let sharedVersion: void | InstalledTokenVersion = undefined;
+      if (authorized.needsPreparation) {
+        if (!prepareApproved) {
+          return;
+        }
+        sharedVersion = await prepareApproved(authorized.source, deadline, signal);
+      }
+      if (!active()) {
+        return;
+      }
+      const result = await this.transaction(async (c) => {
+        const use = await this.recordUse(
+          c,
+          { ...q, deadlineAt: authorized.decisionBy },
+          signal,
+          installed,
+          "online-request",
+          {
+            kind: "release",
+            grant,
+            source: authorized.source,
+            ...(sharedVersion && { sharedVersion }),
+          },
+        );
+        if ("kind" in use || !use.open || !active() || Date.now() >= Date.parse(use.decisionBy)) {
+          throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
+        }
+        bytes = use.open();
+        return {
+          usableUntil: use.decisionBy,
+          version: use.materialVersion,
+          releaseLifetimeMs,
+        };
+      });
+      if (
+        bytes &&
+        !signal.aborted &&
+        Date.now() < Date.parse(result.usableUntil) &&
+        performance.now() - startedAt < result.releaseLifetimeMs
+      ) {
+        return { ...result, value: bytes.toString("utf8") };
+      }
+    } catch {
+      // A failed or uncertain decision does not expose material or authorize a retry.
+      return undefined;
     } finally {
       bytes?.fill(0);
     }
@@ -896,6 +1169,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         return receipt;
       });
       if ("kind" in result) {
+        if (result.kind === "approved" || result.kind === "redeemed") {
+          throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
+        }
         return result;
       }
       if (!bytes || signal.aborted || Date.now() >= Date.parse(result.sendStartBy)) {
@@ -917,9 +1193,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       | PreparedGitHubInstallationUseRequest
       | PreparedGitHubRepositoryUseRequest,
     signal: AbortSignal,
-    installed?: InstalledGitMaterial,
+    installed?: InstalledGitMaterial | InstalledGitRoute,
     mode: Authorization = null,
-  ) {
+    grantDecision?: GitGrantDecision,
+  ): Promise<GitUseDecision> {
     const deadline = Date.parse(q.deadlineAt);
     const valid = (until: number) => !signal.aborted && Date.now() < until;
     const fail = (): never => {
@@ -941,6 +1218,22 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     const { grant } = source;
+    const materialWitness = installed?.materialVersion !== undefined ? installed : undefined;
+    if (
+      (!grantDecision && installed && !materialWitness) ||
+      (grantDecision?.kind === "release" && !isDeepStrictEqual(source, grantDecision.source))
+    ) {
+      return fail();
+    }
+    if (
+      grantDecision &&
+      (!installed?.route ||
+        grant.profile !== "github-repository" ||
+        !allowsPreparedGitGrantRead(grant) ||
+        (q.operation !== "advertise-upload-pack" && q.operation !== "upload-pack"))
+    ) {
+      return fail();
+    }
     const installation = "installationId" in q;
     let repositoryId;
     if (installation) {
@@ -983,17 +1276,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     if (this.proxy?.kind === "selected") {
       const { revisionId, fence, observed } = installed!.route!;
+      const evidence = this.proxy.policy.evidence;
+      const query = grantDecision ? evidence.grantReady : evidence.installed;
+      const parameters = [
+        revisionId,
+        fence,
+        JSON.stringify(observed),
+        ...(grantDecision
+          ? []
+          : [materialWitness!.preparationAttemptId, materialWitness!.materialVersion]),
+      ];
       if (
         revisionId !== current.session.revisionId ||
-        !(
-          await c.query(this.proxy.policy.evidence.installed, [
-            revisionId,
-            fence,
-            JSON.stringify(observed),
-            installed!.preparationAttemptId,
-            installed!.materialVersion,
-          ])
-        ).rowCount
+        !query ||
+        !(await c.query(query, parameters)).rowCount
       ) {
         return fail();
       }
@@ -1041,12 +1337,87 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     } else if ("pull" in q && q.pull) {
       return fail();
     }
-    // The same transaction keeps both live authority and the selected version locked until the
-    // use (and, when applicable, the grant's draft allowance) commits. The protected sender already has the
-    // installed material; only the explicitly selected native sender may open it here.
-    const material = installed
-      ? await this.tokens.current(c, source, installed)
-      : await this.tokens.readWarm(c, source);
+    const { exchangeId, requestDigestSha256 } = q;
+    if (grantDecision && grantDecision.kind !== "release") {
+      const session = current.session;
+      const execution = session.credentialProxyExecution;
+      const identity =
+        grantDecision.kind === "approve" ? grantDecision.approval : grantDecision.grant;
+      const driver = this.proxy?.driver;
+      const approvals = this.grantApprovals?.(c);
+      if (
+        !driver ||
+        !approvals ||
+        !execution ||
+        execution.sandboxId !== identity.recipientId ||
+        execution.executionId !== identity.bindingId
+      ) {
+        return fail();
+      }
+      const until = Math.min(Date.now() + 5000, deadline, Number(current.end_ms));
+      if (!valid(until)) {
+        return fail();
+      }
+      const decisionBy = new Date(until).toISOString();
+      const now = new Date().toISOString();
+      if (grantDecision.kind === "approve") {
+        if (
+          !(await approvals.insert(
+            {
+              recipientId: identity.recipientId,
+              bindingId: identity.bindingId,
+              requestId: identity.requestId,
+              deadlineAt: decisionBy,
+              replayUntilAt: new Date(Date.now() + 60_000).toISOString(),
+              driver,
+              execution: {
+                namespaceId: session.namespaceId,
+                agentId: session.agentId,
+                revisionId: session.revisionId,
+              },
+              policyDigest: requestDigestSha256,
+              expectedCredentialIdentity: grantDecision.approval.credentialIdentity,
+            },
+            now,
+            { requestIds: 8192, sandboxRequestIds: 2048 },
+          )) ||
+          !valid(until)
+        ) {
+          return fail();
+        }
+        return { kind: "approved", decisionBy } as const;
+      }
+      if (!grantDecision.grant.clientAssertion) {
+        return fail();
+      }
+      const approval = await approvals.consume(grantDecision.grant, driver, now);
+      if (
+        !approval ||
+        approval.policyDigest !== requestDigestSha256 ||
+        approval.execution.revisionId !== session.revisionId
+      ) {
+        return fail();
+      }
+      return {
+        kind: "redeemed",
+        source,
+        decisionBy,
+        needsPreparation: this.shared !== undefined || !(await this.tokens.readWarm(c, source)),
+        releaseLifetimeMs: approval.remainingLifetimeMs,
+      };
+    }
+    // Recheck the live grant and recipient after issuance and hold material through the
+    // possible-use commit. Static senders still prove their exact preinstalled version.
+    let material;
+    if (grantDecision?.kind === "release" && this.shared) {
+      material = grantDecision.sharedVersion
+        ? await this.shared.readMember(c, source, grantDecision.sharedVersion)
+        : undefined;
+    } else {
+      material = materialWitness
+        ? await this.tokens.current(c, source, materialWitness)
+        : await this.tokens.readWarm(c, source);
+    }
     if (!material) {
       return fail();
     }
@@ -1062,7 +1433,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     const decisionBy = new Date(until).toISOString();
     const deadlineColumn = mode === null ? "send_start_by" : "authorization_reply_by";
-    const { exchangeId, requestDigestSha256 } = q;
     if (scope && !unlimited) {
       // A possibly spent allowance outlives this session, including an unknown commit or send.
       const claim = await c.query(

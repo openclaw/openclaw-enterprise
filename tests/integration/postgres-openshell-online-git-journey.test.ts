@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import test from "node:test";
-import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
+import { randomUUID, sign } from "node:crypto";
+import { request as httpsRequest } from "node:https";
+import { buffer } from "node:stream/consumers";
+import test, { type TestContext } from "node:test";
+import {
+  narrowOnlineGitJourney,
+  selectedReadGitJourney,
+} from "../helpers/postgres-repository-set-journey.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -23,6 +28,302 @@ type DraftClaim = Pick<
   GitUseReceipt,
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
+
+function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
+  return async (t: TestContext) => {
+    await selectedReadGitJourney(
+      t,
+      import.meta.url,
+      async ({
+        runtime,
+        peer,
+        pool,
+        workspace,
+        sandboxId,
+        revision,
+        removeBinding,
+        grant: authority,
+        evaluateRequest,
+        waitForIssuance,
+        finishIssuance,
+      }) => {
+        const bindingId = revision.egressPlan!.execution.executionId;
+        const original = await runtime.lookup(
+          { sandboxId, bindingId, requestId: randomUUID(), workspace },
+          t.signal,
+        );
+        assert.ok(original?.installed.route);
+        assert.deepEqual(
+          (
+            await pool.query(
+              `SELECT observed->>'credentialState' AS state, preparation_attempt_id, material_version
+               FROM occ.credential_deliveries WHERE revision_id=$1`,
+              [revision.id],
+            )
+          ).rows,
+          [{ state: "active", preparation_attempt_id: null, material_version: null }],
+        );
+        const observed = original.installed.route.observed as { providerId: string };
+        const credentialKey = "installation_token";
+        const assertion = (
+          recipient = sandboxId,
+          provider = observed.providerId,
+          key = credentialKey,
+        ) => {
+          const now = Math.floor(Date.now() / 1000);
+          const header = Buffer.from(
+            JSON.stringify({
+              alg: "EdDSA",
+              kid: "git-grant",
+              typ: "openshell-provider-assertion+jwt",
+            }),
+          ).toString("base64url");
+          const claims = Buffer.from(
+            JSON.stringify({
+              iss: authority.issuer,
+              aud: authority.endpoint,
+              sub: `openshell-sandbox:${recipient}`,
+              sandbox_id: recipient,
+              caller_kind: "supervisor",
+              provider_id: provider,
+              credential_key: key,
+              iat: now,
+              exp: now + 60,
+              jti: randomUUID(),
+            }),
+          ).toString("base64url");
+          const input = `${header}.${claims}`;
+          return `${input}.${sign(null, Buffer.from(input), authority.keys.privateKey).toString("base64url")}`;
+        };
+        const grant = (requestId: string, clientAssertion: string, resource = bindingId) =>
+          new Promise<{ status: number; value: string | undefined }>((resolve, reject) => {
+            const form = new URLSearchParams({
+              grant_type: "client_credentials",
+              client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+              client_assertion: clientAssertion,
+              audience: resource,
+            }).toString();
+            const req = httpsRequest(
+              {
+                hostname: "127.0.0.1",
+                servername: "localhost",
+                port: authority.port,
+                path: "/token",
+                method: "POST",
+                ca: authority.ca,
+                agent: false,
+                signal: AbortSignal.timeout(5000),
+                headers: {
+                  "content-type": "application/x-www-form-urlencoded",
+                  "content-length": Buffer.byteLength(form),
+                  "x-openshell-request-id": requestId,
+                },
+              },
+              async (response) => {
+                try {
+                  const result = JSON.parse((await buffer(response)).toString()) as {
+                    access_token?: string;
+                  };
+                  resolve({ status: response.statusCode!, value: result.access_token });
+                } catch (error) {
+                  reject(error);
+                }
+              },
+            );
+            req.on("error", reject);
+            req.end(form);
+          });
+        const approve = async (upload: boolean, requestedRepository = fixtureRepository) => {
+          const request = peer.input(bindingId, sandboxId, upload, workspace);
+          request.target.path = request.target.path.replace(fixtureRepository, requestedRepository);
+          const decision = await evaluateRequest(request);
+          return { requestId: request.context.request_id, decision: decision.decision };
+        };
+        const receipts = async () =>
+          (
+            await pool.query<{ operation: string }>(
+              `SELECT operation FROM occ.prepared_repository_git_uses u
+           JOIN occ.repository_session_attempts s USING (admission_id)
+           WHERE s.revision_id=$1 ORDER BY authorization_reply_by`,
+              [revision.id],
+            )
+          ).rows.map(({ operation }) => operation);
+        const issuance = peer.gh.issuesOfTokens.length;
+        assert.equal(issuance, 0, "the selected route starts before any installation token exists");
+        const foreignRepository = await approve(false, "fixture/unselected");
+        assert.equal(foreignRepository.decision, 2);
+        assert.equal((await grant(foreignRepository.requestId, assertion())).status, 403);
+        const discovery = await approve(false);
+        assert.equal(discovery.decision, 1);
+        assert.deepEqual(
+          await receipts(),
+          [],
+          "inspection does not disclose or spend the credential",
+        );
+        assert.equal((await grant(discovery.requestId, assertion("foreign-sandbox"))).status, 403);
+        assert.equal(
+          (await grant(discovery.requestId, assertion(sandboxId, "wrong-provider"))).status,
+          403,
+        );
+        assert.equal(
+          (await grant(discovery.requestId, assertion(sandboxId, observed.providerId, "wrong-key")))
+            .status,
+          403,
+        );
+        assert.equal((await grant(discovery.requestId, assertion(), "wrong-binding")).status, 403);
+        assert.equal(peer.gh.issuesOfTokens.length, 0, "authorization and bad grants never mint");
+        const signedGrant = assertion();
+        const originBeforeIssuance = peer.originCalls();
+        const redemption = grant(discovery.requestId, signedGrant);
+        try {
+          await waitForIssuance();
+          assert.deepEqual(await receipts(), [], "held issuer has not released material");
+          if (withdrawWhileIssuing) {
+            await removeBinding();
+          }
+        } finally {
+          finishIssuance();
+        }
+        const allowed = await redemption;
+        if (withdrawWhileIssuing) {
+          assert.deepEqual(allowed, { status: 403, value: undefined });
+          assert.equal(
+            peer.gh.issuesOfTokens.length,
+            1,
+            "the controlled provider completed its issue",
+          );
+          assert.deepEqual(await receipts(), [], "no use is recorded after withdrawal");
+          assert.equal(
+            peer.originCalls(),
+            originBeforeIssuance,
+            "no Git traffic reached the origin",
+          );
+          assert.equal((await grant(discovery.requestId, assertion())).status, 403);
+          return;
+        }
+        assert.equal(allowed.status, 200);
+        assert.ok(allowed.value);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+        assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+          metadata: "read",
+          contents: "read",
+        });
+        assert.equal((await peer.send(allowed.value, false)).status, 200);
+        assert.deepEqual(await receipts(), ["advertise-upload-pack"]);
+        assert.equal((await grant(discovery.requestId, signedGrant)).status, 403);
+        const another = await approve(true);
+        assert.equal(another.decision, 1);
+        assert.equal(
+          (await grant(another.requestId, signedGrant)).status,
+          403,
+          "a new request cannot reuse a signed JTI",
+        );
+        const fetch = await approve(true);
+        assert.equal(fetch.decision, 1);
+        const fetched = await grant(fetch.requestId, assertion());
+        assert.equal(fetched.status, 200);
+        assert.ok(fetched.value);
+        assert.equal((await peer.send(fetched.value, true)).status, 200);
+        const before = await receipts();
+        assert.deepEqual(before, ["advertise-upload-pack", "upload-pack"]);
+
+        if (!shared) {
+          // Rotation must still fence a warm token, while maintenance cannot mint its successor.
+          await peer.rotateAppKey();
+          await peer.prepared.maintain();
+          assert.deepEqual(
+            (
+              await pool.query(
+                `SELECT custody FROM occ.prepared_github_attempts
+           WHERE source_id IN (SELECT 'repository-git:' || admission_id
+             FROM occ.repository_session_attempts WHERE revision_id=$1)`,
+                [revision.id],
+              )
+            ).rows,
+            [{ custody: "retire" }],
+          );
+          assert.equal(peer.gh.issuesOfTokens.length, 1, "rotation does not prewarm a replacement");
+        } else {
+          const state = await pool.query<{ family_id: string; custody: string }>(
+            `SELECT m.family_id, a.custody FROM occ.prepared_github_shared_members m
+           JOIN occ.repository_session_attempts s USING (admission_id)
+           JOIN occ.prepared_github_attempts a ON a.source_id=m.family_id
+           WHERE s.revision_id=$1`,
+            [revision.id],
+          );
+          assert.equal(state.rowCount, 1);
+          assert.match(state.rows[0]!.family_id, /^repository-git-shared:[0-9a-f]{64}$/);
+          assert.equal(state.rows[0]!.custody, "current");
+        }
+        const pending = await approve(true);
+        assert.equal(pending.decision, 1);
+        const traffic = peer.originCalls();
+        await removeBinding();
+        const {
+          rows: [approval],
+        } = await pool.query<{ expires_at: Date }>(
+          "SELECT expires_at FROM occ.request_credential_approvals WHERE request_id=$1",
+          [pending.requestId],
+        );
+        assert.ok(
+          approval && approval.expires_at.getTime() > Date.now() + 1000,
+          "withdrawal is tested before the approval expires",
+        );
+        assert.equal((await grant(pending.requestId, assertion())).status, 403);
+        assert.deepEqual(await receipts(), before);
+        assert.equal(peer.originCalls(), traffic);
+        assert.equal(
+          peer.gh.issuesOfTokens.length,
+          1,
+          "later redemptions reuse the committed token and withdrawal prevents issuance",
+        );
+        await peer.prepared.maintain();
+        assert.deepEqual(
+          (
+            await pool.query(
+              `SELECT custody, sealed IS NULL AS erased FROM occ.prepared_github_attempts
+           WHERE source_id IN (
+             ${
+               shared
+                 ? `SELECT m.family_id FROM occ.prepared_github_shared_members m
+                  JOIN occ.repository_session_attempts s USING (admission_id)
+                  WHERE s.revision_id=$1`
+                 : `SELECT 'repository-git:' || admission_id FROM occ.repository_session_attempts
+                  WHERE revision_id=$1`
+             }
+           )`,
+              [revision.id],
+            )
+          ).rows,
+          [{ custody: "revoked", erased: true }],
+          "the original worker retires its own material after withdrawal",
+        );
+      },
+      shared ? true : undefined,
+    );
+  };
+}
+test(
+  "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(false),
+);
+test(
+  "cold Git HTTPS grant refuses token release after withdrawal during issuance",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(false, true),
+);
+test(
+  "Git HTTPS redemption reuses a committed shared-family token and denies withdrawal while warm",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true),
+);
+test(
+  "shared Git HTTPS redemption refuses token release after withdrawal during issuance",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true, true),
+);
 
 for (const { name, action, expectedDenial } of [
   {

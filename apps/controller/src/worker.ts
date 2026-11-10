@@ -5543,7 +5543,7 @@ export class ControllerWorker {
       const held =
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
-          (revision.executionAdmission.version === 5 &&
+          ([5, 9].includes(revision.executionAdmission.version) &&
             revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
@@ -6342,7 +6342,7 @@ export class ControllerWorker {
         if (
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
-            (activated.executionAdmission.version === 5 &&
+            ([5, 9].includes(activated.executionAdmission.version) &&
               activated.egressPlan?.repositoryGitAuthorization === "online-request"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this

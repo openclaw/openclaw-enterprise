@@ -333,6 +333,9 @@ worker:
   leaseDurationMs: 5000
   maxAttempts: 5
   convergenceTimeoutMs: 900000
+  # Empty preserves per-admission custody. Set a positive generation for all Workers
+  # only with the selected OpenShell Git grant profile and the shared custody migration.
+  githubSharedIssuanceGeneration: null
 
 # Optional credential authority listener owned by the single API process.
 # The Installation Credential Proxy authority must use the same port and file paths, on
@@ -345,6 +348,12 @@ egressAuthority:
   # Only public.pem is projected from the Gateway's issuer Secret.
   # Every client requires both namespaceSelector and podSelector.matchLabels.
   clients: []
+  # Optional per-request model credential redemption; shares TLS and client scope above.
+  tokenGrant:
+    enabled: false
+    port: 9445 # decimal, without leading zeros
+    # Projects the public SPIFFE JWT bundle key bundle.json into the API only.
+    bundleConfigMapName: ""
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation
@@ -362,6 +371,13 @@ openshellGit:
   issuerPublicKeyConfigMapName: ""
   # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
   clients: []
+  # Optional scoped Git redemption on the same worker and serving certificate.
+  tokenGrant:
+    enabled: false
+    port: 9446
+    bundleConfigMapName: ""
+    # Only trusted supervisor Pods may call the token endpoint.
+    clients: []
 
 # Optional OCE custody for explicitly enrolled, Agent-scoped GitHub metadata reads.
 # In the Installation's drivers.credential_proxy.configuration.preparedGitHub set
