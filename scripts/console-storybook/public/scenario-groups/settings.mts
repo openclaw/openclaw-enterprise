@@ -35,7 +35,7 @@ export const settingsScenarios = {
     path: "/console/settings",
     oauthCatalog: "inference",
     description:
-      "Edit Internal vLLM to inspect its two models, default and static-key template, or add another endpoint.",
+      "Edit Internal vLLM to inspect its two models and pinned private server. Add a provider to choose a public endpoint, pinned private IPv4 address, or Kubernetes Service.",
   },
   settings: {
     group: "Pages/Settings",

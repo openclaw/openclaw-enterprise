@@ -67,12 +67,18 @@ model. The revision saves the provider ID, resolved Harness settings, and the
 selected rows from the provider catalog. Updating that catalog affects future
 admissions. Existing revisions keep their saved values.
 
-The OpenShell Gateway installs a provider profile for the approved POST operation.
-The protected request sender admits one route for that operation. The sender needs
-an existing route to the endpoint. A catalog entry does not change Installation
-network policy. OpenShell's default policy checks the resolved IP address. The
-generated profile supplies no private-IP allowance. A private DNS target can
-therefore remain unreachable even when the network routes to it.
+### Private endpoints
+
+The static-key template can authorize one private receiver for its HTTPS POST route.
+
+- For a private server, set `privatePeer` to `{"kind":"private_ipv4","address":"10.20.30.40"}`. Use the server’s DNS name in the base URL. DNS must resolve to the approved address, and its TLS certificate must cover that name.
+- For a Kubernetes Service, use `{"kind":"kubernetes_service","namespace":"research","name":"inference"}` with `https://inference.research.svc.cluster.local/v1`. The Service owner gives Compute permission to `get` that named Service in the execution cluster. It must be an IPv4 ClusterIP Service with a Pod selector and a numeric TCP target port. Compute saves the Service UID, address, selector and target port with the template version.
+
+Both destinations require DNS and an HTTPS certificate trusted by the OpenShell supervisor. For a cluster-local name, install the private issuing CA in the supervisor’s upstream trust store.
+
+The credential owner approves the version. Compute checks the Service again at admission and when preparing and activating the Agent. If a Service is replaced or the mapping changes, save the updated template and register a credential for its new version. Stop the Agent or withdraw the key before transferring the Service name and address. A running supervisor checks the certificate and pinned address on requests. It does not watch the Kubernetes Service UID.
+
+Compute creates an egress NetworkPolicy for the revision’s OpenShell supervisor. For a Service, the policy permits the ClusterIP and Service port, and the selected Pods and target port, so it can apply before or after Kubernetes translates the address. For a private server, the policy permits one `/32` and port. The destination owner still controls ingress. Other NetworkPolicies selecting the supervisor can grant additional network access. OpenShell independently checks the approved hostname, resolved address, port and POST route before injecting the key.
 
 ## Deployment overrides
 

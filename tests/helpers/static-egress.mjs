@@ -519,6 +519,7 @@ export async function staticEgressFixture(
       ...createDevelopmentComputeDriver(),
       normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
       resolveModelProvider: placement.resolveModelProvider,
+      resolveInferencePrivatePeer: placement.resolveInferencePrivatePeer.bind(placement),
       resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
       validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
       // Schema/protocol fixture only: no workload is released by this Compute.

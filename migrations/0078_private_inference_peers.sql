@@ -17,6 +17,8 @@ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
       ELSE false END) IS TRUE
 $$;
 --> statement-breakpoint
+GRANT EXECUTE ON FUNCTION occ.inference_private_peer_is_valid(jsonb) TO occ_app;
+--> statement-breakpoint
 ALTER TABLE occ.static_key_template_versions ADD COLUMN private_peer jsonb
   CONSTRAINT static_key_template_versions_private_peer CHECK (occ.inference_private_peer_is_valid(private_peer));
 --> statement-breakpoint

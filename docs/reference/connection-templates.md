@@ -6,7 +6,7 @@ In Console, open **Credentials → Connection templates**. Choose **Create conne
 
 ## Approve a static inference key
 
-An Installation administrator can create a static Bearer template with `POST /connection-templates`. Set `mode` to `static_bearer` and supply a display name, inference base URL, and protocol. The saved version shows the exact HTTPS host, port, path, and POST method that can receive the key. A change to the route creates a new version.
+An Installation administrator can create a static Bearer template with `POST /connection-templates`. Set `mode` to `static_bearer` and supply a display name, inference base URL, and protocol. The saved version shows the exact HTTPS host, port, path, and POST method that can receive the key. For a [private inference endpoint](drivers/kubernetes-compute/model-provider.md#private-endpoints), supply `privatePeer` on the template. Compute resolves it before the owner approves the key. Changing the route or private receiver creates a new version.
 
 Create a reusable provider with `POST /model-providers`. Supply its display name, base URL, protocol, model list, optional default model ID, and the ID of an Installation-wide template that approves that route. To update the provider, replace its settings with `PUT /model-providers/{modelProviderId}`. An Agent creator can read this catalog at `GET /namespaces/{namespaceId}/model-providers`.
 
