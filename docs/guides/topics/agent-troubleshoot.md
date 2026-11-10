@@ -6,11 +6,10 @@ the console shows. Never include API keys, tokens, or Secret values.
 
 ## Codex refuses the required permission profile
 
-If deployment fails with `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`, ask the
-account's policy owner to check its managed requirements against the
-[OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
-This means the serving process explicitly refused a required mode, profile or reviewer;
-the readiness check does not change policy or start a model turn.
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` means managed requirements explicitly
+refused a required mode, profile or reviewer. Ask the policy owner to check
+[OpenShell's requirements](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+The readiness check does not change policy or start a model turn.
 
 If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
 

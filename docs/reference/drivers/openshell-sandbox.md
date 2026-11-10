@@ -211,14 +211,13 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 
 <a id="codex-permission-profile"></a>
 
-Dedicated Codex requires account policy permitting `:danger-full-access` with `user` review.
-Before reporting the Harness ready, the Driver reads the serving process's managed
-requirements. An explicit refusal fails deployment with
+Codex requires policy allowing `:danger-full-access` and `user` review.
+Before readiness, managed requirements refusal produces
 `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; missing or malformed evidence stays pending.
-OpenShell isolates every login mode; restricted profiles, including the proxy's,
-require nested bubblewrap namespaces, which OpenShell blocks. The Gateway refuses
-constrained threads before turns; see [permission-profile troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
-Native OpenClaw already disables inner isolation. Its hook sets
+OpenShell isolates all login modes and blocks restricted profiles' nested bubblewrap
+namespaces. The Gateway rejects constrained threads;
+see [troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
+Native OpenClaw disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
 which the Gateway, file transfer, and node address; admission refuses a roster
@@ -227,7 +226,7 @@ workspaces but share the Sandbox's user, filesystem, process, and network
 boundary. OpenShell isolates each Agent revision from other workloads, not mutually
 untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
-hosted session releases its slot; idle workers are not retired automatically.
+session releases its slot; idle workers are not retired automatically.
 
 [Harness providers and exposure](openshell-sandbox/harness-providers.md)
 covers credential attachments, the dedicated runtime providers and the
