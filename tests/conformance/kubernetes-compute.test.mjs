@@ -139,6 +139,8 @@ import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 import { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import { OPENCLAW_CONFIG_ENVIRONMENT_COMMIT } from "../../apps/controller/src/drivers/compute/kubernetes/openclaw-config-environment.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -10340,6 +10342,17 @@ test("Kubernetes Compute refuses another spelling of a plugin entry key it rende
   }
 });
 
+test("the OpenClaw Configuration environment mirror follows the runtime pin", async () => {
+  // A stale copy of OpenClaw's host environment policy could take a variable it drops as set,
+  // and admit a Gateway that exits at every start (finding 3059).
+  const { commit } = await readOpenclawSource();
+  assert.equal(
+    OPENCLAW_CONFIG_ENVIRONMENT_COMMIT,
+    commit,
+    "deploy/runtime/openclaw-source.json changed: review openclaw-config-environment.ts against it",
+  );
+});
+
 test("admission refuses a plugin secret input whose unset variable stops any Gateway", () => {
   // OpenClaw resolves an active plugin's Gateway-required secret inputs (no ownerKind in the
   // manifest: codex appServer.authToken and appServer.headers.*, google webSearch.headers.*) at
@@ -10720,6 +10733,44 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // an unset `${_NAME}` as written, never as a SecretRef.
   embeddedAdmission({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["RELAY_TOKEN"]) }, {});
   embeddedAdmission({ ...withBeam("${_RELAY}"), ...allowlist([]) }, {});
+  // OpenClaw applies the Configuration's own environment before it substitutes `${NAME}`
+  // (`applyConfigEnvVars`, finding 3059): a non-blank `env.vars` or other `env` string sets NAME
+  // (trimmed; Z_AI_API_KEY also sets ZAI_API_KEY), so these Gateways start unbound.
+  const withEnv = (configuration, env) => ({ ...configuration, env });
+  for (const configuration of [
+    withEnv(withSearchHeader("${RELAY_TOKEN}"), { vars: { RELAY_TOKEN: "literal" } }),
+    withEnv(withSearchHeader(" ${RELAY_TOKEN} "), { " RELAY_TOKEN ": "literal" }),
+    withEnv(
+      withCodex({ config: { appServer: { headers: { "X-Relay": "${RELAY_TOKEN}" } } } }),
+      { vars: { RELAY_TOKEN: "$${ESCAPED}" } },
+    ),
+    withEnv({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["OTHER"]) }, { RELAY_TOKEN: "x" }),
+    withEnv(withSearchHeader("${ZAI_API_KEY}"), { vars: { Z_AI_API_KEY: "literal" } }),
+  ]) {
+    embeddedAdmission(configuration, undefined);
+    embeddedAdmission(configuration, {});
+  }
+  // OpenClaw drops a blank value, one that holds a reference, a name outside the portable
+  // grammar and a name its host environment policy blocks (listed, or by prefix, or the Cargo
+  // runner pattern); the `$NAME` shorthand is an env SecretRef, left to the binding as before.
+  for (const [value, env, name = "RELAY_TOKEN"] of [
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: " " } }],
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: "${OTHER}" } }],
+    ["${RELAY_TOKEN}", { vars: { OTHER: "literal" } }],
+    ["${RELAY_TOKEN}", { vars: { RELAY_TOKEN: 1 } }],
+    ["$RELAY_TOKEN", { vars: { RELAY_TOKEN: "literal" } }],
+    ["${GITHUB_TOKEN}", { vars: { GITHUB_TOKEN: "literal" } }, "GITHUB_TOKEN"],
+    ["${AWS_SECRET_ACCESS_KEY}", { AWS_SECRET_ACCESS_KEY: "x" }, "AWS_SECRET_ACCESS_KEY"],
+    ["${GIT_CONFIG_RELAY}", { vars: { GIT_CONFIG_RELAY: "x" } }, "GIT_CONFIG_RELAY"],
+    ["${BASH_FUNC_RELAY}", { vars: { BASH_FUNC_RELAY: "x" } }, "BASH_FUNC_RELAY"],
+    ["${CARGO_TARGET_X_RUNNER}", { vars: { CARGO_TARGET_X_RUNNER: "x" } }, "CARGO_TARGET_X_RUNNER"],
+  ]) {
+    refusedUntilBound(embeddedAdmission, withEnv(withSearchHeader(value), env), [
+      searchHeader,
+      name,
+      "google",
+    ]);
+  }
   // An APP_SERVER_ name there is never set on an embedded or Dedicated OpenClaw Agent, and no
   // binding can set it, so the Agent's mode alone decides: deployment and Agent save refuse it
   // under an allowlist that omits it (finding 3060). A Dedicated Codex Gateway sets
