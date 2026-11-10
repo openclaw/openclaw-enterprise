@@ -55,6 +55,11 @@ Controller build selection is independent.
 
 Gateway Routing, Slack Live, and Production TUI restore read-only BuildKit caches through
 `scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
+`scripts/ci/prepare.mjs:imageCacheObservation` reports numeric counts per phase,
+excluding raw output (`image-cache`; OpenShell: `first-agent-image-cache`).
+Step counts deduplicate IDs. `observesImageCache` enables plain progress, including
+alternate source builds. Import lines do not prove hits;
+loads may reuse probe work.
 
 For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
 selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
