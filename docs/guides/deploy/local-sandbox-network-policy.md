@@ -53,37 +53,6 @@ Inspect current decisions using the Agent's existing Sandbox Logs view or
 and the [startup flow](../../flows/openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 for implementation ownership.
 
-## Enable protected npm reads
-
-In the Installation YAML for a protected, dedicated Codex Agent with repository
-access, add this rule under `drivers.sandbox.configuration.policy`. Append the
-name and rule to any existing entries.
-
-```yaml
-codexArtifactRuleNames: [node-packages]
-networkPolicies:
-  - name: node-packages
-    binaries:
-      - path: /usr/local/bin/node
-    endpoints:
-      - host: registry.npmjs.org
-        ports: [443]
-        protocol: rest
-        enforcement: enforce
-        access: read_only
-```
-
-Use `/usr/local/bin/node` as the sole binary and `registry.npmjs.org:443` as
-the sole endpoint. Leave `tls` unset for verified inspection. The Driver
-allows encoded slashes on all otherwise authorized read-only paths on this
-endpoint, including npm scoped package metadata. Keep this endpoint separate
-from Codex artifact and model routes. Kubernetes egress must also permit
-HTTPS to the registry.
-
-Deploy a new Agent revision after applying the Installation configuration.
-Run `npm view @types/node@24.0.0 version --registry=https://registry.npmjs.org`
-in the Agent workspace. A successful read prints `24.0.0`.
-
 ## Delegate per-Agent additions
 
 Pass a separate ceiling file when operators want authorized users to request
