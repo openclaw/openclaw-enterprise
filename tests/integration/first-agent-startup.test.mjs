@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { constants } from "node:fs";
 import {
   cp,
   lstat,
@@ -762,15 +763,24 @@ test("first-Agent preserves live and abandoned locks until inspected recovery", 
       throw new Error("Lock owner exited before its first Agent read");
     }),
   ]);
-  const lock = await lstat(lockPath);
-  const pid = await readFile(lockPath, "utf8");
+  const snapshotLock = async () => {
+    const file = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = await file.stat();
+      const named = await lstat(lockPath);
+      assert.equal(named.isFile(), true);
+      assert.equal(named.dev, opened.dev);
+      assert.equal(named.ino, opened.ino);
+      return { dev: opened.dev, ino: opened.ino, pid: await file.readFile("utf8") };
+    } finally {
+      await file.close();
+    }
+  };
+  const lock = await snapshotLock();
   const record = await readFile(recordPath, "utf8");
-  assert.equal(pid, String(owner.pid));
+  assert.equal(lock.pid, String(owner.pid));
   const assertUnchanged = async () => {
-    const current = await lstat(lockPath);
-    assert.equal(current.dev, lock.dev);
-    assert.equal(current.ino, lock.ino);
-    assert.equal(await readFile(lockPath, "utf8"), pid);
+    assert.deepEqual(await snapshotLock(), lock);
     assert.equal(await readFile(recordPath, "utf8"), record);
   };
   const contender = await runFirstAgentAsync(env);
