@@ -168,6 +168,9 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
+Native first-Agent failures retain sanitized placement and proof observations; see
+[interpret timing and proof](../testing/ci/openshell-execution.md#interpret-timing-and-proof).
+
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
@@ -202,17 +205,6 @@ prevent retention.
 
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
-
-`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
-classifies public placement errors and projects environment/tunnel states, node
-connection and capability counts, and exact workspace-node matches. The expected
-node comes from the selected revision's Gateway Pod. Failure reads use
-`sessions.describe`, `environments.status` and `node.list` share a five-second
-budget; failed refreshes retain a labeled fallback observation.
-`reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
-booleans and counters again. Raw errors and identifiers do not enter the record.
-Public RPCs do not expose workspace-binding readiness or restoration; a workspace
-reference does not prove either state.
 
 Per-file cleanup releases its database; job cleanup removes owned resources. Deleting the
 owned k3d cluster removes Collector RBAC and Namespace. Logging cleanup removes its Docker
