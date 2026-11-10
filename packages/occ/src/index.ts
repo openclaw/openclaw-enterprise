@@ -13862,6 +13862,24 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
+      if (
+        privateInferencePeer &&
+        egressPlan &&
+        (harnessAuth.method !== "credential_source" ||
+          egressPlan.harnessCredentialSource ||
+          egressPlan.routes.filter((route) => route.binding.grant.kind === "inference").length !==
+            1 ||
+          !egressPlan.routes.some(
+            (route) =>
+              route.binding.grant.kind === "inference" &&
+              route.binding.source.source.id === harnessAuth.sourceId &&
+              route.privateInferenceAddress === privateInferencePeer.address,
+          ))
+      ) {
+        throw new ResourceStateConflictError(
+          "A private inference credential requires its own verified sender. A separate protected Git plan cannot release an ordinary model credential.",
+        );
+      }
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };

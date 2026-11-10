@@ -118,6 +118,7 @@ test("startup composes both OpenShell members from one Backend for static source
   const observed: { sandbox?: OpenShellSandboxResponse } = {};
   let revoked = false;
   let policyVersion = 1;
+  let privateInferenceRevisionId: string | undefined;
   let activePolicyVersion = 1;
   let sourcePolicy: Readonly<Record<string, unknown>>;
   let startupReleases = 0;
@@ -142,6 +143,7 @@ test("startup composes both OpenShell members from one Backend for static source
     },
     async getPolicyStatus() {
       return {
+        ...(privateInferenceRevisionId && { privateInferenceRevisionId }),
         version: policyVersion,
         activeVersion: activePolicyVersion,
         state:
@@ -152,6 +154,7 @@ test("startup composes both OpenShell members from one Backend for static source
     async updatePolicy(request) {
       assert.equal(request.expectedResourceVersion, observed.sandbox?.resourceVersion);
       sourcePolicy = structuredClone(request.policy);
+      privateInferenceRevisionId = request.privateInferenceRevisionId;
       policyVersion++;
     },
     getServiceDocument: unexpected,
@@ -576,6 +579,20 @@ test("startup composes both OpenShell members from one Backend for static source
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(startupReleases, 0);
   activePolicyVersion = policyVersion;
+  const acceptedPolicy = sourcePolicy!;
+  sourcePolicy = {
+    ...acceptedPolicy,
+    network_policies: {
+      ...(acceptedPolicy.network_policies as object),
+      unrelated: { name: "unrelated", endpoints: [] },
+    },
+  };
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /did not load the expected private inference policy/,
+  );
+  assert.equal(startupReleases, 0);
+  sourcePolicy = acceptedPolicy;
   assert.equal((await driver.prepareRevision(revision, context)).ready, true);
   assert.equal(startupReleases, 1);
   const workspace = openShellWorkspaceName({ ...tenant, status: "ready", name: namespace });

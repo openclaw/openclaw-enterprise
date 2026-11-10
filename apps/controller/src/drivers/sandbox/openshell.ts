@@ -133,6 +133,7 @@ import {
   openShellSandboxObserver,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
+  type OpenShellPolicyStatus,
   type OpenShellProviderResponse,
   type OpenShellStoredProviderProfile,
   type OpenShellSandboxCreateRequest,
@@ -1343,6 +1344,64 @@ function privateInferenceReleasedPolicy(policy: Readonly<Record<string, unknown>
   }
   const { [PRIVATE_INFERENCE_HOLD]: _hold, ...released } = networks;
   return { ...policy, network_policies: released };
+}
+
+function verifiedPrivateInferencePolicyBase(
+  revision: Readonly<AgentRevision>,
+  baseline: Readonly<Record<string, unknown>>,
+  status: OpenShellPolicyStatus,
+) {
+  const expectedHold = privateInferenceHold(revision);
+  if (!expectedHold) {
+    return baseline;
+  }
+  const networks = asRecord(baseline.network_policies);
+  const current = asRecord(status.policy.network_policies);
+  if (
+    !networks ||
+    !current ||
+    !sameOpenShellPolicy(networks[PRIVATE_INFERENCE_HOLD], expectedHold)
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The immutable Sandbox has no matching private inference hold.",
+    );
+  }
+  if (Object.hasOwn(current, PRIVATE_INFERENCE_HOLD)) {
+    if (status.version !== 1 || !sameOpenShellPolicy(status.policy, baseline)) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The loaded private inference policy differs from the immutable startup policy.",
+      );
+    }
+    return baseline;
+  }
+  const released = privateInferenceReleasedPolicy(baseline);
+  if (
+    status.version === 2 &&
+    status.privateInferenceRevisionId === revision.id &&
+    sameOpenShellPolicy(status.policy, released)
+  ) {
+    return released;
+  }
+  // Later OCE live policy writes can replace only its Agent grants. The native revision
+  // records their OCE revision ID. Every other source-policy field must still match.
+  const fixedPolicy = (policy: Readonly<Record<string, unknown>>) => ({
+    ...policy,
+    network_policies: Object.fromEntries(
+      Object.entries(asRecord(policy.network_policies) ?? {}).filter(
+        ([name]) => !name.startsWith(AGENT_POLICY_PREFIX),
+      ),
+    ),
+  });
+  if (
+    status.version > 2 &&
+    status.privateInferenceRevisionId === revision.id &&
+    sameOpenShellPolicy(fixedPolicy(status.policy), fixedPolicy(released))
+  ) {
+    return released;
+  }
+  throw new OpenShellSandboxConfigurationFailure(
+    "OpenShell did not load the expected private inference policy for this revision.",
+  );
 }
 
 function sandboxCommand(
@@ -4569,11 +4628,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     const status = await client.getPolicyStatus(request, context.signal);
-    const verifiedBase =
-      privateInferenceHold(context.revision) &&
-      !Object.hasOwn(asRecord(status.policy.network_policies) ?? {}, PRIVATE_INFERENCE_HOLD)
-        ? privateInferenceReleasedPolicy(baseline)
-        : baseline;
+    const verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
     const candidate = openShellPolicyCandidate(verifiedBase, snapshot);
     const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
@@ -4623,33 +4678,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (status.state !== "POLICY_STATUS_LOADED" || status.activeVersion !== status.version) {
       return false;
     }
-    const rules = asRecord(status.policy.network_policies);
-    if (!rules) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell did not report the loaded private inference policy.",
-      );
-    }
-    if (Object.hasOwn(rules, PRIVATE_INFERENCE_HOLD)) {
-      if (!sameOpenShellPolicy(rules[PRIVATE_INFERENCE_HOLD], expected)) {
-        throw new OpenShellSandboxConfigurationFailure(
-          "The loaded private inference hold differs from the admitted rule.",
-        );
-      }
+    const verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
+    if (verifiedBase === baseline) {
       await client.updatePolicy(
         {
           ...request,
-          policy: privateInferenceReleasedPolicy(status.policy),
+          policy: privateInferenceReleasedPolicy(baseline),
+          privateInferenceRevisionId: context.revision.id,
           expectedResourceVersion: sandbox.resourceVersion!,
           requestId: randomUUID(),
         },
         context.signal,
       );
       return false;
-    }
-    if (status.version <= 1) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell did not commit an update releasing this private inference Sandbox.",
-      );
     }
     const result = await client.execSandbox(
       {
@@ -4708,15 +4749,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     let verifiedBase = baseline;
-    if (privateInferenceHold(context.revision)) {
+    const privateInference = privateInferenceHold(context.revision);
+    if (privateInference) {
       if (!client.getPolicyStatus) {
         throw new OpenShellSandboxConfigurationFailure(
           "Private inference requires observed policy updates.",
         );
       }
       const status = await client.getPolicyStatus(request, context.signal);
-      if (!Object.hasOwn(asRecord(status.policy.network_policies) ?? {}, PRIVATE_INFERENCE_HOLD)) {
-        verifiedBase = privateInferenceReleasedPolicy(baseline);
+      verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
+      if (
+        verifiedBase === baseline ||
+        status.state !== "POLICY_STATUS_LOADED" ||
+        status.activeVersion !== status.version
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Wait for verified private inference startup before editing the Agent network policy.",
+        );
       }
     }
     const candidate = openShellPolicyCandidate(verifiedBase, input.snapshot);
@@ -4758,6 +4807,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       {
         ...request,
         policy: candidate,
+        ...(privateInference && { privateInferenceRevisionId: context.revision.id }),
         expectedResourceVersion: input.expectedProviderVersion,
         requestId: input.operationId,
       },

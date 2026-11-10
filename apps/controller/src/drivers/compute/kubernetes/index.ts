@@ -14602,6 +14602,24 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!peer) {
       return;
     }
+    const plan = revision.egressPlan;
+    const auth = revision.harnessAuth;
+    if (
+      plan &&
+      (auth.method !== "credential_source" ||
+        plan.harnessCredentialSource ||
+        plan.routes.filter((route) => route.binding.grant.kind === "inference").length !== 1 ||
+        !plan.routes.some(
+          (route) =>
+            route.binding.grant.kind === "inference" &&
+            route.binding.source.source.id === auth.sourceId &&
+            route.privateInferenceAddress === peer.address,
+        ))
+    ) {
+      throw new ConfigurationFailure(
+        "Private inference cannot be released by another credential's protected plan.",
+      );
+    }
     const provider = savedModelProvider(revision.harness.configuration);
     if (
       !provider ||
