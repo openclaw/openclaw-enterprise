@@ -287,6 +287,24 @@ try {
     () => ({ status: 0 }),
     (error) => error.result ?? {},
   );
+  if (runner.status !== 0) {
+    // Report only a known phase, source location, or failure category. Both raw streams
+    // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
+    const text =
+      String(runner.stderr) +
+      String(runner.stdout) +
+      resultText +
+      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
+        () => "",
+      ));
+    // Optional journey records may be incomplete when the test fails.
+    console.error(
+      "Installed test failed (%s, runner-exit=%s)",
+      skipperFailureSummary(resultText, process.cwd(), text),
+      runner.code ?? "unknown",
+    );
+  }
   const ledger = await readFile(join(directory, "compute-journey.jsonl"), "utf8").catch(() => "");
   const entries = ledger
     .trim()
@@ -299,16 +317,6 @@ try {
     progress(name);
   }
   if (runner.status !== 0) {
-    // Report only a known phase, source location, or failure category. Both raw streams
-    // and the runner's private diagnostics can contain the synthetic credentials.
-    const resultText = await readFile(privateResult, "utf8").catch(() => "");
-    const text =
-      String(runner.stderr) +
-      String(runner.stdout) +
-      resultText +
-      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
-        () => "",
-      ));
     const chat = entries.find((e) => e.phase === "gateway-chat-refused");
     if (chat) {
       const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
@@ -319,25 +327,27 @@ try {
       );
       assert.match(
         category,
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified)$/,
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/,
       );
       assert.ok(
-        [modelTurns, modelAnswers, tlsErrors].every((n) => Number.isSafeInteger(n) && n >= 0),
+        [modelTurns, modelAnswers, tlsErrors].every(
+          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
+        ),
       );
-      assert.equal(typeof expectedNonceAnswered, "boolean");
+      assert.ok(expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean");
       assert.match(
         chat.runtimeSignal,
         /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/,
       );
       console.error(
-        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%d, answers=%d, expected nonce answered=%s, TLS errors=%d.",
+        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
         httpStatus,
         category,
         chat.runtimeSignal,
-        modelTurns,
-        modelAnswers,
-        expectedNonceAnswered,
-        tlsErrors,
+        modelTurns ?? "unknown",
+        modelAnswers ?? "unknown",
+        expectedNonceAnswered ?? "unknown",
+        tlsErrors ?? "unknown",
       );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
@@ -390,12 +400,7 @@ try {
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    console.error(
-      "Installed test failed after %s (%s, runner-exit=%s)",
-      last,
-      skipperFailureSummary(resultText, process.cwd(), text),
-      runner.code ?? "unknown",
-    );
+    console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
   assert.deepEqual(observed, proof);
