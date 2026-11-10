@@ -53,6 +53,7 @@ import {
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
 } from "../helpers/egress-connected-inputs.mjs";
+import { acceptedSupervisorSessions } from "../helpers/egress-supervisor-reconnect.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 import {
@@ -1894,4 +1895,85 @@ test("installed Gateway turn rechecks the pinned UID after custody and sends at 
       assert.deepEqual(retained.gatewayExecTarget, { phase: "fixture-turn", outcome });
     });
   }
+});
+
+// These log-shape controls test the observer, not supplier authentication or a
+// live reconnect. UUIDs and lines are synthetic; the real lane supplies evidence.
+test("reconnect observer counts accepted sessions once and preserves uint64 epochs", async () => {
+  const sandboxId = "10000000-0000-4000-8000-000000000001";
+  const instanceId = "20000000-0000-4000-8000-000000000001";
+  const first = "30000000-0000-4000-8000-000000000001";
+  const second = "30000000-0000-4000-8000-000000000002";
+  const line = (session, epoch) =>
+    `2026-01-01T00:00:00.000Z 2026-01-01T00:00:00Z  INFO openshell_server::supervisor_session: supervisor session: accepted sandbox_id=${sandboxId} session_id=${session} instance_id=${instanceId} connection_epoch=${epoch} replica_id=gateway-0 config_push=false`;
+  const accepted = line(first, "9007199254740992");
+  const ansi = accepted.replace("INFO", "\u001b[32mINFO\u001b[0m");
+  const next = line(second, "9007199254740993");
+  assert.deepEqual(
+    acceptedSupervisorSessions(
+      [
+        accepted,
+        ansi,
+        next,
+        accepted.replace("session: accepted", "session: failed"),
+        accepted.replace("openshell_server::supervisor_session:", "untrusted::logger:"),
+        accepted.replace(`sandbox_id=${sandboxId}`, "sandbox_id=foreign"),
+      ].join("\n"),
+      sandboxId,
+      instanceId,
+    ),
+    [
+      { sessionId: first, epoch: "9007199254740992", at: "2026-01-01T00:00:00.000Z" },
+      { sessionId: second, epoch: "9007199254740993", at: "2026-01-01T00:00:00.000Z" },
+    ],
+  );
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(
+          "connection_epoch=9007199254740992",
+          "connection_epoch=18446744073709551616",
+        ),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError" },
+  );
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(`instance_id=${instanceId}`, "instance_id=other"),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError", message: /accepted supervisor instance changed/ },
+  );
+  // A real observer failure must retain its source location without copying
+  // the rejected supplier field into terminal diagnostics.
+  let failure;
+  const privateField = "PRIVATE-OBSERVATION-SENTINEL";
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        accepted.replace(`instance_id=${instanceId}`, `instance_id=${privateField}`),
+        sandboxId,
+        instanceId,
+      ),
+    (error) => {
+      failure = error;
+      return error.code === "ERR_ASSERTION";
+    },
+  );
+  const safe = await safeConnectedFailure(failure, "reconnect-before-policy");
+  assert.match(safe.message, /egress-supervisor-reconnect\.mjs:\d+:\d+/);
+  assert.equal(safe.message.includes(privateField), false);
+  assert.throws(
+    () =>
+      acceptedSupervisorSessions(
+        [accepted, line(first, "9007199254740993")].join("\n"),
+        sandboxId,
+        instanceId,
+      ),
+    { name: "AssertionError", message: /conflicting accepted session event/ },
+  );
 });

@@ -6,9 +6,9 @@ last_verified: "2026-11-04"
 
 # Verify protected static inference
 
-New local protected static-inference launches are retired. The launcher rejects
+Local protected static-inference launches are retired. Before effects, the launcher rejects
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty value, before effects.
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including empty values.
 Unset, empty or `0` protected-egress selections retain ordinary startup. There is
 no fallback. See the [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
@@ -30,10 +30,9 @@ pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-installation-exchange.test.mjs
 ```
 
-This selects literal files; it does not provision dependencies or guarantee
-that cases ran without skips. For strict PostgreSQL coverage, use the broader
-`postgres-platform` lane with local Docker. No provider or cluster credentials
-are needed:
+This selects literal files without provisioning dependencies or guaranteeing
+no skips. For strict PostgreSQL coverage, use `postgres-platform` with local
+Docker; no provider or cluster credentials are needed:
 
 ```sh
 (
@@ -52,15 +51,14 @@ are needed:
 )
 ```
 
-The runner rejects unexpected skips and missing cases; cleanup failures also
-fail this recipe. Keep the printed state/results directory for diagnosis and
-[cleanup recovery](postgresql.md). Source and database
-checks do not replace [installed qualification](#installed-runtime-and-provider-qualification).
+Unexpected skips, missing cases and cleanup failures fail the recipe. Retain
+state/results for diagnosis and [cleanup recovery](postgresql.md).
+[Installed qualification](#installed-runtime-and-provider-qualification) remains required.
 
 ## Authority and provider fixtures
 
-The focused suites above use synthetic acceptance. Test [installation-bound exchange
-and response custody](protected-repository-custody.md) on the candidate pair separately.
+Acceptance is synthetic. Qualify [installation-bound exchange and response custody](protected-repository-custody.md)
+on the installed pair separately.
 
 `static-egress.test.mjs` exercises Fastify authentication, source and Agent admission,
 native IAM, controller transactions, OpenShell adapters, Ed25519 identity, TLS gRPC
@@ -68,11 +66,11 @@ and an HTTPS provider fixture. The Kubernetes Secret Driver reads UID and resour
 over TLS; one case deliberately gives logical and runtime Namespaces different names.
 No Sandbox, model service or cluster runs here.
 
-Gateway policy and V1 loaded-policy observations match the supplier protobuf, but
-do not prove supervisor enforcement. Missing observations refuse even with LOADED
-and legacy field 3. We check current evidence at access and send, admitting only
-the exact name-only rule. Source and effective hashes are distinct synthetic values, not computed supplier policy hashes.
-Extra endpoints, binaries, changed policy and stale identities refuse before Secret reads.
+Protobuf-compatible policy and V1 observations do not prove supervisor enforcement.
+Missing observations refuse despite LOADED or legacy field 3. Access and send
+check current evidence and admit only the exact name-only rule. Source/effective
+hashes are distinct synthetic values, not computed supplier hashes. Extra endpoints,
+binaries, changed policy and stale identities refuse before Secret reads.
 
 Forged identities and unsupported operations refuse before credential access. Cases also
 cover permission revoked between checks, material rotation, replay, selection mismatch,
@@ -111,11 +109,10 @@ The live-envelope case verifies nullable local-tool metadata against public
 [namespace](https://github.com/openai/openai-python/blob/0f73f1d519f8719b226e9084d78c8bdb4a60e48f/src/openai/types/responses/namespace_tool.py)
 types, including rejection of invalid types, formats and hosted tools.
 
-These fixtures exercise selected client wire shapes against a synthetic provider.
-They do not establish byte identity with a runtime image, generated Harness execution,
-a real model response or installed OpenShell enforcement. A separate interrupted
-response probe with request/stream retry counts set to zero observed one request
-and a failed CLI turn; it is not a provider-effect recovery test.
+Synthetic wire fixtures do not establish runtime-image byte identity, generated
+Harness execution, model responses or installed enforcement. A separate interrupted
+response probe with zero request/stream retries observed one request and a failed
+CLI turn; it does not prove provider-effect recovery.
 
 ## Startup enrollment
 
@@ -125,29 +122,25 @@ Run the startup coordination integration separately:
 node --test tests/integration/egress-enrollment.test.mjs
 ```
 
-It launches the generated entrypoint with the selected Sandbox Driver's real
-service client against local HTTP fixtures. A substituted CLI process makes
-one local request through the real authority path after enrollment. The test proves
-that an absent receipt blocks the first request, a committed receipt alone does not
-release startup, and stale, wrong-instance or wrong-execution releases refuse. A
-restart gets a fresh challenge. It does not execute packaged Codex or a supervisor.
-The Compute conformance case `provider Harness endpoint owns Gateway transport
-through preparation and activation` separately checks commit ordering and changed
-evidence using Driver dependencies. Generated-wrapper conformance covers explicit
-zero retry arguments, protected timeout failure and unchanged legacy retry behavior.
+The generated entrypoint uses the real Sandbox service client against local HTTP
+fixtures. A substituted CLI makes one request through real authority after
+enrollment. Missing receipts block requests; committed receipts alone do not
+release startup. Stale or wrong-instance/execution releases refuse; restart requires
+a fresh challenge. Packaged Codex and supervisors are not exercised. The Compute
+case `provider Harness endpoint owns Gateway transport through preparation and activation`
+checks commit ordering and changed evidence with Driver dependencies. Wrapper
+conformance checks zero retries, protected timeout failure and unchanged legacy retries.
 
 ## Captured supplier wires
 
-The companion `openshell-receipt.json` contains actual protobuf bytes from the
-supplier's connected gateway token, TLS registry, OPA installation and receipt-query
-fixture. The consumer decodes those bytes, preserving uint64 values, and verifies
-the captured claim shape with a local fixture signing key and renewed timestamps;
-it does not reuse or establish custody of the producer's token. That capture covers
-the nested enforcement message, not the complete V1 policy observation. The separate
-`openshell-operation.json` captures the sender's TLS/gRPC request after a 100 ms
-delay. Its deadline remains creation plus 30 seconds. The consumer checks that
-historical operation refuses before material access. The two captures come from
-separate synthetic fixtures, not one installed Sandbox.
+`openshell-receipt.json` captures protobuf bytes from the supplier's gateway-token,
+TLS-registry, OPA-installation and receipt-query fixture. Decoding preserves uint64
+values; claim verification uses a local signing key and renewed timestamps without
+reusing or establishing custody of the producer's token. It covers nested enforcement,
+not the complete V1 observation. `openshell-operation.json` captures a TLS/gRPC
+request after 100 ms, still expiring 30 seconds after creation. The consumer checks
+that this historical operation refuses before material access. These are separate
+synthetic fixtures, not one installed Sandbox.
 
 ## PostgreSQL state
 
@@ -157,11 +150,10 @@ With a migrated disposable database selected through `OCC_TEST_DATABASE_URL`, ru
 node --test tests/integration/postgres-static-egress.test.mjs
 ```
 
-Follow the [database setup](postgresql.md): migrate with `occ_migrator` and run
-with `occ_app`. This test uses persisted authentication and native IAM, source and
-revision state, exact installation identity, rejection fences and database
-constraints. A separate state reader verifies persisted observations. It does not
-claim an application-process restart or provider outcome recovery.
+Follow [database setup](postgresql.md): migrate with `occ_migrator`, run with `occ_app`.
+Coverage includes persisted authentication/IAM, sources, revisions, installation
+identity, rejection fences and constraints, with an independent state reader.
+Application-process restart and provider-outcome recovery remain unproved.
 
 ## Installed runtime and provider qualification
 
@@ -318,59 +310,62 @@ Killing a local client does not establish remote termination. Never replay an un
 
 ### Read evidence and retain cleanup custody
 
-Before the first turn, the fixture uses a two-minute polling budget to find one
-nondeleting Gateway Pod for the exact Agent and revision. Its pinned `gateway`
-container must be running and ready, and the Pod must be Ready. Another
-nondeleting Pod for that same revision prevents selection even if only one is
-ready. An in-flight read retains the existing command bound, and the overall
-test deadline still applies. The ledger records the last
-bounded Pod counts when selection succeeds or fails.
+Retain `.build/egress-connected/runtime-<uuid>/`: atomic checkpoints, resource
+IDs, observations and cleanup custody. Never replay uncertain operations.
 
-After each pre-turn custody snapshot, the fixture re-reads the selected Pod and
-requires the same UID and readiness before explicitly targeting `gateway`.
-The ledger retains the pre-exec check outcome. Kubernetes exec addresses the
-Pod by name, so a replacement between the read and exec remains possible.
-The fixture does not select a replacement or replay an uncertain turn.
+Gateway selection has a two-minute polling budget, subject to the existing
+command and overall deadlines. It requires exactly one nondeleting Pod for the
+Agent revision, with its pinned `gateway` container running and ready and the
+Pod Ready. The ledger records selection counts and pre-exec checks. After each
+custody snapshot, the fixture rechecks UID and readiness, then targets `gateway`.
+Name-based exec can still race replacement; the fixture never selects a replacement.
 
-The test creates resources through public APIs, deploys through the worker,
-reads the saved installation and checks the authenticated supplier receipt.
-The Agent Gateway Pod runs the packaged Codex app-server caller. The test adopts
-a fresh unbound source with `adoption: "live"` and `authorityScope: "execution"`.
-The origin sees one startup probe, seventeen Codex sends (including seven
-hostile responses and recovery), and one ordinary sibling request. An upgrade adds one retained-revision turn after B becomes ready.
+Public APIs create resources; the worker deploys; authenticated supplier and
+persisted receipts prove installation. The packaged Codex caller uses a fresh
+source adopted with `adoption: "live"` and `authorityScope: "execution"`.
+Expected traffic: one startup probe, seventeen Codex sends (including seven
+hostile responses and recovery), one sibling request, and one retained turn
+if upgrading after B becomes ready.
 
-Use the supplier's authenticated [workload launch path](./protected-repository-custody.md)
-for the sibling and direct TCP probe so both inherit connection mediation.
-Kubernetes exec provides independent process inspection. Each measured exchange must match the supervisor's resolve,
-permit and response transitions. IAM revocation must yield no permit or upstream
-request. The raw TCP bypass must fail against the same listener, with independent
-reachability checks before and after. After an authorized send, a hostile
-response must give Codex an empty HTTP 502, suppress partial assistant output
-and record `response_blocked` privately. The test checks ordinary Agent and
-running Codex process environments, responses, bounded logs, diagnostics, audit,
-Pod specs and ConfigMaps for synthetic provider credential leaks.
+Before the first measured turn, a three-minute polling budget requires a new
+authenticated supervisor session after the baseline, then a 20-second enrollment
+polling budget. In-flight reads retain their command deadlines. Supervisor and Agent container identities must remain unchanged.
+Separate read-only transactions bracket typed policy observations against the
+current committed installation. Peer pins must match before and after reconnect;
+keys and configuration must remain stable. The exact deployment must succeed
+without error or cleanup and retain the active revision. Failure blocks the turn.
 
-Retain `.build/egress-connected/runtime-<uuid>/`. It records atomic checkpoints,
-resource IDs and bounded observations. Each controller attempt starts with an
-operation ID and unknown outcome. A response alone leaves the effect uncertain.
-The ledger records the failed operation and `failure.kubectl` outcome.
-`failure.nativeExec` is `recorded`, `absent` or `invalid`. A frame gives client step,
-last acknowledged RPC, failure site, URL shape and nonempty token presence.
-Missing frames leave startup uncertain. The pre-turn Pod declarations leave
-effective inputs unknown. The terminal error preserves bounded failure facts
-without raw output or replay authority. The deployed checkpoint records public
-owner capability.
+`reconnect-*` checkpoints retain process/image/source identities, session IDs,
+epochs and equality booleans; keys stay in memory. Gateway logs since run start
+are limited to 2,000 lines and 1 MiB per Pod/read. Counts are observed lower
+bounds. Passing proves natural same-process reconnect, not restart,
+configuration-change, forced-disconnection or upgrade behavior.
 
-Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
-then removes supporting resources and closes the provider. Reconcile missing Sandbox
-identities or unconfirmed creates from the ledger. The parent owns interrupted cleanup
-and disposal of the prepared Namespace, database, cluster, controller and gateway.
+The sibling and TCP probe use the authenticated [workload launch path](./protected-repository-custody.md)
+for connection mediation; Kubernetes exec inspects processes. Each exchange
+requires matching resolve, permit and response transitions. IAM revocation
+must prevent permits and upstream traffic. TCP bypass must fail, with listener
+reachability checked before and after. Hostile responses require empty HTTP 502,
+no partial assistant output and private `response_blocked` evidence. Leak checks
+cover Agent/Codex environments, responses, logs, diagnostics, audit, Pod specs
+and ConfigMaps.
 
-A passing run covers this static-inference slice at its recorded inputs.
-Real-provider usefulness, full workload credential and control API containment,
-revocation between Resolve and AuthorizeSend, mixed-version activation, HA,
-dynamic credentials, long-lived streaming and full Egress MVP delivery require
-separate proof.
+Each controller attempt records its operation ID and uncertain outcome; a response
+alone does not prove effects. Failures retain the operation and `failure.kubectl`.
+`failure.nativeExec` is `recorded`, `absent` or `invalid`; frames include client
+step, last acknowledged RPC, failure site, URL shape and token-presence boolean.
+Absent frames leave startup uncertain; Pod declarations do not prove effective
+inputs. Errors omit raw output. Deployment records public owner capability.
+
+Cleanup deletes owned Agents, confirms API/Sandbox/Pod absence, removes supporting
+resources and closes the provider. Reconcile missing Sandbox identities and
+unconfirmed creates from the ledger. The parent owns interrupted cleanup and
+prepared Namespace, database, cluster, controller and gateway disposal.
+
+Passing covers only this static-inference slice and recorded inputs. Real-provider
+usefulness, full credential/control-API containment, revocation between Resolve
+and AuthorizeSend, mixed-version activation, HA, dynamic credentials, indefinite
+streaming and full Egress MVP delivery need separate proof.
 
 ## Installed repository response and dispatch custody
 

@@ -349,7 +349,7 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   // Only fixed source names and bounded V8 coordinates can reach the reporter.
   const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : "";
   const frame = stack.match(
-    /^ +at [^\n]*[/\\](agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|controller-upgrade|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions)|openshell-kubernetes-real)\.mjs:(\d{1,5}):(\d{1,4})(?:\))?$/m,
+    /^ +at [^\n]*[/\\](agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|controller-upgrade|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions|supervisor-reconnect)|openshell-kubernetes-real)\.mjs:(\d{1,5}):(\d{1,4})(?:\))?$/m,
   );
   const location = frame ? `${frame[1]}.mjs:${frame[2]}:${frame[3]}` : "external-operation";
   const kind = error?.code === "ERR_ASSERTION" ? "assertion" : "operation";

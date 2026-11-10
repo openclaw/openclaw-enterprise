@@ -31,6 +31,7 @@ import {
   observeConnectedOperation,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
+import { requireSupervisorReconnect } from "../helpers/egress-supervisor-reconnect.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -106,6 +107,7 @@ test(
       const installed = await observeInstalledProtection(setup, stack, evidence, deployment);
       const turns = await observeRunningAgent(setup, stack, evidence, owned, deployment, installed);
 
+      await requireSupervisorReconnect(setup, stack, evidence, deployment, installed);
       await verifyManagedClientsAndDirectBypass(setup, evidence, owned, installed, turns);
       if (upgrade) {
         const retained = await prepareControllerUpgrade(
