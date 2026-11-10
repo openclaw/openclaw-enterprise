@@ -1484,8 +1484,72 @@ async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
     true,
     "recovery restores the original credential",
   );
-  await nativePage.reload({ waitUntil: "domcontentloaded" });
-  await waitForStockUi(nativePage);
+  // API lookup recovery precedes kubelet projection and native credential
+  // observation. Require fresh native admission, not merely Secret existence.
+  await waitFor("fresh native profile admission after Secret restoration", async () => {
+    let result;
+    try {
+      result = await nativeRpc(nativePage, "users.self");
+    } catch (error) {
+      if (/Gateway users\.self (?:connection failed|timed out)/.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (
+      !result.response.ok &&
+      result.response.error?.details?.authReason === "trusted_proxy_delegation_denied"
+    ) {
+      return undefined;
+    }
+    assert.equal(result.response.ok, true, "restored native profile request must succeed");
+    assert.deepEqual(result.auth.scopes, ["operator.admin"]);
+    assert.equal(Boolean(result.auth.deviceToken), false);
+    assert.equal(
+      result.response.payload.profile.id,
+      profileId,
+      "fresh admission preserves the native person",
+    );
+    return true;
+  });
+
+  const origin = new URL(nativePage.url()).origin;
+  const assets = [];
+  const observeAsset = (response) => {
+    const url = new URL(response.url());
+    if (
+      url.origin === origin &&
+      ["script", "stylesheet"].includes(response.request().resourceType()) &&
+      assets.length < 24
+    ) {
+      assets.push({ path: url.pathname, status: response.status() });
+    }
+  };
+  nativePage.on("response", observeAsset);
+  try {
+    const reloaded = await nativePage.reload({ waitUntil: "domcontentloaded" });
+    assert.equal(reloaded?.status(), 200, "the restored native document must be served");
+    assert.match(reloaded.headers()["content-type"] ?? "", /^text\/html\b/i);
+    try {
+      await waitForStockUi(nativePage);
+    } catch (cause) {
+      // Never record body text, raw config, error text from the page, or cookies.
+      const boot = await nativePage.evaluate(() => ({
+        hasHook: Boolean(globalThis.openclawControlUi),
+        booted: globalThis.openclawControlUi?.snapshot().booted === true,
+        hasBootstrap: globalThis.document.documentElement.hasAttribute(
+          "data-openclaw-bootstrap-config",
+        ),
+        scriptCount: globalThis.document.scripts.length,
+      }));
+      throw new Error(
+        `Restored native document did not boot: ${JSON.stringify({ boot, assets })}`,
+        { cause },
+      );
+    }
+  } finally {
+    nativePage.off("response", observeAsset);
+  }
   assert.equal(
     (await nativeProfile(nativePage, "operator.admin")).id,
     profileId,
