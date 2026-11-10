@@ -132,7 +132,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
+Keep `--values` and `--installation` as the live baseline. Review owner-only candidate copies:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -146,6 +146,8 @@ These copies may change the
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
+Remove obsolete `agentNativeAdmin.sharedCookieDomain` only if empty; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
 The helper does not convert the baseline automatically. Other configuration
 changes are not supported by this upgrade command.
 Review image, draft and credential compatibility before maintenance; startup
