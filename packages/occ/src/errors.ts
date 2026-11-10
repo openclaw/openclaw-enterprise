@@ -160,7 +160,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
