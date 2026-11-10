@@ -1213,14 +1213,17 @@ function mountRetainedView(current: Route, retained: RetainedView, feature: Page
     app.querySelector<HTMLElement>(".content .scope")!.textContent = retained.scope;
   }
   retained.snapshot.inert = false;
+  retained.snapshot.style.removeProperty("opacity");
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
   if (retained.state?.pageActions) {
     retained.state.pageActions.inert = false;
+    retained.state.pageActions.style.removeProperty("opacity");
     shell.actions.append(retained.state.pageActions);
   }
   if (shell.diagnostics && retained.state?.diagnostics) {
     retained.state.diagnostics.inert = false;
+    retained.state.diagnostics.hidden = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
     shell.diagnostics = retained.state.diagnostics;
   }
@@ -1236,7 +1239,8 @@ function markMountedRoute(current: Route) {
 function resetReads({
   retainView = false,
   returnLink = null,
-}: { retainView?: boolean; returnLink?: Element | null } = {}) {
+  keepShell = false,
+}: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.resumeDrafts = resumeDrafts;
@@ -1250,7 +1254,9 @@ function resetReads({
   administrationConfirmed = false;
   administrationCheck = null;
   clearPasswordInputs();
-  shellUI.reset();
+  if (!keepShell) {
+    shellUI.reset();
+  }
   if (retainView) {
     retainMountedView(returnLink);
   } else {
@@ -3022,13 +3028,19 @@ function showAgentReadFailure(
   return shell.view;
 }
 
+function retryableAgentRecheck(error: unknown) {
+  const { status, retryAfterSeconds } = requestFailure(error);
+  return status !== undefined && status >= 500 && status < 600 && retryAfterSeconds === undefined;
+}
+
 async function revalidateMountedAgent(current: Route) {
   const key = routeKey(current);
-  const view = app.querySelector<HTMLDivElement>('.content [aria-live="polite"]');
+  const state = mountedViewState;
+  const view = state?.view;
   const agent = mountedAgent;
   const owner = sessionOwnerKey(session);
   const selectedNamespace = namespaceId;
-  if (!view || !agent || !owner || !key || selectedNamespace === null) {
+  if (!state || !view?.isConnected || !agent || !owner || !key || selectedNamespace === null) {
     await loadPage();
     return;
   }
@@ -3040,9 +3052,7 @@ async function revalidateMountedAgent(current: Route) {
     view.isConnected;
   const namespacePath = `/namespaces/${encodeURIComponent(selectedNamespace)}`;
   const path = `${namespacePath}/agents/${encodeURIComponent(agent.id)}`;
-  const pageActions = mountedViewState?.pageActions?.isConnected
-    ? mountedViewState.pageActions
-    : null;
+  const pageActions = state.pageActions?.isConnected ? state.pageActions : null;
   const activeElement = document.activeElement;
   const focused =
     (activeElement instanceof HTMLElement || activeElement instanceof SVGElement) &&
@@ -3055,12 +3065,60 @@ async function revalidateMountedAgent(current: Route) {
     typeof textField?.selectionStart === "number"
       ? ([textField.selectionStart, textField.selectionEnd] as const)
       : null;
+  const restoreFocus = (afterRetry = false) => {
+    if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
+      return;
+    }
+    const target = focused.isConnected
+      ? focused
+      : afterRetry && mountedRouteKey === key && focused.id
+        ? document.getElementById(focused.id)
+        : null;
+    if (!target?.closest(".content") || !target.checkVisibility()) {
+      if (afterRetry && mountedRouteKey === key) {
+        app.querySelector<HTMLElement>(".content h1")?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    target.focus({ preventScroll: true });
+    if (
+      selection &&
+      (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
+      target.value === textField?.value
+    ) {
+      target.setSelectionRange(selection[0], selection[1]);
+    }
+  };
   let checking = "session";
-  // Block stale controls during admission without losing focus or an editor's caret on return.
+  const heading = app.querySelector<HTMLHeadingElement>(".content h1")!;
+  const agentIdentity = app.querySelector<HTMLElement>(".content .page-meta-id");
+  const diagnostics = state.diagnostics;
+  const refresh = app.querySelector<HTMLButtonElement>(".content .page-actions > button");
   view.inert = true;
   if (pageActions) {
     pageActions.inert = true;
   }
+  let agentAdmitted = false;
+  const concealDetails = () => {
+    if (!isCurrent()) {
+      return;
+    }
+    // Hold the page's space without painting details whose access check failed.
+    view.style.opacity = "0";
+    if (pageActions) {
+      pageActions.style.opacity = "0";
+    }
+    if (diagnostics) {
+      diagnostics.hidden = true;
+    }
+    if (!agentAdmitted) {
+      heading.textContent = "Agent details";
+      if (agentIdentity) {
+        agentIdentity.hidden = true;
+      }
+    }
+  };
+  let checked = false;
   let clearStillChecking: (() => void) | undefined;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
@@ -3102,82 +3160,182 @@ async function revalidateMountedAgent(current: Route) {
       return;
     }
     checking = "detail";
-    // The page applies this answer once the recheck settles (finding 3000).
-    const readStartedAt = performance.now();
-    const rechecked = { agent: await request(path), readStartedAt };
-    if (!isCurrent()) {
-      return;
-    }
     shellUI.updateNamespaces(namespaces);
-    if (current.url.searchParams.get("tab") !== "workspace") {
-      const selected =
-        current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
-      const snapshotPath =
-        selected === "draft"
-          ? `${namespacePath}/configurations/${encodeURIComponent(agent.configurationId)}`
-          : `${path}/revisions/${encodeURIComponent(selected)}`;
-      const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
-      const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
-      // A refusal this page already showed, or this tab already settled, for a read it never had.
-      const refusalSettled =
-        snapshotWasReadable === false &&
-        (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
-      const versions = request(`${path}/revisions`, { includeMeta: true });
-      // A version this page showed as unreadable has nothing on screen to scrub: its read would
-      // only be refused and audited again on every refocus, and the refusal would replace the
-      // page (finding D799). The page proved it on load as the version's own view does: a settled
-      // refusal, or a current version left out of a newest page of versions that lists every
-      // version the caller can read (finding D791). Refresh reads it again.
-      const shownUnreadable = async () =>
-        selected !== "draft" &&
-        snapshotWasReadable === false &&
-        (refusalSettled ||
-          (selected === agent.activeRevisionId &&
-            (await versions.then((answer) => {
-              const { data, meta } = responseFields(answer);
-              if (!Array.isArray(data)) {
-                throw new Error("Invalid collection response");
-              }
-              if ((responseFields(meta).nextCursor ?? null) !== null) {
-                return false;
-              }
-              // A complete page proves omission only when every row identifies a revision.
-              const ids = data.map((item: unknown) => {
-                const { id } = responseFields(item);
-                if (typeof id !== "string") {
-                  throw new Error("Invalid collection response");
-                }
-                return id;
-              });
-              return !ids.includes(selected);
-            }))));
-      await Promise.all([
-        versions,
-        shownUnreadable()
-          .then((unreadable) => (unreadable ? undefined : request(snapshotPath)))
-          .catch((error: unknown) => {
-            // Initial admission can show an Agent with its draft Configuration denied. Keep
-            // that same refusal, but scrub a page whose previously readable data was revoked.
-            if (selected === "draft" && requestFailure(error).status === 403 && refusalSettled) {
-              return;
+    const readDetails = async () => {
+      const readStartedAt = performance.now();
+      const freshAgent = await request(path);
+      if (!isCurrent()) {
+        return;
+      }
+      const { id, name, namespaceId, configurationId, configurationReadError } =
+        responseFields(freshAgent);
+      if (
+        id !== agent.id ||
+        namespaceId !== selectedNamespace ||
+        !isNonEmptyString(name) ||
+        !isNonEmptyString(configurationId)
+      ) {
+        throw new Error("Invalid Agent response");
+      }
+      agentAdmitted = true;
+      if (heading.textContent !== name) {
+        heading.textContent = name;
+      }
+      if (agentIdentity) {
+        agentIdentity.hidden = false;
+      }
+      const rechecked = { agent: freshAgent, readStartedAt, reload: false };
+      if (
+        configurationId !== agent.configurationId ||
+        (configurationReadError !== undefined &&
+          responseFields(agent).configurationReadError === undefined)
+      ) {
+        return { ...rechecked, reload: true };
+      }
+      if (current.url.searchParams.get("tab") !== "workspace") {
+        const selected =
+          current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+        const snapshotPath =
+          selected === "draft"
+            ? `${namespacePath}/configurations/${encodeURIComponent(agent.configurationId)}`
+            : `${path}/revisions/${encodeURIComponent(selected)}`;
+        const previousSnapshotRead = state.reads.get(snapshotPath);
+        const snapshotWasReadable = state.readablePaths.has(snapshotPath);
+        // A refusal this page already showed, or this tab already settled, for a read it never had.
+        const refusalSettled =
+          snapshotWasReadable === false &&
+          (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
+        const versionsPath = `${path}/revisions`;
+        const versions = request(versionsPath, { includeMeta: true })
+          .then((answer) => {
+            const { data, meta } = responseFields(answer);
+            if (
+              !Array.isArray(data) ||
+              !data.every((item) => {
+                const { id, namespaceId, agentId } = responseFields(item);
+                return (
+                  isNonEmptyString(id) && namespaceId === selectedNamespace && agentId === agent.id
+                );
+              })
+            ) {
+              throw new Error("Invalid collection response");
             }
+            return { data, meta };
+          })
+          .catch((error: unknown) => {
+            concealDetails();
             throw error;
-          }),
-      ]);
+          });
+        // A version this page showed as unreadable has nothing on screen to scrub: its read would
+        // only be refused and audited again on every refocus, and the refusal would replace the
+        // page (finding D799). The page proved it on load as the version's own view does: a settled
+        // refusal, or a current version left out of a newest page of versions that lists every
+        // version the caller can read (finding D791). Refresh reads it again.
+        const shownUnreadable = async () =>
+          selected !== "draft" &&
+          snapshotWasReadable === false &&
+          (refusalSettled ||
+            (selected === agent.activeRevisionId &&
+              (await versions.then(
+                ({ data, meta }) =>
+                  (responseFields(meta).nextCursor ?? null) === null &&
+                  !data.some((item) => responseFields(item).id === selected),
+              ))));
+        const [versionResult, snapshotResult] = await Promise.allSettled([
+          versions,
+          shownUnreadable()
+            .then((unreadable) => (unreadable || !isCurrent() ? undefined : request(snapshotPath)))
+            .catch((error: unknown) => {
+              // Initial admission can show an Agent with its draft Configuration denied. Keep
+              // that same refusal, but scrub a page whose previously readable data was revoked.
+              if (selected === "draft" && requestFailure(error).status === 403 && refusalSettled) {
+                return;
+              }
+              concealDetails();
+              throw error;
+            }),
+        ]);
+        if (versionResult.status === "rejected" || snapshotResult.status === "rejected") {
+          const errors = [versionResult, snapshotResult].flatMap((result) =>
+            result.status === "rejected" ? [result.reason as unknown] : [],
+          );
+          // A concurrent refusal or rate limit takes precedence over a retryable failure.
+          throw (
+            errors.find((error) => isAccessRefusal(requestFailure(error).status)) ??
+            errors.find((error) => !retryableAgentRecheck(error)) ??
+            errors[0]
+          );
+        }
+        const snapshot = snapshotResult.value;
+        if (snapshot !== undefined) {
+          const { id, namespaceId, agentId, generation, configurationReadError } =
+            responseFields(snapshot);
+          if (
+            namespaceId !== selectedNamespace ||
+            (selected === "draft"
+              ? id !== configurationId || !Number.isSafeInteger(generation)
+              : id !== selected || agentId !== agent.id)
+          ) {
+            throw new Error("Invalid Agent detail response");
+          }
+          if (configurationReadError !== undefined && previousSnapshotRead?.startsWith("{")) {
+            const previous = responseFields(JSON.parse(previousSnapshotRead));
+            if (previous.configurationReadError === undefined) {
+              return { ...rechecked, reload: true };
+            }
+          }
+        }
+        // A permission change can omit a previously visible version from the successful list.
+        const previousVersions = state.reads.get(versionsPath);
+        if (previousVersions?.startsWith("{")) {
+          const { data } = responseFields(JSON.parse(previousVersions));
+          const visibleIds = new Set(
+            versionResult.value.data.map((item) => responseFields(item).id),
+          );
+          if (
+            Array.isArray(data) &&
+            data.some((item) => !visibleIds.has(responseFields(item).id))
+          ) {
+            return { ...rechecked, reload: true };
+          }
+        }
+      }
+      return rechecked;
+    };
+    let rechecked: Awaited<ReturnType<typeof readDetails>>;
+    try {
+      rechecked = await readDetails();
+    } catch (error) {
+      concealDetails();
+      if (!isCurrent() || !retryableAgentRecheck(error)) {
+        throw error;
+      }
+      // One more set of detail GETs for this foreground check. Navigation aborts it.
+      rechecked = await readDetails();
     }
     // The page's own answers follow the recheck: a grant or revocation since the page loaded
     // applies without Refresh, as on the Agents list (r54 row 11).
-    if (!isCurrent()) {
+    if (!isCurrent() || !rechecked) {
       return;
     }
-    for (const handler of mountedViewState?.rechecked ?? []) {
+    if (rechecked.reload) {
+      // This admission found a narrower projection. Drop the old node before rebuilding.
+      concealDetails();
+      view.hidden = true;
+      await loadPage({ reuseView: true });
+      restoreFocus(true);
+      return;
+    }
+    for (const handler of state.rechecked) {
       handler(rechecked);
     }
+    checked = true;
   } catch (error) {
     if (!isCurrent() || responseFields(error).name === "AbortError") {
       return;
     }
-    if (requestFailure(error).status === 401) {
+    const { status } = requestFailure(error);
+    if (status === 401) {
       showExpiredLogin();
       return;
     }
@@ -3189,29 +3347,83 @@ async function revalidateMountedAgent(current: Route) {
       showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
+    if (
+      unreachable(error) ||
+      status === 408 ||
+      status === 429 ||
+      (status !== undefined && status >= 500)
+    ) {
+      const { requestId, retryAfterSeconds } = requestFailure(error);
+      const retry = button("Retry", () => {
+        if (!resumePending && warning.isConnected && routeKey(route()) === key) {
+          trackResume(loadPage({ reuseView: true }).then(() => restoreFocus(true)));
+        }
+      });
+      const warning = element(
+        "div",
+        { "aria-live": "polite", "aria-busy": "false" },
+        statusBlock(
+          "warning",
+          "Could not check Agent details",
+          status === 429 || retryAfterSeconds
+            ? "Wait before retrying. Details are hidden until access is checked."
+            : "Retry to check access and show details.",
+          [retry, requestId ? requestIdDisclosure(requestId) : null],
+          { className: "agent-recheck-warning", role: "status" },
+        ),
+      );
+      if (retryAfterSeconds !== undefined) {
+        retry.disabled = true;
+        setTimeout(() => {
+          retry.disabled = false;
+        }, retryAfterSeconds * 1000);
+      }
+      // Retain the editor in memory only. A Retry goes through normal page admission.
+      resetReads({ retainView: true, keepShell: true });
+      view.replaceWith(warning);
+      pageActions?.remove();
+      if (refresh) {
+        refresh.disabled = true;
+      }
+      if (diagnostics) {
+        diagnostics.hidden = false;
+        diagnostics.remove();
+      }
+      if (document.activeElement === document.body) {
+        (retry.disabled ? heading : retry).focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (isAccessRefusal(status)) {
+      drafts.scope(selectedNamespace, agent.id).clear();
+    }
     showAgentReadFailure(selectedNamespace, error);
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
-    if (view.isConnected && lifetime.isCurrent(active)) {
+    if (checked && isCurrent()) {
+      view.style.removeProperty("opacity");
       view.inert = false;
-      if (pageActions?.isConnected) {
+      if (pageActions) {
+        pageActions.style.removeProperty("opacity");
         pageActions.inert = false;
       }
-      if (
-        isCurrent() &&
-        focused?.isConnected &&
-        document.hasFocus() &&
-        document.activeElement === document.body
-      ) {
-        focused.focus({ preventScroll: true });
-        if (selection) {
-          textField?.setSelectionRange(selection[0], selection[1]);
-        }
+      if (diagnostics) {
+        diagnostics.hidden = false;
       }
+      restoreFocus();
     }
   }
+}
+
+function trackResume(pending: Promise<void>) {
+  resumePending = pending;
+  void pending.finally(() => {
+    if (resumePending === pending) {
+      resumePending = null;
+    }
+  });
 }
 
 function resumePage() {
@@ -3220,7 +3432,7 @@ function resumePage() {
     !session ||
     loggingOut ||
     pendingIntent ||
-    app.querySelector("dialog[open]")
+    app.querySelector("dialog[open], .agent-recheck-warning")
   ) {
     return;
   }
@@ -3237,13 +3449,7 @@ function resumePage() {
   if (!inPlace && app.querySelector("form")) {
     return;
   }
-  const pending = inPlace ? revalidateMountedAgent(current) : loadPage({ reuseView: true });
-  resumePending = pending;
-  void pending.finally(() => {
-    if (resumePending === pending) {
-      resumePending = null;
-    }
-  });
+  trackResume(inPlace ? revalidateMountedAgent(current) : loadPage({ reuseView: true }));
 }
 
 // Settings: the signed-in account, browser preferences, and this session with Sign out. The session

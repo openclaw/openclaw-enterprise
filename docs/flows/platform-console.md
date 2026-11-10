@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-09
-last_updated_session: authoring-run/4f118861-18d8-403b-a287-90ac81564c99
+updated: 2026-11-10
+last_updated_session: authoring-run/376a5ba9-f37d-4a9f-a8bc-a2359d2cd7c9
 ---
 
 # Platform console request flow
@@ -136,52 +136,50 @@ Disabling Debug mode stops new reads. See the
 
 ### 2. Resolve the session before private reads
 
-`agents/collection.mts:renderAgentList` focuses the Agent-name link for plain row
-clicks. Links, buttons (including disabled ones), modified clicks, and selected
-text keep their own behavior.
+`agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
-shows **Loading agent details…** and **Back to Agents**, then reveals its name,
-actions, and overview after access checks. Back cancels once; refocus does not
-interrupt loading. Other Agent routes preserve the page or show loading after
-400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
-visits and Refresh show loading after 250 ms.
+shows **Loading agent details…** and **Back to Agents**, then reveals the Agent
+after access checks. Back cancels once. Refocus waits for opening. Other Agent
+routes preserve the page or show loading after 400 ms. Other first visits and
+Refresh wait 250 ms. Visible loading lasts at least 300 ms.
 
-Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
-disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
-route, Namespace, and session owner. Matching user and GET dependencies restore
-DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
-Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
-mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
-Interrupted returns preserve the view; interrupted Refresh discards it.
+Return and refocus hold the view inert. **Still checking…** appears after one
+second. The Console retains up to 16 views by route, Namespace, and session.
+Matching user and reads restore DOM, handlers, drafts, and debug disclosures.
+Changed reads, new Namespaces, and Refresh rebuild. Pending or failed reads,
+passwords, and mutations prevent reuse. Discovery state is excluded. Read-only
+POSTs permit reuse.
 
-`api-client.mts:createApiClient` preserves abort reasons through response bodies.
-Socket failure means interrupted read, not invalid JSON. Neither replays requests.
+`console.mts:revalidateMountedAgent` checks the session, Namespace, Agent, and
+selected details. Focus and visibility events share the check. A failed detail
+read hides protected content. A 5xx without a retry delay allows one more set
+of detail GETs. Navigation cancels the check. Success restores the view and
+focus. Narrowed access triggers a rebuild from fresh reads.
 
-**Back to Agents** waits for session, Namespace, permission, and collection checks,
-not row reads. The newest readable revisions page supplies each row;
-`agents/collection.mts:currentRevision` reads only an off-page current version.
-`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
-after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
-cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
-A search cancels the unfinished reads of rows it hides (`collection.mts:retireHidden`); a row
-shown again reads once.
+If the check still fails, the Agent header names a freshly checked Agent.
+**Retry** in the warning starts admission again. Session expiry opens sign-in.
+A refusal removes private content.
 
-Changed users or session keys clear retained views and drafts before private
-reads. Missing sessions open login; failed reads offer Retry. The
-[sign-in flow](platform-console/sign-in-return.md) owns provider discovery,
-one-use session binding, and destination recovery.
+`api-client.mts:createApiClient` preserves abort and socket failures through
+response bodies without replay.
 
-After authentication, `GET /namespaces` preserves URL selection or chooses the
-first ready/readable Namespace. Unreadable IDs remain unavailable; selection
-never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
-during session/Namespace checks, naming known selections; retained-view reads do
-not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
-avoids focusing its hidden toggle. While `drawer-open`, `console.css` prevents
-background scrolling. `createShell` preserves primary navigation
-presses across replacement renders. Empty lists explain access. Namespace
-navigation sends Agent detail/creation to Agents; global pages stay open and
-recovered warnings disappear.
+**Back to Agents** waits for admission and the collection. The newest readable
+versions supply the rows. `agents/collection.mts:currentRevision` reads off-page
+current versions. `deniedReadsFor` retains 403s. Reused deployment cells show
+**Reading deployment…** after 250 ms for at least 150 ms. Focus returns to the
+cell. Pending or failed reads resume. Search cancels reads for rows it hides
+(`collection.mts:retireHidden`). A row shown again reads once.
+
+A changed user or session key clears private state. A missing session opens login.
+Failed reads offer Retry. See [sign-in and return](platform-console/sign-in-return.md).
+
+After authentication, `GET /namespaces` keeps the URL selection or picks the
+first ready and readable Namespace. Unreadable IDs stay unavailable.
+`shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
+closes the drawer without focusing its toggle. An open drawer blocks scrolling.
+`createShell` preserves navigation presses across renders. A Namespace switch
+returns Agent detail and creation to Agents.
 
 ### 3. Authorize the selected page resource
 
@@ -367,6 +365,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 18:56: Retry a temporary Agent detail read on tab return and show a warning if it still fails. (authoring-run/376a5ba9-f37d-4a9f-a8bc-a2359d2cd7c9 - 7aaab5047253612d942ea931052d69376fd9cbfa)
 
 - 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 
