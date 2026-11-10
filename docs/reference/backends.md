@@ -114,11 +114,11 @@ Backend is supported and may coexist with one ChatGPT Backend. Its member ID
 must match `repository.id`. With this configuration, the API and worker use the
 built-in GitHub registry policy. They require no public Repo Driver registration.
 Omit both the GitHub Backend and `repository` to leave Git unconfigured.
-If you used the earlier draft configuration, remove `repository.policyMode: built-in`
-before restarting the API or worker. Startup rejects that field and the retired
-`drivers.repo` selection. Drain admitted work on its original owner before changing
-senders. The registry's Backend ID must match the definition, and the session
-duration must fit the registry's maximum.
+Existing configurations may keep or omit `repository.policyMode: built-in` with
+the same policy and protected sender identity. Startup rejects other values and
+the retired `drivers.repo` selection. Drain admitted work on its original owner
+before changing senders. The registry's Backend ID must match the definition,
+and the session duration must fit the registry's maximum.
 See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
 for delivery settings.
 

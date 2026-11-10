@@ -125,12 +125,12 @@ can supply several repositories. Omission preserves selections. `[]` clears them
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-matches GitHub Backend and registry IDs. Startup snapshots validated policy before
-loading packages or registries. This snapshot determines policy construction and protected Driver identity.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds the exact owner.
-File-based `repository` selects built-in GitHub policy. Startup rejects `drivers.repo`
-and separate public Repo Drivers.
-Programmatic callers can register and select their own.
+matches GitHub Backend and registry IDs. It snapshots policy before loading packages
+or registries, preserving the protected Driver identity.
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
+File-based `repository` selects the built-in policy. Optional `repository.policyMode: built-in`
+leaves identity unchanged. Startup rejects other modes, `drivers.repo`, and separate public
+Repo Drivers. Programmatic registration remains available.
 
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
 owns OpenShell parsing and chart constraints.

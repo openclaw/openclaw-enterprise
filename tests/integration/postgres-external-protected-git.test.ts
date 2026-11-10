@@ -277,9 +277,9 @@ test("production composition separates repository policy from protected and expl
   await assert.rejects(
     load({
       ...configuration,
-      repository: { ...configuration.repository, policyMode: "built-in" },
+      repository: { ...configuration.repository, policyMode: "custom-veto" },
     }),
-    { name: "Error", message: /repository.*policyMode/ },
+    { name: "Error", message: 'repository.policyMode must be "built-in" when supplied.' },
   );
   await assert.rejects(
     load({
@@ -288,16 +288,24 @@ test("production composition separates repository policy from protected and expl
     }),
     { name: "Error", message: /repository.*policy/ },
   );
+  const legacy = await load({
+    ...configuration,
+    repository: { ...configuration.repository, policyMode: "built-in" },
+  });
   const protectedGit = await load(configuration);
   assert.ok(protectedGit.protectedDriver);
-  assert.equal(Object.hasOwn(protectedGit, "repositoryPolicy"), false);
-  assert.equal(protectedGit.repositoryAdmission?.policyMode, "built-in");
-  assert.equal(
-    installationDriverConfigurations(protectedGit.installation).some(
-      (entry) => entry.capability === "repo",
-    ),
-    false,
-  );
+  assert.deepEqual(legacy.protectedDriver?.ref, protectedGit.protectedDriver.ref);
+  assert.deepEqual(legacy.installation.repository, protectedGit.installation.repository);
+  for (const loaded of [protectedGit, legacy]) {
+    assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
+    assert.equal(loaded.repositoryAdmission?.policyMode, "built-in");
+    assert.equal(
+      installationDriverConfigurations(loaded.installation).some(
+        (entry) => entry.capability === "repo",
+      ),
+      false,
+    );
+  }
   const policy = protectedGit.repositoryAdmission!.policy;
   assert.equal((await policy.listCatalog({ namespaceId })).options.length, 1);
   assert.throws(

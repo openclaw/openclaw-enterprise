@@ -574,13 +574,16 @@ function installationRepositoryConfiguration(input: unknown, mode: "development"
   const selection = object(input, "repository");
   closed(
     selection,
-    ["id", "configuration", "preparedGitHub", "openShell", "nativeSender"],
+    ["id", "configuration", "preparedGitHub", "openShell", "nativeSender", "policyMode"],
     "repository",
   );
-  const { openShell, ...portableSelection } = selection;
+  const { policyMode, openShell, ...portableSelection } = selection;
+  if (policyMode !== undefined && policyMode !== "built-in") {
+    throw new Error('repository.policyMode must be "built-in" when supplied.');
+  }
   const portable = githubRepositoryConfiguration(portableSelection);
-  // Preserve native/prepared validation before transport validation, and all raw selection
-  // fields for the legacy digest. Proxy preview augmentation must not enter this projection.
+  // Preserve native/prepared validation before transport validation. Proxy preview
+  // augmentation must not enter the raw selection used for the legacy digest.
   return {
     ...portable,
     selection,
@@ -941,7 +944,8 @@ export async function loadInstallationConfiguration(options: {
     // Validate the original first, then retain the accepted flat policy across loader awaits.
     // Both authority projections must describe the policy used to construct the Driver.
     const policy = Object.freeze({ ...repoSelection.configuration });
-    const selection = { ...repositoryConfiguration.selection };
+    // The optional built-in spelling contributes no protected sender authority.
+    const { policyMode: _policyMode, ...selection } = repositoryConfiguration.selection;
     // A non-enumerable configuration never contributed to the raw selection's digest.
     repositoryConfiguration.selection = Object.hasOwn(selection, "configuration")
       ? { ...selection, configuration: policy }
