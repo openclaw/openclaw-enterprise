@@ -201,7 +201,7 @@ Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends
 prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
-`scripts/first-agent.mjs:main` distinguishes credential rejection from policy refusal
+`scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
 when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
 After a model failure, the CLI prints the original error before a bounded
 [diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from the existing
