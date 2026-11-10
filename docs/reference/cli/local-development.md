@@ -51,6 +51,12 @@ reported the result. It does not establish that cancellation initiated failure.
 Original errors and exit behavior are preserved. The record contains no raw
 errors, paths or subprocess output.
 
+`primary_stage=controller-image-import` identifies a failure while preparing or
+importing the development controller image. Check that the selected image exists
+in the selected container engine. If using a local image registry, verify its
+current published port and connectivity from the host and owned cluster before
+retrying. The stage identifies the failed operation, not its underlying cause.
+
 For `primary_stage=routing`, optional `routing_operation` identifies the selected
 failed step: `manifest-download`, `gateway-api-readiness`, `manifest-filter`,
 `manifest-write`, `manifest-apply`, `controller-crd-readiness`,
