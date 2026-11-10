@@ -44,7 +44,8 @@
     {
       "path": "tests/integration/oidc-agent-chat-k3d-real.test.ts",
       "expectedTests": [
-        "OIDC owner creates an Agent and a shared operator chats without administrative access"
+        "OIDC linking preserves Agent access with account creation disabled",
+        "OIDC linking preserves Agent access with account creation enabled"
       ],
       "requiredEnv": [
         "OCC_TEST_KEYCLOAK_ISSUER",

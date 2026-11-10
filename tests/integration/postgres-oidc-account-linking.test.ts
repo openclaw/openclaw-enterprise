@@ -182,22 +182,71 @@ test(
       },
     );
     await t.test(
-      "an already attached fresh owner can link; account revocation invalidates pending proof",
+      "administrative invalidation and linking enforce both transaction orderings",
       async () => {
-        cookie = "";
-        assert.equal((await post("start")).statusCode, 200);
-        await external("owner", "new-member");
-        await external("candidate", "another-member-identity");
-        await changeAccount(app, adminHeaders, member.id, "revoke");
-        assert.equal((await post("confirm")).statusCode, 409);
-        assert.equal(
-          (
-            await fixture.pool.query(
-              "SELECT 1 FROM occ.account WHERE account_id = 'another-member-identity'",
-            )
-          ).rowCount,
-          0,
-        );
+        for (const operation of ["disable", "revoke", "detach"] as const) {
+          for (const administrativeFirst of [true, false]) {
+            const ownerSubject = `owner-${operation}-${administrativeFirst}`;
+            const candidateSubject = `candidate-${operation}-${administrativeFirst}`;
+            await start();
+            await external("candidate", ownerSubject);
+            assert.equal((await post("confirm")).statusCode, 200);
+            const session = await signedInHeaders(app, origin, member);
+            const account = (
+              await app.inject({ url: `/api/auth/accounts/${member.id}`, headers: adminHeaders })
+            ).json().data;
+            const method = account.methods.find(
+              (value: { subject?: string }) => value.subject === ownerSubject,
+            );
+            assert.ok(method);
+            const action = operation === "detach" ? `methods/${method.methodId}/detach` : operation;
+            cookie = "";
+            assert.equal((await post("start")).statusCode, 200);
+            await external("owner", ownerSubject);
+            await external("candidate", candidateSubject);
+
+            // Exercise each serialized outcome. A stale administrator version cannot
+            // overwrite a completed link; an earlier invalidation defeats its proof.
+            if (administrativeFirst) {
+              assert.equal(
+                (await changeAccount(second, adminHeaders, member.id, action, account.version))
+                  .statusCode,
+                200,
+              );
+              assert.equal((await post("confirm")).statusCode, 409);
+            } else {
+              assert.equal((await post("confirm")).statusCode, 200);
+              assert.equal(
+                (await changeAccount(second, adminHeaders, member.id, action, account.version))
+                  .statusCode,
+                409,
+              );
+              assert.equal(
+                (await changeAccount(second, adminHeaders, member.id, action)).statusCode,
+                200,
+              );
+            }
+            assert.equal(await currentSession(app, session.cookie), null);
+            assert.equal(
+              (
+                await fixture.pool.query("SELECT 1 FROM occ.account WHERE account_id = $1", [
+                  candidateSubject,
+                ])
+              ).rowCount,
+              administrativeFirst ? 0 : 1,
+            );
+            if (operation === "disable") {
+              // Disabling the owner does not make its external identity claimable.
+              await start(other);
+              await external("candidate", ownerSubject);
+              assert.equal((await post("confirm")).statusCode, 409);
+              assert.equal(
+                (await changeAccount(second, adminHeaders, member.id, "enable")).statusCode,
+                200,
+              );
+            }
+          }
+        }
       },
     );
     await t.test(

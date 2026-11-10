@@ -3,8 +3,9 @@
 Use the `gateway-routing` lane to check browser chat through OCC, Kubernetes
 routing, and the real OpenClaw runtime. The `oidc-agent-chat` QA scenario adds
 Keycloak sign-in and signed admission claims to that path. It uses manually
-created Default users with explicitly attached identities; automatic account
-creation is covered separately by the PostgreSQL enrollment integration.
+created Default users who link identities through the Console. The focused test
+repeats with automatic account creation disabled and enabled; account creation
+itself is covered by the PostgreSQL enrollment integration.
 
 ## Run the combined OIDC journey
 
@@ -30,7 +31,8 @@ node scripts/ci/cleanup.mjs --state "$state"
 Run cleanup after a preparation or test failure too. Preserve the private state
 file until cleanup completes. Do not run another Keycloak lane on the same host.
 
-The focused wrapper runs the same `oidc-agent-chat` scenario as the QA matrix.
+The focused wrapper runs the `oidc-agent-chat` scenario with both account-creation
+settings. The QA matrix runs its default setting, with account creation disabled.
 To reuse an already prepared local environment through the QA entrypoint, keep its
 Kubernetes, database, routing, and Keycloak variables, then run:
 
@@ -48,9 +50,10 @@ Keycloak state variable.
 
 ## What the test exercises
 
-The browser signs in at the real Keycloak server, returns through the OCC
-callback, verifies the original account ID, and opens an Agent with the resulting
-shared session. A disposable IdP Group supplies the signed admission claim. The journey
+The browser proves the manually created account password, authenticates at the
+real Keycloak server, and explicitly confirms the new identity. A separate
+ordinary sign-in verifies the original account ID and opens an Agent with the
+resulting shared session. A disposable IdP Group supplies the signed admission claim. The journey
 checks chat with `agent:operate`, administration denial, and a real model
 response. Related native browser cases cover administrator access, Agent
 boundaries, permission withdrawal, and session expiry.

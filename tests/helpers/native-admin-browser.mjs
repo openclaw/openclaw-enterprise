@@ -1389,7 +1389,7 @@ async function assertChatAdministrationDenied(nativePage) {
 }
 
 /** The QA matrix reuses the native browser harness with a real, prepared OIDC provider. */
-export async function runOidcAgentChatScenario(context) {
+export async function runOidcAgentChatScenario(context, { createAccounts = false } = {}) {
   const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
   const secrets = JSON.parse(await readFile(process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE, "utf8"));
   const caCert = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT, "utf8");
@@ -1465,7 +1465,10 @@ export async function runOidcAgentChatScenario(context) {
     oidc: {
       issuer,
       linking: true,
-      enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
+      enrollment: {
+        admission: { groupsClaim: "groups", anyOf: [groupName] },
+        createAccount: createAccounts ? { enabled: true, role: null } : { enabled: false },
+      },
       clientId,
       clientSecret,
       caCert,
