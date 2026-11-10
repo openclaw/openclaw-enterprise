@@ -98,6 +98,7 @@ export function projectSkipperRunnerReceipt(value: unknown) {
 const skipperOperations = [
   "command-input",
   "gateway-chat",
+  "gateway-exec",
   "native-observation",
   "model-observation",
   "command-cleanup",
@@ -116,10 +117,30 @@ export function skipperOperationDiagnostic(value: unknown) {
   ) {
     return undefined;
   }
-  const { operation, exitCode, signal, code } = diagnostic;
+  const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
   return {
     kind: "skipper-operation",
     operation: operation as SkipperOperation,
+    ...(typeof gatewayCategory === "string" &&
+    [
+      "gateway-credential-unavailable",
+      "authentication",
+      "permission",
+      "workspace",
+      "agent-runtime",
+      "timeout",
+      "unavailable",
+      "unclassified",
+      "transport",
+      "response-body",
+      "response-json",
+    ].includes(gatewayCategory)
+      ? { gatewayCategory }
+      : {}),
+    ...(typeof httpStatus === "number" &&
+    (httpStatus === 0 || (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599))
+      ? { httpStatus }
+      : {}),
     ...(Number.isInteger(exitCode) &&
     typeof exitCode === "number" &&
     exitCode >= 0 &&
@@ -154,16 +175,23 @@ export async function runSkipperOperation<T>(
     const error =
       cause instanceof Error ? cause : new Error("Installed Skipper operation failed", { cause });
     try {
-      const fields = error as Error & { code?: unknown; signal?: unknown };
-      Object.assign(error, {
-        openclawCiDiagnostic: skipperOperationDiagnostic({
-          kind: "skipper-operation",
-          operation,
-          exitCode: typeof fields.code === "number" ? fields.code : undefined,
-          code: typeof fields.code === "string" ? fields.code : undefined,
-          signal: fields.signal,
-        }),
-      });
+      const fields = error as Error & {
+        code?: unknown;
+        signal?: unknown;
+        openclawCiDiagnostic?: unknown;
+      };
+      // Keep the innermost known operation when a caller adds its broader context.
+      if (!skipperOperationDiagnostic(fields.openclawCiDiagnostic)) {
+        Object.assign(error, {
+          openclawCiDiagnostic: skipperOperationDiagnostic({
+            kind: "skipper-operation",
+            operation,
+            exitCode: typeof fields.code === "number" ? fields.code : undefined,
+            code: typeof fields.code === "string" ? fields.code : undefined,
+            signal: fields.signal,
+          }),
+        });
+      }
     } catch {
       // A frozen or unusual Error must keep its original failure.
     }
@@ -197,6 +225,10 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
         diagnostic.exitCode === undefined ? undefined : `child-exit=${diagnostic.exitCode}`,
         diagnostic.signal === undefined ? undefined : `signal=${diagnostic.signal}`,
         diagnostic.code === undefined ? undefined : `code=${diagnostic.code}`,
+        diagnostic.httpStatus === undefined ? undefined : `gateway-status=${diagnostic.httpStatus}`,
+        diagnostic.gatewayCategory === undefined
+          ? undefined
+          : `gateway-category=${diagnostic.gatewayCategory}`,
       ]
         .filter(Boolean)
         .join(", ");

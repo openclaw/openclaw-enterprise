@@ -185,6 +185,9 @@ test("installed Skipper failure summary reads the actual runner result without e
     "rejection",
     "file failure",
     "captured subprocess rejection",
+    "nested subprocess rejection",
+    "nested subprocess signal",
+    "receiver failure",
     "unrecognized operation",
     "unrecognized outcome",
   ]) {
@@ -209,13 +212,23 @@ test("installed Skipper failure summary reads the actual runner result without e
           "}",
         ].join("\n"),
       );
-      if (scenario === "assertion") {
+      if (scenario === "receiver failure") {
+        const helper = new URL("../../scripts/ci/skipper-release.ts", import.meta.url).href;
+        lines.push(
+          `  const { runSkipperOperation, skipperOperationDiagnostic } = await import(${JSON.stringify(helper)});`,
+          '  const failure = Object.assign(new Error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL), { openclawCiDiagnostic: skipperOperationDiagnostic({ kind: "skipper-operation", operation: "gateway-chat", httpStatus: 200, gatewayCategory: "response-json" }) });',
+          // Losing the optional ledger must not remove the receiver's structured failure.
+          '  await runSkipperOperation("gateway-chat", async () => { throw failure; });',
+        );
+      } else if (scenario === "assertion") {
         lines.push('  assert.equal(process.env.CI_RUNNER_FIXTURE_CREDENTIAL, "expected");');
       } else if (scenario === "rejection") {
         lines.push("  await fail();");
       } else if (
         [
           "captured subprocess rejection",
+          "nested subprocess rejection",
+          "nested subprocess signal",
           "unrecognized operation",
           "unrecognized outcome",
         ].includes(scenario)
@@ -227,7 +240,15 @@ test("installed Skipper failure summary reads the actual runner result without e
           `  const { runSkipperOperation } = await import(${JSON.stringify(helper)});`,
           '  const { execFile } = await import("node:child_process");',
           '  const { promisify } = await import("node:util");',
-          '  const outcome = runSkipperOperation("gateway-chat", () => promisify(execFile)(process.execPath, ["-e", "console.error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL); process.exit(7)"])).then(() => ({}), (error) => ({ error }));',
+          `  const child = () => promisify(execFile)(process.execPath, ["-e", ${JSON.stringify(
+            "console.error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL); " +
+              (scenario === "nested subprocess signal"
+                ? 'process.kill(process.pid, "SIGTERM")'
+                : "process.exit(7)"),
+          )}]);`,
+          `  const outcome = runSkipperOperation("gateway-chat", () => ${
+            scenario.startsWith("nested") ? 'runSkipperOperation("gateway-exec", child)' : "child()"
+          }).then(() => ({}), (error) => ({ error }));`,
           "  const settled = await outcome;",
           "  await new Promise((resolve) => setImmediate(resolve));",
           "  Object.assign(settled.error.openclawCiDiagnostic, { command: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, stderr: process.env.CI_RUNNER_FIXTURE_CREDENTIAL });",
@@ -238,7 +259,7 @@ test("installed Skipper failure summary reads the actual runner result without e
             : []),
           ...(scenario === "unrecognized outcome"
             ? [
-                "  Object.assign(settled.error.openclawCiDiagnostic, { exitCode: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, signal: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, code: process.env.CI_RUNNER_FIXTURE_CREDENTIAL });",
+                "  Object.assign(settled.error.openclawCiDiagnostic, { exitCode: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, signal: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, code: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, gatewayCategory: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, httpStatus: process.env.CI_RUNNER_FIXTURE_CREDENTIAL });",
               ]
             : []),
           "  throw settled.error;",
@@ -277,18 +298,35 @@ test("installed Skipper failure summary reads the actual runner result without e
         rejection: "ERR_TEST_FAILURE",
         "file failure": "post-test-async-activity",
         "captured subprocess rejection": "ERR_TEST_FAILURE",
+        "nested subprocess rejection": "ERR_TEST_FAILURE",
+        "nested subprocess signal": "ERR_TEST_FAILURE",
+        "receiver failure": "ERR_TEST_FAILURE",
         "unrecognized operation": "ERR_TEST_FAILURE",
         "unrecognized outcome": "ERR_TEST_FAILURE",
       }[scenario];
-      if (scenario === "captured subprocess rejection") {
+      if (scenario === "captured subprocess rejection" || scenario.startsWith("nested")) {
+        const operation = scenario.startsWith("nested") ? "gateway-exec" : "gateway-chat";
+        const signaled = scenario === "nested subprocess signal";
         assert.equal(
           diagnostic,
-          "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat, child-exit=7",
+          `location unavailable, ERR_TEST_FAILURE, operation=${operation}, ${signaled ? "signal=SIGTERM" : "child-exit=7"}`,
+        );
+        assert.deepEqual(summary.files[0].tests[0].error.diagnostic, {
+          kind: "skipper-operation",
+          operation,
+          ...(signaled ? { signal: "SIGTERM" } : { exitCode: 7 }),
+        });
+      } else if (scenario === "receiver failure") {
+        assert.ok(
+          diagnostic.endsWith(
+            "ERR_TEST_FAILURE, operation=gateway-chat, gateway-status=200, gateway-category=response-json",
+          ),
         );
         assert.deepEqual(summary.files[0].tests[0].error.diagnostic, {
           kind: "skipper-operation",
           operation: "gateway-chat",
-          exitCode: 7,
+          httpStatus: 200,
+          gatewayCategory: "response-json",
         });
       } else if (scenario === "unrecognized outcome") {
         assert.equal(diagnostic, "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat");

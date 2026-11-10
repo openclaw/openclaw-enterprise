@@ -319,25 +319,27 @@ try {
       );
       assert.match(
         category,
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified)$/,
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/,
       );
       assert.ok(
-        [modelTurns, modelAnswers, tlsErrors].every((n) => Number.isSafeInteger(n) && n >= 0),
+        [modelTurns, modelAnswers, tlsErrors].every(
+          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
+        ),
       );
-      assert.equal(typeof expectedNonceAnswered, "boolean");
+      assert.ok(expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean");
       assert.match(
         chat.runtimeSignal,
         /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/,
       );
       console.error(
-        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%d, answers=%d, expected nonce answered=%s, TLS errors=%d.",
+        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
         httpStatus,
         category,
         chat.runtimeSignal,
-        modelTurns,
-        modelAnswers,
-        expectedNonceAnswered,
-        tlsErrors,
+        modelTurns ?? "unknown",
+        modelAnswers ?? "unknown",
+        expectedNonceAnswered ?? "unknown",
+        tlsErrors ?? "unknown",
       );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
