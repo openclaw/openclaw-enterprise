@@ -131,6 +131,25 @@ async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function writePassedBaselineResult(root, sourceSha, filePath) {
+  return writeJson(join(root, "results/baseline.json"), {
+    version: 1,
+    command: "run",
+    sourceSha,
+    lane: "baseline",
+    status: "passed",
+    exitCode: 0,
+    files: [
+      {
+        path: filePath,
+        status: "passed",
+        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
+        tests: [{ name: "baseline case", status: "passed" }],
+      },
+    ],
+  });
+}
+
 function writeSingleLaneManifest(root, lane, files, groups) {
   return writeJson(join(root, "manifest.json"), {
     version: 1,
@@ -6270,10 +6289,11 @@ test("audit requires current discovered test files and rejects duplicate ownersh
 test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
+  const baselinePath = "tests/integration/a.test.mjs";
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
-      baseline: { files: [{ path: "tests/integration/a.test.mjs" }] },
+      baseline: { files: [{ path: baselinePath }] },
       runtime: { files: [{ path: "tests/integration/b.test.mjs" }] },
       missing: { files: [{ path: "tests/integration/c.test.mjs" }] },
     },
@@ -6281,22 +6301,7 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
       full: ["baseline", "runtime", "missing"],
     },
   });
-  await writeJson(join(root, "results/baseline.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    lane: "baseline",
-    status: "passed",
-    exitCode: 0,
-    files: [
-      {
-        path: "tests/integration/a.test.mjs",
-        status: "passed",
-        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
-        tests: [{ name: "baseline case", status: "passed" }],
-      },
-    ],
-  });
+  await writePassedBaselineResult(root, sha, baselinePath);
   await writeJson(join(root, "results/runtime.json"), {
     version: 1,
     command: "run",
@@ -6545,30 +6550,11 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
 test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
-  await writeSingleLaneManifest(
-    root,
-    "baseline",
-    [{ path: "tests/integration/baseline.test.mjs" }],
-    {
-      ci: ["baseline"],
-    },
-  );
-  await writeJson(join(root, "results/baseline.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    lane: "baseline",
-    status: "passed",
-    exitCode: 0,
-    files: [
-      {
-        path: "tests/integration/baseline.test.mjs",
-        status: "passed",
-        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
-        tests: [{ name: "baseline case", status: "passed" }],
-      },
-    ],
+  const baselinePath = "tests/integration/baseline.test.mjs";
+  await writeSingleLaneManifest(root, "baseline", [{ path: baselinePath }], {
+    ci: ["baseline"],
   });
+  await writePassedBaselineResult(root, sha, baselinePath);
   await writeJson(join(root, "needs.json"), {
     audit: { result: "failure" },
     baseline: { result: "success" },
