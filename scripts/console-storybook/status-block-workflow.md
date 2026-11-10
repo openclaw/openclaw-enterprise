@@ -65,7 +65,10 @@ at 390.
     compatibility before redeploying. The recovery block offers **Open v7 Logs**,
     without **Deploy again** or generic logs advice. Open the logs and confirm
     v7 stays selected; no deployment is submitted. This is simulated presentation
-    and navigation evidence, not native policy or deployment proof.
+    and navigation evidence, not native policy or deployment proof. Repeat with
+    **New version failed, oversized Codex requirements**
+    (`pages-agent-detail--deployment-failed-codex-requirements-size`): the remedy
+    names the 1 MiB limit and asks the policy owner to reduce the document.
 
 ## Check Console startup recovery
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00
+last_updated_session: authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -57,9 +57,10 @@ graph TD
   R1 --> Y
   Y -- "yes" --> S{"<b>Attachment status</b><br/>All ready?"}
   S -- "failed, withheld, revoked" --> R
-  S -- "ready" --> Z{"<b>Activate Harness</b>"}
+  S -- "ready" --> P1["<b>Publish revision</b><br/>Commit active selection"]
+  P1 --> Z{"<b>Activate Harness</b>"}
   Z -- "Codex" --> C2{"<b>Recheck Codex readiness</b><br/>Before replacing Gateway"}
-  C2 -- "refused" --> R
+  C2 -- "refused" --> R2["<b>Fail deployment</b><br/>Published selection retained"]
   C2 -- "serving" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
   Z -- "OpenClaw" --> U["<b>Run native turn</b>"]
   L -- "Git withdrawn" --> D1["<b>Fence delivery</b><br/>OCC commits intent"]
@@ -77,9 +78,9 @@ graph TD
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F,D1 state
-  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,R1,T,U operation
+  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U operation
   class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2 gate
-  class X,R,R0,D3 blocked
+  class X,R,R0,R2,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
 
@@ -312,7 +313,11 @@ After bearer-authenticated initialization, the Driver reads `configRequirements/
 A policy that excludes the required sandbox mode, named profile or human reviewer
 fails preparation or activation with `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`. Missing
 or malformed replies stay `starting`. An explicit null requirements result means
-the server reports no managed requirements.
+the server reports no managed requirements. OCE bounds the requirements reply to
+1 MiB and all other replies/notifications combined to 16 KiB. A complete correlated
+requirements reply above 1 MiB fails with `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`.
+The WebSocket caps each message at 1 MiB + 16 KiB; failures before a complete reply
+remain pending. These defensive limits are OCE-specific.
 
 For `credential_source`/`codex_pat`, the same connection then requests
 `getAuthStatus` with `includeToken:false` and `refreshToken:false`. Only
@@ -341,7 +346,10 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-Preparation preserves the serving predecessor; activation rechecks candidates.
+Preparation preserves the serving predecessor. `apps/controller/src/worker.ts:finalizeRevision`
+publishes the active selection before activation rechecks the Harness. A permanent
+activation refusal fails deployment without rolling back that published selection;
+it does not replace the Gateway or retire the predecessor.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
@@ -424,6 +432,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
+
 - 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
 
 - 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
@@ -437,17 +447,5 @@ model execution.
 - 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
 
 - 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
-
-- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
-
-- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
-
-- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
-
-- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
-
-- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
-
-- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

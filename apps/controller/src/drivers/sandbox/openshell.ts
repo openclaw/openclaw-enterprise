@@ -4104,6 +4104,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "The Codex Harness reports managed permission requirements incompatible with activation.",
           );
         }
+        if (status === "requirements-too-large") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+            "The Codex Harness requirements reply exceeds the supported size limit.",
+          );
+        }
         if (status !== "unavailable") {
           return Object.freeze({ state: status });
         }

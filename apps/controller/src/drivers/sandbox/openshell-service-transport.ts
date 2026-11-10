@@ -37,6 +37,9 @@ export class OpenShellServiceTransportError extends DependencyUnavailableError {
 }
 
 const MAX_SERVICE_RESPONSE_BYTES = 16 * 1024;
+// Managed requirements include full instructions and provider definitions. This
+// is OCE's defensive read limit, not a maximum imposed by the native protocol.
+const MAX_CODEX_REQUIREMENTS_BYTES = 1024 * 1024;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // The pinned OpenShell release serves provider-advertised service traffic on the
@@ -318,7 +321,8 @@ export async function serviceWebSocketHandshake(
   )) as boolean;
 }
 
-export type OpenShellCodexReadiness = "unavailable" | "starting" | "serving" | "permission-refused";
+export type OpenShellCodexReadiness =
+  "unavailable" | "starting" | "serving" | "permission-refused" | "requirements-too-large";
 
 function codexPermissionReadiness(
   requirements: unknown,
@@ -385,7 +389,10 @@ export async function serviceCodexReadinessStatus(
   // Preserve the advertised Host while verifying/connecting to the control endpoint,
   // exactly as the HTTP service transport does. This dispatcher belongs to this read only.
   const dispatcher = new Agent({
-    webSocket: { maxPayloadSize: MAX_SERVICE_RESPONSE_BYTES, maxFragments: 32 },
+    webSocket: {
+      maxPayloadSize: MAX_CODEX_REQUIREMENTS_BYTES + MAX_SERVICE_RESPONSE_BYTES,
+      maxFragments: 32,
+    },
     connect: (settings, callback) =>
       connect(
         {
@@ -422,6 +429,7 @@ export async function serviceCodexReadinessStatus(
     let expectedId = 1;
     let opened = false;
     let bytes = 0;
+    let statusBytes = 0;
     const socket = new WebSocket(url, {
       dispatcher: serviceDispatcher,
       headers: { authorization },
@@ -490,7 +498,8 @@ export async function serviceCodexReadinessStatus(
       }
       if (
         typeof event.data !== "string" ||
-        (bytes += Buffer.byteLength(event.data)) > MAX_SERVICE_RESPONSE_BYTES
+        (bytes += Buffer.byteLength(event.data)) >
+          MAX_CODEX_REQUIREMENTS_BYTES + MAX_SERVICE_RESPONSE_BYTES
       ) {
         finish("starting");
         return;
@@ -502,11 +511,29 @@ export async function serviceCodexReadinessStatus(
         finish("starting");
         return;
       }
-      // Notifications do not complete either request; the shared byte/deadline bounds apply.
+      // Only the expected requirements reply receives the larger allowance.
+      // Initialization, authentication and all notifications share the small budget.
+      const messageBytes = Buffer.byteLength(event.data);
+      const result = asRecord(message?.result);
+      if (expectedId === 2 && message?.id === 2) {
+        if (messageBytes > MAX_CODEX_REQUIREMENTS_BYTES) {
+          finish(
+            message.error === undefined &&
+              result !== undefined &&
+              codexPermissionReadiness(result.requirements) !== "starting"
+              ? "requirements-too-large"
+              : "starting",
+          );
+          return;
+        }
+      } else if ((statusBytes += messageBytes) > MAX_SERVICE_RESPONSE_BYTES) {
+        finish("starting");
+        return;
+      }
+      // Notifications do not complete a request; the shared deadline still applies.
       if (typeof message?.method === "string" && message.id === undefined) {
         return;
       }
-      const result = asRecord(message?.result);
       if (message?.id !== expectedId || message.error !== undefined || result === undefined) {
         finish("starting");
         return;

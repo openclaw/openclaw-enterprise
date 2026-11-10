@@ -3287,7 +3287,7 @@ for (const refusal of [
     error: {
       code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
       message:
-        "This Codex runtime’s managed permission policy does not allow the profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+        "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     },
     cause: "ActivationFailedError",
   },

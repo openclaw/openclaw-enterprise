@@ -1091,7 +1091,9 @@ export class ActivationPendingError extends Error {
 
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode =
-  "AGENT_GATEWAY_UNAUTHORIZED" | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE";
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
 
 /** The selected Driver proved that this execution's repository access cannot be resumed.
  * Missing evidence or a failed dependency read must not produce this terminal result. */

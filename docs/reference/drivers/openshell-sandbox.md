@@ -212,8 +212,9 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 <a id="codex-permission-profile"></a>
 
 Codex requires policy allowing `:danger-full-access` and `user` review.
-Before readiness, managed requirements refusal produces
-`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; missing or malformed evidence stays pending.
+Readiness refusal produces `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`.
+Oversized replies produce `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`;
+[read limits](../../flows/openshell-sandbox-provisioning.md) distinguish incomplete evidence.
 OpenShell isolates all login modes and blocks restricted profiles' nested bubblewrap
 namespaces. The Gateway rejects constrained threads;
 see [troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
