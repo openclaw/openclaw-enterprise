@@ -16,6 +16,14 @@ const cursorExamples: Record<string, string | undefined> = {
 const rateLimitCodes: Record<string, string | undefined> = {
   createAuthAccount: "RATE_LIMITED",
   signInEmail: "RATE_LIMITED",
+  oidcLinkStart: "RATE_LIMITED",
+  oidcLinkStatus: "RATE_LIMITED",
+  oidcLinkPassword: "RATE_LIMITED",
+  oidcLinkOwner: "RATE_LIMITED",
+  oidcLinkCandidate: "RATE_LIMITED",
+  oidcLinkConfirm: "RATE_LIMITED",
+  oidcLinkCancel: "RATE_LIMITED",
+
   completeNamespaceConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntime: "RUNTIME_LOGS_RATE_LIMITED",

@@ -71,3 +71,10 @@ API Pod replacement, including changes to a combined Gateway CA: assembly and No
 trust loading happen at startup, without hot reload. Restarting only the API
 container keeps the init snapshot. The single API replica is interrupted during
 replacement. See [private CA setup and rotation](../../guides/deploy/oidc-sign-in.md#trust-a-private-idp-ca).
+
+## Existing-account linking
+
+`OCC_AUTH_OIDC_LINKING_ENABLED` maps to Helm `auth.oidc.linking.enabled` and
+profile `controlPlane.oidc.linking.enabled`. It defaults to `false`; the API
+accepts only `true` or `false`. Qualify provider reauthentication before enabling
+[account linking](../authentication/account-linking.md).

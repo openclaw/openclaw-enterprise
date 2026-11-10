@@ -109,6 +109,14 @@ The database case skips without the URL and fails without the browser. Provider
 responses are fixtures; a pass does not prove live IdP registration or HTTPS
 cookies. Password and other provider scenarios are in the `postgres-auth` lane.
 
+The `postgres-auth` lane also runs
+`tests/integration/postgres-oidc-account-linking.test.ts`. It exercises public
+linking routes against PostgreSQL, including two-controller confirmation races,
+stale signed claims, account revocation, real audit-constraint rollback, and a
+lost COMMIT acknowledgement. Its issuer transport is a fixture; it does not
+prove provider reauthentication or model execution. The gateway-routing OIDC
+Agent scenario exercises Console linking with real Keycloak before Agent chat.
+
 ## PostgreSQL test environment
 
 Use `OCC_TEST_DATABASE_URL` for the application role and

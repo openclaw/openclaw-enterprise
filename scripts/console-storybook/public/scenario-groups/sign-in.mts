@@ -51,6 +51,7 @@ type SignInScenario = {
   signedOut?: true;
   buildRevision?: string;
   oidcEnabled?: true;
+  oidcLinkStage?: "owner" | "candidate" | "confirm";
   googleEnabled?: true;
   passwordRecoveryOnly?: true;
   pendingOidcAttempt?: true;
@@ -85,6 +86,80 @@ export function signInScenarios({
       buildRevision: "1234567890abcdef1234567890abcdef12345678",
       description:
         "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
+    },
+    oidcLinkOwner: {
+      group: "Pages/Sign in",
+      name: "Link: prove account ownership",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "owner",
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkCandidate: {
+      group: "Pages/Sign in",
+      name: "Link: authenticate new identity",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "candidate",
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkConfirm: {
+      group: "Pages/Sign in",
+      name: "Link: confirm identity attachment",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "confirm",
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkRecovery: {
+      group: "Pages/Sign in",
+      name: "Link: recovery-only password",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "owner",
+      passwordRecoveryOnly: true,
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkExpired: {
+      group: "Pages/Sign in",
+      name: "Link: expired or conflicting attempt",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "confirm",
+      rules: [{ path: "/api/auth/oidc/link/status", method: "POST", status: 409 }],
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkUncertain: {
+      group: "Pages/Sign in",
+      name: "Link: confirmation outcome unknown",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "confirm",
+      rules: [{ path: "/api/auth/oidc/link/confirm", method: "POST", status: 503 }],
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+    },
+    oidcLinkLoading: {
+      group: "Pages/Sign in",
+      name: "Link: loading proof state",
+      path: "/console/?link=1",
+      signedOut: true,
+      oidcEnabled: true,
+      oidcLinkStage: "owner",
+      rules: [{ path: "/api/auth/oidc/link/status", method: "POST", hold: true }],
+      description:
+        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
     },
     oidcLogin: {
       group: "Pages/Sign in",

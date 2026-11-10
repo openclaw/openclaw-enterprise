@@ -2192,6 +2192,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preOidcAccountLinking"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2685,6 +2686,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preOidcAccountLinking"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2880,6 +2882,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preOidcAccountLinking"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2891,6 +2894,9 @@ test(
         ok: true,
         history,
       });
+      context.diagnostic(
+        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+      );
       assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
         ok: true,
         history: "completed",
@@ -2969,6 +2975,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preOidcAccountLinking"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

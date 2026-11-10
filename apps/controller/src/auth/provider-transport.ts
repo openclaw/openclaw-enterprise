@@ -57,6 +57,7 @@ export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABL
 export type ProviderExchange =
   | {
       readonly subject: string;
+      readonly expiresAt?: number;
       readonly enrollment?: Pick<
         ResolvedOidcEnrollmentPolicy,
         "groupIds" | "createAccount" | "policyId"

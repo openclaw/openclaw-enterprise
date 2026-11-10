@@ -289,6 +289,23 @@ OCE identifies an IdP account only by the ID token's `sub` claim for this issuer
 - **Entra ID:** `sub` is pairwise per application and is not shown in the portal; OCE
   does not yet offer another claim. Entra ID is not verified with OCE.
 
+## Let users link their accounts
+
+Qualify the provider's [fresh authentication behavior](../../reference/authentication/account-linking.md#enablement-and-proof-methods),
+then set `auth.oidc.linking.enabled: true` and deploy the chart. For installation
+profiles, set `controlPlane.oidc.linking.enabled: true` instead.
+
+Users select **Link OIDC to an existing account** on the Console sign-in page.
+They verify their existing password or an already attached OIDC identity,
+authenticate the new identity, review the account and subject, and confirm.
+They must then sign in again. Existing sessions end; permissions stay unchanged.
+Recovery-only password policy still applies. Native Google proof is unsupported.
+
+If confirmation reports an unknown outcome, restart this explicit flow using the
+original account method. Do not use ordinary candidate login to test attachment:
+with automatic enrollment enabled, it could create another account. For a
+conflict or an unusable original method, use the administrator procedure below.
+
 ## Attach and detach
 
 As a human Installation administrator, [sign in as a human administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)

@@ -1351,7 +1351,213 @@ function showExpiredLogin() {
   showLogin("Your session has expired.", destination);
 }
 
-function showLogin(message: LoginMessage = "", destination: Intent | null = null) {
+// Linking is an explicit public flow. Existing sessions never substitute for fresh proof.
+async function showAccountLink(start = false) {
+  clearDrafts();
+  const active = resetReads();
+  clearPrivate();
+  pinSessionKey(null);
+  takeExternalAttempt();
+  forgetLoginIntent();
+  pendingIntent = null;
+  replaceUrl("/console/?link=1");
+  const content = element("div", { className: "auth-providers" });
+  const feedback = statusBlock("info", null, "Loading account linking…");
+  const main = element(
+    "main",
+    { className: "auth" },
+    element("p", { className: "brand" }, ...brandContents("sign-in")),
+    element("h1", {}, "Link your account"),
+    content,
+    feedback,
+  );
+  app.replaceChildren(main, ...signInFooter());
+  let pending = false;
+  const post = (action: string, body?: Record<string, string>) =>
+    request(`/api/auth/oidc/link/${action}`, { method: "POST", ...(body ? { body } : {}) });
+  async function act(work: () => Promise<void>) {
+    if (pending) {
+      return;
+    }
+    pending = true;
+    main.querySelectorAll("button").forEach((control) => setUnavailable(control, true, null));
+    feedback.textContent = "Working…";
+    try {
+      await work();
+    } catch (error) {
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      const { status } = requestFailure(error);
+      feedback.textContent =
+        status === 429
+          ? "Too many attempts. Wait a minute, then start again."
+          : status === undefined || status >= 500
+            ? "The result could not be confirmed. Start linking again using your original sign-in method."
+            : "Linking was not accepted or the attempt expired. Start again, or ask an administrator to attach your identity.";
+      content.replaceChildren(button("Start again", () => showAccountLink(true)));
+    } finally {
+      pending = false;
+      if (lifetime.isCurrent(active)) {
+        main.querySelectorAll("button").forEach((control) => setUnavailable(control, false, null));
+      }
+    }
+  }
+  async function redirect(purpose: "owner" | "candidate") {
+    const result = responseFields(await post(purpose));
+    const url = new URL(typeof result.url === "string" ? result.url : "");
+    const provider = externalProviders.oidc;
+    if (
+      url.origin !== provider.origin ||
+      url.pathname !== provider.pathname ||
+      url.searchParams.get("max_age") !== "0"
+    ) {
+      throw new Error("Invalid linking authorization URL");
+    }
+    if (lifetime.isCurrent(active)) {
+      location.assign(url.href);
+    }
+  }
+  let passwordAvailable = false;
+  async function render() {
+    const state = responseFields(await post("status"));
+    if (!lifetime.isCurrent(active)) {
+      return;
+    }
+    content.replaceChildren();
+    feedback.textContent = "Complete both proofs and confirm within five minutes.";
+    if (state.stage === "owner") {
+      content.append(element("p", {}, "First, prove ownership of your existing OCE account."));
+      const email = element("input", {
+        id: "link-email",
+        type: "email",
+        autocomplete: "username",
+        required: true,
+      });
+      const password = element("input", {
+        id: "link-password",
+        type: "password",
+        autocomplete: "current-password",
+        required: true,
+      });
+      const form = element(
+        "form",
+        {},
+        element("label", { for: "link-email" }, "Account email"),
+        email,
+        element("label", { for: "link-password" }, "Password"),
+        password,
+        element(
+          "button",
+          { type: "submit", className: "button button--primary" },
+          "Verify existing account",
+        ),
+      );
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (form.reportValidity()) {
+          void act(async () => {
+            try {
+              await post("password", { email: email.value, password: password.value });
+            } finally {
+              password.value = "";
+            }
+            await render();
+          });
+        }
+      });
+      content.append(form);
+      if (!passwordAvailable) {
+        content.append(
+          element(
+            "p",
+            {},
+            "Only the recovery account can use a password. Other accounts must use an already-linked identity.",
+          ),
+        );
+      }
+      content.append(
+        button("Verify with an already-linked identity", () => act(() => redirect("owner"))),
+      );
+    } else if (state.stage === "candidate") {
+      const account = responseFields(state.account);
+      content.append(
+        element("p", {}, `Existing account: ${String(account.email)} (${String(account.id)})`),
+        element(
+          "p",
+          {},
+          "Now authenticate the identity you want to link. Your account permissions will stay the same.",
+        ),
+        button(
+          `Authenticate with ${externalProviders.oidc.label}`,
+          () => act(() => redirect("candidate")),
+          { tone: "primary" },
+        ),
+      );
+    } else if (state.stage === "confirm") {
+      const account = responseFields(state.account);
+      const candidate = responseFields(state.candidate);
+      content.append(
+        element("p", {}, `Link this identity to ${String(account.email)} (${String(account.id)})?`),
+        element("p", { className: "resource-id" }, `Provider: ${String(candidate.providerId)}`),
+        element("p", { className: "resource-id" }, `Subject: ${String(candidate.subject)}`),
+        element(
+          "p",
+          {},
+          "This adds a sign-in method and ends your existing sessions. Your permissions stay the same.",
+        ),
+        button(
+          "Confirm link",
+          () =>
+            act(async () => {
+              const result = responseFields(await post("confirm"));
+              if (typeof result.methodId !== "string" || typeof result.created !== "boolean") {
+                throw new Error("Link outcome not confirmed");
+              }
+              if (lifetime.isCurrent(active)) {
+                showLogin(
+                  "",
+                  null,
+                  result.created
+                    ? "Identity linked. Sign in with your linked identity."
+                    : "This identity is already linked. Sign in to continue.",
+                );
+              }
+            }),
+          { tone: "primary" },
+        ),
+      );
+    } else {
+      throw new Error("Invalid linking state");
+    }
+  }
+  main.append(
+    button(
+      "Cancel",
+      () =>
+        act(async () => {
+          await post("cancel");
+          if (lifetime.isCurrent(active)) {
+            showLogin();
+          }
+        }),
+      { tone: "link" },
+    ),
+  );
+  await act(async () => {
+    const providers = responseFields(await request("/api/auth/providers"));
+    if (providers.oidcLinking !== true || !configureOidc(providers.oidcSignIn)) {
+      throw new Error("Account linking is unavailable");
+    }
+    passwordAvailable = providers.password !== false;
+    if (start) {
+      await post("start");
+    }
+    await render();
+  });
+}
+
+function showLogin(message: LoginMessage = "", destination: Intent | null = null, notice = "") {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
   clearDrafts();
@@ -1514,6 +1720,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       element("p", { className: "brand" }, ...brandContents("sign-in")),
       element("h1", {}, "Sign in"),
       usernameHint,
+      ...(notice ? [statusBlock("success", null, notice)] : []),
       form,
       providers,
       recovery,
@@ -1532,6 +1739,13 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
           oidc = providerButton("oidc");
           setUnavailable(oidc, pending, null);
           providers.append(oidc);
+        }
+        if (available?.oidcLinking === true) {
+          providers.append(
+            button("Link OIDC to an existing account", () => showAccountLink(true), {
+              tone: "link",
+            }),
+          );
         }
         // Only an explicit false hides the form: failed or older discovery keeps it.
         if (available?.password === false && (available.google || available.oidc)) {
@@ -1857,6 +2071,11 @@ async function loadPage({
     clearTimeout(loadingTimer ?? undefined);
     loadingTimer = null;
   };
+  if (current.url.searchParams.get("link") === "1") {
+    stopLoadingTimer();
+    await showAccountLink();
+    return;
+  }
   const authError = current.url.searchParams.get("authError");
   const providerError = hasKey(externalProviders, authError) ? externalProviders[authError] : null;
   const authReason = current.url.searchParams.get("authReason");

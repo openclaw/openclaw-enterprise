@@ -417,6 +417,7 @@ export const requestExamples = {
     expiresIn: 86400,
   },
   confirmGoogleSignIn: { attemptId: "example".padEnd(43, "0") },
+  oidcLinkPassword: { email: "member@example.test", password: "example-password-replace-me" },
   confirmOidcSignIn: { attemptId: "example".padEnd(43, "0") },
 };
 
@@ -747,6 +748,24 @@ export const responseExamples = {
   },
   confirmGoogleSignIn: { sessionKey },
   confirmOidcSignIn: { sessionKey },
+  oidcLinkStart: { stage: "owner", expiresAt: 1794299000000 },
+  oidcLinkStatus: {
+    stage: "confirm",
+    expiresAt: 1794299000000,
+    account: { id: "user-member", email: "member@example.test", name: "Member" },
+    candidate: { providerId: "oidc:example-provider", subject: "member-subject" },
+  },
+  oidcLinkOwner: {
+    url: "https://identity.example.com/authorize?max_age=0&state=example-state",
+    attemptId: "example".padEnd(43, "0"),
+  },
+  oidcLinkCandidate: {
+    url: "https://identity.example.com/authorize?max_age=0&state=example-state",
+    attemptId: "example".padEnd(43, "0"),
+  },
+  oidcLinkPassword: { linking: true },
+  oidcLinkConfirm: { methodId: "method-member-oidc", created: true },
+  oidcLinkCancel: { cancelled: true },
   resolveAgentNativeAdminReturn: { agentId, namespaceId },
 };
 

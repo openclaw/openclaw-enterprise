@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-09 16:10"
-last_updated_session: "authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755"
+updated: "2026-11-10 00:20"
+last_updated_session: "authoring-run/44b77125-b2cd-40e8-b132-d912d3933ed7"
 ---
 
 # Bootstrap and human authentication flow
@@ -303,6 +303,9 @@ external method, initial Role binding, Group memberships and audits commit toget
 Existing accounts receive only missing Group memberships. The session transaction
 rechecks the resulting proof before issuing its cookie.
 
+Explicit self-service attachment follows the [OIDC account linking flow](oidc-account-linking.md).
+It proves both identities and returns here for ordinary session issuance.
+
 ## Debugging and Verification
 
 Run `tests/integration/` files with `node --test`.
@@ -353,6 +356,8 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 00:20: Link the new account-linking flow. (authoring-run/44b77125-b2cd-40e8-b132-d912d3933ed7 - a0730c3be)
 
 - 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
 

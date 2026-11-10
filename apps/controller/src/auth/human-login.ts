@@ -16,6 +16,7 @@ import {
 import {
   knownDeviceAccountState,
   ResourceConflictError,
+  ResourceStateConflictError,
   type PostgresHumanAuthentication,
   type HumanAuthenticationProof,
 } from "@openclaw-enterprise/occ";
@@ -60,6 +61,7 @@ interface ExternalProvider {
     code: string,
     codeVerifier: string,
     state: string,
+    authenticationStartedAt?: number,
   ): Promise<ProviderExchange>;
 }
 
@@ -134,7 +136,7 @@ function oidcProvider(
     callbackURL,
     authorizationURL: (secret, state, codeVerifier) =>
       oidcAuthorizationURL(config, state, codeVerifier, callbackURL, oidcNonce(secret, state)),
-    exchange: (secret, code, codeVerifier, state) =>
+    exchange: (secret, code, codeVerifier, state, authenticationStartedAt) =>
       exchangeOidcSubject(
         config,
         code,
@@ -142,6 +144,7 @@ function oidcProvider(
         callbackURL,
         oidcNonce(secret, state),
         deadlineMs,
+        authenticationStartedAt,
       ),
   };
 }
@@ -212,6 +215,39 @@ export function createHumanLogin(
     config.oidc === undefined ? undefined : oidcProvider(config.oidc, baseURL, providerDeadlineMs);
   const secure = new URL(baseURL).protocol === "https:";
   const bindingCookie = secure ? "__Host-occ_login_attempt" : "occ_login_attempt";
+  const linkCookie = secure ? "__Host-occ_account_link" : "occ_account_link";
+  const linkingEnabled = config.oidc?.linking?.enabled === true;
+  const linkPolicy = digest(
+    JSON.stringify({
+      oidc: config.oidc,
+      google: config.google,
+      password: config.passwordSignIn ?? "all",
+      linkingEnabled,
+    }),
+  );
+  function linkBrowser(value: string | null | undefined): string {
+    if (!linkingEnabled || !oidcLogin || !value || !/^[A-Za-z0-9_-]{43}$/.test(value)) {
+      throw rejected();
+    }
+    return value;
+  }
+  async function linkOperation<T>(browser: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      // A known refusal consumes the parent. Unknown database outcomes must not be retried.
+      if (error instanceof ResourceStateConflictError || error instanceof APIError) {
+        await state.cancelLink(digest(browser));
+        if (error instanceof ResourceStateConflictError) {
+          await state.recordDenied("EXTERNAL_IDENTITY_REJECTED", "oidc");
+          throw APIError.fromStatus("CONFLICT", {
+            message: "Linking could not be completed. Start again.",
+          });
+        }
+      }
+      throw error;
+    }
+  }
   const receiptCookie = secure ? "__Host-occ_login_receipt" : "occ_login_receipt";
   const receiptAttributes = { httpOnly: true, secure, sameSite: "strict" as const, path: "/" };
   const cookieAttributes = { httpOnly: true, secure, sameSite: "lax" as const, path: "/" };
@@ -466,21 +502,39 @@ export function createHumanLogin(
       start: createAuthEndpoint(`/oce/providers/${name}/start`, { method: "POST" }, async (ctx) =>
         admitStart.admit(externalKeys(ctx.headers), async () => {
           const attemptState = secret();
-          const browser = secret();
+          const purpose = (ctx.body as { linkPurpose?: unknown } | undefined)?.linkPurpose;
+          if (
+            purpose !== undefined &&
+            (name !== "oidc" || (purpose !== "owner" && purpose !== "candidate"))
+          ) {
+            throw rejected();
+          }
+          const browser = purpose === undefined ? secret() : linkBrowser(ctx.getCookie(linkCookie));
           const codeVerifier = secret();
           const startedAt = performance.now();
-          const attempt = await state.createAttempt({
-            stateHash: digest(attemptState),
-            browserHash: digest(browser),
-            providerId: provider.attemptProviderId,
-            callbackURL: provider.callbackURL,
-            codeVerifier,
-          });
+          const createAttempt = () =>
+            state.createAttempt(
+              {
+                stateHash: digest(attemptState),
+                browserHash: digest(browser),
+                providerId: provider.attemptProviderId,
+                callbackURL: provider.callbackURL,
+                codeVerifier,
+              },
+              purpose === undefined ? undefined : { policyId: linkPolicy, purpose },
+            );
+          const attempt =
+            purpose === undefined
+              ? await createAttempt()
+              : await linkOperation(browser, createAttempt);
           const url = await provider.authorizationURL(
             ctx.context.secret,
             attemptState,
             codeVerifier,
           );
+          if (purpose !== undefined) {
+            url.searchParams.set("max_age", "0");
+          }
           const maxAge = cookieLifetime(attempt.createdAt, attempt.expiresAt, startedAt);
           ctx.setCookie(bindingCookie, browser, {
             ...cookieAttributes,
@@ -527,6 +581,57 @@ export function createHumanLogin(
                 return refuseUnmatched(name);
               }
               const attemptId = loginAttemptId(ctx.context.secret, digest(stateValue));
+              if (attempt.linkPurpose !== undefined) {
+                const linkValue = linkBrowser(ctx.getCookie(linkCookie));
+                if (linkValue !== browser || name !== "oidc") {
+                  throw rejected();
+                }
+                return linkOperation(browser, async () => {
+                  await state.readLink(digest(browser), linkPolicy);
+                  ctx.setCookie(bindingCookie, "", { ...cookieAttributes, maxAge: 0 });
+                  if (error) {
+                    return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId);
+                  }
+                  const exchange = await provider.exchange(
+                    ctx.context.secret,
+                    code!,
+                    attempt.codeVerifier,
+                    stateValue,
+                    attempt.createdAt.getTime(),
+                  );
+                  if ("denial" in exchange) {
+                    return rejectExternal(name, exchange.denial, attemptId);
+                  }
+                  if (exchange.expiresAt === undefined) {
+                    throw rejected();
+                  }
+                  if (attempt.linkPurpose === "owner") {
+                    const snapshot = await state.snapshotExternal(
+                      provider.providerId,
+                      exchange.subject,
+                      attempt.createdAt,
+                    );
+                    if (!snapshot || "missing" in snapshot || "disabled" in snapshot) {
+                      return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId);
+                    }
+                    await state.proveLinkOwner(
+                      digest(browser),
+                      linkPolicy,
+                      snapshot.proof,
+                      new Date(exchange.expiresAt),
+                    );
+                  } else {
+                    await state.proveLinkCandidate(
+                      digest(browser),
+                      linkPolicy,
+                      provider.providerId,
+                      exchange.subject,
+                      new Date(exchange.expiresAt),
+                    );
+                  }
+                  return ctx.json({ linking: true });
+                });
+              }
               if (error) {
                 // RFC 6749 section 4.1.2.1: the provider reports its own failure.
                 if (error === "server_error" || error === "temporarily_unavailable") {
@@ -726,8 +831,75 @@ export function createHumanLogin(
   const plugin = {
     id: "oce-human-login",
     endpoints: {
+      oceLinkStart: createAuthEndpoint("/oce/link/start", { method: "POST" }, async (ctx) =>
+        admitStart.admit(externalKeys(ctx.headers), async () => {
+          if (!linkingEnabled || !oidcLogin) {
+            throw rejected();
+          }
+          const browser = secret();
+          const previous = ctx.getCookie(linkCookie);
+          const startedAt = performance.now();
+          const attempt = await state.startLink(
+            digest(browser),
+            linkPolicy,
+            oidcLogin.providerId,
+            previous ? digest(previous) : undefined,
+          );
+          ctx.setCookie(linkCookie, browser, {
+            ...cookieAttributes,
+            maxAge: cookieLifetime(attempt.createdAt, attempt.expiresAt, startedAt),
+          });
+          return ctx.json({ stage: "owner", expiresAt: attempt.expiresAt.getTime() });
+        }),
+      ),
+      oceLinkStatus: createAuthEndpoint("/oce/link/status", { method: "POST" }, async (ctx) => {
+        const browser = linkBrowser(ctx.getCookie(linkCookie));
+        return admitResult.admit(
+          externalKeys(ctx.headers, () => browser),
+          () =>
+            linkOperation(browser, async () =>
+              ctx.json(await state.readLink(digest(browser), linkPolicy)),
+            ),
+        );
+      }),
+      oceLinkCancel: createAuthEndpoint("/oce/link/cancel", { method: "POST" }, async (ctx) => {
+        const browser = linkBrowser(ctx.getCookie(linkCookie));
+        return admitResult.admit(
+          externalKeys(ctx.headers, () => browser),
+          async () => {
+            await state.cancelLink(digest(browser));
+            ctx.setCookie(linkCookie, "", { ...cookieAttributes, maxAge: 0 });
+            ctx.setCookie(bindingCookie, "", { ...cookieAttributes, maxAge: 0 });
+            return ctx.json({ cancelled: true });
+          },
+        );
+      }),
+      oceLinkConfirm: createAuthEndpoint("/oce/link/confirm", { method: "POST" }, async (ctx) => {
+        const browser = linkBrowser(ctx.getCookie(linkCookie));
+        return admitResult.admit(
+          externalKeys(ctx.headers, () => browser),
+          () =>
+            linkOperation(browser, async () => {
+              const result = await state.confirmLink(
+                digest(browser),
+                linkPolicy,
+                recoveryOnly ? "recovery-only" : "all",
+              );
+              ctx.setCookie(linkCookie, "", { ...cookieAttributes, maxAge: 0 });
+              ctx.setCookie(bindingCookie, "", { ...cookieAttributes, maxAge: 0 });
+              ctx.setCookie(receiptCookie, "", { ...receiptAttributes, maxAge: 0 });
+              deleteSessionCookie(ctx);
+              return ctx.json(result);
+            }),
+        );
+      }),
       ocePassword: createAuthEndpoint("/oce/password", { method: "POST" }, async (ctx) => {
-        const body = ctx.body as { email?: unknown; password?: unknown } | undefined;
+        const body = ctx.body as
+          { email?: unknown; password?: unknown; linking?: boolean } | undefined;
+        const browser = body?.linking ? linkBrowser(ctx.getCookie(linkCookie)) : undefined;
+        if (browser !== undefined) {
+          await linkOperation(browser, () => state.readLink(digest(browser), linkPolicy));
+        }
         if (
           typeof body?.email !== "string" ||
           body.email.length > 254 ||
@@ -746,11 +918,17 @@ export function createHumanLogin(
           // bad-credential answer and reads no account, so it is the same for every
           // email other than the recovery one, whether or not an account exists.
           await ctx.context.password.hash(password);
+          if (browser !== undefined) {
+            await state.cancelLink(digest(browser));
+          }
           return refusePassword();
         }
         const snapshot = await state.snapshotPassword(email);
         if (!snapshot?.proof.passwordHash) {
           await ctx.context.password.hash(password);
+          if (browser !== undefined) {
+            await state.cancelLink(digest(browser));
+          }
           return refusePassword();
         }
         if (
@@ -759,7 +937,16 @@ export function createHumanLogin(
             hash: snapshot.proof.passwordHash,
           }))
         ) {
+          if (browser !== undefined) {
+            await state.cancelLink(digest(browser));
+          }
           return refusePassword();
+        }
+        if (browser !== undefined) {
+          await linkOperation(browser, () =>
+            state.proveLinkOwner(digest(browser), linkPolicy, snapshot.proof),
+          );
+          return ctx.json({ linking: true });
         }
         const startedAt = performance.now();
         const session = await proofScope.run({ proof: snapshot.proof }, () =>
@@ -800,6 +987,11 @@ export function createHumanLogin(
           if (token) {
             await state.revokeSession(token);
           }
+          const linkValue = ctx.getCookie(linkCookie);
+          if (linkValue && /^[A-Za-z0-9_-]{43}$/.test(linkValue)) {
+            await state.cancelLink(digest(linkValue));
+          }
+          ctx.setCookie(linkCookie, "", { ...cookieAttributes, maxAge: 0 });
           deleteSessionCookie(ctx);
           return ctx.json({ success: true });
         },
@@ -833,6 +1025,7 @@ export function createHumanLogin(
             authorizationUrl: config.oidc.authorizationUrl,
           },
         }),
+    linkingEnabled,
     designateRecovery,
     // The controller also uses this owner for malformed-email refusals before account reads.
     recordPasswordDenial,

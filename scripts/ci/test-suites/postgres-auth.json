@@ -179,6 +179,12 @@
       "expectedTests": [
         "a guarded Console opens host-only Agent sessions bound to the browser, live parent and exact revision"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-oidc-account-linking.test.ts",
+      "expectedTests": [
+        "OIDC linking proves an existing owner before attaching an identity in PostgreSQL"
+      ]
     }
   ]
 }

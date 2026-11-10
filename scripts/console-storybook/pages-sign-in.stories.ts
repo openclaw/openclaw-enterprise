@@ -30,3 +30,17 @@ export const GoogleAccountDisabled = { ...story("googleAccountDisabled") };
 export const RecoveryOnlyAccountDisabled = { ...story("recoveryOnlyAccountDisabled") };
 export const RecoveryOnlyProviderUnavailable = { ...story("recoveryOnlyProviderUnavailable") };
 export const ProviderDiscoveryUnavailable = { ...story("providerDiscoveryUnavailable") };
+
+export const OIDCLinkOwner = { ...story("oidcLinkOwner") };
+
+export const OIDCLinkCandidate = { ...story("oidcLinkCandidate") };
+
+export const OIDCLinkConfirm = { ...story("oidcLinkConfirm") };
+
+export const OIDCLinkRecovery = { ...story("oidcLinkRecovery") };
+
+export const OIDCLinkExpired = { ...story("oidcLinkExpired") };
+
+export const OIDCLinkUncertain = { ...story("oidcLinkUncertain") };
+
+export const OIDCLinkLoading = { ...story("oidcLinkLoading") };

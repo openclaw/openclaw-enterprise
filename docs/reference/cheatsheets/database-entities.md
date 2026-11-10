@@ -622,6 +622,17 @@ Retains the fixed existing password recovery administrator for an Installation.
 - `principal_id`
 - `method_id`
 
+### `human_authentication_links`
+
+Browser-bound, five-minute [account-linking proofs](../authentication/account-linking.md).
+
+| Columns                                                                                                               | Purpose                                                                  |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `browser_hash`, `id`, `installation_id`, `policy_id`, `provider_id`                                                   | Browser binding, audit correlation and configured policy/identity scope. |
+| `created_at`, `expires_at`                                                                                            | Parent lifetime.                                                         |
+| `owner_user_id`, `owner_method_id`, `owner_principal_id`, `owner_version`, `owner_method_version`, `owner_expires_at` | Verified existing owner and freshness snapshot.                          |
+| `candidate_subject`, `candidate_expires_at`                                                                           | Verified candidate and proof expiry.                                     |
+
 ### `human_authentication_attempts`
 
 Stores one-use external-login attempts with browser binding and a maximum
@@ -636,6 +647,10 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+
+The optional `link_hash` and `link_purpose` columns bind a provider challenge to
+its parent link and its `owner` or `candidate` proof. Parent deletion removes
+these challenges.
 
 ### `native_browser_intents`
 

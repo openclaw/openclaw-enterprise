@@ -12,6 +12,8 @@ export interface IdTokenExpectation {
   readonly jwks: unknown;
   // Milliseconds since the epoch.
   readonly now: number;
+  /** Link proofs require a fresh, signed authentication time after this challenge. */
+  readonly authenticationStartedAt?: number;
 }
 
 const segmentPattern = /^[A-Za-z0-9_-]+$/;
@@ -122,6 +124,17 @@ export function verifyIdToken(
         (typeof claims.nbf !== "number" || claims.nbf > now + clockAllowanceSeconds))
     ) {
       return undefined;
+    }
+    if (expected.authenticationStartedAt !== undefined) {
+      const earliest = Math.floor(expected.authenticationStartedAt / 1000) - clockAllowanceSeconds;
+      if (
+        !Number.isSafeInteger(claims.auth_time) ||
+        (claims.auth_time as number) < earliest ||
+        (claims.auth_time as number) > now + clockAllowanceSeconds ||
+        (claims.iat as number) < earliest
+      ) {
+        return undefined;
+      }
     }
     if (expected.nonce.length === 0 || claims.nonce !== expected.nonce) {
       return undefined;

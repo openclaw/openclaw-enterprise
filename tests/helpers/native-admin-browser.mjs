@@ -1464,6 +1464,7 @@ export async function runOidcAgentChatScenario(context) {
     workspaceGateway: true,
     oidc: {
       issuer,
+      linking: true,
       enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
       clientId,
       clientSecret,
@@ -1493,22 +1494,45 @@ export async function runOidcAgentChatScenario(context) {
   // The supported account API enrolls both people in the configured Default
   // user group, which permits creation in this fresh default Namespace.
   const enroll = async (username, subject) => {
+    const password = randomUUID() + randomUUID();
     const account = await topology.adminRequest("POST", "/api/auth/accounts", {
       email: `${username}@example.test`,
-      password: randomUUID() + randomUUID(),
+      password,
     });
     assert.equal(account.status, 201, JSON.stringify(account.error));
     const current = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
     assert.equal(current.status, 200);
-    const attached = await topology.adminRequest(
-      "POST",
-      `/api/auth/accounts/${account.data.id}/providers/oidc`,
-      {
-        subject,
-        expectedVersion: current.data.version,
-      },
-    );
-    assert.equal(attached.status, 200, JSON.stringify(attached.error));
+    // A default user proves the existing password and a real fresh Keycloak identity.
+    // The account is attached through the public Console flow, with no administrator attach.
+    const ownerContext = await browser.newContext();
+    try {
+      const page = await ownerContext.newPage();
+      await page.goto(ingress.origin + "/console/");
+      await page.getByRole("button", { name: "Link OIDC to an existing account" }).click();
+      await page.getByLabel("Account email", { exact: true }).fill(`${username}@example.test`);
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Verify existing account" }).click();
+      await page.getByRole("button", { name: "Authenticate with Keycloak" }).click();
+      await page.waitForURL((url) => url.origin === new URL(issuer).origin);
+      await page.locator("#username").fill(username);
+      await page.locator("#password").fill(secrets.users[username].password);
+      await page.locator("#kc-login").click();
+      await page.getByRole("button", { name: "Confirm link" }).waitFor();
+      assert.ok(await page.getByText(`Subject: ${subject}`, { exact: true }).isVisible());
+      const confirmation = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/auth/oidc/link/confirm",
+      );
+      await page.getByRole("button", { name: "Confirm link" }).click();
+      assert.equal((await confirmation).status(), 200);
+      await page.getByRole("button", { name: "Continue with Keycloak" }).waitFor();
+      const attached = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
+      assert.equal(attached.status, 200);
+      assert.equal(attached.data.principalId, current.data.principalId);
+      assert.equal(attached.data.version, current.data.version + 1);
+      assert.ok(attached.data.methods.some((method) => method.subject === subject));
+    } finally {
+      await ownerContext.close();
+    }
     return account.data;
   };
   const alice = await enroll("alice", "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001");

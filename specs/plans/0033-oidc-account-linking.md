@@ -5,7 +5,7 @@ rfc: ../rfcs/0033-oidc-account-linking.md
 # Implementation plan: OIDC account linking
 
 - **ID:** RFC-0033
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Owner:** kevinlin-openai
 - **Authority:** [RFC-0033](../rfcs/0033-oidc-account-linking.md)
 - **Source baseline:** `af35ce905`
@@ -38,9 +38,9 @@ on the implementation PR, with the tested revision and verification limits.
 
 | Required outcome  | Real check and prerequisites                                                                                                               | Result       |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------ |
-| AC-1, AC-2, AC-3  | Controller and PostgreSQL with a signed-token IdP; installed Keycloak/OIDC Agent scenario                                                  | Not run      |
-| AC-4, AC-5        | Two controllers sharing disposable PostgreSQL, existing fault harness                                                                      | Not run      |
-| AC-6              | Rebuilt Storybook and supported Console controls                                                                                           | Not run      |
+| AC-1, AC-2, AC-3  | Controller and PostgreSQL with a signed-token IdP; installed Keycloak/OIDC Agent scenario                                                  | Pending live proof |
+| AC-4, AC-5        | Two controllers sharing disposable PostgreSQL, existing fault harness                                                                      | Passed: two-controller PostgreSQL suite |
+| AC-6              | Rebuilt Storybook and supported Console controls                                                                                           | Rebuilt previews inspected; final media pending |
 | GitHub acceptance | Existing authorized GitHub test app and account, qualified OIDC broker, manually created OCE account, deployed Agent and actual model chat | Not run      |
 | Video evidence    | Record the live GitHub-backed linking/sign-in/chat workflow, upload native GitHub attachment, verify playback                              | Not recorded |
 
@@ -52,7 +52,9 @@ broker without weakening RFC-0033's proof requirements.
 
 ## Delivery record
 
-Implementation and verification pending. Temporary credentials and media stay
+Implementation is under validation. PostgreSQL linking, freshness, conflict,
+revocation, rollback and lost-acknowledgement checks pass. Live GitHub and Agent
+verification remains pending. Temporary credentials and media stay
 outside the checkout. Preserve unrelated user edits in RFC-0032.
 
 ## Manual Notes
