@@ -242,25 +242,23 @@ cluster or model runtime and supplies no installation receipt.
 ## Select the prepared connected lane
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the manual `egress-connected` CLI lane, outside CI and GitHub dispatch.
-Its default path requires an owner accepting fresh static sources. Bundled
-retirement requires the [A-to-B upgrade procedure](static-egress-upgrade.md).
-Both need prepared, authenticated controllers and a qualified supplier gateway.
-Missing selected inputs fail.
+with the manual `egress-connected` lane, outside CI/GitHub dispatch.
+Use an owner accepting fresh sources, or the
+[A-to-B procedure](static-egress-upgrade.md) for bundled retirement.
+Use authenticated controllers.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
-NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).
-[Migrate a dedicated](postgresql.md) `openclaw_k8s_*` database, then run the controller
-and observer as `occ_app`. The test compares the database Installation with the controller's.
+NetworkPolicies and the [OpenShell prerequisites](openshell.md).
+[Migrate](postgresql.md) a dedicated `openclaw_k8s_*` database; run controller and observer as
+`occ_app` with matching Installations.
 
 Select immutable product and supplier images agreeing on physical namespace
 mapping, loaded-enforcement readiness, finite Responses protection and zero
 automatic retries, including the startup probe. Missing contracts and legacy
 gateway-copy setups cannot qualify.
 
-Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
-The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
-exact contract:
+Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute private JSON path.
+The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing inputs:
 
 | Input                                                                                                | Required preparation                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -273,9 +271,14 @@ exact contract:
 | `openShellBackend`                                                                                   | HTTPS `endpoint`, absolute `rootCertificatePath`, and exactly `auth: { mode: "bearerTokenFile", path: "…" }` or `auth: { mode: "mtls", certificatePath: "…", privateKeyPath: "…" }`. All auth paths must be absolute; no insecure transport. |
 | `provider`                                                                                           | Fixture-only HTTPS `.test` or exact `host.openshell.internal` `origin` ending `/v1`, explicit reachable IP `bindHost`, matching high `bindPort`, and absolute `certificatePath`/`privateKeyPath`.                                            |
 
-Prepare the synthetic provider certificate, supervisor DNS, routing, trust and scoped
-egress before the test binds its listener. `host.openshell.internal` must resolve there
-and appear in the certificate SAN. An mTLS input requires actual Backend mTLS support.
+Before listening, prepare the provider certificate, supervisor DNS, routing,
+trust and scoped egress. `host.openshell.internal` must resolve there and match the
+certificate SAN. mTLS requires Backend support.
+
+Before admission, configure the Installation
+[model provider](../reference/drivers/kubernetes-compute/model-provider.md) with
+`protocol: openai-responses` and `baseUrl` equal to `provider.origin`; retain both
+across A-to-B. Source authorization cannot select routing.
 
 In the runner's private environment file, set `OCC_TEST_EGRESS_CONNECTED_CONTROLLER`
 to JSON containing the prepared `apiOrigin`, `namespaceId`, `model` and `providerOrigin`.
@@ -290,6 +293,11 @@ Set `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
 This lane requires execution authority, all five supplier capabilities, and a
 loaded managed policy with no caller executable list. Run it from the candidate
 checkout named by `oceCommit`.
+
+The qualified OpenShell supplier requires Helm value
+`gatewayConfig["openshell.gateway"].config_delivery_mode: push` (default: `poll`)
+for execution enrollment. Complete Gateway rollout before admission.
+This does not qualify stock images.
 
 With those prerequisites ready, select a fresh result directory:
 
