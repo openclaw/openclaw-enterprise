@@ -394,9 +394,14 @@ export function registerInstallationKeycloak() {
               ({ name, value }) => name.endsWith(".session_token") && value,
             );
             assert.ok(sessionCookie);
-            assert.equal(sessionCookie.domain, fixture.consoleHost);
+            // The default session spans this cluster's Console and Agent hosts;
+            // its scope must not extend to another development installation.
+            assert.equal(sessionCookie.name, "__Secure-openclaw_occ_shared.session_token");
+            assert.equal(sessionCookie.domain, `.${fixture.cluster}.oce.localhost`);
             assert.equal(sessionCookie.secure, true);
             assert.equal(sessionCookie.httpOnly, true);
+            assert.equal(sessionCookie.path, "/");
+            assert.equal(sessionCookie.sameSite, "Lax");
 
             const endpoint = {
               hostname: fixture.consoleHost,
