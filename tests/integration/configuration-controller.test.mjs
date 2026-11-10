@@ -3876,6 +3876,12 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
   });
 }
 
+// A default model setting off the openai provider, and the refusal that names it.
+const offDefaults = (path, settings, baseDefaults = runtimeDefaults) => [
+  { agents: { defaults: { ...baseDefaults, ...settings } } },
+  setting(`agents.defaults.${path}`, openaiOnly),
+];
+
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
   // for a fallback. The rules depend only on the Configuration, so no Agent is consulted.
@@ -3896,14 +3902,10 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     "agents.defaults.model.fallbacks",
     "must use the primary model's provider",
   );
-  // A default model setting off the openai provider, and the refusal that names it.
-  const offDefaults = (path, settings) => [
-    { agents: { defaults: { ...runtimeDefaults, ...settings } } },
-    setting(`agents.defaults.${path}`, openaiOnly),
-  ];
+  const offProviderImageModel = offDefaults("imageModel", { imageModel: other });
   const offProvider = [
     offDefaults("subagents.model", { subagents: { model: other } }),
-    offDefaults("imageModel", { imageModel: other }),
+    offProviderImageModel,
     offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
     offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
@@ -4004,10 +4006,9 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   // Finding 1310: deployment reads an OpenRouter compatibility selector as save does, so a row
   // stored before the rule is refused by name before a revision exists.
   await t.test("a stored OpenRouter compatibility selector", async () => {
-    const values = {
-      agents: { defaults: { ...runtimeDefaults, heartbeat: { model: "openrouter:auto" } } },
-    };
-    const message = setting("agents.defaults.heartbeat.model", openaiOnly);
+    const [values, message] = offDefaults("heartbeat.model", {
+      heartbeat: { model: "openrouter:auto" },
+    });
     await writePastOcc(configurationDriver, configurationId, values);
     assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message);
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
@@ -4100,12 +4101,13 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     ];
     const memberAgentRead = await request(context.app, "GET", agentPath);
     assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-    const refused = await answers(offProvider[1][0], 400);
-    assert.equal(refused.message, offProvider[1][1]);
+    const [imageValues, imageMessage] = offProviderImageModel;
+    const refused = await answers(imageValues, 400);
+    assert.equal(refused.message, imageMessage);
     await answers(valid, 200);
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
-    for (const values of [valid, offProvider[1][0]]) {
+    for (const values of [valid, imageValues]) {
       const denied = await answers(values);
       assert.equal(denied.code, "FORBIDDEN");
     }
@@ -4134,16 +4136,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     models: { "openai/{{ vars.model }}": { agentRuntime: { id: "openclaw" } } },
   };
   const refused = [
-    [
-      { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
-      setting("agents.defaults.imageModel", openaiOnly),
-    ],
-    [
-      {
-        agents: { defaults: { ...templated, subagents: { model: "anthropic/{{ vars.model }}" } } },
-      },
-      setting("agents.defaults.subagents.model", openaiOnly),
-    ],
+    offDefaults("imageModel", { imageModel: other }),
+    offDefaults(
+      "subagents.model",
+      { subagents: { model: "anthropic/{{ vars.model }}" } },
+      templated,
+    ),
     [
       {
         agents: {
@@ -4178,14 +4176,11 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       setting("agents.defaults.pdfModel", "must be provider/model references"),
     ],
     // Finding 1306: an allowlist entry is checked like a selection, a written provider at save.
-    [
-      {
-        agents: {
-          defaults: { ...templated, modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } },
-        },
-      },
-      setting("agents.defaults.modelPolicy.allow", openaiOnly),
-    ],
+    offDefaults(
+      "modelPolicy.allow",
+      { modelPolicy: { allow: ["anthropic/{{ vars.model }}"] } },
+      templated,
+    ),
     [
       {
         agents: { defaults: { ...runtimeDefaults, modelPolicy: { allow: ["{{ vars.count }}"] } } },
@@ -4193,10 +4188,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       setting("agents.defaults.modelPolicy.allow", "must be provider/model references"),
     ],
     // Finding 1310: an OpenRouter compatibility selector names the openrouter provider.
-    [
-      { agents: { defaults: { ...templated, utilityModel: "openrouter:free" } } },
-      setting("agents.defaults.utilityModel", openaiOnly),
-    ],
+    offDefaults("utilityModel", { utilityModel: "openrouter:free" }, templated),
     // A fallback and a policy key whose provider waits on a variable leave the rest checked.
     [
       {
