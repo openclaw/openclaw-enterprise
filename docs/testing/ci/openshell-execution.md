@@ -51,7 +51,13 @@ inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
 claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
 Each prepares its own shared resources and runs its assigned manifest files
-serially. The Full Integration Aggregate requires both results for the same
+serially. Each full lane includes source-build cases. The action selects one
+job-owned builder for the lane, and preparation passes that builder and
+`SOURCE_DATE_EPOCH=0` to its tests. The shared stack's image build populates that
+builder even if the Docker engine already holds the image; there is no separate
+warm build. Later installer builds still compile from the checked-out source and
+can reuse matching layers. Explicit image overrides do not populate a build
+cache. The Full Integration Aggregate requires both results for the same
 checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
