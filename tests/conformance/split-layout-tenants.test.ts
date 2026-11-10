@@ -429,11 +429,9 @@ test("export reads every tenant resource the import needs, without Secret values
     const binding = tenant.accessBindings.find(({ id }) => id === seeded.binding.id)!;
     const agent = tenant.agents.find(({ id }) => id === seeded.agent.id)!;
     role.id = opaqueId;
-    binding.id = opaqueId;
     binding.roleId = opaqueId;
-    binding.subjectId = opaqueId;
+    binding.subjectId = agent.servicePrincipalId;
     binding.resourceId = opaqueId;
-    agent.servicePrincipalId = opaqueId;
     assert.deepEqual(checkImport(compatible, { "team-a": { "model-key": "synthetic" } }), []);
   }
 
@@ -1981,4 +1979,74 @@ test("discard preserves encoded opaque Role IDs through real HTTP deletion", asy
     (await fixture.api.expect("GET", `/namespaces/${namespace.id}/iam/roles`)).data,
     [],
   );
+});
+
+test("import refuses ambiguous source identities before requests or map saves", async (t) => {
+  const fixture = await createFixture();
+  const source = await created(fixture, "/namespaces", { name: "map-key-source" });
+  const target = await created(fixture, "/namespaces", { name: "map-key-target" });
+  await markReady(fixture, source.id);
+  await markReady(fixture, target.id);
+  // Existing IAM Role IDs are opaque and scoped independently of Namespace IDs.
+  // Public Role creation generates an ID; the repository can retain this valid collision.
+  await fixture.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.iamPolicy.createRole({
+      id: source.id,
+      namespaceId: source.id,
+      name: "Role sharing a Namespace ID",
+      permissions: [{ action: "read", resourceKind: "configuration" }],
+    }),
+  );
+  const role = createdResource(
+    (await fixture.api.expect("GET", `/namespaces/${source.id}/iam/roles/${source.id}`)).data,
+  );
+  assert.equal(role.id, source.id);
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === source.id);
+  assert.equal(bundle.namespaces[0]!.roles[0]!.id, source.id);
+
+  for (const [label, initialIds] of [
+    ["empty map", {}],
+    ["valid Namespace destination", { [source.id]: target.id }],
+    ["opaque destination", { [source.id]: "role-destination" }],
+  ] as const) {
+    await t.test(label, async () => {
+      const state: SavedState = { ids: { ...initialIds }, deployed: [] };
+      const before = structuredClone(state);
+      let requests = 0;
+      let saves = 0;
+      const api = createOccApi({
+        baseUrl: "https://console.oce.localhost",
+        fetchImpl(url, init) {
+          requests += 1;
+          return asAdministrator(fixture)(url, init);
+        },
+      });
+      // One flat entry cannot describe both a Namespace and a Role destination.
+      // Even a valid Namespace mapping would otherwise silently skip Role creation.
+      await assert.rejects(
+        importTenants(
+          api,
+          bundle,
+          {},
+          {
+            state,
+            save: () => {
+              saves += 1;
+            },
+            names: { "map-key-source": "map-key-target" },
+            deploy: false,
+          },
+        ),
+        /source IDs overlap/u,
+      );
+      assert.equal(requests, 0);
+      assert.equal(saves, 0);
+      assert.deepEqual(state, before);
+      assert.deepEqual(
+        (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data,
+        [],
+      );
+    });
+  }
 });

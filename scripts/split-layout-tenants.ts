@@ -1019,9 +1019,19 @@ export async function importTenants(
       `ID map (--map).ids: expected nonempty string values and keys of at most 200 code points. ${recoverInput}`,
     );
   }
-  const mappedKinds = new Map<unknown, string>(
-    allNamespaces.map((namespace) => [namespace.id, "namespaces"]),
-  );
+  const mappedKinds = new Map<unknown, { kind: string; namespaceId: unknown }>();
+  const registerIdentity = (id: unknown, kind: string, namespaceId: unknown) => {
+    const previous = mappedKinds.get(id);
+    if (previous && (previous.kind !== kind || previous.namespaceId !== namespaceId)) {
+      throw new InvalidMigrationDataError(
+        `Bundle source IDs overlap across resource kinds or Namespaces; the ID map cannot represent both identities. ${recoverInput}`,
+      );
+    }
+    mappedKinds.set(id, { kind, namespaceId });
+  };
+  for (const namespace of allNamespaces) {
+    registerIdentity(namespace.id, "namespaces", namespace.id);
+  }
   for (const namespace of namespaces) {
     for (const field of [
       "agents",
@@ -1034,15 +1044,15 @@ export async function importTenants(
       "accessBindings",
     ]) {
       for (const resource of bundleRecords(namespace, field)) {
-        mappedKinds.set(resource.id, field);
+        registerIdentity(resource.id, field, namespace.id);
         if (field === "agents" && resource.servicePrincipalId !== undefined) {
-          mappedKinds.set(resource.servicePrincipalId, "servicePrincipalId");
+          registerIdentity(resource.servicePrincipalId, "servicePrincipalId", namespace.id);
         }
       }
     }
   }
   for (const [key, value] of Object.entries(savedIds)) {
-    requireResourceId(value, mappedKinds.get(key) ?? "opaque", "ID map (--map).ids");
+    requireResourceId(value, mappedKinds.get(key)?.kind ?? "opaque", "ID map (--map).ids");
   }
   const ids = new Map<unknown, unknown>(Object.entries(savedIds));
   // Each source tenant must keep a separate destination, including on a resumed import.

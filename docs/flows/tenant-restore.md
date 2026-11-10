@@ -70,7 +70,10 @@ their 1–200-code-point contract, without trimming whitespace. Invalid private 
 name without quoting its contents.
 
 The importer rejects duplicate source Namespace IDs across the whole bundle,
-including skipped tenants, before any request or map save. It checks required
+including skipped tenants, before any request or map save. Its flat ID map also
+refuses defining source IDs shared across resource kinds or selected Namespaces;
+ordinary references to one identity may repeat. Export and discard still preserve
+and address those opaque identities independently. It checks required
 Secret values and refuses selected sources that share a destination name or
 saved destination ID. Saved destinations remain
 reserved even when their sources are skipped. Every saved ID must be a nonempty
@@ -154,3 +157,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 - 2026-11-10 17:32: Validate successful OCC envelopes and preserve unverified workspace reads as unread. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 9fac3e11786d23b9ebb73cf2eece61a0257157dc)
 
 - 2026-11-10 17:43: Preserve exact IAM identifiers, preflight destructive URLs and stop credentialed redirects. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 03e992cea59ddd82b0f0bf1ecbb3a70c5a45f596)
+
+- 2026-11-10 17:52: Refuse ambiguous source identities before creating an import ID map. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - f2a43c7c0195b23eb8e21bf2252caa3d5c4fd795)
