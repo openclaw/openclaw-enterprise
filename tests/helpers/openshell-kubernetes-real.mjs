@@ -1,4 +1,5 @@
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -165,6 +166,34 @@ export function registerOpenShellInstallationCleanups(context, operations) {
   if (stopped !== undefined) {
     throw stopped;
   }
+}
+
+export class OpenShellDeploymentFailedError extends Error {
+  constructor(revisionId, code) {
+    // Only emit codes from the controller's fixed deployment failure vocabulary.
+    const reason =
+      typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code) ? code : undefined;
+    super(
+      `OpenShell revision ${revisionId} deployment failed${reason === undefined ? "" : ` (${reason})`}.`,
+    );
+    this.code = reason;
+  }
+}
+
+export function waitForOpenShellRevisionActivation(waitFor, { request, agentPath, revisionId }) {
+  return waitFor(`OpenShell revision ${revisionId} activation`, async () => {
+    const observed = await request("GET", agentPath);
+    assert.equal(observed.status, 200, "OpenShell Agent status read failed.");
+    if (observed.data.activeRevisionId === revisionId) {
+      return observed.data;
+    }
+    const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+    assert.equal(deployment.status, 200, "OpenShell deployment status read failed.");
+    if (deployment.data.status === "failed") {
+      throw new OpenShellDeploymentFailedError(revisionId, deployment.data.error?.code);
+    }
+    return undefined;
+  });
 }
 
 // One poll of the gateway-outage proof: the revision's work back in `queued` after a pass, then

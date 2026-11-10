@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import type {
@@ -11,6 +13,7 @@ import {
   openShellEgressConfiguration,
   OpenShellCredentialProxyDriver,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { wirePolicy } from "../../apps/controller/src/drivers/egress-proxy/openshell-wire-policy.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -35,6 +38,14 @@ function artifact(): OpenShellNetworkPolicyRule {
         access: "read_only",
       },
     ],
+  };
+}
+
+function npmRegistry(): OpenShellNetworkPolicyRule {
+  return {
+    name: "node-packages",
+    binaries: [{ path: "/usr/local/bin/node" }],
+    endpoints: [{ ...artifact().endpoints[0]!, host: "registry.npmjs.org" }],
   };
 }
 
@@ -231,6 +242,153 @@ test("protected Git compilation carries the complete frozen artifact map without
   const absent = { ...revision };
   delete absent.sandboxPolicy;
   assert.deepEqual(openShellProtectedCodexArtifacts(absent), {});
+});
+
+test("protected Git compiles the admitted Node registry read with encoded slashes", (t) => {
+  const registry = npmRegistry();
+  const codex = artifact();
+  const ambient = { ...codex, name: "ambient" };
+  const driver = sandbox(t, [registry, codex, ambient], [registry.name, codex.name]);
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  const revision = protectedRevision(snapshot);
+  const options = {
+    middlewareName: "artifact-exchange",
+    repositoryMiddlewareName: "oce-prepared-git",
+    authorityScope: "execution" as const,
+  };
+  const compiled = openShellEgressConfiguration(revision.egressPlan!, options, revision);
+  const endpoint = {
+    host: "registry.npmjs.org",
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+  };
+  const rule = {
+    name: registry.name,
+    binaries: [{ path: "/usr/local/bin/node" }],
+    endpoints: [endpoint],
+  };
+  assert.deepEqual(snapshot.defaults[registry.name], rule);
+  assert.deepEqual(compiled.network_policies, {
+    [codex.name]: snapshot.defaults[codex.name],
+    [registry.name]: { ...rule, endpoints: [{ ...endpoint, allow_encoded_slash: true }] },
+  });
+  const gitOnly = openShellEgressConfiguration(
+    revision.egressPlan!,
+    options,
+    protectedRevision(sandbox(t, [registry]).admitProtectedCodexArtifactPolicy(1).snapshot),
+  );
+  assert.deepEqual(gitOnly.network_policies, {});
+  assert.deepEqual(compiled.network_middlewares, gitOnly.network_middlewares);
+  assert.equal(Object.hasOwn(compiled, "providers"), false);
+
+  // OCE's gRPC policy encoder and readback comparison must preserve a true opt-in.
+  const controller = new URL("../../apps/controller/", import.meta.url);
+  const require = createRequire(new URL("package.json", controller));
+  const loader = require("@grpc/proto-loader") as {
+    loadSync(
+      path: string,
+      options: { keepCase: true; enums: StringConstructor; defaults: false; oneofs: true },
+    ): Record<string, { serialize(value: unknown): Buffer; deserialize(value: Buffer): unknown }>;
+  };
+  const messages = loader.loadSync(
+    fileURLToPath(new URL("src/drivers/sandbox/proto/openshell-gateway.proto", controller)),
+    { keepCase: true, enums: String, defaults: false, oneofs: true },
+  );
+  const policy = messages["openshell.v1.SandboxPolicy"]!;
+  const readback = (value: unknown) => wirePolicy(policy.deserialize(policy.serialize(value)));
+  assert.deepEqual(readback(compiled), wirePolicy(compiled));
+  assert.notDeepEqual(
+    readback({ ...compiled, network_policies: snapshot.defaults }),
+    wirePolicy(compiled),
+  );
+
+  const modelSource = {
+    method: "credential_source",
+    sourceId: "model-source",
+    credentialGatewayId: "artifact-credentials",
+    sourceType: "openai",
+    loginMode: "api_key",
+  } as const;
+  const plan = { ...revision.egressPlan!, harnessCredentialSource: modelSource };
+  const withModel = {
+    ...revision,
+    egressPlan: plan,
+    harnessAuth: modelSource,
+    harness: {
+      ...revision.harness,
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://model.example.test/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    },
+  } as const;
+  assert.deepEqual(openShellEgressConfiguration(plan, options, withModel), compiled);
+  assert.throws(
+    () =>
+      openShellEgressConfiguration(plan, options, {
+        ...withModel,
+        harness: {
+          ...withModel.harness,
+          configuration: {
+            modelProvider: {
+              ...withModel.harness.configuration.modelProvider,
+              baseUrl: "https://registry.npmjs.org/v1",
+            },
+          },
+        },
+      }),
+    (error: unknown) =>
+      error instanceof ConfigurationValidationError &&
+      error.error.details[0].message?.includes("cannot share its endpoint") === true,
+  );
+
+  // An operator cannot inject the compiled flag into a rehydrated declaration.
+  assert.throws(
+    () =>
+      openShellProtectedCodexArtifacts({
+        ...revision,
+        sandboxPolicy: {
+          ...snapshot,
+          defaults: {
+            [registry.name]: { ...rule, endpoints: [{ ...endpoint, allow_encoded_slash: true }] },
+          },
+        },
+      }),
+    ConfigurationValidationError,
+  );
+});
+
+test("the Node registry admission refuses other binaries, destinations, and conflicting artifact rules", async (t) => {
+  const registry = npmRegistry();
+  const endpoint = registry.endpoints[0]!;
+  const cases: Array<[string, OpenShellNetworkPolicyRule[]]> = [
+    ["other binary", [{ ...registry, binaries: [{ path: "/usr/bin/node" }] }]],
+    ["mixed binaries", [{ ...registry, binaries: [...registry.binaries, { path: native }] }]],
+    ["other host", [{ ...registry, endpoints: [{ ...endpoint, host: "registry.example.test" }] }]],
+    ["other port", [{ ...registry, endpoints: [{ ...endpoint, ports: [8443] }] }]],
+    ["multiple endpoints", [{ ...registry, endpoints: [endpoint, artifact().endpoints[0]!] }]],
+    ["write access", [{ ...registry, endpoints: [{ ...endpoint, access: "read_write" }] }]],
+    ["TLS bypass", [{ ...registry, endpoints: [{ ...endpoint, tls: "skip" }] }]],
+    ["same host with a Codex rule", [registry, { ...artifact(), endpoints: [endpoint] }]],
+  ];
+  for (const [name, rules] of cases) {
+    await t.test(name, (context) => {
+      const driver = sandbox(
+        context,
+        rules,
+        rules.map(({ name }) => name),
+      );
+      assert.throws(
+        () => driver.admitProtectedCodexArtifactPolicy(1),
+        ConfigurationValidationError,
+      );
+    });
+  }
 });
 
 test("rehydrated artifact authority refuses an invalid scope, identity, additions or credential field", async (t) => {
