@@ -90,7 +90,7 @@ async function assertAdmissionUnchanged(f, before) {
   assert.deepEqual({ ...after, audit: [] }, { ...before, audit: [] });
 }
 
-test("a retired OpenShell owner refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
+test("bundled OpenShell startup refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
   for (const gatewayOnly of [false, true]) {
     const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
     const before = await admissionSnapshot(f);
@@ -193,7 +193,7 @@ test("a retired OpenShell owner refuses mixed static CREATE before material or r
   }
 });
 
-test("a retired OpenShell owner refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
+test("bundled OpenShell startup refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
   let clock = Date.now();
   const f = await staticEgressAdmissionFixture(t, {
     includeLegacy: true,

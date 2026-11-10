@@ -1,3 +1,5 @@
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -90,7 +92,7 @@ async function buildStaticEgressFixture(
     ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
-    // Only the admission fixture marks its owner; execution fixtures stay unmarked.
+    // Admission uses production composition; execution retains an already admitted owner.
     admissionOnly = false,
     gatewayOnly = false,
     protectedSourceOnly = false,
@@ -464,32 +466,70 @@ async function buildStaticEgressFixture(
   );
   t.after(() => backend.client.close());
   const egressOptions = { middlewareName: "oce-authority", authorityScope: "execution" };
-  const sandbox = new OpenShellSandboxDriver(
-    {
-      egress: egressOptions,
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
+  let admissionDrivers;
+  if (admissionOnly) {
+    // Exercise startup's retirement selection, not a policy recreated by the fixture.
+    const base = createCredentialProxyInstallationConfiguration();
+    const configuration = {
+      ...base,
+      backend: [
+        {
+          ...base.backend[0],
+          id: backend.id,
+          configuration: {
+            ...base.backend[0].configuration,
+            endpoint: `https://127.0.0.1:${gatewayPort}`,
+            rootCertificatePath: certPath,
+          },
+        },
+      ],
+    };
+    const path = join(directory, "installation.json");
+    await writeFile(path, JSON.stringify(configuration));
+    const loaded = await loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: path },
+      createOpenShellBackend: () => backend,
+    });
+    assert.ok(loaded?.protectedDriver);
+    assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
+    assert.ok(loaded.proxyDriver instanceof OpenShellCredentialProxyDriver);
+    assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
+    admissionDrivers = {
+      owner: loaded.protectedDriver,
+      sandbox: loaded.sandboxDriver,
+      proxy: loaded.proxyDriver,
+      catalog: loaded.credentialGatewayDriver,
+    };
+  }
+  const sandbox =
+    admissionDrivers?.sandbox ??
+    new OpenShellSandboxDriver(
+      {
+        egress: egressOptions,
+        gateway: { workspaceMode: "operator" },
+        kubernetes: {
+          runtimeClassName: "openshell-sandbox",
+          serviceAccount: { mode: "gatewayConfigured" },
+          sandboxDataMount: {
+            subPath: "workspace",
+            mountPath: "/sandbox/enterprise",
+            readOnly: false,
+          },
+        },
+        policy: {
+          process: { runAsUser: "1000", runAsGroup: "1000" },
+          networkPolicies: [
+            {
+              name: "inference",
+              endpoints: [{ host: "provider.example.test", ports: [443] }],
+              binaries: [{ path: "/usr/bin/model-client" }],
+            },
+          ],
         },
       },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "inference",
-            endpoints: [{ host: "provider.example.test", ports: [443] }],
-            binaries: [{ path: "/usr/bin/model-client" }],
-          },
-        ],
-      },
-    },
-    { id: "openshell-sandbox", backend },
-  );
+      { id: "openshell-sandbox", backend },
+    );
   const preparedTokens = new TokenService();
   const owner = createPreparedGitHub
     ? await createPreparedGitHub({ secretDriver, tokenService: preparedTokens })
@@ -537,20 +577,24 @@ async function buildStaticEgressFixture(
     protocol: "openai-responses",
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
   };
-  const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    id: proxyDriverId,
-    preparedProviders: preparedProvider
-      ? [preparedProvider]
-      : owner
-        ? [githubMetadataProvider]
-        : [],
-    backend,
-    sandbox,
-  });
-  const catalog = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
-  );
+  const egress =
+    admissionDrivers?.proxy ??
+    new OpenShellCredentialProxyDriver(egressOptions, {
+      id: proxyDriverId,
+      preparedProviders: preparedProvider
+        ? [preparedProvider]
+        : owner
+          ? [githubMetadataProvider]
+          : [],
+      backend,
+      sandbox,
+    });
+  const catalog =
+    admissionDrivers?.catalog ??
+    new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/model-client"] },
+      { id: "openshell-credentials", backend },
+    );
   const gatewayEffects = [];
   for (const method of ["registerSource", "updateSource", "removeSource"]) {
     const original = catalog[method].bind(catalog);
@@ -597,26 +641,17 @@ async function buildStaticEgressFixture(
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
-  // Resolve the real catalog ref so baseline comparisons fail on behavior, not a new export.
-  const retiredStaticProviderRefs = [];
-  if (admissionOnly) {
-    const provider = egress.sourceControl.providers.find(
-      (entry) => entry.ref.id === "openai-static-https",
+  const installedDriver =
+    admissionDrivers?.owner ??
+    new InstalledDriver(
+      {
+        id: sandbox.id,
+        implementation: sandbox.implementation,
+        configuration: egressOptions,
+      },
+      { capabilities: { sandbox, credential_proxy: egress } },
+      { sandbox: sandbox.id, credential_proxy: egress.id },
     );
-    assert.ok(provider);
-    assert.deepEqual(provider.ref, { id: "openai-static-https", generation: 3 });
-    retiredStaticProviderRefs.push(provider.ref);
-  }
-  const installedDriver = new InstalledDriver(
-    {
-      id: sandbox.id,
-      implementation: sandbox.implementation,
-      configuration: egressOptions,
-      ...(admissionOnly ? { retiredStaticProviderRefs } : {}),
-    },
-    { capabilities: { sandbox, credential_proxy: egress } },
-    { sandbox: sandbox.id, credential_proxy: egress.id },
-  );
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
   namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
