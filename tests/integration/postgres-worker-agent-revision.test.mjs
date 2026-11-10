@@ -3283,6 +3283,7 @@ for (const refusal of [
       new ActivationFailedError(
         "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
         "The Codex Harness reports managed permission requirements incompatible with activation.",
+        ["named-profile-denied", "reviewer-denied"],
       ),
     error: {
       code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
@@ -3290,6 +3291,7 @@ for (const refusal of [
         "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     },
     cause: "ActivationFailedError",
+    diagnosticFailure: "named-profile-denied_reviewer-denied",
   },
   {
     label: "whose private Secret write Kubernetes refuses with 403",
@@ -3366,8 +3368,18 @@ for (const refusal of [
           )
           .at(-1);
         assert.deepEqual(
-          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+          {
+            outcome: last?.outcome,
+            code: last?.code,
+            cause: last?.cause,
+            failure: last?.failure,
+          },
+          {
+            outcome: "permanent",
+            code: refusal.error.code,
+            cause: refusal.cause,
+            failure: refusal.diagnosticFailure,
+          },
         );
       },
     );

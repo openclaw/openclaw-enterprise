@@ -430,27 +430,31 @@ test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes repor
     phase: "Failed",
     logs: `${JSON.stringify({ event: "bootstrap-volume.rejected", error: "mounted root is not fresh" })}\n`,
   });
-
+  // Copying the diagnostic into Bash must preserve paths with shell metacharacters.
+  const selectedKubeconfig = join(directory, "kube config 'quoted' $literal");
+  await writeFile(selectedKubeconfig, await readFile(kubeconfig), { mode: 0o600 });
+  const env = { ...compileCacheEnvironment, PATH: commandPath(directory) };
+  const run = execute(
+    helper,
+    [
+      "--kubeconfig",
+      selectedKubeconfig,
+      "--context",
+      "production",
+      "--namespace",
+      "openclaw-system",
+      "--claim",
+      "occ-bootstrap-admin-password",
+      "--image",
+      image,
+    ],
+    {
+      cwd: repository,
+      env,
+    },
+  );
   await assert.rejects(
-    execute(
-      helper,
-      [
-        "--kubeconfig",
-        kubeconfig,
-        "--context",
-        "production",
-        "--namespace",
-        "openclaw-system",
-        "--claim",
-        "occ-bootstrap-admin-password",
-        "--image",
-        image,
-      ],
-      {
-        cwd: repository,
-        env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
-      },
-    ),
+    run,
     ({ stderr }) =>
       stderr.includes("preparation Pod failed") &&
       stderr.includes("Preparation Pod retained for diagnosis") &&
@@ -459,6 +463,29 @@ test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes repor
 
   const calls = await invocations(statePath);
   assert.ok(!calls.some((args) => args.includes("delete") && args.includes("pod")));
+  assert.equal(calls.length, 3, "failure guidance must not execute additional cluster requests");
+
+  const { stderr } = await run.catch((error) => error);
+  const diagnostic = stderr.match(/^Inspect claim: (.+)$/m)?.[1];
+  assert.ok(diagnostic, "failure guidance must include the claim inspection command");
+  await execute("/bin/bash", ["-c", diagnostic], { cwd: repository, env });
+  assert.deepEqual((await invocations(statePath)).slice(calls.length), [
+    [
+      "--kubeconfig",
+      selectedKubeconfig,
+      "--context",
+      "production",
+      "--namespace",
+      "openclaw-system",
+      "--request-timeout",
+      "10s",
+      "get",
+      "persistentvolumeclaim",
+      "occ-bootstrap-admin-password",
+      "--output",
+      "custom-columns=NAME:.metadata.name,PHASE:.status.phase,STORAGECLASS:.spec.storageClassName,VOLUME:.spec.volumeName",
+    ],
+  ]);
 });
 
 test("prepare-bootstrap-volume refuses unverifiable success reports without printing Pod logs", async (t) => {

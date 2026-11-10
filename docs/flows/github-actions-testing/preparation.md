@@ -55,20 +55,28 @@ Controller build selection is independent.
 
 Gateway Routing, Slack Live, and Production TUI restore read-only BuildKit caches through
 `scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
+`scripts/ci/prepare.mjs:imageCacheObservation` reports numeric counts per phase,
+excluding raw output (`image-cache`; OpenShell: `first-agent-image-cache`).
+Step counts deduplicate IDs. `observesImageCache` enables plain progress, including
+alternate source builds. Import lines do not prove hits;
+loads may reuse probe work.
 
-For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
-selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
-loads it under a run-owned tag. The artifact's index, platform manifest and config
-have distinct digests; Docker's image ID is not assumed to be the config digest.
-The loader checks archive integrity, source commit, workflow run and platform,
-then verifies the loaded image. Preparation records the tag before loading so
-failure cleanup can remove it. A selected artifact cannot be combined with an
-alternate OpenClaw source checkout, and loading failure does not fall back to a
-build. The existing runtime environment aliases refer to that tag; packaging's
-controller build and each lane's Envoy or seccomp preparation remain separate.
-The three runtime startup lanes omit Buildx setup when they select this artifact.
-Packaging retains its builder for the controller and image tests; source builds
-without an artifact retain their existing builder.
+For the four ordinary image lanes and First Agent Smoke,
+`.github/actions/run-ci-lane/action.yml` and `.github/workflows/ci.yml` pass
+`actions/download-artifact` the job's GitHub token, repository, producer run ID,
+and exact artifact ID. The token selects REST lookup rather than the runtime's
+internal listing. CI grants these consumers `actions: read`; Full Integration
+already grants it.
+
+`scripts/ci/runtime-artifact.mjs:loadRuntimeArtifact` verifies the archive,
+source, run, producer attempt, platform and loaded image. It checks OCI index,
+manifest and config digests separately; Docker's image ID may equal the config digest.
+For ordinary image lanes, `scripts/ci/prepare.mjs:buildRuntimeImages` records
+tag ownership before loading for cleanup, refuses alternate sources and fallback
+builds, and sets runtime aliases. Startup lanes omit Buildx for artifacts;
+packaging and source builds retain their builders. Envoy and seccomp preparation
+remain separate. `scripts/ci/first-agent-smoke.mjs` calls the loader directly and
+builds its trust layer from the verified OCI layout at its platform manifest digest.
 
 The preparation CLI records run-owned resources in private state before creation. GitHub Actions keeps that file under `RUNNER_TEMP` for later job steps; it is never uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role; the Agent revision worker suite also gives each test a copy of a migrated template (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. The CLI-only installed repository lane is temporarily refused in `validateLaneInputsBeforeSideEffects`, before its input checks and before any state or resource is created, until its remote cleanup is safe; its image and seccomp preparation below is unreachable in this source version. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Preparation failures still enter job cleanup. Cluster cleanup reads k3d inventory before and after deletion, then checks for matching Docker containers, networks, and volumes. An invalid inventory or possible surviving resource retains cleanup state.
 

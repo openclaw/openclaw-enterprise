@@ -409,6 +409,7 @@ test(
       (kind) => `CANARY_${kind}_${fixture.suffix}`,
     );
     const payload = Object.fromEntries(canaries.map((value) => [value, value]));
+    let senderStdoutMatches = null;
 
     // The sender is deliberately synthetic: this exercises the real Engine ->
     // Fluent Forward -> Collector -> OTLP boundary, not gateway/Codex emission.
@@ -424,7 +425,7 @@ test(
       ];
       const script = `for(const line of ${JSON.stringify(stdout)})process.stdout.write(line+'\\n');for(const line of ${JSON.stringify(stderr)})process.stderr.write(line+'\\n');`;
       try {
-        await docker([
+        const output = await docker([
           "run",
           "--name",
           name,
@@ -444,6 +445,7 @@ test(
           "-e",
           script,
         ]);
+        senderStdoutMatches = output === stdout.join("\n").trim();
       } finally {
         await docker(["rm", "--force", name]).catch(() => {});
       }
@@ -467,6 +469,11 @@ test(
       const metrics = await response.text();
       // Keep counts only: labels and response bodies are not failure diagnostics.
       for (const [field, name] of [
+        ["connectionsOpened", "otelcol_fluent_opened_connections"],
+        ["connectionsClosed", "otelcol_fluent_closed_connections"],
+        ["eventsParsed", "otelcol_fluent_events_parsed"],
+        ["parseFailures", "otelcol_fluent_parse_failures"],
+        ["recordsGenerated", "otelcol_fluent_records_generated"],
         ["accepted", "otelcol_receiver_accepted_log_records"],
         ["refused", "otelcol_receiver_refused_log_records"],
         ["filtered", "otelcol_processor_filter_logs_filtered"],
@@ -493,7 +500,12 @@ test(
     try {
       await waitFor("the Collector to count the filtered near-match", filtered, fixture);
     } catch (error) {
-      t.diagnostic(`Last Collector metrics (null means absent): ${JSON.stringify(lastMetrics)}`);
+      t.diagnostic(
+        `Last Collector forwarding state (null means absent): ${JSON.stringify({
+          senderStdoutMatches,
+          metrics: lastMetrics,
+        })}`,
+      );
       throw error;
     }
 
