@@ -95,7 +95,7 @@ export function signInScenarios({
       oidcEnabled: true,
       oidcLinkStage: "owner",
       description:
-        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+        "Simulated account proof. Enter a demo email and password, submit, and verify that the candidate stage appears. Cancel returns to sign-in. Password verification requires the live integration.",
     },
     oidcLinkCandidate: {
       group: "Pages/Sign in",
@@ -105,7 +105,7 @@ export function signInScenarios({
       oidcEnabled: true,
       oidcLinkStage: "candidate",
       description:
-        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+        "Simulated candidate proof. Inspect the existing account and the provider action. Cancel returns to sign-in. Provider authentication requires the live integration.",
     },
     oidcLinkConfirm: {
       group: "Pages/Sign in",
@@ -115,7 +115,7 @@ export function signInScenarios({
       oidcEnabled: true,
       oidcLinkStage: "confirm",
       description:
-        "Simulated linking state. Inspect the account and identity, try the available action, and cancel or restart. Provider proof, persistence and session revocation require the live integration.",
+        "Simulated confirmation. Inspect the exact account, provider and subject, then confirm and verify the success message on sign-in. Persistence and session revocation require the live integration.",
     },
     oidcLinkRecovery: {
       group: "Pages/Sign in",

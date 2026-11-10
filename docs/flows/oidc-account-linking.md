@@ -1,7 +1,7 @@
 ---
 created: 2026-11-10
-updated: "2026-11-10 00:18"
-last_updated_session: "authoring-run/44b77125-b2cd-40e8-b132-d912d3933ed7"
+updated: "2026-11-10 07:58"
+last_updated_session: "authoring-run/f3659272-3f8b-41a1-9379-658381bb9679"
 ---
 
 # OIDC account linking flow
@@ -52,9 +52,10 @@ and expiry cleanup across controllers for both parent and provider attempts.
 ### 2. Prove the existing account
 
 `apps/controller/src/auth/index.ts:signInEmail` reuses password admission for the
-linking password route. The private `/oce/password` endpoint verifies the hash
-and calls `proveLinkOwner` without session creation. State rechecks the account
-and method versions after password verification.
+linking password route. The private `/oce/link/password` endpoint uses the same `verifyPassword` function
+as password sign-in, then calls `proveLinkOwner` without session creation.
+`linkOwner` accepts typed proof fields and rechecks the account and method
+versions after password verification.
 
 For external proof, `externalProviderEndpoints` starts a one-use OIDC child
 with purpose `owner`. It adds `max_age=0`. The callback consumes the child,
@@ -109,5 +110,7 @@ GitHub-backed broker and a recorded browser interaction.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 07:58: Trace separate password-proof handlers and typed ownership validation. (authoring-run/f3659272-3f8b-41a1-9379-658381bb9679 - 3363c1577c8ef6aabbe8a0725f73477406ac455e)
 
 - 2026-11-10 00:18: Trace the accompanying account-linking implementation. (authoring-run/44b77125-b2cd-40e8-b132-d912d3933ed7 - a0730c3bed16459143ade3c97d706cdf65602ae8)

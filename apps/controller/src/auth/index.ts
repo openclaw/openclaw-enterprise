@@ -1315,7 +1315,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
-        if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
+        if (
+          (path === "/oce/password" || path === "/oce/link/password") &&
+          (await deniedWithoutAudit(response))
+        ) {
           throw new DenialAuditUnavailable(failure);
         }
         throw failure;
@@ -1499,10 +1502,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
               }
               throw unstorableEmail;
             }
-            return runPrivateEndpoint(request, "/oce/password", {
-              ...body,
-              ...(linking ? { linking: true } : {}),
-            });
+            return runPrivateEndpoint(
+              request,
+              linking ? "/oce/link/password" : "/oce/password",
+              body,
+            );
           });
         }
         return passwordAdmission.admit(attempt, async () => {

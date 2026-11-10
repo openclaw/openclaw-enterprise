@@ -1419,117 +1419,134 @@ async function showAccountLink(start = false) {
     }
   }
   let passwordAvailable = false;
+  function renderOwner() {
+    content.append(element("p", {}, "First, prove ownership of your existing OCE account."));
+    const email = element("input", {
+      id: "link-email",
+      type: "email",
+      autocomplete: "username",
+      required: true,
+    });
+    const password = element("input", {
+      id: "link-password",
+      type: "password",
+      autocomplete: "current-password",
+      required: true,
+    });
+    const form = element(
+      "form",
+      {},
+      element("label", { for: "link-email" }, "Account email"),
+      email,
+      element("label", { for: "link-password" }, "Password"),
+      password,
+      element(
+        "button",
+        { type: "submit", className: "button button--primary" },
+        "Verify existing account",
+      ),
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (form.reportValidity()) {
+        void act(async () => {
+          try {
+            await post("password", { email: email.value, password: password.value });
+          } finally {
+            password.value = "";
+          }
+          await render();
+        });
+      }
+    });
+    content.append(form);
+    if (!passwordAvailable) {
+      content.append(
+        element(
+          "p",
+          {},
+          "Only the recovery account can use a password. Other accounts must use an already-linked identity.",
+        ),
+      );
+    }
+    content.append(
+      button("Verify with an already-linked identity", () => act(() => redirect("owner"))),
+    );
+  }
+  function renderCandidate(account: { id: string; email: string }) {
+    content.append(
+      element("p", {}, `Existing account: ${account.email} (${account.id})`),
+      element(
+        "p",
+        {},
+        "Now authenticate the identity you want to link. Your account permissions will stay the same.",
+      ),
+      button(
+        `Authenticate with ${externalProviders.oidc.label}`,
+        () => act(() => redirect("candidate")),
+        { tone: "primary" },
+      ),
+    );
+  }
+  function renderConfirmation(
+    account: { id: string; email: string },
+    candidate: { providerId: string; subject: string },
+  ) {
+    content.append(
+      element("p", {}, `Link this identity to ${account.email} (${account.id})?`),
+      element("p", { className: "resource-id" }, `Provider: ${candidate.providerId}`),
+      element("p", { className: "resource-id" }, `Subject: ${candidate.subject}`),
+      element(
+        "p",
+        {},
+        "This adds a sign-in method and ends your existing sessions. Your permissions stay the same.",
+      ),
+      button(
+        "Confirm link",
+        () =>
+          act(async () => {
+            const result = responseFields(await post("confirm"));
+            if (typeof result.methodId !== "string" || typeof result.created !== "boolean") {
+              throw new Error("Link outcome not confirmed");
+            }
+            if (lifetime.isCurrent(active)) {
+              showLogin(
+                "",
+                null,
+                result.created
+                  ? "Identity linked. Sign in with your linked identity."
+                  : "This identity is already linked. Sign in to continue.",
+              );
+            }
+          }),
+        { tone: "primary" },
+      ),
+    );
+  }
   async function render() {
     const state = responseFields(await post("status"));
     if (!lifetime.isCurrent(active)) {
       return;
     }
-    content.replaceChildren();
-    feedback.textContent = "Complete both proofs and confirm within five minutes.";
-    if (state.stage === "owner") {
-      content.append(element("p", {}, "First, prove ownership of your existing OCE account."));
-      const email = element("input", {
-        id: "link-email",
-        type: "email",
-        autocomplete: "username",
-        required: true,
-      });
-      const password = element("input", {
-        id: "link-password",
-        type: "password",
-        autocomplete: "current-password",
-        required: true,
-      });
-      const form = element(
-        "form",
-        {},
-        element("label", { for: "link-email" }, "Account email"),
-        email,
-        element("label", { for: "link-password" }, "Password"),
-        password,
-        element(
-          "button",
-          { type: "submit", className: "button button--primary" },
-          "Verify existing account",
-        ),
-      );
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        if (form.reportValidity()) {
-          void act(async () => {
-            try {
-              await post("password", { email: email.value, password: password.value });
-            } finally {
-              password.value = "";
-            }
-            await render();
-          });
-        }
-      });
-      content.append(form);
-      if (!passwordAvailable) {
-        content.append(
-          element(
-            "p",
-            {},
-            "Only the recovery account can use a password. Other accounts must use an already-linked identity.",
-          ),
-        );
-      }
-      content.append(
-        button("Verify with an already-linked identity", () => act(() => redirect("owner"))),
-      );
-    } else if (state.stage === "candidate") {
-      const account = responseFields(state.account);
-      content.append(
-        element("p", {}, `Existing account: ${String(account.email)} (${String(account.id)})`),
-        element(
-          "p",
-          {},
-          "Now authenticate the identity you want to link. Your account permissions will stay the same.",
-        ),
-        button(
-          `Authenticate with ${externalProviders.oidc.label}`,
-          () => act(() => redirect("candidate")),
-          { tone: "primary" },
-        ),
-      );
-    } else if (state.stage === "confirm") {
-      const account = responseFields(state.account);
-      const candidate = responseFields(state.candidate);
-      content.append(
-        element("p", {}, `Link this identity to ${String(account.email)} (${String(account.id)})?`),
-        element("p", { className: "resource-id" }, `Provider: ${String(candidate.providerId)}`),
-        element("p", { className: "resource-id" }, `Subject: ${String(candidate.subject)}`),
-        element(
-          "p",
-          {},
-          "This adds a sign-in method and ends your existing sessions. Your permissions stay the same.",
-        ),
-        button(
-          "Confirm link",
-          () =>
-            act(async () => {
-              const result = responseFields(await post("confirm"));
-              if (typeof result.methodId !== "string" || typeof result.created !== "boolean") {
-                throw new Error("Link outcome not confirmed");
-              }
-              if (lifetime.isCurrent(active)) {
-                showLogin(
-                  "",
-                  null,
-                  result.created
-                    ? "Identity linked. Sign in with your linked identity."
-                    : "This identity is already linked. Sign in to continue.",
-                );
-              }
-            }),
-          { tone: "primary" },
-        ),
-      );
-    } else {
+    const stage = state.stage;
+    if (stage !== "owner" && stage !== "candidate" && stage !== "confirm") {
       throw new Error("Invalid linking state");
     }
+    const accountFields = responseFields(state.account);
+    const account = { id: String(accountFields.id), email: String(accountFields.email) };
+    const candidateFields = responseFields(state.candidate);
+    const candidate = {
+      providerId: String(candidateFields.providerId),
+      subject: String(candidateFields.subject),
+    };
+    const renderStage = {
+      owner: renderOwner,
+      candidate: () => renderCandidate(account),
+      confirm: () => renderConfirmation(account, candidate),
+    };
+    content.replaceChildren();
+    feedback.textContent = "Complete both proofs and confirm within five minutes.";
+    renderStage[stage]();
   }
   main.append(
     button(

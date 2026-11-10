@@ -60,6 +60,21 @@ export interface HumanAuthenticationProof {
   readonly passwordHash?: string;
 }
 
+type LinkOwnerProof = Pick<
+  HumanAuthenticationProof,
+  "userId" | "principalId" | "methodId" | "version" | "methodVersion"
+>;
+
+function storedLinkOwner(link: Row): LinkOwnerProof {
+  return {
+    userId: link.owner_user_id as string,
+    principalId: link.owner_principal_id as string,
+    methodId: link.owner_method_id as string,
+    version: link.owner_version as number,
+    methodVersion: link.owner_method_version as number,
+  };
+}
+
 export interface HumanAuthenticationSnapshot {
   readonly user: HumanAuthenticationUser;
   readonly proof: HumanAuthenticationProof;
@@ -1436,13 +1451,13 @@ export class PostgresHumanAuthentication {
 
   private async linkOwner(
     unit: PlatformUnitOfWork,
-    link: Row,
+    proof: LinkOwnerProof,
   ): Promise<HumanAuthenticationSnapshot> {
-    const user = await this.lockUser(unit, link.owner_user_id as string);
+    const user = await this.lockUser(unit, proof.userId);
     const [method] = await this.query(
       unit,
       `SELECT provider_id, account_id FROM occ.account WHERE id = $1 AND user_id = $2`,
-      [link.owner_method_id, link.owner_user_id],
+      [proof.methodId, proof.userId],
     );
     const current =
       method === undefined
@@ -1455,10 +1470,10 @@ export class PostgresHumanAuthentication {
           );
     if (
       current === undefined ||
-      current.proof.principalId !== link.owner_principal_id ||
-      current.proof.methodId !== link.owner_method_id ||
-      current.proof.version !== link.owner_version ||
-      current.proof.methodVersion !== link.owner_method_version ||
+      current.proof.principalId !== proof.principalId ||
+      current.proof.methodId !== proof.methodId ||
+      current.proof.version !== proof.version ||
+      current.proof.methodVersion !== proof.methodVersion ||
       (current.proof.providerId !== "credential" &&
         !this.externalProviderIds.includes(current.proof.providerId))
     ) {
@@ -1470,7 +1485,8 @@ export class PostgresHumanAuthentication {
   async readLink(browserHash: string, policyId: string) {
     return this.state.transact(async (unit) => {
       const link = await this.liveLink(unit, browserHash, policyId);
-      const owner = link.owner_user_id === null ? undefined : await this.linkOwner(unit, link);
+      const owner =
+        link.owner_user_id === null ? undefined : await this.linkOwner(unit, storedLinkOwner(link));
       let stage: "owner" | "candidate" | "confirm" = "confirm";
       if (owner === undefined) {
         stage = "owner";
@@ -1507,14 +1523,7 @@ export class PostgresHumanAuthentication {
         throw new ResourceStateConflictError("Account ownership was already proved.");
       }
       // Revalidate the pre-verification snapshot: password/method changes during verification invalidate it.
-      await this.linkOwner(unit, {
-        ...link,
-        owner_user_id: proof.userId,
-        owner_principal_id: proof.principalId,
-        owner_method_id: proof.methodId,
-        owner_version: proof.version,
-        owner_method_version: proof.methodVersion,
-      });
+      await this.linkOwner(unit, proof);
       await this.query(
         unit,
         `UPDATE occ.human_authentication_links SET owner_user_id = $2,
@@ -1550,7 +1559,7 @@ export class PostgresHumanAuthentication {
       ) {
         throw new ResourceStateConflictError("The linking attempt is not ready for this identity.");
       }
-      await this.linkOwner(unit, link);
+      await this.linkOwner(unit, storedLinkOwner(link));
       await this.query(
         unit,
         `UPDATE occ.human_authentication_links SET candidate_subject = $2,
@@ -1574,7 +1583,7 @@ export class PostgresHumanAuthentication {
       ) {
         throw new ResourceStateConflictError("The linking proofs are incomplete.");
       }
-      const owner = await this.linkOwner(unit, link);
+      const owner = await this.linkOwner(unit, storedLinkOwner(link));
       if (owner.proof.providerId === "credential" && passwordPolicy === "recovery-only") {
         const [recovery] = await this.query(
           unit,

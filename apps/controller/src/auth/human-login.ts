@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AuthPrincipalSeed, AccountEnrollmentRole } from "@openclaw-enterprise/iam";
-import { APIError, type BetterAuthPlugin } from "better-auth";
+import { APIError, type AuthContext, type BetterAuthPlugin } from "better-auth";
 import { createAuthEndpoint } from "better-auth/api";
 import { deleteSessionCookie, setSessionCookie } from "better-auth/cookies";
 import type { DBAdapter, DBAdapterInstance } from "better-auth/adapters";
@@ -828,6 +828,35 @@ export function createHumanLogin(
     }
     throw rejected();
   }
+  // Both callers are admitted by the controller before checking credentials.
+  async function verifyPassword(
+    body: { email?: unknown; password?: unknown } | undefined,
+    passwordApi: AuthContext["password"],
+  ) {
+    if (
+      typeof body?.email !== "string" ||
+      body.email.length > 254 ||
+      typeof body.password !== "string"
+    ) {
+      throw rejected();
+    }
+    const email = body.email.trim().toLowerCase();
+    const password = body.password;
+    if (password.length < 12 || password.length > 128) {
+      throw rejected();
+    }
+    // Recovery-only refusals read no account and do the same hash work as an unknown email.
+    const permitted = !recoveryOnly || (recoveryEmail !== undefined && email === recoveryEmail);
+    const snapshot = permitted ? await state.snapshotPassword(email) : undefined;
+    if (!snapshot?.proof.passwordHash) {
+      await passwordApi.hash(password);
+      return undefined;
+    }
+    if (!(await passwordApi.verify({ password, hash: snapshot.proof.passwordHash }))) {
+      return undefined;
+    }
+    return { email, snapshot };
+  }
   const plugin = {
     id: "oce-human-login",
     endpoints: {
@@ -893,61 +922,25 @@ export function createHumanLogin(
             }),
         );
       }),
+      oceLinkPassword: createAuthEndpoint("/oce/link/password", { method: "POST" }, async (ctx) => {
+        const browser = linkBrowser(ctx.getCookie(linkCookie));
+        await linkOperation(browser, () => state.readLink(digest(browser), linkPolicy));
+        const verified = await verifyPassword(ctx.body, ctx.context.password);
+        if (verified === undefined) {
+          await state.cancelLink(digest(browser));
+          return refusePassword();
+        }
+        await linkOperation(browser, () =>
+          state.proveLinkOwner(digest(browser), linkPolicy, verified.snapshot.proof),
+        );
+        return ctx.json({ linking: true });
+      }),
       ocePassword: createAuthEndpoint("/oce/password", { method: "POST" }, async (ctx) => {
-        const body = ctx.body as
-          { email?: unknown; password?: unknown; linking?: boolean } | undefined;
-        const browser = body?.linking ? linkBrowser(ctx.getCookie(linkCookie)) : undefined;
-        if (browser !== undefined) {
-          await linkOperation(browser, () => state.readLink(digest(browser), linkPolicy));
-        }
-        if (
-          typeof body?.email !== "string" ||
-          body.email.length > 254 ||
-          typeof body.password !== "string"
-        ) {
-          throw rejected();
-        }
-        // Reached only through the controller's sign-in route, which admits it first.
-        const email = body.email.trim().toLowerCase();
-        const password = body.password;
-        if (password.length < 12 || password.length > 128) {
-          throw rejected();
-        }
-        if (recoveryOnly && (recoveryEmail === undefined || email !== recoveryEmail)) {
-          // Ordinary accounts sign in with their external identity. The refusal is the
-          // bad-credential answer and reads no account, so it is the same for every
-          // email other than the recovery one, whether or not an account exists.
-          await ctx.context.password.hash(password);
-          if (browser !== undefined) {
-            await state.cancelLink(digest(browser));
-          }
+        const verified = await verifyPassword(ctx.body, ctx.context.password);
+        if (verified === undefined) {
           return refusePassword();
         }
-        const snapshot = await state.snapshotPassword(email);
-        if (!snapshot?.proof.passwordHash) {
-          await ctx.context.password.hash(password);
-          if (browser !== undefined) {
-            await state.cancelLink(digest(browser));
-          }
-          return refusePassword();
-        }
-        if (
-          !(await ctx.context.password.verify({
-            password,
-            hash: snapshot.proof.passwordHash,
-          }))
-        ) {
-          if (browser !== undefined) {
-            await state.cancelLink(digest(browser));
-          }
-          return refusePassword();
-        }
-        if (browser !== undefined) {
-          await linkOperation(browser, () =>
-            state.proveLinkOwner(digest(browser), linkPolicy, snapshot.proof),
-          );
-          return ctx.json({ linking: true });
-        }
+        const { email, snapshot } = verified;
         const startedAt = performance.now();
         const session = await proofScope.run({ proof: snapshot.proof }, () =>
           ctx.context.internalAdapter.createSession(snapshot.user.id, false),

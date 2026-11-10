@@ -109,6 +109,50 @@ test(
     };
 
     await t.test(
+      "linking password refusals spend admission budget when their audit cannot be written",
+      async (auditTest) => {
+        const query = pg.Client.prototype.query;
+        let refusedAudits = 0;
+        auditTest.mock.method(
+          pg.Client.prototype,
+          "query",
+          function (this: pg.Client, sql: unknown, ...args: unknown[]) {
+            // Fail the real denial INSERT through its database constraint, after
+            // credentials have been rejected. A dependency outage must not erase the guess.
+            if (
+              typeof sql === "string" &&
+              sql.includes("INSERT INTO occ.audit_events") &&
+              Array.isArray(args[0]) &&
+              args[0][4] === "authentication.login" &&
+              args[0][8] === "denied"
+            ) {
+              refusedAudits += 1;
+              args[0] = ["invalid-audit-id", ...args[0].slice(1)];
+            }
+            return Reflect.apply(query, this, [sql, ...args]);
+          },
+        );
+        const guess = { email: "link-guess@example.test", password: "wrong-linking-password" };
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          assert.equal((await post("start")).statusCode, 200);
+          assert.equal((await post("password", guess)).statusCode, 503);
+          assert.equal(
+            (await fixture.pool.query("SELECT 1 FROM occ.human_authentication_links")).rowCount,
+            0,
+            "a rejected password consumes the linking attempt even when auditing fails",
+          );
+        }
+        assert.equal((await post("start")).statusCode, 200);
+        assert.equal((await post("password", guess)).statusCode, 429);
+        assert.equal(
+          refusedAudits,
+          10,
+          "exhausted admission does not attempt another denial write",
+        );
+        assert.equal((await post("cancel")).statusCode, 200);
+      },
+    );
+    await t.test(
       "fresh proofs and explicit confirmation preserve the account and grants",
       async () => {
         await start();
