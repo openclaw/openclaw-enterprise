@@ -3653,7 +3653,13 @@ function assertDeliberateRestart(gateway, code) {
     gateway.files.get("/dev/termination-log"),
     `deliberate restart: ${code.toLowerCase().replaceAll("_", "-")}`,
   );
+  assert.equal(gateway.files.has(UNEXPLAINED_EXITS), false, "a deliberate restart clears the count");
 }
+
+// Where the Kubernetes Gateway wrapper keeps its container's consecutive unexplained exits:
+// /tmp is the Pod's emptyDir, which outlives a container restart.
+const UNEXPLAINED_EXITS = "/tmp/.oce-unexplained-exits";
+const unexplainedExits = (count) => `consecutive unexplained exits: ${count}`;
 
 function startCodexGatewaySupervisor(t, options) {
   return startGatewaySupervisor(
@@ -4250,6 +4256,49 @@ test("Codex gateway supervisor restarts its container deliberately for another w
   first.exit(null, "SIGTERM");
   assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
   assertDeliberateRestart(gateway, "WORKSPACE_NODE_CHANGED");
+});
+
+// Kubernetes Compute fails a crash loop on consecutive unexplained exits only (finding 3041).
+// Each Gateway start counts its own exit in advance, in the termination message the kubelet
+// records at exit, so a kill the wrapper never sees counts too. A deliberate restart clears
+// the count and readiness starts it again from 1.
+test("Kubernetes Gateway counts consecutive unexplained exits across container restarts", async (t) => {
+  // A deliberate restart, for another workspace node.
+  const deliberate = await startCodexGatewaySupervisor(t, { bindingDeviceId: "a".repeat(64) });
+  assert.equal(deliberate.files.get("/dev/termination-log"), unexplainedExits(1));
+  deliberate.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: deliberate.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await deliberate.intervals.find(({ delay }) => delay === 1_000).callback();
+  deliberate.children[0].exit(null, "SIGTERM");
+  assert.deepEqual(deliberate.exits, [DELIBERATE_RESTART]);
+  assertDeliberateRestart(deliberate, "WORKSPACE_NODE_CHANGED");
+  // Then OpenClaw exits at every start; the second time something kills the container, which
+  // the wrapper never sees.
+  let previous = deliberate;
+  for (const count of [1, 2, 3]) {
+    const gateway = await startCodexGatewaySupervisor(t, { savedFiles: previous.files });
+    assert.equal(gateway.files.get("/dev/termination-log"), unexplainedExits(count));
+    assert.equal(gateway.files.get(UNEXPLAINED_EXITS), String(count));
+    if (count !== 2) {
+      gateway.children[0].exit(1, null);
+      assert.deepEqual(gateway.exits, [1]);
+    }
+    previous = gateway;
+  }
+  // A Gateway that becomes ready counts only its own exit.
+  const ready = await startCodexGatewaySupervisor(t, {
+    savedFiles: previous.files,
+    runtimeStatus: true,
+  });
+  assert.equal(ready.files.get("/dev/termination-log"), unexplainedExits(4));
+  assert.equal((await readReadyStatusFromHandler(ready.statusHandler)).status, 200);
+  assert.equal(ready.files.get("/dev/termination-log"), unexplainedExits(1));
+  assert.equal(ready.files.get(UNEXPLAINED_EXITS), "1");
+  ready.children[0].exit(1, null);
+  const next = await startCodexGatewaySupervisor(t, { savedFiles: ready.files });
+  assert.equal(next.files.get("/dev/termination-log"), unexplainedExits(2));
 });
 
 // Only the wrapper's own deliberate restart exits 75: an OpenClaw exit with that status is

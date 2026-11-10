@@ -19,6 +19,7 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
+  UNEXPLAINED_EXITS_MESSAGE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -2527,6 +2528,50 @@ const { spawn } = require("node:child_process");
 // OCE upgrades this runtime by rolling out a selected image.
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
+// Kubernetes Compute fails a crash-looping Gateway on the consecutive unexplained exits of
+// its container (finding 3041), which the kubelet does not keep. The wrapper counts them in
+// /tmp, the Pod's runtime-temporary emptyDir, which outlives a container restart but not the
+// Pod, and states the count in the termination message the kubelet records at exit. Each
+// start counts its own exit in advance, so an exit the wrapper never sees (an out-of-memory
+// kill) counts too; readiness counts from 1 again, and a deliberate restart (exit 75) clears
+// the count and states its reason instead. Only Kubernetes creates the termination log.
+const TERMINATION_LOG_PATH = "/dev/termination-log";
+const UNEXPLAINED_EXITS_PATH = "/tmp/.oce-unexplained-exits";
+const countsUnexplainedExits = (() => {
+  try {
+    return require("node:fs").existsSync(TERMINATION_LOG_PATH);
+  } catch {
+    return false;
+  }
+})();
+// Set once readiness or a deliberate restart has set the count for this instance's exit.
+let unexplainedExitsSettled = false;
+
+function writeTerminationMessage(message) {
+  if (!countsUnexplainedExits) return;
+  try {
+    require("node:fs").writeFileSync(TERMINATION_LOG_PATH, message);
+  } catch {}
+}
+
+// A count that cannot be saved only lowers the next start's count.
+function countUnexplainedExits(count) {
+  if (!countsUnexplainedExits) return;
+  try {
+    require("node:fs").writeFileSync(UNEXPLAINED_EXITS_PATH, String(count));
+  } catch {}
+  writeTerminationMessage(${JSON.stringify(UNEXPLAINED_EXITS_MESSAGE)} + count);
+}
+
+if (countsUnexplainedExits) {
+  let previous = 0;
+  try {
+    const saved = String(require("node:fs").readFileSync(UNEXPLAINED_EXITS_PATH, "utf8")).trim();
+    if (/^[0-9]{1,6}$/.test(saved)) previous = Number(saved);
+  } catch {}
+  countUnexplainedExits(previous + 1);
+}
+
 ${PLUGIN_RUNTIME_HELPERS}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
@@ -2577,7 +2622,13 @@ async function gatewayRuntimeReady() {
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
   if (answers[1]) gatewayServed = true;
-  return answers.every((ready) => ready);
+  const ready = answers.every((answer) => answer);
+  if (ready && !unexplainedExitsSettled) {
+    // Earlier exits no longer make a crash loop; this instance's own exit would be the first.
+    unexplainedExitsSettled = true;
+    countUnexplainedExits(1);
+  }
+  return ready;
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
@@ -3273,14 +3324,13 @@ function stopContainer(reason) {
   if (stoppingContainer) return;
   stoppingContainer = true;
   logStartupPhase("container-restart", startupPhaseOrigin, "failed", reason);
-  try {
-    // Kubernetes' default terminationMessagePath. r+ writes only a file the kubelet created.
-    require("node:fs").writeFileSync(
-      "/dev/termination-log",
-      "deliberate restart: " + reason.toLowerCase().replaceAll("_", "-"),
-      { flag: "r+" },
-    );
-  } catch {}
+  unexplainedExitsSettled = true;
+  if (countsUnexplainedExits) {
+    try {
+      require("node:fs").rmSync(UNEXPLAINED_EXITS_PATH, { force: true });
+    } catch {}
+  }
+  writeTerminationMessage("deliberate restart: " + reason.toLowerCase().replaceAll("_", "-"));
   if (!childRunning) {
     process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;

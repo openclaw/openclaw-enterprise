@@ -4005,9 +4005,10 @@ test("a pending dedicated deploy names a container image pull failure", async ()
 });
 
 // A Gateway or Harness container that exits at every start fails startup once the kubelet
-// backs off its third restart, instead of waiting for the convergence deadline (finding 3041).
-// Only the role's own container on a live Pod of the revision counts, and a wrapper's
-// deliberate restart (exit 75) keeps the wait as before.
+// backs off after its third consecutive unexplained exit, instead of waiting for the
+// convergence deadline (finding 3041). Only the role's own container on a live Pod of the
+// revision counts. The Gateway wrapper states the count in its termination message, and its
+// deliberate restart (exit 75) never counts; without a count the restart count stands in.
 for (const embedded of [true, false]) {
   test(`a pending ${embedded ? "embedded" : "dedicated"} deploy fails a crash-looping runtime container`, async () => {
     const { state, clients, prepare } = dedicatedFirstDeployFixture({
@@ -4038,7 +4039,7 @@ for (const embedded of [true, false]) {
     const finishedAt = "2026-11-10T00:00:00Z";
     const container = (
       name,
-      { exitCode = 1, restartCount = 3, waiting = "CrashLoopBackOff" } = {},
+      { exitCode = 1, restartCount = 3, waiting = "CrashLoopBackOff", message } = {},
     ) => ({
       name,
       ready: false,
@@ -4047,8 +4048,11 @@ for (const embedded of [true, false]) {
         waiting === null
           ? { running: { startedAt: finishedAt } }
           : { waiting: { reason: waiting, message: "back-off 40s restarting failed container" } },
-      lastState: { terminated: { exitCode, reason: "Error", finishedAt } },
+      lastState: {
+        terminated: { exitCode, reason: "Error", finishedAt, ...(message ? { message } : {}) },
+      },
     });
+    const exits = (count) => `consecutive unexplained exits: ${count}`;
     const runtimeFailureWith = async (statuses) => {
       observed = statuses;
       const pass = await prepare();
@@ -4057,10 +4061,18 @@ for (const embedded of [true, false]) {
       return pass;
     };
     for (const role of embedded ? ["gateway"] : ["gateway", "agent"]) {
-      // An unexplained exit, or an out-of-memory kill, at every start.
-      for (const exitCode of [1, 137]) {
+      // An unexplained exit, or an out-of-memory kill, at every start. The Gateway's third
+      // consecutive one fails it even after earlier deliberate restarts; a Harness never
+      // restarts on purpose, so an exit 75 counts too.
+      for (const options of [
+        { exitCode: 1 },
+        { exitCode: 137 },
+        ...(role === "gateway"
+          ? [{ restartCount: 5, message: exits(3) }]
+          : [{ exitCode: 75 }, { message: exits(1) }]),
+      ]) {
         const failed = await runtimeFailureWith({
-          [role]: { containerStatuses: [container(role, { exitCode })] },
+          [role]: { containerStatuses: [container(role, options)] },
         });
         assert.deepEqual(failed.runtimeFailure, {
           component: role,
@@ -4068,11 +4080,20 @@ for (const embedded of [true, false]) {
           code: "UNAVAILABLE",
           checkedAt: finishedAt,
         });
-        assert.equal(Object.hasOwn(failed, "pendingReason"), false);
+        assert.equal(Object.hasOwn(failed, "pendingReason"), false, JSON.stringify(options));
       }
       for (const [scenario, statuses] of [
-        // A wrapper that stops its container on purpose, as for a changed Harness peer.
-        ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+        ...(role === "gateway"
+          ? [
+              // The wrapper stops its container on purpose, as for a changed Harness peer.
+              ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+              // Two deliberate restarts, then two unexplained exits.
+              [
+                "two consecutive unexplained exits",
+                { containerStatuses: [container(role, { restartCount: 4, message: exits(2) })] },
+              ],
+            ]
+          : []),
         ["two restarts", { containerStatuses: [container(role, { restartCount: 2 })] }],
         ["a running restart", { containerStatuses: [container(role, { waiting: null })] }],
         [

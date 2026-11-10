@@ -238,7 +238,7 @@ import {
   type ModelProviderConfiguration,
 } from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
-import { DELIBERATE_RESTART_EXIT_STATUS } from "../runtime-startup.ts";
+import { DELIBERATE_RESTART_EXIT_STATUS, UNEXPLAINED_EXITS_MESSAGE } from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
@@ -2212,9 +2212,20 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
   "ImagePullBackOff",
 ]);
 
-// A runtime container restarted this often, and waiting in the kubelet's crash-loop backoff,
-// fails startup (finding 3041). A slow start, an image pull or one exit cannot reach it.
-const CRASH_LOOP_RESTARTS = 3;
+// A runtime container with this many consecutive unexplained exits, waiting in the kubelet's
+// crash-loop backoff, fails startup (finding 3041). A slow start, an image pull or one exit
+// cannot reach it.
+const CRASH_LOOP_EXITS = 3;
+
+// The consecutive unexplained exits a Gateway wrapper states in its termination message, or
+// undefined for a message without the count (a Pod started before the wrapper kept one).
+function unexplainedExitCount(message: unknown): number | undefined {
+  if (typeof message !== "string" || !message.startsWith(UNEXPLAINED_EXITS_MESSAGE)) {
+    return undefined;
+  }
+  const count = message.slice(UNEXPLAINED_EXITS_MESSAGE.length);
+  return /^[0-9]{1,6}$/u.test(count) ? Number(count) : undefined;
+}
 
 // True when one of a Pod's containers or init containers waits on an image pull.
 function podWaitsOnImagePull(pod: unknown): boolean {
@@ -11322,11 +11333,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   // Evidence for a runtime container the kubelet keeps restarting after unexplained exits
   // (finding 3041): on a live Pod of this revision, the role's own container (the Gateway, or
-  // a Harness that runs in a Deployment) waits in CrashLoopBackOff after CRASH_LOOP_RESTARTS
-  // restarts, and its last exit was not a deliberate restart. Init containers and sidecars
-  // never count. A wrapper that stops its container on purpose exits
-  // DELIBERATE_RESTART_EXIT_STATUS, which keeps the wait. Like failure evidence, an
-  // unavailable observation reports nothing.
+  // a Harness that runs in a Deployment) waits in CrashLoopBackOff after CRASH_LOOP_EXITS
+  // consecutive unexplained exits. Init containers and sidecars never count. The Gateway
+  // wrapper exits DELIBERATE_RESTART_EXIT_STATUS when it stops its container on purpose,
+  // which keeps the wait and clears its count, and states the count in its termination
+  // message. Without one (a Pod from before the count), the restart count stands in. No Harness
+  // wrapper restarts on purpose, so each of its restarts follows an unexplained exit. Like
+  // failure evidence, an unavailable observation reports nothing.
   private async safeCrashLoopObservation(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -11349,12 +11362,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ? statuses.map(asRecord).find((item) => item?.name === role)
             : undefined;
           const terminated = asRecord(asRecord(status?.lastState)?.terminated);
+          const exits =
+            (role === "gateway" ? unexplainedExitCount(terminated?.message) : undefined) ??
+            status?.restartCount;
           if (
             asRecord(asRecord(status?.state)?.waiting)?.reason === "CrashLoopBackOff" &&
-            typeof status?.restartCount === "number" &&
-            status.restartCount >= CRASH_LOOP_RESTARTS &&
+            typeof exits === "number" &&
+            exits >= CRASH_LOOP_EXITS &&
             typeof terminated?.exitCode === "number" &&
-            terminated.exitCode !== DELIBERATE_RESTART_EXIT_STATUS
+            !(role === "gateway" && terminated.exitCode === DELIBERATE_RESTART_EXIT_STATUS)
           ) {
             const checkedAt = this.terminatedAt(terminated);
             return { component: role, check: "crash-loop", code: "UNAVAILABLE", checkedAt };

@@ -13,6 +13,13 @@ const STARTUP_PHASE_EVENT = "runtime.startup_phase";
  */
 export const DELIBERATE_RESTART_EXIT_STATUS = 75;
 
+/**
+ * How a Kubernetes Gateway wrapper's termination message states the consecutive unexplained
+ * exits of its container, its own exit included: this prefix, then the count. Kubernetes
+ * Compute fails startup as a crash loop on this count (finding 3041).
+ */
+export const UNEXPLAINED_EXITS_MESSAGE = "consecutive unexplained exits: ";
+
 // Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
 export function gatewayManagedModeEnvironment(managedMode: boolean): string {
   return JSON.stringify(
