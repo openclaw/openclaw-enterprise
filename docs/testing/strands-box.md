@@ -71,6 +71,28 @@ outside Box, provide trusted fixture TLS through a supported host input, and
 observe policy denial in the actual Box journal. A host that cannot create
 Box's namespaces cannot qualify containment with this lane.
 
+## Reuse the controlled services
+
+Runtime adapters can start the services independently of the sender and native
+process fixtures:
+
+- [`strandsRehearsalModel(t)`](../../tests/helpers/strands-rehearsal-model.ts)
+  returns the Responses `baseUrl`, model name, synthetic credential, CA path and
+  bytes, and request and connection counters. Call `beginTurn("before")` or
+  `beginTurn("after")` for the prompt and expected answer. The second request
+  must include the first answer. This helper starts no runtime process.
+- [`strandsRepositoryOriginFixture(t)`](../../tests/helpers/strands-rehearsal-repository.ts)
+  returns the GitHub HTTPS listener address, canonical Git and API origins,
+  synthetic credential, CA, and a TLS-verifying `upstreamAgent`. It also exposes
+  the real repository, `publishCommit()`, request records in `writes`, and a
+  connection counter. Optional `loseDraft` and `losePush` fault controls retain
+  the lost-response cases. This helper creates no recipient or grant authority.
+
+Both listeners bind to loopback. A runtime adapter owns routing to them while
+preserving their TLS hostnames and CA trust. Register runtime cleanup before
+starting the fixtures so the runtime stops before its services and files are
+removed. The repository fixture drains active Git requests during cleanup.
+
 ## Diagnose a failure
 
 Missing executable or execution permission fails before startup. A native RPC

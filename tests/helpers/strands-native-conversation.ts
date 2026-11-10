@@ -1,19 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { createServer } from "node:https";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
 import {
   cleanEnvironment,
-  listen,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
 
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { strandsRehearsalModel } from "./strands-rehearsal-model.ts";
 
 interface Turn {
   id: string;
@@ -35,69 +31,17 @@ export async function strandsNativeConversation(t: TestContext, executable: stri
   // Stop the process before earlier-acquired server and file cleanup hooks run.
   t.after(() => dispose());
   const directory = await temporaryDirectory(t, "strands-conversation-");
-  const tls = await harnessTlsFixture(t);
-  const { responseEvents } = JSON.parse(
-    await readFile(
-      new URL("../fixtures/static-egress/codex-responses.json", import.meta.url),
-      "utf8",
-    ),
-  );
-  const nonce = randomUUID();
-  const credential = "fixture-" + nonce;
-  let phase: "before" | "after" = "before";
-  let requests = 0;
-  let providerError: unknown;
-  const answer = () => phase + "-answer-" + nonce;
-  const provider = createServer(tls, (req, res) => {
-    void (async () => {
-      if (req.url !== "/v1/responses") {
-        res.writeHead(404).end();
-        return;
-      }
-      const body = JSON.parse(await text(req));
-      assert.equal(req.headers.authorization, "Bearer " + credential);
-      assert.equal(body.model, "fixture-model");
-      assert.ok(JSON.stringify(body.input.at(-1)).includes(phase + "-question"));
-      if (phase === "after") {
-        assert.ok(
-          JSON.stringify(body.input).includes("before-answer-" + nonce),
-          "second model request retains the first reply",
-        );
-      }
-      requests++;
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      for (const event of responseEvents) {
-        res.write(
-          "data: " +
-            JSON.stringify(event)
-              .replaceAll("READY", answer())
-              .replaceAll("runtime_probe", "strands_" + requests) +
-            "\n\n",
-        );
-      }
-      res.end();
-    })().catch((error: unknown) => {
-      providerError = error;
-      res.destroy();
-    });
-  });
-  let connections = 0;
-  provider.on("connection", () => {
-    connections++;
-  });
-  provider.on("tlsClientError", (error) => {
-    providerError = error;
-  });
-  const origin = (await listen(t, provider)).replace("127.0.0.1", "localhost");
+  const model = await strandsRehearsalModel(t);
+  const credential = model.credential;
   const home = join(directory, "home");
   await mkdir(home);
   await writeFile(
     join(home, "config.toml"),
-    `model = "fixture-model"
+    `model = "${model.model}"
 model_provider = "rehearsal"
 [model_providers.rehearsal]
 name = "Controlled rehearsal"
-base_url = "${origin}/v1"
+base_url = "${model.baseUrl}"
 wire_api = "responses"
 env_key = "REHEARSAL_MODEL_KEY"
 request_max_retries = 0
@@ -117,8 +61,8 @@ log_user_prompt = false
       HOME: directory,
       CODEX_HOME: home,
       TMPDIR: directory,
-      SSL_CERT_FILE: tls.rootCertificatePath,
-      CODEX_CA_CERTIFICATE: tls.rootCertificatePath,
+      SSL_CERT_FILE: model.rootCertificatePath,
+      CODEX_CA_CERTIFICATE: model.rootCertificatePath,
       REHEARSAL_MODEL_KEY: credential,
     }),
     detached: true,
@@ -159,8 +103,8 @@ log_user_prompt = false
           "native turn failure: " +
             JSON.stringify({
               native: message.params,
-              connections,
-              providerError: String(providerError),
+              connections: model.connections(),
+              providerError: String(model.error()),
             }).replaceAll(credential, "[fixture credential]"),
         );
       }
@@ -229,7 +173,11 @@ log_user_prompt = false
           waiter.reject(
             new Error(
               "native response deadline; no replay: " +
-                JSON.stringify({ events, requests, providerError: String(providerError) }) +
+                JSON.stringify({
+                  events,
+                  requests: model.requests(),
+                  providerError: String(model.error()),
+                }) +
                 " " +
                 stderr.replaceAll(credential, "[fixture credential]"),
             ),
@@ -259,7 +207,7 @@ log_user_prompt = false
   child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
   const { thread } = await call("thread/start", {
     cwd: directory,
-    model: "fixture-model",
+    model: model.model,
     modelProvider: "rehearsal",
     approvalPolicy: "never",
     sandbox: "read-only",
@@ -280,7 +228,7 @@ log_user_prompt = false
   return {
     pid,
     async turn(when: "before" | "after") {
-      phase = when;
+      const expected = model.beginTurn(when);
       const complete = wait(
         (message) => message.method === "turn/completed" && message.params?.threadId === thread.id,
       );
@@ -288,11 +236,11 @@ log_user_prompt = false
       const [started, message] = await Promise.all([
         call("turn/start", {
           threadId: thread.id,
-          input: [{ type: "text", text: when + "-question, reply without tools" }],
+          input: [{ type: "text", text: expected.prompt }],
         }),
         complete,
       ]);
-      assert.equal(providerError, undefined, "controlled model rejected a request");
+      assert.equal(model.error(), undefined, "controlled model rejected a request");
       assert.equal(message.params?.turn.id, started.turn.id);
       assert.equal(
         message.params?.turn.status,
@@ -303,10 +251,14 @@ log_user_prompt = false
       const last = saved.thread.turns.at(-1);
       assert.equal(last?.id, started.turn.id);
       assert.ok(
-        last?.items.some((item) => item.type === "agentMessage" && item.text === answer()),
+        last?.items.some((item) => item.type === "agentMessage" && item.text === expected.answer),
         "persisted model reply differs",
       );
-      assert.equal(requests, when === "before" ? 1 : 2, "exactly one provider request per turn");
+      assert.equal(
+        model.requests(),
+        when === "before" ? 1 : 2,
+        "exactly one provider request per turn",
+      );
       return { runtimeId: await identity(), sessionId: thread.id, turnId: started.turn.id };
     },
   };
