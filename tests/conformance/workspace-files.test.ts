@@ -7,7 +7,6 @@ import {
   ControllerWorkspaceFileUnknownOutcomeError,
   type ControllerWorkspaceFileReadRequest,
   type ControllerWorkspaceFileWriteRequest,
-  type ControllerWorkspaceFileWriteResult,
   type ControllerWorkspaceFilesAccess,
 } from "../../apps/controller/src/gateway/contracts.ts";
 import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
@@ -43,19 +42,12 @@ const administratorPermissions: Permission[] = [
 ];
 
 type Session = Pick<Awaited<ReturnType<typeof signInToControllerApp>>, "cookie" | "origin">;
-// The failed-audit case simulates a provider that acknowledges the write without file metadata.
-type AcknowledgementOnlyAccess = Pick<ControllerWorkspaceFilesAccess, "read"> & {
-  write(
-    request: ControllerWorkspaceFileWriteRequest,
-  ): Promise<Pick<Extract<ControllerWorkspaceFileWriteResult, { status: "ok" }>, "status">>;
-};
-type FixtureAccess = ControllerWorkspaceFilesAccess | AcknowledgementOnlyAccess;
 type FixtureOverrides = {
   workspaceFilesUnconfigured?: boolean;
   workspaceFileRequestTimeoutMs?: number;
 };
 type FixtureOptions = {
-  workspaceFilesAccess: FixtureAccess | undefined;
+  workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined;
   workspaceFileRequestTimeoutMs?: number;
 };
 type RequestOptions = {
@@ -136,7 +128,7 @@ function isListeningApp(
 // app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
 // provider (the app's forwards to the running case's) and the audit events since it started.
 // An app with a shorter workspace file deadline is built once per deadline, on the same controller.
-const running: { workspaceFilesAccess: FixtureAccess | undefined } = {
+const running: { workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined } = {
   workspaceFilesAccess: undefined,
 };
 const deadlineApps = new Map<number, ControllerApp>();
@@ -812,13 +804,13 @@ test("Agent workspace file reads refuse provider content OCC would not accept in
 
 test("Agent workspace file writes report an unknown outcome when the success audit fails", async (context) => {
   const writes: ControllerWorkspaceFileWriteRequest[] = [];
-  const workspaceFilesAccess: AcknowledgementOnlyAccess = {
+  const workspaceFilesAccess: ControllerWorkspaceFilesAccess = {
     async read() {
       throw new Error("not used");
     },
     async write(write) {
       writes.push(write);
-      return { status: "ok" };
+      return { status: "ok", file: { name: write.filename, content: write.content } };
     },
   };
   const fixture = await createFixture({ workspaceFilesAccess });

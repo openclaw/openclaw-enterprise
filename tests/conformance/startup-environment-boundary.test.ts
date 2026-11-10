@@ -24,8 +24,41 @@ function isAstNode(value: unknown): value is AstNode {
   return isRecord(value) && typeof value.type === "string";
 }
 
-function parseSource(source: string): unknown {
-  return Reflect.apply(parsers.typescript.parse, parsers.typescript, [source]);
+async function parseSource(source: string): Promise<unknown> {
+  const parser = parsers.typescript;
+  // Supply the parser contract directly so dependency changes remain type-checked.
+  return await parser.parse(source, {
+    parser: "typescript",
+    filepath: "startup.ts",
+    originalText: source,
+    locStart: parser.locStart,
+    locEnd: parser.locEnd,
+    printWidth: 80,
+    tabWidth: 2,
+    semi: true,
+    singleQuote: false,
+    jsxSingleQuote: false,
+    trailingComma: "all",
+    bracketSpacing: true,
+    objectWrap: "preserve",
+    bracketSameLine: false,
+    rangeStart: 0,
+    rangeEnd: Number.POSITIVE_INFINITY,
+    requirePragma: false,
+    insertPragma: false,
+    checkIgnorePragma: false,
+    proseWrap: "preserve",
+    arrowParens: "always",
+    plugins: [],
+    htmlWhitespaceSensitivity: "css",
+    endOfLine: "lf",
+    quoteProps: "as-needed",
+    vueIndentScriptAndStyle: false,
+    embeddedLanguageFormatting: "auto",
+    singleAttributePerLine: false,
+    experimentalOperatorPosition: "start",
+    experimentalTernaries: false,
+  });
 }
 
 function propertyName(node: AstNode): string | undefined {
@@ -58,7 +91,7 @@ const globalObjects = new Set(["globalThis", "global"]);
 // computed member that cannot be named), process reached through globalThis, or
 // an import of the process module. process.exitCode, process.once and the like
 // stay allowed.
-function environmentReads(source: string): string[] {
+async function environmentReads(source: string): Promise<string[]> {
   const reads: string[] = [];
   const deny = (node: AstNode, what: string): void => {
     const loc = node.loc;
@@ -109,14 +142,14 @@ function environmentReads(source: string): string[] {
       }
     }
   }
-  visit(parseSource(source));
+  visit(await parseSource(source));
   return reads;
 }
 
 test("API startup and bootstrap configuration read settings only from their env parameter", async () => {
   for (const path of parameterizedSources) {
     const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
-    assert.deepEqual(environmentReads(source), [], `${path} must read settings from env`);
+    assert.deepEqual(await environmentReads(source), [], `${path} must read settings from env`);
 
     // Each way back to the process environment is caught when appended to the
     // real file; the comments that mention process.env are not.
@@ -130,13 +163,13 @@ test("API startup and bootstrap configuration read settings only from their env 
       ['import { env as ambient } from "node:process";', "import from node:process"],
       ['await import("node:process");', "import from node:process"],
     ]) {
-      const reads = environmentReads(`${source}\n${read}\n`);
+      const reads = await environmentReads(`${source}\n${read}\n`);
       assert.equal(reads.length, 1, `${path} + ${read}: ${reads.join("; ")}`);
       assert.ok(reads[0]?.endsWith(` ${expected}`), `${path} + ${read}: ${reads[0]}`);
     }
     // A property that is merely named process, and other process members, stay allowed.
     const allowed = "const options = { process: 1 }; options.process; process.exitCode = 1;";
-    assert.deepEqual(environmentReads(`${source}\n${allowed}\n`), []);
+    assert.deepEqual(await environmentReads(`${source}\n${allowed}\n`), []);
   }
 });
 
@@ -152,7 +185,9 @@ function isCompositionName(name: unknown): name is CompositionName {
   return typeof name === "string" && Object.hasOwn(compositionArity, name);
 }
 
-function compositionCalls(source: string): { name: CompositionName; arguments: number }[] {
+async function compositionCalls(
+  source: string,
+): Promise<{ name: CompositionName; arguments: number }[]> {
   const calls: { name: CompositionName; arguments: number }[] = [];
   function visit(node: unknown): void {
     if (!isAstNode(node)) {
@@ -176,7 +211,7 @@ function compositionCalls(source: string): { name: CompositionName; arguments: n
       }
     }
   }
-  visit(parseSource(source));
+  visit(await parseSource(source));
   return calls;
 }
 
@@ -185,7 +220,7 @@ test("API startup composes without code-only dependencies such as a password has
     new URL("../../apps/controller/src/api-startup.mjs", import.meta.url),
     "utf8",
   );
-  const calls = compositionCalls(source);
+  const calls = await compositionCalls(source);
   assert.deepEqual([...new Set(calls.map(({ name }) => name))].sort(), [
     "composePostgresDevelopment",
     "composeProduction",
@@ -198,7 +233,7 @@ test("API startup composes without code-only dependencies such as a password has
     "composeProduction(config, { passwordHasher });",
     "composePostgresDevelopment(settings, drivers, factory, { passwordHasher });",
   ]) {
-    const appended = compositionCalls(`${source}\n${extra}\n`).at(-1);
+    const appended = (await compositionCalls(`${source}\n${extra}\n`)).at(-1);
     assert.ok(appended && appended.arguments > compositionArity[appended.name], extra);
   }
 });
