@@ -129,7 +129,7 @@ Rendered Certificates must pass server-side dry-run admission before startup Job
 `scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
 mounts and service accounts into single-Pod Jobs with the candidate Secret,
 no retries and the selected deadline. `preflight_startup` verifies Job UID and
-child ownership. It waits for missing children and refuses replacements or
+child ownership. It waits for children and refuses replacements or
 multiple children. Job failure overrides child success.
 
 An API Pod with a theme first calls
