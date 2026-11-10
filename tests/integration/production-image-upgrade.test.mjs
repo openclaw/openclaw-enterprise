@@ -309,7 +309,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -773,6 +773,12 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
+  *' get deployment/openclaw-enterprise-'*)
+    for arg in "$@"; do
+      case "$arg" in deployment/openclaw-enterprise-*) component=\${arg##*-} ;; esac
+    done
+    printf '{"metadata":{"uid":"fixture-%s","resourceVersion":"1","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":1}}\\n' "$component" "$component"
+    ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
@@ -785,7 +791,7 @@ esac
     "occ",
     `printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
-  *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
+  *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false,"repositoryWorkerRestart":"reverification-supported"}]}]}' ;;
   *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
   *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
