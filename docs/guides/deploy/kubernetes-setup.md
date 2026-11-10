@@ -6,15 +6,17 @@ last_verified: "2026-11-02"
 
 # Set up OCE on Kubernetes
 
-Install OpenClaw Enterprise (OCE) for development and evaluation on Kubernetes. [Production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes cluster for development and evaluation. [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 ## Before you start
 
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
-Label separate pools `oce-role=control` and `oce-role=agents`. Use encrypted RWO storage with `WaitForFirstConsumer`.
+Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.
 
-Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel and isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
+Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
+
+Use a fresh application database.
 
 ## 1. Prepare the cluster and images
 
@@ -45,20 +47,18 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get nodes -L oce-role
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORAGE_CLASS"
 ```
 
-Set these inputs:
+| Input                                    | Value                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
+| `OPENSHELL_CHART`                        | Stock 0.1.6.                                                                   |
+| `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
+| `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
+| `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
+| `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-| Input                                    | Value                                                                                  |
-| ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| `OCE_CHART`                              | Matching absolute chart directory/archive.                                             |
-| `OPENSHELL_CHART`                        | Stock OpenShell 0.1.6.                                                                 |
-| `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository holding its stock AMD64 Gateway, supervisor and runtime manifests. |
-| `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                                       |
-| `ADMIN_EMAIL`                            | Owner’s email.                                                                         |
-| `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including the API Service VIP and endpoint /32s.            |
+Match templates: OpenShell 0.1.6, Codex 0.164.0.
 
-Verify template compatibility: OpenShell 0.1.6 and Codex 0.164.0.
-
-Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify the GatewayClass:
+Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 
 ```bash
 class_json=$(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get gatewayclass eg --ignore-not-found -o json)
@@ -83,4 +83,4 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 
 In the same Bash shell, [deploy your first Agent](deploy-first-agent.md).
 
-[Delete the Agent](quickstart-delete-agent.md), then [clean up the installation](kubernetes-cleanup.md).
+When finished, [delete the Agent](quickstart-delete-agent.md), then [clean up the installation](kubernetes-cleanup.md).
