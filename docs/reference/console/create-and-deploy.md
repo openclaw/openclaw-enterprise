@@ -53,6 +53,8 @@ as the reason Dedicated OpenClaw is disabled.
    or you use ChatGPT OAuth.
    Choose the default model or **Enter model ID manually**. Returning to the list
    clears unlisted IDs. Select **Additional models** to allow session switches.
+   For a Preset that sets models only on individual roster entries, edit each entry's model policy
+   under **Advanced settings** or set a shared `agents.defaults.model` to use the picker.
    Choosing a checked model as the default retains the previous one.
 4. Confirm the credential can use each model. Primary, fallback and session models
    must share a provider and Harness. Model edits preserve unrelated JSON.

@@ -2581,10 +2581,11 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   // An alternate must extend that catalog so the selected provider can resolve the model.
   const advanced = structuredClone(selection);
   const defaults = advanced.agents.defaults;
-  defaults.models = { "openai/gpt-6-luna": defaults.models[defaults.model] };
+  delete defaults.models;
+  delete defaults.modelPolicy;
   defaults.model = "openai/gpt-6-luna";
-  defaults.modelPolicy.allow = [defaults.model];
-  advanced.models.providers = { openai: advanced.models.providers.codex };
+  const codexProvider = advanced.models.providers.codex;
+  advanced.models.providers = { openai: { ...codexProvider, agentRuntime: { id: "codex" } } };
   await configuration.fill(JSON.stringify(advanced));
   await page.getByRole("checkbox", { name: "gpt-6-sol", exact: true }).check();
   const routed = JSON.parse(await configuration.inputValue());
@@ -2596,6 +2597,9 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     routed.models.providers.openai.models.map((row: { id: string }) => row.id),
     ["gpt-6-luna", "gpt-6-sol"],
   );
+  assert.deepEqual(routed.agents.defaults.models["openai/gpt-6-luna"], {
+    agentRuntime: { id: "codex" },
+  });
   assert.equal(routed.models.providers.codex, undefined);
   await page.getByLabel("Agent name").fill("Discarded draft");
   page.once("dialog", (dialog) => dialog.accept());

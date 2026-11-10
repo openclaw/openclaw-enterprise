@@ -1528,6 +1528,8 @@ function renderAgentForm(
     const isRow = (row: unknown) => isObject(row) && (row.id === id || row.id === reference);
     if (add) {
       policy.allow = [...new Set([primary, ...allow, reference])];
+      // A single-model Preset can inherit its Harness from the provider until a second model is selectable.
+      policies[primary] ??= { agentRuntime: { id: harness.value } };
       policies[reference] ??= { agentRuntime: { id: harness.value } };
       if (!catalog.some(isRow)) {
         // Use the model's own template. The default model's limits may differ.
