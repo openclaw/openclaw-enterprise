@@ -800,13 +800,16 @@ for (const status of [200, 503]) {
     const discovery = await holdRequests(t, page, "**/api/auth/providers", {
       method: "GET",
       once: true,
-      fulfill: {
-        status,
-        json: {
-          data: { google: true, password: true, sessionBinding: true },
-          meta: { requestId: "discovery-focus" },
-        },
-      },
+      fulfill:
+        status === 503
+          ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sign-in discovery is unavailable.")
+          : {
+              status,
+              json: {
+                data: { google: true, oidc: false, password: true, sessionBinding: true },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+              },
+            },
     });
     await page.goto(`${fixture.origin}/console/login`);
     await discovery.requested;
