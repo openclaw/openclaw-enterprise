@@ -178,6 +178,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 74 && completedCount > 74) {
     return "preHumanAuthenticationResults";
   }
+  if (count === 75 && completedCount > 75) {
+    return "preNativeBrowserAccess";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -289,7 +292,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 75) {
+  if (count === 76) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");
@@ -360,7 +363,10 @@ async function preflight(client, manifest) {
   return shape;
 }
 
-export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty = false } = {}) {
+export async function migrateWithHistory(
+  pool,
+  { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
+) {
   const { manifest, migrations } = await readManifest();
   const client = await pool.connect();
   let locked = false;
@@ -383,6 +389,17 @@ export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty 
       );
       error.code = "MIGRATION_HISTORY_NOT_EMPTY";
       throw error;
+    }
+    if (requireCurrent) {
+      if (history !== "completed") {
+        const error = new Error(
+          "The separate database deployment has not completed the candidate migration history. " +
+            "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+        );
+        error.code = "MIGRATION_HISTORY_PENDING";
+        throw error;
+      }
+      return history;
     }
     if (!checkOnly) {
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable

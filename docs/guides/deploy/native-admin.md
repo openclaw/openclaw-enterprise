@@ -21,11 +21,11 @@ browser onboarding and reopening the same conversation.
 
 ## Production requirements
 
-- Use password or OIDC sign-in. Native access remains unavailable with GitHub or Google; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
+- Use password or OIDC sign-in with shared cookies, or guarded GitHub sign-in with host-only exchange. Google does not support native access; see [authentication limits](../../reference/agent-native-admin.md#who-can-open-it).
 - Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
-- Configure HTTPS Console and Agent DNS hosts under a common non-public suffix. OCC derives the shared session cookie domain; for `console.oce.example.com` and `agents.oce.example.com`, it is `oce.example.com`. Every host that receives this cookie must be a trusted OCE ingress endpoint. The Agent suffix is required even when native access is disabled.
+- In shared-cookie mode, configure HTTPS Console and Agent DNS hosts under a common non-public suffix. OCC derives the shared session cookie domain; for `console.oce.example.com` and `agents.oce.example.com`, it is `oce.example.com`. Every host that receives this cookie must be a trusted OCE ingress endpoint. The Agent suffix is required even when native access is disabled.
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy device auto-approval.
 - Users have exact Agent `operate` for chat or `administer` for administration. A runtime must enforce the narrow chat scopes before chat-only access is available.
 
@@ -44,6 +44,23 @@ agentNativeAdmin:
   enabled: true
   domain: agents.oce.example.com
 ```
+
+For an installation that already uses guarded GitHub sign-in, select host-only
+exchange explicitly to keep the Console cookie off Agent hosts:
+
+```yaml
+agentNativeAdmin:
+  enabled: true
+  sessionMode: host-only-exchange
+  domain: agents.oce.example.com
+```
+
+Keep the existing GitHub sign-in and recovery-user settings. Console and Agent
+hosts must use HTTPS on the same registrable site. Google sign-in, OIDC and
+sandbox preview cannot be combined with this mode. The exchange creates no user
+or grant; the signed-in person needs `operate` for chat or `administer` for
+administration on the exact Agent. See the
+[session boundary](../../reference/agent-native-admin.md#host-only-session-exchange).
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
 
@@ -108,7 +125,7 @@ spec:
           port: 8080
 ```
 
-Verify Helm passes these API environment variables:
+For shared-cookie mode, verify Helm passes these API environment variables:
 
 ```text
 OCC_AGENT_NATIVE_ADMIN_ENABLED=true
@@ -120,6 +137,8 @@ Verify that the session cookie is emitted once at the derived domain as
 the configured `SameSite` behavior. Sign-out revokes the current session and
 expires this cookie. Clear stale OCE cookies manually if the browser reports
 a duplicate-cookie refusal. See [shared sessions](../../reference/authentication.md#native-admin-shared-sessions).
+
+For host-only exchange, verify `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE=host-only-exchange` is present and `OCC_AUTH_COOKIE_DOMAIN` is absent. The Console session cookie must have no `Domain` attribute and must not be sent to the Agent host. **Open chat** or **Open Agent UI** establishes a separate host-only Agent cookie; see [session exchange](../../reference/agent-native-admin.md#host-only-session-exchange).
 
 Kubernetes Compute renders baseline gateway trust from Installation settings.
 Native admin availability still checks the explicit Agent policy below; keep
@@ -184,7 +203,7 @@ for the exact opt-in conditions and storage lifecycle.
 
 ## Enable HTML previews
 
-HTML previews use the runtime's separate sandbox listener. Exposing the native
+HTML previews require shared-cookie mode; host-only exchange refuses sandbox preview enablement. Previews use the runtime's separate sandbox listener. Exposing the native
 admin UI alone does not expose this listener: without sandbox routing, the browser
 may try the Agent hostname on port 8081 and report a refused connection.
 
@@ -252,9 +271,9 @@ the same file and verify its contents are retained.
 
 ## Tests
 
-Open the console, choose a running Agent with a selected version, and verify **Open Agent UI** is enabled for an administrator. Its description names the version selected for service. Select **Open Agent UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
+Open the console, choose a running Agent with a selected version, and verify **Open Agent UI** is enabled for an administrator. Its description names the version selected for service. Select **Open Agent UI** and confirm the Agent host loads in a new tab. Shared-cookie mode opens it directly. Host-only exchange first completes the Console-bound launch and sets `__Host-occ_agent_access` on the Agent host; the Console cookie stays on the Console host.
 
-Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and performs a reversible native admin edit against a disposable Agent.
+Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and completes an authorized action against a disposable Agent. A native configuration edit requires [Gateway managed mode](../../reference/agents/gateway-managed-mode.md) to be off.
 
 ## Troubleshooting
 
@@ -270,7 +289,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayChatEndpoint` in chat mode or `getGatewayEndpoint` in admin mode. |
-| Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                   |
+| Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
 | Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.                                       |
 

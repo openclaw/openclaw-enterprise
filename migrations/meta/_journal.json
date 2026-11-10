@@ -530,8 +530,15 @@
     {
       "idx": 76,
       "version": "7",
+      "when": 1787000000076,
+      "tag": "0076_native_browser_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0076_namespace_lifecycle",
+      "tag": "0077_namespace_lifecycle",
       "breakpoints": true
     }
   ]

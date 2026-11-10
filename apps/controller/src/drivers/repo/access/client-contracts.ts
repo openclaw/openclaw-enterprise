@@ -8,6 +8,27 @@ export interface RepositoryCredentialClientConfiguration {
   readonly pushRefAllowlist?: readonly string[];
 }
 
+/** Check the canonical HTTPS gateway and its same-origin Git remote after URL parsing. */
+export function isValidGitClientConnection(
+  origin: URL,
+  remote: URL,
+  client: Pick<RepositoryCredentialClientConfiguration, "gatewayOrigin">,
+): boolean {
+  return (
+    origin.protocol === "https:" &&
+    origin.origin === client.gatewayOrigin &&
+    !origin.username &&
+    !origin.password &&
+    !origin.search &&
+    !origin.hash &&
+    remote.origin === origin.origin &&
+    !remote.username &&
+    !remote.password &&
+    !remote.search &&
+    !remote.hash
+  );
+}
+
 /**
  * True when `value` contains a C0 control character (U+0000-U+001F) or DEL (U+007F).
  *

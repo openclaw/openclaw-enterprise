@@ -59,7 +59,8 @@ auth:
   # accounts without one cannot sign in until an administrator attaches it.
   passwordSignIn: all
   # Optional GitHub browser sign-in for existing password accounts (API Pod only).
-  # Needs an HTTPS baseUrl, auth.recoveryUserId and agentNativeAdmin.enabled: false.
+  # Needs an HTTPS baseUrl and auth.recoveryUserId. Native admin must be disabled
+  # or use agentNativeAdmin.sessionMode: host-only-exchange; see docs/guides/deploy/native-admin.md.
   # Create the dedicated Secret first.
   github:
     enabled: false
@@ -81,7 +82,8 @@ auth:
     # api.github.com/meta to narrow it.
     egressCidrs: []
   # Optional Google sign-in (OpenID Connect) for existing password accounts (API Pod
-  # only). Same requirements as auth.github; its Secret must differ from auth.github's.
+  # only). Needs HTTPS, auth.recoveryUserId and agentNativeAdmin.enabled: false.
+  # Its Secret must differ from auth.github's.
   # Create the dedicated Secret first.
   google:
     enabled: false
@@ -97,8 +99,9 @@ auth:
     # an egress proxy.
     egressCidrs: []
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
-  # existing password accounts (API Pod only). Same requirements as auth.github; its
-  # Secret must differ from auth.github's and auth.google's. Copy issuer and the three URLs
+  # existing password accounts (API Pod only). Needs HTTPS and auth.recoveryUserId.
+  # Native access supports shared-cookie mode. Its Secret must differ from
+  # auth.github's and auth.google's. Copy issuer and the three URLs
   # from the IdP's discovery document: each must be https on port 443 on the issuer's
   # host, with no query or fragment. The API never runs discovery.
   oidc:
@@ -128,6 +131,8 @@ auth:
 
 agentNativeAdmin:
   enabled: false
+  # host-only-exchange is an explicit opt-in for guarded GitHub sign-in.
+  sessionMode: shared-cookie
   # Required even when browser access is disabled; shares a non-public DNS suffix
   # with auth.baseUrl for automatically scoped browser session cookies.
   domain: ""
@@ -253,6 +258,8 @@ database:
   secretName: occ-database
   appUrlKey: application-url
   migrationUrlKey: migration-url
+  # On upgrade, separate requires the candidate schema before Helm can replace services.
+  upgradeMigration: hook
   # Public CA trust; may share a Secret with the other CA settings, not secretName.
   caSecretName: ""
   caKey: ca.pem

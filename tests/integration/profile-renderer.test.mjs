@@ -3055,3 +3055,59 @@ test("profile transport Secret prefixes agree with controller startup admission"
     }
   }
 });
+
+test(
+  "profiles explicitly opt guarded GitHub into host-only native admin",
+  { skip: helmSkip },
+  async () => {
+    const input = externalSignInInput({
+      authBaseUrl: "https://console.example.com",
+      agentNativeAdminDomain: "agents.example.com",
+      agentNativeAdminSessionMode: "host-only-exchange",
+    });
+    const output = await render("openclaw", input);
+    assert.equal(output.summary.ok, true);
+    assert.deepEqual(loadYaml(output.values).agentNativeAdmin, {
+      enabled: true,
+      domain: "agents.example.com",
+      sessionMode: "host-only-exchange",
+    });
+    const shared = await render("openclaw", {
+      ...input,
+      controlPlane: { ...input.controlPlane, agentNativeAdminSessionMode: "shared-cookie" },
+    });
+    // The chart owns the shared default; profiles must not revive a manual cookie domain.
+    assert.deepEqual(loadYaml(shared.values).agentNativeAdmin, {
+      enabled: false,
+      domain: "agents.example.com",
+    });
+    const manifests = helmTemplate(output);
+    assert.match(
+      manifests,
+      /name: OCC_AGENT_NATIVE_ADMIN_SESSION_MODE\n\s+value: "host-only-exchange"/,
+    );
+    assert.doesNotMatch(manifests, /OCC_AUTH_COOKIE_DOMAIN/);
+    assert.match(output.preflight.prerequisites.join("\n"), /External sign-in Secrets created/);
+    for (const changes of [
+      { sharedCookieDomain: "example.com" },
+      { agentNativeAdminDomain: "agents.other.com" },
+      { google: {} },
+      {
+        oidc: {
+          issuer: "https://sso.example.com/realms/acme",
+          authorizationUrl: "https://sso.example.com/authorize",
+          tokenUrl: "https://sso.example.com/token",
+          jwksUrl: "https://sso.example.com/jwks",
+          egressCidrs: ["198.51.100.0/24"],
+        },
+      },
+      { github: undefined },
+      { agentNativeAdminSessionMode: "unknown" },
+    ]) {
+      await assert.rejects(
+        render("openclaw", { ...input, controlPlane: { ...input.controlPlane, ...changes } }),
+        /profile renderer refused/,
+      );
+    }
+  },
+);

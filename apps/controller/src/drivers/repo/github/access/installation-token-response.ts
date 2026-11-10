@@ -1,5 +1,4 @@
-import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
-import { permissionsForProfile } from "./profiles.ts";
+import type { ProviderScope } from "./provider-transport/request-options.ts";
 import { parseJsonMembers } from "../../access/json-members.ts";
 import { providerClockSkewMs, tokenLifetimeMs } from "./driver/lifetime.ts";
 import { isGitHubWireCredential } from "./wire-credential.ts";
@@ -43,7 +42,8 @@ export function validateInstallationTokenResponse<Credential>(
   packet: Record<string, unknown> | undefined,
   credential: Credential | undefined,
   observedWallMs: number,
-  policy: GitHubPreparationAdmission["grant"] & { readonly minimumValidityMs: number },
+  scope: ProviderScope,
+  minimumValidityMs: number,
 ):
   | Readonly<{
       kind: "validated";
@@ -68,7 +68,7 @@ export function validateInstallationTokenResponse<Credential>(
   if (!isGitHubWireCredential(token)) {
     return { kind: "uncertain" };
   }
-  if (!packet || !validIssuedScope(packet, policy)) {
+  if (!packet || !validIssuedScope(packet, scope)) {
     return { kind: "rejected", code: "scope-mismatch" };
   }
   if (
@@ -81,7 +81,7 @@ export function validateInstallationTokenResponse<Credential>(
   ) {
     return { kind: "rejected", code: "invalid-response" };
   }
-  if (expiry - observedWallMs - providerClockSkewMs < policy.minimumValidityMs) {
+  if (expiry - observedWallMs - providerClockSkewMs < minimumValidityMs) {
     return { kind: "rejected", code: "insufficient-validity" };
   }
   return {
@@ -92,16 +92,13 @@ export function validateInstallationTokenResponse<Credential>(
   };
 }
 
-function validIssuedScope(
-  packet: Record<string, unknown>,
-  policy: GitHubPreparationAdmission["grant"],
-): boolean {
+function validIssuedScope(packet: Record<string, unknown>, scope: ProviderScope): boolean {
   const { permissions, repositories, repository_selection: selection } = packet;
   const reported =
     permissions !== null && typeof permissions === "object" && !Array.isArray(permissions)
       ? Object.entries(permissions)
       : undefined;
-  if (policy.profile === "github-installation") {
+  if (scope.kind === "inherited") {
     // The empty POST selects inheritance. GitHub's 201 requires only token and expires_at;
     // any returned permissions, selection or repositories describe the installation, not a local grant.
     return (
@@ -126,15 +123,8 @@ function validIssuedScope(
           new Set(repositories.map((r) => r.full_name.toLowerCase())).size === repositories.length))
     );
   }
-  const expected = Object.entries(
-    policy.profile === "github-repository"
-      ? policy.permissions
-      : permissionsForProfile(policy.profile),
-  );
-  const selected =
-    policy.profile === "github-repository"
-      ? policy.repositories
-      : [{ repositoryId: policy.repositoryId, repository: policy.repository }];
+  const expected = Object.entries(scope.permissions);
+  const selected = scope.repositories;
   return (
     reported?.length === expected.length &&
     expected.every(([name, level]) => (permissions as Record<string, unknown>)[name] === level) &&
@@ -145,9 +135,9 @@ function validIssuedScope(
     selected.every((wanted) =>
       repositories.some(
         (r) =>
-          r?.id === Number(wanted.repositoryId) &&
+          r?.id === wanted.id &&
           typeof r.full_name === "string" &&
-          r.full_name.toLowerCase() === wanted.repository.toLowerCase(),
+          r.full_name.toLowerCase() === wanted.name.toLowerCase(),
       ),
     )
   );

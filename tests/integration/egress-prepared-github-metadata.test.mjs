@@ -1,3 +1,4 @@
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -277,8 +278,8 @@ test("prepared GitHub metadata preserves the acquisition wire credential envelop
     profile: "metadata-read",
     repositoryId: fixtureRepositoryId,
     repository: fixtureRepository,
-    minimumValidityMs: 10000,
   };
+  const scope = prepareProviderScope("https://api.github.com", policy);
   const cases = [
     ...[1, 7, 8, 8192, 8193, 16384].map((length) => ({
       label: `length ${length}`,
@@ -308,7 +309,8 @@ test("prepared GitHub metadata preserves the acquisition wire credential envelop
       },
       "synthetic-custody-reference",
       observedWallMs,
-      policy,
+      scope,
+      10000,
     );
     assert.equal(decision.kind, accepted ? "validated" : "uncertain", label);
     if (accepted) {

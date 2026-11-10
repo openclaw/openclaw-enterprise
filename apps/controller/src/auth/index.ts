@@ -178,6 +178,7 @@ export {
 
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
 const LOCAL_PASSWORD_MAX_LENGTH = 128;
+export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
@@ -207,6 +208,8 @@ export interface ControllerAuthOptions {
   readonly database?: BetterAuthOptions["database"];
   readonly memoryDatabase?: MemoryDB;
   readonly agentDomain: string;
+  /** Shared sessions are the default; native exchange keeps the parent session host-only. */
+  readonly sessionMode?: "shared-cookie" | "host-only-exchange";
   readonly humanLogin?: ReturnType<typeof createHumanLogin>;
   /** Trusted proxies whose client-address header keys sign-in admission. */
   readonly clientAddress?: ClientAddressConfiguration;
@@ -300,10 +303,11 @@ export {
 } from "@openclaw-enterprise/iam";
 
 export interface ControllerAuth {
+  readonly nativeBrowser?: PostgresHumanAuthentication["nativeBrowser"];
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
-  readonly sharedCookieDomain: string;
+  readonly sharedCookieDomain?: string;
   readonly admissionVerifier: ControllerAdmissionVerifier;
   readonly githubEnabled: boolean;
   /** Provider-instance key for GitHub identities; set only while GitHub sign-in is configured. */
@@ -966,10 +970,24 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       "sharedCookieDomain has been removed; session cookie scope is derived from Console and Agent hostnames.",
     );
   }
-  const sharedCookieDomain = deriveSharedCookieDomain(options.baseURL, options.agentDomain);
+  const sessionMode = options.sessionMode ?? "shared-cookie";
+  if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
+    throw new Error("Session mode must be shared-cookie or host-only-exchange.");
+  }
+  const derivedCookieDomain = deriveSharedCookieDomain(options.baseURL, options.agentDomain);
+  const hostBoundSession = sessionMode === "host-only-exchange";
+  const sharedCookieDomain = hostBoundSession ? undefined : derivedCookieDomain;
   const humanLogin = options.humanLogin;
-  const cookiePrefix = OCC_SHARED_AUTH_COOKIE_PREFIX;
-  const sessionCookieName = `__Secure-${cookiePrefix}.session_token`;
+  if (
+    hostBoundSession &&
+    (humanLogin?.githubProviderId === undefined ||
+      humanLogin.googleProviderId !== undefined ||
+      humanLogin.oidcProviderId !== undefined)
+  ) {
+    throw new Error("Host-only exchange requires guarded GitHub sign-in without Google or OIDC.");
+  }
+  const cookiePrefix = hostBoundSession ? OCC_AUTH_COOKIE_PREFIX : OCC_SHARED_AUTH_COOKIE_PREFIX;
+  const sessionCookieName = `${hostBoundSession ? "__Host-" : "__Secure-"}${cookiePrefix}.session_token`;
   const issuer = betterAuthIssuer(options.installationId);
   const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
@@ -1042,8 +1060,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     advanced: {
       ...(humanLogin === undefined ? {} : { ipAddress: { ipAddressHeaders: ["x-occ-client-ip"] } }),
       cookiePrefix,
-      useSecureCookies: true,
-      crossSubDomainCookies: { enabled: true, domain: sharedCookieDomain },
+      ...(hostBoundSession
+        ? {
+            // Better Auth otherwise prepends __Secure- even to an explicit __Host- name.
+            useSecureCookies: false,
+            cookies: { session_token: { name: sessionCookieName } },
+          }
+        : {
+            useSecureCookies: true,
+            crossSubDomainCookies: { enabled: true, domain: derivedCookieDomain },
+          }),
       defaultCookieAttributes: {
         httpOnly: true,
         path: "/",
@@ -1621,7 +1647,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     auth,
     issuer,
     sessionCookieName,
-    sharedCookieDomain,
+    ...(sharedCookieDomain === undefined ? {} : { sharedCookieDomain }),
     admissionVerifier: new ControllerAdmissionVerifier(
       auth,
       options.installationId,
@@ -1972,6 +1998,7 @@ export async function createPostgresControllerAuth(
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
+    ...(guarded && persistence ? { nativeBrowser: persistence.nativeBrowser } : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

@@ -162,7 +162,9 @@ other than `:danger-full-access` report fixed request-source, selector-agreement
 response-comparison categories, without profile names or configuration. Missing metadata
 and a different returned ID remain refusals. The message directs the caller to ask
 the workspace administrator to verify profile availability and runtime compatibility
-before retrying.
+before retrying. Full-access refusals report a fixed sandbox or response-shape
+category so callers can distinguish a restricted grant from an incompatible
+response. The guard still requires `sandbox.type` to equal `dangerFullAccess`.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
@@ -216,8 +218,8 @@ interrupted smoke command.
 ### 3. Seal and enter publication
 
 `scripts/ci/container-release.mjs:seal` rechecks the platform contents and records
-the archive hash, multi-platform index digest, platform list, source, workflow,
-run attempt, CI identity, and approved base. Both prepared artifacts must exist
+the archive hash, index digest, each platform’s manifest and config digests,
+source, workflow run and attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
 publish job runs only when the operator selected `publish: true`.
 

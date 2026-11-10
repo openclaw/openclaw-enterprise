@@ -410,6 +410,7 @@ runs:
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+        OCC_TEST_NATIVE_BROWSER_RECEIPT: ${{ inputs.lane == 'openshell' && format('{0}/native-browser-receipt.json', runner.temp) || '' }}
         # One V8 code cache per job, shared by the lane's host Node processes
         # (test files and the controllers and helpers they start with the job
         # env). Node keeps entries under a directory tagged with its version,
@@ -505,6 +506,15 @@ runs:
         name: runtime-image-fixture-receipt-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/state/runtime-image-fixture-receipt.json
         if-no-files-found: error
+        retention-days: 7
+    - name: Retain native browser receipt
+      id: retain-native-browser-receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always() && inputs.lane == 'openshell' && (inputs.test-file == '' || inputs.test-file == 'tests/integration/dev-up-openshell-k3d-real.test.mjs')
+      with:
+        name: native-browser-receipt-${{ inputs.artifact-prefix }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/native-browser-receipt.json
+        if-no-files-found: ${{ steps.run-lane.outcome == 'success' && 'error' || 'ignore' }}
         retention-days: 7
     - name: Upload cluster diagnostics
       id: upload-cluster-diagnostics
@@ -644,6 +654,7 @@ runs:
           image_reconciliation=${{ steps.image_reconciliation.conclusion }}
           retain-image-reconciliation=${{ steps.retain-image-reconciliation.conclusion }}
           retain-runtime-fixture=${{ steps.retain-runtime-fixture.conclusion }}
+          retain-native-browser-receipt=${{ steps.retain-native-browser-receipt.conclusion }}
           upload-cluster-diagnostics=${{ steps.upload-cluster-diagnostics.conclusion }}
           upload-browser-diagnostics=${{ steps.upload-browser-diagnostics.conclusion }}
           aggregate-results=${{ steps.aggregate-results.conclusion }}
