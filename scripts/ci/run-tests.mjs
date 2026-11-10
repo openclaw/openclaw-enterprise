@@ -2184,7 +2184,8 @@ async function aggregateGroup(
         let outcome = exercisedLaneStatus(summary, lane.files);
         if (outcome && laneName === "skipper-prepared-git-installed") {
           try {
-            projectSkipperRunnerReceipt(summary);
+            const projected = projectSkipperRunnerReceipt(summary);
+            outcome = exercisedLaneStatus({ ...projected, cleanup: summary.cleanup }, lane.files);
           } catch {
             // Its owning contract requires file cleanup even when other lanes do not.
             outcome = undefined;

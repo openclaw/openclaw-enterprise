@@ -296,6 +296,11 @@ test("full coverage receipts require real case evidence and retain approved same
   nullCleanup.files[0].cleanup = null;
   await json(skipperPath, nullCleanup);
   await verify(0, false);
+  const extraCounts = JSON.parse(installedReceipt);
+  extraCounts.files[0].counts.cancelled = 1;
+  assert.equal(projectSkipperRunnerReceipt(extraCounts).files[0].exercised, undefined);
+  await json(skipperPath, extraCounts);
+  await verify(0, false);
   await writeFile(skipperPath, installedReceipt);
   // A later artifact-copy failure leaves case execution and completed cleanup
   // intact, even though the owning job and required aggregate remain failed.
