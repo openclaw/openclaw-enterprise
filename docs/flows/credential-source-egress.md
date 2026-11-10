@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-10
-last_updated_session: authoring-run/734c21e4-4d60-477a-bd0a-b307427da70d
+last_updated_session: authoring-run/3273f8d1-cb26-4ee5-b89f-e459369ea8ee
 ---
 
 # Protected credential request flow
@@ -270,6 +270,8 @@ checks [request forms](../reference/credential-sources/protected-inference.md#st
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
 Inline developer tools keep the local-tool restrictions. Optional Codex Git
 workspace metadata passes the same closed request check and grants no authority.
+When Codex sends a tool result in a follow-up, the request validator accepts replayed
+assistant output text with the same empty metadata arrays that response validation accepts.
 
 ### 6. Reduce the live credential policy
 
@@ -332,6 +334,8 @@ None.
 
 ## Changelog
 
+- 2026-11-10 07:49: Admit empty provider metadata on replayed assistant text. (authoring-run/3273f8d1-cb26-4ee5-b89f-e459369ea8ee - fa0e6957720c96d423ab44b0369eeecefc797072)
+
 - 2026-11-10 07:01: Admit bounded Codex Git workspace metadata on Responses requests. (authoring-run/734c21e4-4d60-477a-bd0a-b307427da70d - 194e20fc69f913ba81662832f817c33302ded33c)
 
 - 2026-11-10 02:54: Link the separate online model request flow. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
@@ -347,19 +351,5 @@ None.
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 - 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
-
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
-
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
-
-- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
-
-- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
-
-- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

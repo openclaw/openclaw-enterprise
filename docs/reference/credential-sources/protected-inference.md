@@ -106,6 +106,7 @@ SHA-256 commit hash, a Boolean `has_changes`, and a map of up to 16 Git remote
 URLs. The proxy admits HTTPS URLs without user info and SCP-style URLs with the
 literal `git` transport user. Both forms use plain ASCII repository paths and
 omit queries and fragments. The proxy treats this metadata as telemetry only.
+Replayed assistant `output_text` parts can include `annotations` and `logprobs`. If present, each field must be an empty array.
 Unknown request fields remain refused. In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
 the same type and local-tool restrictions. Namespace descriptions remain text. The optional
