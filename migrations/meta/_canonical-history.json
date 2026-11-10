@@ -709,10 +709,16 @@
       "35e58241d2983bd4fc147d33258696016190972b54fd75d58e2821f031facd06",
       "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
       "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5"
+    ],
+    "231f3c5137f57c79d24c7e5d577ffc41fd9dffaea19b39c34a1d340ad22fc16a": [
+      "9c482d8e1b53aed9a620486daddead50cc332613c3590c14f92d126a899523cd",
+      "bc76ee9222a4f31372ad2687844bf7f277610c0113bb05a9eea23f7b46ca7e37",
+      "c4cce760b65efb72c3e731f2afc73832424a5879c7be16b7e5b6a1a412a77e28",
+      "4348a3723f0adf4bf24818530fbada099dd3842f9a92c2eddbc88bdd231de541"
     ]
   },
   "catalogs": {
-    "completed": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed",
+    "completed": "231f3c5137f57c79d24c7e5d577ffc41fd9dffaea19b39c34a1d340ad22fc16a",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -773,7 +779,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0076 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0076 and upgraded canonical restores from prefixes 51, 74, and 75. The native catalog through 0077 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, and 76 upgraded to 0077."
   },
   "compatibleLineages": {
     "providerCompleted": {

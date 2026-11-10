@@ -181,6 +181,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 75 && completedCount > 75) {
     return "preNativeBrowserAccess";
   }
+  if (count === 76 && completedCount > 76) {
+    return "preCredentialSourceRetainedSecrets";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -291,9 +294,6 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 63) {
     return "preGatewayManagedMode";
-  }
-  if (count === 65) {
-    return "preCredentialSourceRetainedSecrets";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

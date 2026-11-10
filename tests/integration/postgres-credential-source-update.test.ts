@@ -175,7 +175,7 @@ async function seedSource(f: Controller) {
       value: `synthetic-${label}-${randomUUID()}`,
     });
     assert.equal(secret.status, 201, JSON.stringify(secret.body));
-    return secret.body.data as { id: string; ref: Record<string, string> };
+    return secret.body.data as { id: string; namespaceId: string; ref: Record<string, string> };
   };
   const recorded = await createSecret("recorded");
   const source = await f.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
@@ -231,7 +231,7 @@ test(
     const staged = await createSecret("staged");
     const readValue = secretDriver.withValue.bind(secretDriver);
     let restricted = false;
-    secretDriver.withValue = async (...args: Parameters<SecretDriver["withValue"]>) => {
+    secretDriver.withValue = async <T>(...args: Parameters<typeof readValue<T>>) => {
       if (!restricted) {
         restricted = true;
         // OCC has no API that writes Restrictions; the application role may insert them.
