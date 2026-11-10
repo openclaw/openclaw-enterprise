@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -72,7 +71,11 @@ function storedLegacyPolicy(scope: GoogleRequestScope) {
 }
 
 function allowPaths(scope: GoogleRequestScope): string[] {
-  return googleRequestPolicy(scope).networks["oce-google-requests"].endpoints.flatMap((endpoint) =>
+  const endpoints = googleRequestPolicy(scope).networks["oce-google-requests"].endpoints as {
+    host: string;
+    rules: { allow: { method: string; path: string } }[];
+  }[];
+  return endpoints.flatMap((endpoint) =>
     endpoint.host === scope.host
       ? endpoint.rules.map((rule) => `${rule.allow.method} ${rule.allow.path}`)
       : [],
@@ -135,7 +138,7 @@ test("an existing AdSense Sandbox replaces only its obsolete generated rules", a
   const storedPaths = allowPathsFrom(stored);
   assert.ok(storedPaths.includes("GET /v2/*"));
   assert.ok(storedPaths.includes("GET /v2/*:listChildAccounts"));
-  const replaced = reconcileObsoleteGoogleRequestRules(stored);
+  const replaced = reconcileObsoleteGoogleRequestRules(stored) as typeof stored;
   assert.deepEqual(
     wirePolicy(replaced.network_policies["oce-google-requests"]),
     wirePolicy(googleRequestPolicy(adsenseScope).networks["oce-google-requests"]),
@@ -146,50 +149,29 @@ test("an existing AdSense Sandbox replaces only its obsolete generated rules", a
   });
   assert.equal(reconcileObsoleteGoogleRequestRules(tampered), tampered);
 
-  const configuration = installation();
-  configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
-  configuration.backend = [
-    {
-      id: "openshell",
-      type: "openshell",
-      configuration: {
-        serviceName: "openshell-gateway",
-        port: 50051,
-        insecureTransport: "network-policy",
+  const sandboxConfiguration = {
+    gateway: { workspaceMode: "operator" },
+    kubernetes: {
+      runtimeClassName: "openshell-sandbox",
+      userNamespaces: false,
+      serviceAccount: { mode: "gatewayConfigured" },
+      sandboxDataMount: {
+        subPath: "workspace",
+        mountPath: "/sandbox/enterprise",
+        readOnly: false,
       },
-      drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
     },
-  ];
-  configuration.drivers.credential_gateway = {
-    id: "openshell-credentials",
-    configuration: { binaries: ["/app/bin/model-client"] },
-  };
-  configuration.drivers.sandbox = {
-    id: "openshell-sandbox",
-    configuration: {
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        userNamespaces: false,
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
+    policy: {
+      process: { runAsUser: "1000", runAsGroup: "1000" },
+      networkPolicies: [
+        {
+          name: "model-egress",
+          endpoints: [{ host: "api.openai.com", ports: [443] }],
+          binaries: [{ path: "/app/bin/model-client" }],
         },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model-egress",
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-            binaries: [{ path: "/app/bin/model-client" }],
-          },
-        ],
-      },
+      ],
     },
-  };
+  } as ConstructorParameters<typeof OpenShellSandboxDriver>[0];
   const updated: unknown[] = [];
   let policy: typeof stored | { network_policies: Record<string, unknown> } = stored;
   const gatewayClient = {
@@ -213,7 +195,7 @@ test("an existing AdSense Sandbox replaces only its obsolete generated rules", a
       policy = input.policy;
     },
   };
-  const driver = new OpenShellSandboxDriver(configuration.drivers.sandbox.configuration, {
+  const driver = new OpenShellSandboxDriver(sandboxConfiguration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: {
@@ -246,8 +228,11 @@ test("an existing AdSense Sandbox replaces only its obsolete generated rules", a
     executionAdmission: { mode: "standard" as const },
   };
   const loaded = await gatewayClient.getSandbox();
-  assert.ok(allowPathsFrom(loaded.spec.policy).includes("GET /v2/*"));
-  const sandboxName = driver.harnessResource({ namespace, revision }).resourceName;
+  assert.ok(allowPathsFrom(loaded.spec.policy as typeof stored).includes("GET /v2/*"));
+  const sandboxName = driver.harnessResource({
+    namespace,
+    revision: revision as never,
+  }).resourceName;
   gatewayClient.getSandbox = async () => ({
     ...(await Promise.resolve({
       name: sandboxName,
