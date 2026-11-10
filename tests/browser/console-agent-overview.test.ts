@@ -2060,7 +2060,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "RUNTIME_STARTUP_FAILED",
       "UNKNOWN_FAILURE",
     ],
-    // A setting, grant or stored record must change first; no runtime logged anything.
+    // A setting, grant or stored record must change first.
     change: [
       "AUTHORIZATION_DENIED",
       "BACKEND_UNAVAILABLE",
@@ -2087,6 +2087,8 @@ test("Every failed deployment code has its own message and next step", async () 
       "REPOSITORY_RUNTIME_UNSUPPORTED",
       "REPOSITORY_STANDING_APPROVAL_REMOVED",
       "REPOSITORY_STANDING_POLICY_CHANGED",
+      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+      "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
       "SANDBOX_GATEWAY_UNAUTHORIZED",
       "SANDBOX_HARNESS_UNSUPPORTED",
       "SANDBOX_POD_LABELS_NOT_PERMITTED",

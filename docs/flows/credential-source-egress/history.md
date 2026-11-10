@@ -8,6 +8,10 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
+
+- 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
+
 - 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
 - 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)

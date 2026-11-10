@@ -147,7 +147,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 }
 
 export interface InstallationStartupConfiguration {
-  readonly repository?: SelectedDriverConfiguration & { readonly policyMode?: "built-in" };
+  readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
@@ -182,9 +182,6 @@ export function installationDriverConfigurations(
   const selections = [
     ...Object.entries(drivers),
     ...plugin.map((selection) => ["plugin", selection] as const),
-    ...(installation?.repository && installation.repository.policyMode !== "built-in"
-      ? [["repo", installation.repository] as const]
-      : []),
   ];
   return selections.flatMap(([capability, selection]) => {
     if (!("definition" in selection)) {
@@ -581,13 +578,13 @@ function installationRepositoryConfiguration(input: unknown, mode: "development"
     ["id", "configuration", "preparedGitHub", "openShell", "nativeSender", "policyMode"],
     "repository",
   );
-  if (selection.policyMode !== undefined && selection.policyMode !== "built-in") {
+  const { policyMode, openShell, ...portableSelection } = selection;
+  if (policyMode !== undefined && policyMode !== "built-in") {
     throw new Error('repository.policyMode must be "built-in" when supplied.');
   }
-  const { openShell, ...portableSelection } = selection;
   const portable = githubRepositoryConfiguration(portableSelection);
-  // Preserve native/prepared validation before transport validation, and all raw selection
-  // fields for the legacy digest. Proxy preview augmentation must not enter this projection.
+  // Preserve native/prepared validation before transport validation. Proxy preview
+  // augmentation must not enter the raw selection used for the legacy digest.
   return {
     ...portable,
     selection,
@@ -935,7 +932,6 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository,
     options.mode,
   );
-  const builtInRepositoryPolicy = repositoryConfiguration?.selection.policyMode === "built-in";
   let repoSelection =
     repositoryConfiguration &&
     (selected(
@@ -949,7 +945,7 @@ export async function loadInstallationConfiguration(options: {
     // Validate the original first, then retain the accepted flat policy across loader awaits.
     // Both authority projections must describe the policy used to construct the Driver.
     const policy = Object.freeze({ ...repoSelection.configuration });
-    // Registration mode does not change the protected sender's persisted identity.
+    // The optional built-in spelling contributes no protected sender authority.
     const { policyMode: _policyMode, ...selection } = repositoryConfiguration.selection;
     // A non-enumerable configuration never contributed to the raw selection's digest.
     repositoryConfiguration.selection = Object.hasOwn(selection, "configuration")
@@ -1324,13 +1320,7 @@ export async function loadInstallationConfiguration(options: {
     ...(runtime === undefined ? {} : { runtime }),
     ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
     backend: backends,
-    ...(repoSelection === undefined
-      ? {}
-      : {
-          repository: builtInRepositoryPolicy
-            ? Object.freeze({ ...repoSelection, policyMode: "built-in" as const })
-            : repoSelection,
-        }),
+    ...(repoSelection === undefined ? {} : { repository: repoSelection }),
     drivers: Object.freeze({
       configuration: configured,
       iam,
@@ -1612,17 +1602,7 @@ export async function loadInstallationConfiguration(options: {
       "Production Compute Drivers must implement activateRevision, deactivateRevision, and stopRevision.",
     );
   }
-  const { repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
-  const installationRepository =
-    builtInRepositoryPolicy && repositoryRuntime
-      ? {
-          ...repositoryServices,
-          repositoryAdmission: Object.freeze({
-            ...repositoryRuntime.repositoryAdmission,
-            policyMode: "built-in" as const,
-          }),
-        }
-      : { ...repositoryServices, ...(repositoryPolicy ? { repositoryPolicy } : {}) };
+  const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
@@ -1643,7 +1623,13 @@ export async function loadInstallationConfiguration(options: {
     ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     pluginDrivers: plugins.map(({ driver }) => driver),
-    ...installationRepository,
+    ...repositoryServices,
+    ...(repositoryRuntime && {
+      repositoryAdmission: Object.freeze({
+        ...repositoryRuntime.repositoryAdmission,
+        policyMode: "built-in" as const,
+      }),
+    }),
     ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
     ...(repositoryTransport ? { repositoryTransport } : {}),
   });

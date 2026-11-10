@@ -132,7 +132,6 @@ test("startup composes both OpenShell members from one Backend for static source
     execSandbox: unexpected,
     getServiceDocument: unexpected,
     postServiceDocument: unexpected,
-    serviceCodexPatStatus: unexpected,
     listProviderProfiles: unexpected,
     deleteProviderProfile: unexpected,
     listProviders: unexpected,
@@ -197,6 +196,10 @@ test("startup composes both OpenShell members from one Backend for static source
     },
     async serviceWebSocketHandshake() {
       return true;
+    },
+    async serviceCodexReadinessStatus(_url, _bearer, requirePat) {
+      assert.equal(requirePat, false);
+      return "serving";
     },
     async getSandboxProviderStatus(workspace, name, provider, signal, receipt) {
       calls.push(["status", workspace, name, provider, receipt]);
