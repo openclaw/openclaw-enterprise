@@ -4,6 +4,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
@@ -283,66 +284,83 @@ export async function createQaBrowser(f, { themed }) {
       }
     },
     async verify(agent) {
-      assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
-      assert.equal(
-        await page.locator(".sidebar .brand img").getAttribute("src"),
-        "/console/theme/logo.png",
-      );
-      const gateway = await f.gatewayUrl(agent);
-      let origin = nativeOrigin;
-      if (f.controlPlane === "compose") {
-        upstream = new URL(gateway.url);
-      } else {
-        const path = `/namespaces/${agent.namespaceId}/agents/${agent.id}/native-admin`;
-        const status = await page.evaluate(async (path) => {
-          const response = await fetch(path);
-          return { status: response.status, body: await response.json() };
-        }, path);
-        assert.equal(status.status, 200);
-        assert.equal(status.body.data.status, "available");
-        assert.equal(status.body.data.activeRevisionId, agent.revision.id);
-        origin = status.body.data.origin;
-      }
-      const native = await browser.newPage();
-      const frames = [];
-      native.on("websocket", (socket) => {
-        assert.equal(new URL(socket.url()).origin, origin.replace(/^http/, "ws"));
-        socket.on("framereceived", (frame) => frames.push(frame));
-      });
+      let operation = "native UI Console branding";
       try {
-        const response = await native.goto(origin);
-        assert.ok(response?.ok(), "native UI must load through its trusted endpoint");
-        const authenticate =
-          f.controlPlane === "compose"
-            ? async () => {
-                const credential = native.locator("#login-gate-credential");
-                await credential.waitFor({ state: "attached", timeout: 60_000 });
-                // The stock login failure view nests credentials in a collapsed
-                // connection disclosure. Wait for that view before opening it.
-                if (!(await credential.isVisible())) {
-                  await native.locator("details.login-gate__connection > summary").click();
-                }
-                await credential.fill(gateway.gatewayPassword);
-                await native.getByRole("button", { name: "Connect", exact: true }).click();
-              }
-            : undefined;
-        await waitForStockUi(native);
-        const nonce = `QA_NATIVE_${randomUUID()}`;
-        await submitChatTurnWithAssistantProof(native, nonce, frames, waitFor, authenticate);
-        const current = await f.pod(agent, "gateway");
-        assert.equal(current.metadata.uid, gateway.pod.metadata.uid);
-        await f.record(`${agent.preset}-native-ui`, {
-          agentId: agent.id,
-          revisionId: agent.revision.id,
-          podUid: current.metadata.uid,
-          origin,
-          trustedTls: true,
-          assistantNonce: nonce,
-          receivedFrames: frames.length,
+        assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
+        assert.equal(
+          await page.locator(".sidebar .brand img").getAttribute("src"),
+          "/console/theme/logo.png",
+        );
+        operation = "native UI Gateway discovery";
+        const gateway = await f.gatewayUrl(agent);
+        operation = "native UI origin discovery";
+        let origin = nativeOrigin;
+        if (f.controlPlane === "compose") {
+          upstream = new URL(gateway.url);
+        } else {
+          const path = `/namespaces/${agent.namespaceId}/agents/${agent.id}/native-admin`;
+          const status = await page.evaluate(async (path) => {
+            const response = await fetch(path);
+            return { status: response.status, body: await response.json() };
+          }, path);
+          assert.equal(status.status, 200);
+          assert.equal(status.body.data.status, "available");
+          assert.equal(status.body.data.activeRevisionId, agent.revision.id);
+          origin = status.body.data.origin;
+        }
+        operation = "native UI trusted navigation";
+        const native = await browser.newPage();
+        const frames = [];
+        native.on("websocket", (socket) => {
+          assert.equal(new URL(socket.url()).origin, origin.replace(/^http/, "ws"));
+          socket.on("framereceived", (frame) => frames.push(frame));
         });
-      } finally {
-        await native.close();
-        await gateway.close();
+        try {
+          const response = await native.goto(origin);
+          assert.ok(response?.ok(), "native UI must load through its trusted endpoint");
+          operation = "native UI WebSocket turn";
+          const authenticate =
+            f.controlPlane === "compose"
+              ? async () => {
+                  const credential = native.locator("#login-gate-credential");
+                  await credential.waitFor({ state: "attached", timeout: 60_000 });
+                  // The stock login failure view nests credentials in a collapsed
+                  // connection disclosure. Wait for that view before opening it.
+                  if (!(await credential.isVisible())) {
+                    await native.locator("details.login-gate__connection > summary").click();
+                  }
+                  await credential.fill(gateway.gatewayPassword);
+                  await native.getByRole("button", { name: "Connect", exact: true }).click();
+                }
+              : undefined;
+          await waitForStockUi(native);
+          const nonce = `QA_NATIVE_${randomUUID()}`;
+          await submitChatTurnWithAssistantProof(native, nonce, frames, waitFor, authenticate);
+          operation = "native UI Gateway identity and proof";
+          const current = await f.pod(agent, "gateway");
+          assert.equal(current.metadata.uid, gateway.pod.metadata.uid);
+          await f.record(`${agent.preset}-native-ui`, {
+            agentId: agent.id,
+            revisionId: agent.revision.id,
+            podUid: current.metadata.uid,
+            origin,
+            trustedTls: true,
+            assistantNonce: nonce,
+            receivedFrames: frames.length,
+          });
+        } finally {
+          const verificationOperation = operation;
+          operation = "native UI cleanup";
+          await native.close();
+          await gateway.close();
+          operation = verificationOperation;
+        }
+      } catch (error) {
+        // The enclosing QA stage redacts and classifies the original failure.
+        await test(operation, () => {
+          throw new Error("Native UI check failed");
+        });
+        throw error;
       }
     },
   };
