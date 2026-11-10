@@ -845,6 +845,41 @@ describe("CI preparation", { concurrency }, () => {
     }
   });
 
+  test("full OpenShell preparation reaches stack setup without a duplicate image warm-up", async (t) => {
+    const commands = await fixtureImageCommands(t, "engine-holds-images", "openshell-policy", {
+      ...imageCacheEnv,
+      OCC_CI_SUITE_VIEW: "full-integration",
+      NODE_BASE_IMAGE: packagingNodeBaseImage,
+      CODEX_ACCESS_TOKEN: "synthetic-model-credential",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      BUILDX_BUILDER: "owned-installer-builder",
+    });
+    const root = dirname(commands.statePath);
+    // Stop at the first shared-stack tool check. This exercises the valid-builder
+    // path without downloading kubectl or simulating the OpenShell installation.
+    await writeFile(
+      join(root, "bin", "helm"),
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(join(root, "commands.jsonl"))}, JSON.stringify({ command: "helm", args: process.argv.slice(2) }) + "\\n");
+process.exit(73);
+`,
+      { mode: 0o700 },
+    );
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    const calls = await commands.commands();
+    assert.deepEqual(
+      calls.filter(({ command }) => command === "helm").map(({ args }) => args),
+      [["version", "--short"]],
+    );
+    // A separate installer warm-up would perform two Buildx builds here before
+    // the shared stack builds the same images again.
+    assert.equal(calls.filter(({ args }) => args[0] === "buildx").length, 0);
+    assert.deepEqual((await commands.readState()).resources, []);
+    await commands.cleanupSuccessfully();
+  });
+
   test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
     const commands = await fixtureImageCommands(t, "engine-holds-images", "images-packaging", {
       ...imageCacheEnv,
