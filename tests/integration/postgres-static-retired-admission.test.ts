@@ -318,6 +318,14 @@ test(
       }));
       return structuredClone({
         ...persisted,
+        // Refused admission must neither enqueue work nor mutate the recovered job.
+        work: (
+          await p.pool.query(
+            "SELECT * FROM occ.controller_work WHERE namespace_id = $1 ORDER BY idempotency_key",
+            [f.namespace.id],
+          )
+        ).rows,
+        gatewayInfoRequests: f.observed.gatewayInfoRequests,
         secretReads: f.secretReads,
         providers: [...f.providers.entries()],
         gatewayEffects: [...f.gatewayEffects],
@@ -395,8 +403,8 @@ test(
       });
     }
     await t.test("missing middleware cannot hide permanent deployment retirement", async () => {
-      // The real Gateway client observes a peer without its middleware registration.
-      // Retirement must win over that recoverable transport-qualification failure.
+      // If discovery runs, the wire peer reports no middleware registration.
+      // Permanent retirement must refuse the deploy without querying that peer.
       f.observed.available = false;
       try {
         const response = await p.inject(
@@ -407,6 +415,11 @@ test(
         );
         assert.equal(response.statusCode, 409, response.body);
         assert.deepEqual(response.json().error, { code: "RESOURCE_CONFLICT", message: refusal });
+        assert.equal(
+          f.observed.gatewayInfoRequests,
+          retained.gatewayInfoRequests,
+          "permanent retirement must not query Gateway discovery",
+        );
         assert.deepEqual(await snapshot(), retained, "retirement must not mutate retained state");
         assert.equal(f.providerRequests.length, 0);
       } finally {

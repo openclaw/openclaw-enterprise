@@ -494,7 +494,8 @@
         "the retired owner recovers the original active revision",
         "unbound protected source re-admission PATCH",
         "stored-provider Secret-only PATCH without adoption consent",
-        "deploy with the retained protected source"
+        "deploy with the retained protected source",
+        "missing middleware cannot hide permanent deployment retirement"
       ]
     },
     {

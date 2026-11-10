@@ -262,6 +262,7 @@ async function buildStaticEgressFixture(
     deleted: [],
     workspaceVisible: true,
     policyStatusRequests: 0,
+    gatewayInfoRequests: 0,
     policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
@@ -337,6 +338,7 @@ async function buildStaticEgressFixture(
       });
     },
     GetGatewayInfo(_call, callback) {
+      observed.gatewayInfoRequests += 1;
       callback(null, {
         status: 1,
         extensions: observed.available
