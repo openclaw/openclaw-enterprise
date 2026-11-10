@@ -10,6 +10,7 @@ const approvalLeaseMs = 30_000;
 
 export interface StoredRequestCredentialApproval extends RequestCredentialApproval {
   readonly consumed: boolean;
+  readonly assertionReplayKey?: string;
 }
 
 export function memoryRequestCredentialApprovals(
@@ -41,10 +42,18 @@ export function memoryRequestCredentialApprovals(
     async consume(grant, driver, now) {
       const key = JSON.stringify([grant.recipientId, grant.requestId]);
       const approval = records.get(key);
+      const assertion = grant.clientAssertion;
       if (
         !approval ||
         approval.consumed ||
         approval.bindingId !== grant.bindingId ||
+        approval.expectedCredentialIdentity !== assertion?.credentialIdentity ||
+        (assertion &&
+          (assertion.expiresAt <= now ||
+            [...records.values()].some(
+              (record) =>
+                record.assertionReplayKey === assertion.replayKey && record.replayUntilAt > now,
+            ))) ||
         !isDeepStrictEqual(approval.driver, driver) ||
         approval.deadlineAt <= now
       ) {
@@ -56,7 +65,17 @@ export function memoryRequestCredentialApprovals(
       if (!(remainingLifetimeMs > 0)) {
         return undefined;
       }
-      records.set(key, { ...approval, consumed: true });
+      records.set(key, {
+        ...approval,
+        consumed: true,
+        ...(assertion && {
+          assertionReplayKey: assertion.replayKey,
+          replayUntilAt:
+            assertion.expiresAt > approval.replayUntilAt
+              ? assertion.expiresAt
+              : approval.replayUntilAt,
+        }),
+      });
       return { ...approval, remainingLifetimeMs };
     },
   };
@@ -81,9 +100,10 @@ export function postgresRequestCredentialApprovals(
       );
       const result = await client.query(
         `INSERT INTO occ.request_credential_approvals
-          (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at, replay_until_at)
+          (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at, replay_until_at, expected_credential_identity)
          SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb,
-           LEAST($9::timestamptz, clock_timestamp() + $13::int * interval '1 millisecond'), $10::timestamptz
+           LEAST($9::timestamptz, clock_timestamp() + $13::int * interval '1 millisecond'),
+           $10::timestamptz, $14::text
          WHERE $9::timestamptz > clock_timestamp()
            AND $10::timestamptz <= clock_timestamp() + interval '1 hour'
            AND current_setting('transaction_isolation') = 'read committed'
@@ -104,22 +124,35 @@ export function postgresRequestCredentialApprovals(
           limits.requestIds,
           limits.sandboxRequestIds,
           approvalLeaseMs,
+          approval.expectedCredentialIdentity ?? null,
         ],
       );
       return result.rowCount === 1;
     },
     async consume(grant, driver, _now) {
-      // Redemption expiry does not remove the authenticated request correlation.
+      // Claim the assertion in the same transaction as the approval. The unique index
+      // fences concurrent requests on separate API replicas, including different request IDs.
+      const assertion = grant.clientAssertion;
       const { rows } = await client.query(
-        `UPDATE occ.request_credential_approvals SET consumed = true
-         WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3 AND NOT consumed AND driver_ref = $4::jsonb AND LEAST(expires_at, $5::timestamptz) > clock_timestamp()
-         RETURNING namespace_id, agent_id, revision_id, policy_digest, expires_at, replay_until_at,
-           FLOOR(EXTRACT(EPOCH FROM (LEAST(expires_at, $5::timestamptz) - clock_timestamp())) * 1000)::int AS remaining_lifetime_ms`,
+        `UPDATE occ.request_credential_approvals
+         SET consumed = true, assertion_replay_key = $6,
+             replay_until_at = GREATEST(replay_until_at, $7::timestamptz)
+         WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3
+           AND NOT consumed AND driver_ref = $4::jsonb
+           AND LEAST(expires_at, $8::timestamptz) > clock_timestamp()
+           AND expected_credential_identity IS NOT DISTINCT FROM $5::text
+           AND ($7::timestamptz IS NULL OR $7::timestamptz > clock_timestamp())
+         RETURNING namespace_id, agent_id, revision_id, policy_digest, expires_at,
+                   replay_until_at, expected_credential_identity,
+                   FLOOR(EXTRACT(EPOCH FROM (LEAST(expires_at, $8::timestamptz) - clock_timestamp())) * 1000)::int AS remaining_lifetime_ms`,
         [
           grant.recipientId,
           grant.requestId,
           grant.bindingId,
           JSON.stringify(driver),
+          assertion?.credentialIdentity ?? null,
+          assertion?.replayKey ?? null,
+          assertion?.expiresAt ?? null,
           grant.deadlineAt,
         ],
       );
@@ -132,11 +165,14 @@ export function postgresRequestCredentialApprovals(
             expires_at: Date;
             replay_until_at: Date;
             remaining_lifetime_ms: number;
+            expected_credential_identity: string | null;
           }
         | undefined;
       return (
         row && {
-          ...grant,
+          recipientId: grant.recipientId,
+          requestId: grant.requestId,
+          bindingId: grant.bindingId,
           driver,
           deadlineAt: row.expires_at.toISOString(),
           remainingLifetimeMs: row.remaining_lifetime_ms,
@@ -147,6 +183,7 @@ export function postgresRequestCredentialApprovals(
             revisionId: row.revision_id,
           },
           policyDigest: row.policy_digest,
+          expectedCredentialIdentity: row.expected_credential_identity ?? undefined,
         }
       );
     },

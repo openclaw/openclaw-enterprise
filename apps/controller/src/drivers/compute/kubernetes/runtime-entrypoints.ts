@@ -17,6 +17,7 @@ import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
+import type { HarnessEgressEnrollment } from "../egress-enrollment.ts";
 import {
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
@@ -5125,7 +5126,8 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
   agentRuntimeEntrypoint(true, true, false),
 );
 
-export const NATIVE_WORKER_ENTRYPOINT = String.raw`
+export function nativeWorkerEntrypoint(enrollment?: HarnessEgressEnrollment): string {
+  return String.raw`
 const { join } = require("node:path");
 const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
@@ -5260,7 +5262,7 @@ function nativeWorkerReady() {
 if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
   startRuntimeReadinessServer(nativeWorkerReady);
 }
-mkdirSync(temporary, { recursive: true, mode: 0o700 });
+${enrollment === undefined ? "" : "function startReleasedNativeWorker() {\n"}mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
 const authenticationFailure = probeOpenClawAuthenticationFailure();
@@ -5442,8 +5444,29 @@ if (initialSetupCode !== undefined) startWorker(initialSetupCode);
   console.error(error);
   process.exit(1);
 });
+}${
+    enrollment === undefined
+      ? ""
+      : String.raw`
 }
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+${HARNESS_EGRESS_ENROLLMENT_HELPER}
+const enrollmentStartedAt = Date.now();
+waitForHarnessEgressEnrollment(${JSON.stringify(enrollment)}).then(() => {
+  logStartupPhase("egress-enrollment", enrollmentStartedAt);
+  startReleasedNativeWorker();
+}, () => {
+  logStartupPhase("egress-enrollment", enrollmentStartedAt, "failed");
+  holdFailedAuthentication("egress-enrollment", "UNAVAILABLE");
+});
+`
+  }
 `;
+}
+
+export const NATIVE_WORKER_ENTRYPOINT = nativeWorkerEntrypoint();
 
 // Docker Compute runs the remaining Codex readiness program as a healthcheck.
 // It emits only a fixed-vocabulary reason when the container is unready.

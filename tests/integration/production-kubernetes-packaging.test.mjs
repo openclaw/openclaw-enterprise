@@ -7130,6 +7130,48 @@ test(
         }
       }
     }
+    const grantValues = {
+      ...combinedValues,
+      "openshellGit.tokenGrant.enabled": "true",
+      "openshellGit.tokenGrant.bundleConfigMapName": "git-grant-jwt-bundle",
+      "openshellGit.tokenGrant.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "openshellGit.tokenGrant.clients[0].podSelector.matchLabels.app": "git-supervisor",
+    };
+    const grantObjects = await resources((await render(grantValues, { isUpgrade: true })).stdout);
+    const gitService = grantObjects.find(
+      ({ kind, metadata }) => kind === "Service" && metadata.name === service.metadata.name,
+    );
+    assert.equal(gitService.spec.selector["app.kubernetes.io/component"], "worker");
+    assert.deepEqual(gitService.spec.ports.at(-1), {
+      name: "git-token-grant",
+      port: 9446,
+      targetPort: "git-token-grant",
+      protocol: "TCP",
+    });
+    const gitIngress = grantObjects.find(
+      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === policy.metadata.name,
+    );
+    const { from, ports } = gitIngress.spec.ingress.at(-1);
+    assert.equal(from[0].podSelector.matchLabels.app, "git-supervisor");
+    assert.deepEqual(ports, [{ protocol: "TCP", port: 9446 }]);
+    const worker = grantObjects.find(
+      ({ kind, metadata }) =>
+        kind === "Deployment" && metadata.name === "openclaw-enterprise-worker",
+    );
+    const projected = worker.spec.template.spec.volumes.find(
+      ({ name }) => name === "openshell-git",
+    );
+    assert.deepEqual(projected.projected.sources.at(-1), {
+      configMap: {
+        name: "git-grant-jwt-bundle",
+        items: [{ key: "bundle.json", path: "token-grant/bundle.json" }],
+      },
+    });
+    await assert.rejects(
+      render({ ...grantValues, "openshellGit.tokenGrant.port": "8445" }),
+      /distinct unprivileged TCP port/,
+    );
     await assert.rejects(
       render({ ...combinedValues, "egressAuthority.tokenGrant.enabled": "false" }),
       /openshellGit cannot be combined with egressAuthority/,

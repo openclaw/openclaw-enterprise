@@ -23,6 +23,7 @@ import {
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
+  assertExecutionAdmission,
   requireConfiguration,
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
@@ -3249,10 +3250,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const egressPolicy =
       plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
-    if (plan !== undefined && context.revision.harness.id !== "codex") {
+    const modelRequest =
+      plan && this.options.egress
+        ? openShellModelRequestPolicy(plan, this.options.egress, context.revision)
+        : undefined;
+    if (
+      plan !== undefined &&
+      context.revision.harness.id !== "codex" &&
+      (!modelRequest || (plan.repositoryGit && !this.openShellGit?.configuration.grantRedemption))
+    ) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "Protected inference startup enrollment requires the dedicated Codex Harness.",
+        "This protected egress plan requires the dedicated Codex Harness.",
       );
     }
     if (
@@ -3283,10 +3292,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const modelRequest =
-      plan && this.options.egress
-        ? openShellModelRequestPolicy(plan, this.options.egress, context.revision)
-        : undefined;
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -3318,19 +3323,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (modelRequest) {
-      const { name, profile } = modelRequest.provider;
-      await this.ensureRuntimeProfile(
-        client,
-        workspace,
-        managedRuntimeProfile(profile),
-        context.signal,
-      );
-      verifyModelRequestProfile(
-        await client.getProviderProfile(workspace, name, context.signal),
-        profile,
-        workspace,
-      );
-      await this.ensureRuntimeProvider(client, workspace, context, name, {}, {}, {}, name);
+      await this.prepareModelRequestProvider(context);
     }
     const git =
       context.revision.repositoryCredentials === undefined
@@ -3892,13 +3885,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         preview &&
         !(
-          (document.status === 400 || document.status === 404) &&
           this.openShellGit?.previewReleased(context.revision.id) &&
-          (await client.serviceWebSocketHandshake(
-            service.url,
-            context.transportToken,
-            context.signal,
-          ))
+          (context.revision.harness.id === "openclaw"
+            ? [400, 404, 502].includes(document.status)
+            : (document.status === 400 || document.status === 404) &&
+              (await client.serviceWebSocketHandshake(
+                service.url,
+                context.transportToken,
+                context.signal,
+              )))
         )
       ) {
         throw new OpenShellSandboxConfigurationFailure(
@@ -4959,6 +4954,75 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return this.backend.client.clientForNamespace(namespace);
   }
 
+  /** Prepare an admitted revision's empty provider before operator registration or Sandbox attachment. */
+  async prepareModelRequestProvider(
+    context: Pick<SandboxHarnessContext, "namespace" | "revision" | "signal">,
+  ): Promise<{ readonly name: string; readonly id?: string } | undefined> {
+    const { namespace, revision, signal } = context;
+    if (!revision.egressPlan || !this.options.egress) {
+      return undefined;
+    }
+    const policy = openShellModelRequestPolicy(revision.egressPlan, this.options.egress, revision);
+    if (!policy) {
+      return undefined;
+    }
+    this.requireOperatorWorkspaceMode("prepare a model request provider");
+    const gatewayAssertion = policy.registration.assertionSource === "openshell_gateway";
+    if (
+      (gatewayAssertion && revision.sandboxDriverId !== this.id) ||
+      revision.namespaceId !== namespace.id
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Model provider preparation requires the selected Sandbox Driver and Namespace.",
+      );
+    }
+    const { name, profile } = policy.provider;
+    const workspace = workspaceName(namespace);
+    const client = this.gatewayClientForNamespace(namespaceName(namespace));
+    if (gatewayAssertion) {
+      assertExecutionAdmission(revision);
+      const active = await client.getWorkspace(workspace, signal);
+      if (!active) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Model provider requires its active Workspace.",
+        );
+      }
+      verifyActiveWorkspace(active, namespace);
+    }
+    await this.ensureRuntimeProfile(client, workspace, managedRuntimeProfile(profile), signal);
+    verifyModelRequestProfile(
+      await client.getProviderProfile(workspace, name, signal),
+      profile,
+      workspace,
+    );
+    const provider = await this.ensureRuntimeProvider(
+      client,
+      workspace,
+      context,
+      name,
+      {},
+      {},
+      {},
+      name,
+    );
+    if (gatewayAssertion) {
+      const current = await client.getProvider(workspace, name, signal);
+      if (
+        !provider.id ||
+        !current ||
+        current.id !== provider.id ||
+        current.workspace !== workspace ||
+        current.profileWorkspace !== workspace
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Model provider has no matching immutable OpenShell ID.",
+        );
+      }
+      verifyRuntimeProvider(current, name, name, runtimeProviderLabels(namespace, revision), {});
+    }
+    return { name, ...(provider.id === undefined ? {} : { id: provider.id }) };
+  }
+
   private async ensureRuntimeProfile(
     client: OpenShellGatewayClient,
     workspace: string,
@@ -5005,13 +5069,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private async ensureRuntimeProvider(
     client: OpenShellGatewayClient,
     workspace: string,
-    context: SandboxHarnessContext,
+    context: Pick<SandboxHarnessContext, "namespace" | "revision" | "signal">,
     profileId: string,
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
     name = runtimeProviderName(context.revision.id),
-  ): Promise<{ readonly name: string; readonly created: boolean }> {
+  ): Promise<{ readonly name: string; readonly created: boolean; readonly id?: string }> {
     const expectedLabels = runtimeProviderLabels(context.namespace, context.revision);
     let provider = await client.getProvider(workspace, name, context.signal);
     let created = false;
@@ -5067,7 +5131,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Model provider belongs to another Workspace.",
       );
     }
-    return Object.freeze({ name, created });
+    return Object.freeze({
+      name,
+      created,
+      ...(provider.id === undefined ? {} : { id: provider.id }),
+    });
   }
 
   private async deleteRuntimeProfileIfUnused(

@@ -184,6 +184,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 76 && completedCount > 76) {
     return "preRequestCredentialApprovals";
   }
+  if (count === 77 && completedCount > 77) {
+    return "preRequestCredentialAssertions";
+  }
   if (count === completedCount) {
     return "completed";
   }

@@ -16,7 +16,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import assert from "node:assert/strict";
-import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
+import { generateKeyPairSync, randomUUID, verify, type KeyObject } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -106,6 +106,38 @@ type NarrowPreparation = Pick<
   NarrowJourney,
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
 >;
+
+type SelectedReadJourney = Pick<
+  NarrowJourney,
+  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
+> & {
+  readonly grant: {
+    readonly endpoint: string;
+    readonly port: number;
+    readonly issuer: string;
+    readonly keys: { readonly publicKey: KeyObject; readonly privateKey: KeyObject };
+    readonly ca: string;
+  };
+  evaluateRequest: (input: object) => ReturnType<typeof invoke>;
+};
+
+export async function selectedReadGitJourney(
+  t: TestContext,
+  testUrl: string,
+  exercise: (journey: SelectedReadJourney) => Promise<void>,
+) {
+  await repositoryGitJourney(
+    t,
+    testUrl,
+    undefined,
+    {},
+    undefined,
+    false,
+    undefined,
+    undefined,
+    exercise,
+  );
+}
 
 export async function beforeNarrowGitPreparation(
   t: TestContext,
@@ -197,12 +229,16 @@ async function repositoryGitJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
+  selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
-  const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
+  const selectedRepositories = repositorySet.slice(0, standing || selectedRead ? 1 : 2);
+  const selectedPermissions = selectedRead
+    ? ({ metadata: "read", contents: "read" } as const)
+    : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
   const modelProvider = conversation
@@ -237,6 +273,29 @@ async function repositoryGitJourney(
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
+  const grantPort = selectedRead ? await reservePort() : undefined;
+  const grantKeys = selectedRead ? generateKeyPairSync("ed25519") : undefined;
+  const grantIssuer = "openshell-gateway:git-fixture";
+  const grantBundlePath = join(tls.directory, "gateway-jwks.json");
+  const grantEndpoint = grantPort && `https://localhost:${grantPort.port}/token`;
+  if (grantPort && grantKeys) {
+    t.after(grantPort.release);
+    await bindReservedPortInProcess(grantPort);
+    await writeFile(
+      grantBundlePath,
+      JSON.stringify({
+        keys: [
+          {
+            ...grantKeys.publicKey.export({ format: "jwk" }),
+            kid: "git-grant",
+            use: "sig",
+            alg: "EdDSA",
+          },
+        ],
+      }),
+      { mode: 0o644 },
+    );
+  }
   // The Git runtime binds its authority on this port in-process, well after its configuration
   // names it. Hold the port until then, so a test running in parallel cannot take it.
   const authorityPort = await reservePort();
@@ -295,6 +354,16 @@ async function repositoryGitJourney(
           privateKeyPath: tls.keyPath,
           issuerPublicKeyPath,
         },
+        ...(grantEndpoint &&
+          grantPort && {
+            grantRedemption: {
+              endpoint: grantEndpoint,
+              port: grantPort.port,
+              assertionSource: "openshell_gateway" as const,
+              bundlePath: grantBundlePath,
+              issuer: grantIssuer,
+            },
+          }),
       },
       (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
     );
@@ -389,7 +458,7 @@ async function repositoryGitJourney(
       : {
           selection: {
             entries: repositorySet,
-            permissions: repositorySetPermissions,
+            permissions: selectedPermissions,
             selectedRepositoryIds: selectedRepositories.map((entry) => entry.repositoryId),
             ...(standing && { allowStandingApproval: true }),
           },
@@ -432,6 +501,7 @@ async function repositoryGitJourney(
   // The authority listens now. Release the hold before the first request: while both listen, the
   // kernel may hand a connection to the hold, which resets it.
   await authorityPort.release();
+  await grantPort?.release();
   await runtime["running"];
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
@@ -512,6 +582,7 @@ async function repositoryGitJourney(
     deadline: Date.now() + 600_000,
     platformProfile: policy.platformProfile ?? false,
     trackGitExpiry: standing || policy.sessionDurationSeconds !== undefined,
+    grantOnly: !!selectedRead,
     gatewayVersion: "0.1.6",
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
@@ -560,7 +631,10 @@ async function repositoryGitJourney(
   );
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
-  assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile || standing ? 1 : 2);
+  assert.equal(
+    revision.repositoryCredentials!.bindings.length,
+    narrowProfile || standing || selectedRead ? 1 : 2,
+  );
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.executionAdmission.mode, "protected");
   assert.deepEqual(revision.egressPlan!.repositoryGit, revision.repositoryCredentials);
@@ -1020,7 +1094,11 @@ async function repositoryGitJourney(
     await runtime.releasePreview(revision.id, startupId, async () => {
       assert.ok(lastCustody);
       const installed = await release.current(context, lastCustody, async () => true);
-      assert.ok(state.installed, "the launcher cannot start before material installation");
+      if (selectedRead) {
+        assert.equal(state.installed, undefined, "the selected launcher uses a grant-only profile");
+      } else {
+        assert.ok(state.installed, "the launcher cannot start before material installation");
+      }
       const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
       assert.deepEqual(value.challenge, { ...challenge, startupId });
       assert.ok(
@@ -1043,7 +1121,16 @@ async function repositoryGitJourney(
       return true;
     });
     assert.equal(acked, true);
-    assert.ok(state.installed, "production owner material reached the authenticated recipient");
+    if (selectedRead) {
+      assert.equal(wire.world.writes, 0, "no credential was preinstalled or rotated");
+      assert.deepEqual(
+        wire.world.providerCredentialKeys,
+        [],
+        "bootstrap created a credential-free provider",
+      );
+    } else {
+      assert.ok(state.installed, "production owner material reached the authenticated recipient");
+    }
     return entry;
   };
   if (startupOptions) {
@@ -1140,6 +1227,44 @@ async function repositoryGitJourney(
       }
     }
     const entry = await readyGit();
+    if (selectedRead) {
+      assert.ok(grantPort && grantEndpoint && grantKeys);
+      try {
+        await selectedRead({
+          runtime,
+          revision,
+          workspace,
+          peer,
+          pool: f.observerPool,
+          sandboxId: wire.world.id!,
+          grant: {
+            endpoint: grantEndpoint,
+            port: grantPort.port,
+            issuer: grantIssuer,
+            keys: grantKeys,
+            ca: tls.caBundle,
+          },
+          evaluateRequest: (input) =>
+            invoke(
+              middleware,
+              "EvaluateHttpRequest",
+              input,
+              token(keys, "supervisor", wire.world.id, "repository-set"),
+            ),
+          removeBinding: () =>
+            f.controller.updateAgent(f.actor.id, {
+              namespaceId: f.namespace.id,
+              agentId: agent.id,
+              configurationId: configuration.id,
+              repositoryBindings: [],
+            }),
+        });
+      } finally {
+        await f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id);
+        await peer.prepared.maintain();
+      }
+      return;
+    }
     if (askModel) {
       await askModel("before");
     }

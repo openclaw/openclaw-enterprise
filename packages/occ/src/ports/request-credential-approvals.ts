@@ -4,11 +4,12 @@ import type {
   RequestCredentialInput,
 } from "@openclaw-enterprise/contracts";
 
-export interface RequestCredentialApproval extends RequestCredentialGrant {
+export interface RequestCredentialApproval extends Omit<RequestCredentialGrant, "clientAssertion"> {
   readonly execution: RequestCredentialInput["execution"];
   readonly driver: DriverRegistrationRef;
   /** Digest of the source and grant selected to authorize the operation. */
   readonly policyDigest: string;
+  readonly expectedCredentialIdentity?: string | undefined;
   /** Retain correlation after redemption expires while its authenticated request remains valid. */
   readonly replayUntilAt: string;
 }

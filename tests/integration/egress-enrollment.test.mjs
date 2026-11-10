@@ -324,8 +324,9 @@ test(
         environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
       },
     };
-    // Unsupported Harnesses must refuse before provisioning starts a process that
-    // lacks this enrollment gate. The legacy unprotected path remains separate.
+    // Strict inference still requires dedicated Codex. Setting the Harness to
+    // OpenClaw does not admit the signed online-model startup profile.
+    assert.notEqual(f.revision.egressPlan.authorization, "online-request");
     await assert.rejects(
       f.sandboxDriver.provisionHarness({
         ...enrollmentContext,
@@ -333,7 +334,7 @@ test(
       }),
       {
         code: "SANDBOX_HARNESS_UNSUPPORTED",
-        message: "Protected inference startup enrollment requires the dedicated Codex Harness.",
+        message: "This protected egress plan requires the dedicated Codex Harness.",
       },
     );
     // Consume the same independently verified adapter observation that Compute

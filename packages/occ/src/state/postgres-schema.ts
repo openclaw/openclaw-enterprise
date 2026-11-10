@@ -1879,6 +1879,8 @@ export const requestCredentialApprovals = occSchema.table(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     replayUntilAt: timestamp("replay_until_at", { withTimezone: true }).notNull(),
     consumed: boolean("consumed").notNull().default(false),
+    expectedCredentialIdentity: text("expected_credential_identity"),
+    assertionReplayKey: text("assertion_replay_key"),
   },
   (table) => [
     primaryKey({ columns: [table.recipientId, table.requestId] }),
@@ -1892,7 +1894,21 @@ export const requestCredentialApprovals = occSchema.table(
       "request_credential_approval_horizon",
       sql`${table.replayUntilAt} >= ${table.expiresAt} AND isfinite(${table.replayUntilAt})`,
     ),
+    check(
+      "request_credential_approval_assertion_identity",
+      sql`${table.expectedCredentialIdentity} IS NULL OR ${table.expectedCredentialIdentity} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "request_credential_approval_assertion_replay",
+      sql`
+        (${table.consumed} AND ${table.expectedCredentialIdentity} IS NOT NULL) = (${table.assertionReplayKey} IS NOT NULL)
+        AND (${table.assertionReplayKey} IS NULL OR ${table.assertionReplayKey} ~ '^[a-f0-9]{64}$')
+      `,
+    ),
     index("request_credential_approvals_expiry").on(table.replayUntilAt),
+    uniqueIndex("request_credential_approvals_assertion_replay")
+      .on(table.assertionReplayKey)
+      .where(sql`${table.assertionReplayKey} IS NOT NULL`),
   ],
 );
 

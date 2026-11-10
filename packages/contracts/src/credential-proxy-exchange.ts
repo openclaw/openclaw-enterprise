@@ -42,6 +42,12 @@ export interface RequestCredentialGrant {
   readonly requestId: string;
   readonly bindingId: string;
   readonly deadlineAt: string;
+  /** Verified by the selected transport before entering the approval transaction. */
+  readonly clientAssertion?: {
+    readonly credentialIdentity: string;
+    readonly replayKey: string;
+    readonly expiresAt: string;
+  };
 }
 
 /** Ephemeral material for one approved request; usableUntil does not expire the provider key. */

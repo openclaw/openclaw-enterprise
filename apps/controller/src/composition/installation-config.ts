@@ -3,6 +3,7 @@ import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
   openShellGitChartListener,
+  openShellGitGrantChartListener,
   isOpenShellGatewayEligible,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
@@ -1042,6 +1043,12 @@ export async function loadInstallationConfiguration(options: {
     repositoryTransportConfiguration?.authority,
     environment,
     openShellGitChartListener,
+  );
+  const gitGrant = repositoryTransportConfiguration?.grantRedemption;
+  requireChartListener(
+    gitGrant && { ...gitGrant, host: repositoryTransportConfiguration?.authority?.host ?? "" },
+    environment,
+    openShellGitGrantChartListener,
   );
 
   const backends = backendConfiguration(

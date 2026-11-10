@@ -57,6 +57,11 @@ const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AN
   AND binding_id=(SELECT admitted_spec#>>'{egress_plan,execution,executionId}' FROM occ.agent_revisions WHERE id=$1)
   AND target->>'transport'='${openShellGitDeliveryTransport}'
   AND live_revision_id IS NOT NULL AND settlement='snapshot' AND observed=$3::jsonb AND blocked IS NULL`;
+const activeOpenShellRecipient = `${openShellObserved} AND observed->>'credentialState'='active'
+  AND write_pending IS NULL AND desired->>'credentialState'='active'
+  AND observed->>'providerId'=desired->>'providerId'
+  AND observed->>'providerResourceVersion'=desired->>'resourceVersion'
+  AND observed->>'profileVersion'=desired->>'profileVersion'`;
 
 /** Only a terminal tombstone for this same observed preview retires its possibly installed
  * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
@@ -83,10 +88,6 @@ export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Obj
       OR ${admittedAuthorization}='request-hook-observed')
     AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
-  installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
-    AND desired->>'credentialState'='active'
-    AND observed->>'providerId'=desired->>'providerId'
-    AND observed->>'providerResourceVersion'=desired->>'resourceVersion'
-    AND observed->>'profileVersion'=desired->>'profileVersion'
-    AND preparation_attempt_id=$4 AND material_version=$5`,
+  installed: `${activeOpenShellRecipient} AND preparation_attempt_id=$4 AND material_version=$5`,
+  grantReady: `${activeOpenShellRecipient} AND preparation_attempt_id IS NULL AND material_version IS NULL`,
 });

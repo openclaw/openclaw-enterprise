@@ -37,6 +37,7 @@ export async function requestCredentialFixture(
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
     bindExchange?: CredentialProxyDriver["bindExchange"];
+    requestCredentialIdentity?: string;
   } = {},
 ) {
   let owner!: InstalledDriver;
@@ -237,6 +238,9 @@ export async function requestCredentialFixture(
     enforcement: {
       instanceId: randomUUID(),
       configurationId: "request-policy",
+      ...(configuration.requestCredentialIdentity && {
+        requestCredentialIdentity: configuration.requestCredentialIdentity,
+      }),
       policyHash: "a".repeat(64),
       authorityScope: "execution",
     },

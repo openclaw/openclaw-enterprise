@@ -2695,6 +2695,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
+      [77, "preRequestCredentialAssertions"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2891,6 +2892,7 @@ test(
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
+      [77, "preRequestCredentialAssertions"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(

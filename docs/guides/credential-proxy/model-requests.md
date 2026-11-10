@@ -28,13 +28,14 @@ for the TLS certificate, Gateway issuer public key and trusted client selectors.
 
 Configure a separate model middleware name and token-grant listener under
 `drivers.credential_proxy.configuration`. Alongside `middlewareName` and
-`authority`, add this fragment, replacing the endpoint and trust domain:
+`authority`, add this fragment for a Gateway and supervisor that support provider assertions:
 
 ```yaml
 tokenGrant:
   endpoint: https://openclaw-enterprise-egress-authority.<namespace>.svc.cluster.local:9445/token
   port: 9445
-  trustDomain: <configured-spiffe-trust-domain>
+  assertionSource: openshell_gateway
+  issuer: <exact-openshell-gateway-issuer>
   bundlePath: /etc/openclaw/egress/token-grant/bundle.json
 ```
 
@@ -50,13 +51,18 @@ With Helm, enable
 `egressAuthority.tokenGrant`, match its `port`, and set `bundleConfigMapName` to
 a ConfigMap containing the public JWT trust bundle as `bundle.json`. The chart
 mounts that bundle only into the API Pods. Keep `egressAuthority.clients` scoped
-to trusted callers. The operator must keep this ConfigMap synchronized with
-the authoritative SPIRE JWT trust bundle, including key removals. The token
-listener reads the mounted bundle on each exchange; it does not refresh the
-ConfigMap from SPIRE.
+to trusted callers. Keep this ConfigMap synchronized with the configured issuer’s public keys,
+including key removals. The token listener reads the mounted bundle on each
+exchange.
 
-Use the installation's existing SPIRE infrastructure to provision the trusted
-supervisor's Workload API socket and registration. Its JWT-SVID subject must be
+For Gateway assertions, put the Gateway’s public Ed25519 JWKS in
+`bundle.json`. Enable Gateway signing and supervisor TLS. Register the
+provider’s immutable ID, the `access_token` credential and exact HTTPS token
+endpoint with the Gateway before starting the Agent.
+
+For the existing SPIFFE mode, omit `assertionSource` and `issuer` and set
+`trustDomain`. Provision the trusted supervisor’s Workload API socket and
+registration through the installation’s SPIRE infrastructure. Its JWT-SVID subject must be
 `spiffe://<trust-domain>/openshell/sandbox/<sandbox-id>` and its audience must be
 the exact token endpoint. This feature does not deploy SPIRE or create those
 registrations. Verify that the guest cannot reach the socket or obtain the same
@@ -67,8 +73,8 @@ configured HTTPS authority and audience. Set `timeout = "5s"` in the
 model middleware registration to allow live installation and IAM checks; this
 is a recommended timeout, not a guarantee that a request completes within it.
 The existing Gateway-signed extension
-identity authenticates that middleware call. The JWT-SVID independently
-authenticates credential redemption. Use a distinct middleware name for
+identity authenticates that middleware call. A separate assertion with the
+token endpoint as its audience authenticates credential redemption. Use a distinct middleware name for
 protected Git. The Driver refuses missing mandatory bindings, overlapping model
 routes, mismatched provider configuration and token grants without explicit
 `cache_ttl: 0`.
@@ -156,6 +162,28 @@ match; changing only the Agent endpoint is refused. Keep the Gateway's
 `models.providers.codex.baseUrl` at its fail-closed value from the linked setup.
 Check the requested deployment and runtime status. A ready source does not prove
 that the workload passed installation checks or can answer a model turn.
+
+## Redeem a prepared Git token with a Gateway assertion
+
+An installation can enable `repository.openShell.grantRedemption` for one
+selected read-only `github-repository` grant. Use matching Gateway and
+supervisor builds that support provider assertions and dynamic Git HTTP Basic
+injection. The held Agent still requires a current prepared token before release.
+The Gateway provider stores no copy of that token.
+
+Configure the Worker’s HTTPS `/token` listener on a port separate from its
+middleware authority. Set `assertionSource: openshell_gateway`, the exact
+Gateway `issuer`, and `bundlePath` to its public JWKS. With Helm, set
+`openshellGit.tokenGrant.enabled`, match its `port`, and configure
+`bundleConfigMapName` and trusted supervisor `clients`. Register the provider’s
+immutable ID, the `installation_token` credential and the exact HTTPS endpoint with
+the Gateway. Use the existing [supervisor TLS requirements](../../reference/repository-credentials/protected-openshell-git.md#prerequisites).
+
+The middleware first approves the inspected operation. The proxy presents a
+separate signed assertion to redeem that approval. The Worker rechecks the
+same recipient, grant and material before release, then OpenShell injects the
+token into the authorized Git HTTPS request. This profile disables token
+caching. Installed candidate qualification remains pending.
 
 ## Verify the installed path
 

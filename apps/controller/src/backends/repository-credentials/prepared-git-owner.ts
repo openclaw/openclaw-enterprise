@@ -9,6 +9,7 @@ import type {
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
+  ProtectedRepositoryGitAuthority,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
@@ -21,6 +22,7 @@ import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
 import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
+import type { PreparedGitGrantApprovals } from "../../drivers/repo/github/access/prepared-git-redemption.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -68,6 +70,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   /** Private host selection; never derived from issuer configuration or a request. */
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
+  gitGrantApprovals?: PreparedGitGrantApprovals;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -327,6 +330,7 @@ export async function startPreparedGitHubGitOwner(
       };
     },
     custodySelection,
+    options.gitGrantApprovals,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -420,7 +424,10 @@ export async function startPreparedGitHubGitOwner(
   if (options.startWorker !== false) {
     maintenance.start();
   }
-  const protectedGit = store.protectedAuthority(stop.signal, useRequest);
+  const protectedGit: ProtectedRepositoryGitAuthority | undefined = store.protectedAuthority(
+    stop.signal,
+    useRequest,
+  );
   return {
     protectedGit,
     use,
