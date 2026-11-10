@@ -52,13 +52,9 @@ import { waitUntil } from "../helpers/wait-for.mjs";
 type RetryOptions = {
   sleep: (ms: number) => Promise<unknown>;
   log: (message: string) => void;
-  applied?: RegExp;
 };
-type RetryOperation<Result = never> = <T>(
-  operation: () => Promise<T>,
-  options: RetryOptions,
-) => Promise<T | Result>;
-type Kubectl = (...args: string[]) => Promise<unknown>;
+type RetryOperation = <T>(operation: () => Promise<T>, options: RetryOptions) => Promise<T>;
+type Kubectl = (...args: string[]) => Promise<string>;
 type DiagnosticSleep = (
   ms: number,
   value: undefined,
@@ -68,7 +64,10 @@ type DiagnosticSleep = (
 // The JavaScript helpers accept these fixture inputs at runtime; inference from their defaults
 // otherwise narrows callback return values and treats unused fixture settings as required.
 const retryKubectlRead = retryKubectlReadJs as RetryOperation;
-const retryKubectlWrite = retryKubectlWriteJs as RetryOperation<"">;
+const retryKubectlWrite = retryKubectlWriteJs as <T>(
+  operation: () => Promise<T>,
+  options: RetryOptions & { applied?: RegExp },
+) => Promise<T | "">;
 const retryModelAtCapacity = retryModelAtCapacityJs as RetryOperation;
 const deleteNamespaceExplained = deleteNamespaceExplainedJs as (
   kubectl: Kubectl,
@@ -93,7 +92,7 @@ const assertAllowedCredentialRoute = assertAllowedCredentialRouteJs as (
 const failedRecoveryDiagnostic = failedRecoveryDiagnosticJs as (
   input: {
     readWorker: () => unknown;
-    describe: (worker: unknown) => unknown;
+    describe: (worker: unknown) => string | Promise<string>;
     failure?: Error | undefined;
     write: (text: string) => unknown;
   },
@@ -475,6 +474,7 @@ function namespaceKubectl(reads: Record<string, string | Error>) {
     if (answer instanceof Error) {
       throw answer;
     }
+    assert.ok(answer !== undefined, `No kubectl response for ${args[0]} ${args[1]}`);
     return answer;
   };
   return { kubectl, calls };
@@ -736,15 +736,17 @@ if (command === "delete namespace") {
     { interpreter: process.execPath },
   );
   prependPath(t, directory);
-  const client: { kubectl: Kubectl } = createKubernetesClient({
+  const client = createKubernetesClient({
     selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
   });
   const listing = Promise.withResolvers<void>();
-  const kubectl = (...args: string[]) => {
+  const kubectl = async (...args: string[]) => {
     if (args[0] === "get" && args[1] === "pods") {
       listing.resolve();
     }
-    return client.kubectl(...args);
+    const output = await client.kubectl(...args);
+    assert.ok(typeof output === "string");
+    return output;
   };
   // The deadline's timer is held until the stalled listing has started.
   let release: (() => void) | undefined;
@@ -1824,7 +1826,7 @@ test(
     const started = join(directory, "started");
     await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
     prependPath(t, directory);
-    const { kubectl }: { kubectl: Kubectl } = createKubernetesClient({
+    const { kubectl } = createKubernetesClient({
       selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
     });
 
