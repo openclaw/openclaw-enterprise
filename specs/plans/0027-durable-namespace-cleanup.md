@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0032-durable-namespace-cleanup.md
+rfc: ../rfcs/0034-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0032
+- **ID:** RFC-0034
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0032](../rfcs/0032-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0034](../rfcs/0034-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope

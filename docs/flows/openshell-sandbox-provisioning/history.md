@@ -8,13 +8,27 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
+
+- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
+
 - 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
+
+- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
+
+- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
+
+- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
+
+- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
+
+- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+
+- 2026-11-08 16:17: Preserve archive retries and Namespace cleanup histories. (authoring-run/84991a6f-3680-4e06-871a-d5e82266193d - 11ed9080a4093e2637803eca7dbcd76d26b77edd)
 
 - 2026-11-08 04:08: Preserve Namespace cleanup and upstream readiness while merging histories. (authoring-run/ac563bfd-5c5e-43d2-8682-8bb3899b1814 - 40e98dcfd3b8f3b4f7e2b96e1460b6185486866e)
 
 - 2026-11-05 13:56: Preserve Namespace journal cleanup while integrating shared setup validation and current workload-identity refusal. (authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6 - 26909c112b94322dcd7196631c2087c121ae2217)
-
-- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
 
 - 2026-11-05 05:35: Preserve journal cleanup, TLS setup validation and preparer shutdown while integrating main. (authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a - 7c113779d56e81637388a8a79b3a8de61bb15b59)
 
@@ -23,6 +37,18 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-11-04 07:14: Preserve Namespace cleanup while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
 
 - 2026-11-04 04:08: Preserve cleanup ownership and quickstart policy/probe boundaries when integrating main. (authoring-run/9b858934-4857-4a62-80e1-dc6fc0aded6f - ca704785b3a06b45d637a99003cdfc41c81981ee)
+
+- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
+
+- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
+
+- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
+
+- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
+
+- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
 
 - 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
 
@@ -240,22 +266,10 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 - 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
 
-- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
-- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
+- 2026-10-08: Document normal native OpenClaw provider delivery and private Compute workspace initialization; retain experimental qualification limits. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 
-- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
+- 2026-10-01: Adopted exact existing Sandboxes during reconciliation, retained revision providers across uncertain create outcomes, and gave the dev-up OpenShell Backend a 30-second local-cluster request deadline. The disposable k3d node now retains verified `Never`-pull OpenShell images through teardown.
 
-- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
-
-- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
-
-- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
-
-- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
-
-- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
-
-- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
-
-- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
+- 2026-10-01: Added the plugin-free dedicated Codex path with verifier-only app-server authentication, bearer passthrough, provider-managed runtime files, one-shot workspace-node credentials, and revision-provider cleanup.

@@ -53,6 +53,7 @@ import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
+  validateOpenShellSelection,
 } from "./openshell.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -709,11 +710,28 @@ async function ensurePostgresServer(statePath, state) {
   resource.initSqlCreated = true;
   await writeState(statePath, state);
   await chmod(initSql, 0o644);
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-    { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
-  );
+  try {
+    await execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      dockerArgsForPostgres(resource, "up", "-d", "--wait"),
+      { env: { OCC_POSTGRES_PORT: String(port), OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
+    );
+  } catch (error) {
+    if (
+      /all predefined address pools have been fully subnetted/i.test(
+        `${error.stderr ?? ""}\n${error.stdout ?? ""}`,
+      )
+    ) {
+      const quotedStatePath = `'${statePath.replaceAll("'", "'\\''")}'`;
+      error.message +=
+        `\nDocker subnet pools are exhausted. Clean this run's partial resources with:\n` +
+        `node scripts/ci/cleanup.mjs --state ${quotedStatePath}\n` +
+        `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
+        `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
+        `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+    }
+    throw error;
+  }
   await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
@@ -958,6 +976,9 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
+  ["slack", { localStore: false }],
+  ["production-tui", { localStore: false }],
+  ["gateway-routing", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
   ["qa-matrix", { localStore: false }],
@@ -1301,13 +1322,16 @@ async function buildRuntimeImages(
     }
     const exportArgs = imageCacheExportArgs(role, args);
     // A failed or overrunning build fails the job and keeps nothing. The first
-    // stage and the image build share one 20-minute limit.
-    const deadline = performance.now() + 20 * 60_000;
+    // stage and the image build share one limit. Cold runtime builds compile
+    // Node; give them the native runtime assembly budget, retaining 20 min
+    // for controller builds.
+    const buildTimeoutMs = (role === "runtime" ? 180 : 20) * 60_000;
+    const deadline = performance.now() + buildTimeoutMs;
     if (role === "runtime") {
       await warmCommand(
         `runtime ${warmRuntimeFirstStage} build`,
         imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
-        20 * 60_000,
+        buildTimeoutMs,
       );
     }
     await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
@@ -2769,7 +2793,7 @@ async function prepareK3dRuntimeImages(
   state,
   cluster,
   env,
-  { buildController = false, buildRuntime = false } = {},
+  { buildController = false, buildRuntime = false, reuseEngineImages = true } = {},
 ) {
   const needsController = buildController && !process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
   const needsRuntime =
@@ -2795,6 +2819,7 @@ async function prepareK3dRuntimeImages(
       controller: needsController,
       runtime: needsRuntime,
       nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+      reuseEngineImages,
     });
     Object.assign(env, built.env);
     if (needsRuntime) {
@@ -3047,6 +3072,11 @@ async function prepareLane({ lane, statePath, file }) {
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  // The lane receives source inputs. File preparation later receives its
+  // chart paths and imported image references through the prepared environment.
+  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+    await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -3059,9 +3089,17 @@ async function prepareLane({ lane, statePath, file }) {
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
+  const fullOpenShellSourceBuild =
+    process.env.OCC_CI_IMAGE_CACHE === "1" &&
+    suiteView === "full-integration" &&
+    isOpenShellLane(name) &&
+    relativeFile === undefined &&
+    laneDefinition(name).files.some(({ path }) =>
+      lanePrepare(name).sourceBuildFiles?.includes(path),
+    );
   if (
     process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+    (fullOpenShellSourceBuild || lanePrepare(name).sourceBuildFiles?.includes(relativeFile))
   ) {
     // Prime the selected builder, but keep the installer's actual source-build path.
     // Cache credentials remain in preparation; tests inherit only the builder name.
@@ -3069,16 +3107,19 @@ async function prepareLane({ lane, statePath, file }) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
       throw new Error("Installer image preparation requires its selected job builder.");
     }
-    await timedPreparation(name, "installer-source-images", () =>
-      buildRuntimeImages(resolvedStatePath, state, {
-        controller: true,
-        runtime: true,
-        nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
-        // These callers build from source next; an engine tag does not populate
-        // the selected builder's layer cache, even if it holds an identical image.
-        reuseEngineImages: false,
-      }),
-    );
+    // Full OpenShell lanes populate the same builder during their shared stack
+    // preparation below; focused source-build files have no shared stack.
+    if (!fullOpenShellSourceBuild) {
+      await timedPreparation(name, "installer-source-images", () =>
+        buildRuntimeImages(resolvedStatePath, state, {
+          controller: true,
+          runtime: true,
+          nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+          // An engine tag does not populate the selected builder's layer cache.
+          reuseEngineImages: false,
+        }),
+      );
+    }
     env.BUILDX_BUILDER = builder;
     // WORKDIR cache keys include this value; match the preparation build so the
     // installer reuses its layers instead of rebuilding with an unset epoch.
@@ -3463,6 +3504,7 @@ async function prepareLane({ lane, statePath, file }) {
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
+        reuseEngineImages: !fullOpenShellSourceBuild,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);

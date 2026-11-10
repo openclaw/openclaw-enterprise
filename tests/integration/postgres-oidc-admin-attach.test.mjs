@@ -9,8 +9,8 @@ import {
   consoleOrigin as origin,
   createAccount,
   currentSession,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   passwordSignIn,
   readAccount,
   signedInHeaders,
@@ -24,23 +24,24 @@ const password = "attach-member-password";
 const adminSubject = "9100001";
 const secondSubject = "9100002";
 
-// After the documented GitHub upgrade, Installation administrators attach their own
-// GitHub identities and manage other accounts' identities, all without contacting GitHub.
+// After the documented OIDC upgrade, Installation administrators attach their own
+// OIDC identities and manage other accounts' identities, all without contacting OIDC.
 test(
-  "Installation administrators attach, detach and re-attach GitHub identities and disable accounts",
+  "Installation administrators attach, detach and re-attach OIDC identities and disable accounts",
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
+    const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
       {
+        oidc: true,
         email: "attach-recovery@example.test",
         password,
         secrets: {
           "occ-auth/secret": "attach-admin-auth-test-secret-at-least-32-bytes",
-          "occ-github-login/client-id": "attach-client-id",
-          "occ-github-login/client-secret": "attach-client-secret",
+          "occ-oidc-login/client-id": "attach-client-id",
+          "occ-oidc-login/client-secret": "attach-client-secret",
         },
       },
     );
@@ -58,30 +59,42 @@ test(
       },
     });
     let adminHeaders;
-    app = await composeApp(githubUpgradeSettings(admin.id));
+    app = await composeApp(oidcUpgradeSettings(admin.id));
     const attach = (headers, userId, subject, expectedVersion) =>
-      injectLocalhost(app, "POST", `/api/auth/accounts/${userId}/providers/github`, {
+      injectLocalhost(app, "POST", `/api/auth/accounts/${userId}/providers/oidc`, {
         headers,
         body: { subject, expectedVersion },
       });
     const change = (userId, operation, expectedVersion) =>
       changeAccount(app, adminHeaders, userId, operation, expectedVersion);
-    async function assertGitHubSignIn(subject, userId) {
-      const { callback } = await githubSignIn(app, origin, subject, address());
+    async function assertOIDCSignIn(subject, userId) {
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(subject) },
+        address(),
+      );
       return assertConsoleSignIn(app, callback, userId);
     }
-    async function assertGitHubRefused(subject, consoleReason) {
-      const { callback } = await githubSignIn(app, origin, subject, address());
+    async function assertOIDCRefused(subject, consoleReason) {
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(subject) },
+        address(),
+      );
       assert.equal(
         callback.headers.location,
         consoleReason === undefined
-          ? "/console/?authError=github"
-          : `/console/?authError=github&authReason=${consoleReason}`,
+          ? "/console/?authError=oidc"
+          : `/console/?authError=oidc&authReason=${consoleReason}`,
       );
       assert.equal(callback.headers["set-cookie"], undefined);
     }
 
-    await t.test("the recovery administrator attaches their own GitHub identity", async () => {
+    await t.test("the recovery administrator attaches their own OIDC identity", async () => {
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       const before = await readAccount(app, adminHeaders, admin.id);
       assert.equal(before.methods.length, 1, "only the password before attaching");
@@ -102,27 +115,27 @@ test(
         ).statusCode,
         403,
       );
-      const requestsBefore = github.requests;
+      const requestsBefore = oidc.requests;
       const attached = await attach(adminHeaders, admin.id, adminSubject, before.version);
       assert.equal(attached.statusCode, 200, attached.body);
-      assert.equal(github.requests, requestsBefore, "attaching never contacts GitHub");
+      assert.equal(oidc.requests, requestsBefore, "attaching never contacts OIDC");
       assert.equal(
         await currentSession(app, adminHeaders.cookie),
         null,
         "attaching ends the account's existing sessions, including the actor's own",
       );
-      const githubCookie = await assertGitHubSignIn(adminSubject, admin.id);
-      const after = await readAccount(app, { cookie: githubCookie, origin }, admin.id);
+      const oidcCookie = await assertOIDCSignIn(adminSubject, admin.id);
+      const after = await readAccount(app, { cookie: oidcCookie, origin }, admin.id);
       assert.equal(after.version, before.version + 1);
       assert.deepEqual(
         after.methods.filter(({ providerId }) => providerId !== "credential").map((m) => m.subject),
         [adminSubject],
       );
-      // The recovery password keeps working next to the GitHub identity.
+      // The recovery password keeps working next to the OIDC identity.
       adminHeaders = await signedInHeaders(app, origin, admin, address());
     });
 
-    let secondGitHubCookie;
+    let secondOIDCCookie;
     await t.test(
       "a second administrator attaches their own identity; taken and unauthorized attaches are refused",
       async () => {
@@ -131,12 +144,12 @@ test(
         const attached = await attach(secondHeaders, second.id, secondSubject, own.version);
         assert.equal(attached.statusCode, 200, attached.body);
         assert.equal(await currentSession(app, secondHeaders.cookie), null);
-        secondGitHubCookie = await assertGitHubSignIn(secondSubject, second.id);
-        // A GitHub session carries the account's Installation authority.
+        secondOIDCCookie = await assertOIDCSignIn(secondSubject, second.id);
+        // A OIDC session carries the account's Installation authority.
         assert.equal(
           (
             await injectLocalhost(app, "GET", "/api/auth/recovery", {
-              session: { cookie: secondGitHubCookie, origin },
+              session: { cookie: secondOIDCCookie, origin },
             })
           ).json().data.userId,
           admin.id,
@@ -144,9 +157,9 @@ test(
 
         const memberAccount = await readAccount(app, adminHeaders, member.id);
         const taken = await attach(adminHeaders, member.id, adminSubject, memberAccount.version);
-        // One GitHub identity signs in to one account. The conflict is named: the caller is an
+        // One OIDC identity signs in to one account. The conflict is named: the caller is an
         // Installation administrator, who can already list every account's sign-in methods.
-        assert.equal(taken.statusCode, 409, "one GitHub identity signs in to one account");
+        assert.equal(taken.statusCode, 409, "one OIDC identity signs in to one account");
         assert.deepEqual(taken.json().error, {
           code: "RESOURCE_CONFLICT",
           message: "The external identity is already assigned.",
@@ -160,7 +173,7 @@ test(
         );
         assert.equal(unauthorized.statusCode, 403, "a reader cannot attach, even to itself");
         assert.deepEqual(await readAccount(app, adminHeaders, member.id), memberAccount);
-        await assertGitHubRefused("9100003");
+        await assertOIDCRefused("9100003");
       },
     );
 
@@ -184,8 +197,8 @@ test(
         );
         const detached = await detach(external.methodId, account.version);
         assert.equal(detached.statusCode, 200, detached.body);
-        assert.equal(await currentSession(app, secondGitHubCookie), null, "its sessions end");
-        await assertGitHubRefused(secondSubject);
+        assert.equal(await currentSession(app, secondOIDCCookie), null, "its sessions end");
+        await assertOIDCRefused(secondSubject);
         const passwordAfterDetach = await passwordSignIn(app, origin, second, address());
         assert.equal(passwordAfterDetach.statusCode, 200, passwordAfterDetach.body);
 
@@ -196,7 +209,7 @@ test(
           (await readAccount(app, adminHeaders, second.id)).version,
         );
         assert.equal(reattached.statusCode, 200, reattached.body);
-        secondGitHubCookie = await assertGitHubSignIn(secondSubject, second.id);
+        secondOIDCCookie = await assertOIDCSignIn(secondSubject, second.id);
       },
     );
 
@@ -210,10 +223,10 @@ test(
       const account = await readAccount(app, adminHeaders, second.id);
       const disabled = await change(second.id, "disable", account.version);
       assert.equal(disabled.statusCode, 200, disabled.body);
-      assert.equal(await currentSession(app, secondGitHubCookie), null);
+      assert.equal(await currentSession(app, secondOIDCCookie), null);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 401);
-      // The attached GitHub identity is told its account is disabled; the password is not.
-      await assertGitHubRefused(secondSubject, "account-disabled");
+      // The attached OIDC identity is told its account is disabled; the password is not.
+      await assertOIDCRefused(secondSubject, "account-disabled");
 
       const disabledAccount = await readAccount(app, adminHeaders, second.id);
       assert.equal(disabledAccount.disabled, true);
@@ -239,7 +252,7 @@ test(
       const enabled = await change(second.id, "enable", disabledAccount.version);
       assert.equal(enabled.statusCode, 200, enabled.body);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 200);
-      await assertGitHubSignIn(secondSubject, second.id);
+      await assertOIDCSignIn(secondSubject, second.id);
     });
 
     await t.test("every change is audited to the acting administrator", async () => {
@@ -287,12 +300,12 @@ test(
           ],
           [
             "POST",
-            `/api/auth/accounts/${admin.id}/providers/github`,
+            `/api/auth/accounts/${admin.id}/providers/oidc`,
             { subject: "9100005", expectedVersion: version },
           ],
           [
             "POST",
-            `/api/auth/accounts/${member.id}/providers/github`,
+            `/api/auth/accounts/${member.id}/providers/oidc`,
             { subject: "9100005", expectedVersion: memberAccount.version },
           ],
           [
@@ -336,12 +349,12 @@ test(
           "the administrator stays signed in",
         );
         assert.ok(await currentSession(app, memberHeaders.cookie), "a refusal changes no session");
-        await assertGitHubRefused("9100005");
+        await assertOIDCRefused("9100005");
       },
     );
 
     await t.test(
-      "concurrent GitHub attaches return retryable contention, then an identity conflict",
+      "concurrent OIDC attaches return retryable contention, then an identity conflict",
       async () => {
         const createReader = (email) =>
           createAccount(app, adminHeaders, { email, password, roleId: roles.reader.id });
@@ -420,7 +433,7 @@ test(
           raceAudits.map(({ actorId, details }) => [actorId, details.userId]),
           [[await accountPrincipalId(pool, admin.id), member.id]],
         );
-        await assertGitHubSignIn(racedSubject, member.id);
+        await assertOIDCSignIn(racedSubject, member.id);
       },
     );
   },

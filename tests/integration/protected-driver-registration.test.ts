@@ -954,15 +954,17 @@ test("repository scope changes invalidate the external Driver identity while a r
       }
       const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
       t.after(() => runtime.protectedDriver?.close());
-      assert.equal(
-        (
-          await runtime.repositoryPolicy!.resolve({
-            namespaceId: "namespace-a",
-            bindings: [{ repositoryRef: "application", profile: "git-write" }],
-          })
-        ).sessionDurationSeconds,
-        601,
-      );
+      const admission = runtime.repositoryAdmission;
+      assert.ok(admission);
+      assert.equal(admission.policyMode, "built-in");
+      assert.equal(admission.backendId, registry.backendId);
+      assert.equal(admission.policy.id, "repo");
+      assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+      const binding = admission.policy.resolveBindings({
+        namespaceId: "namespace-a",
+        bindings: [{ repositoryRef: "application", profile: "git-write" }],
+      });
+      assert.equal(binding.sessionDurationSeconds, 601);
       assert.equal(runtime.repositoryOwner!.driverId, "repo");
       assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
       if (mode === "native") {
@@ -982,7 +984,7 @@ test("repository scope changes invalidate the external Driver identity while a r
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
   }
-  const binding = await original.repositoryPolicy!.resolve({
+  const binding = original.repositoryAdmission!.policy.resolveBindings({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],
   });
@@ -1051,7 +1053,7 @@ test("repository scope changes invalidate the external Driver identity while a r
   const reordered = await load();
   assert.deepEqual(reordered.protectedDriver!.ref, original.protectedDriver!.ref);
   assert.deepEqual(
-    await reordered.repositoryPolicy!.resolve({
+    reordered.repositoryAdmission!.policy.resolveBindings({
       namespaceId: "namespace-a",
       bindings: [{ repositoryRef: "application", profile: "git-write" }],
     }),

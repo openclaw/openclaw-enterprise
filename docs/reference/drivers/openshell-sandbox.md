@@ -155,7 +155,7 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 Optional readiness observes an OCC-namespace Service and Pods; paired Gateways normally use Backend `endpoint`. Require positive `timeoutMs` and `pollIntervalMs` (default 1000, maximum `2147483647`). Development uses Harness readiness without `startupDelayMs`.
 
-Install the Gateway separately. Required `gateway.workspaceMode` accepts `operator`; `managed` refuses before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
+Install the Gateway separately. `gateway.workspaceMode` accepts `operator`; `managed` refuses before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs a Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose), and Agent Sandbox in `agent-sandbox-system`. The launcher renders `openshell-workspace` into trusted Installation configuration; the Driver prepares each Namespace's resources before its Workspace, without per-Namespace Helm releases.
 
@@ -201,11 +201,14 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 
 <a id="codex-permission-profile"></a>
 
-Dedicated Codex requires account policy permitting `:danger-full-access` with `user` review.
-OpenShell isolates every login mode; restricted profiles, including the proxy's,
-require nested bubblewrap namespaces, which OpenShell blocks. The Gateway refuses
-constrained threads before turns; see [permission-profile troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
-Native OpenClaw already disables inner isolation. Its hook sets
+Codex requires policy allowing `:danger-full-access` and `user` review.
+Readiness refusal produces `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`.
+Oversized replies produce `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`;
+[read limits](openshell-sandbox/harness-providers.md#harness-observation) distinguish incomplete evidence.
+OpenShell isolates all login modes and blocks restricted profiles' nested bubblewrap
+namespaces. The Gateway rejects constrained threads;
+see [troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
+Native OpenClaw disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
 which the Gateway, file transfer, and node address; admission refuses a roster
@@ -213,7 +216,7 @@ that makes another Agent the default. Native workers have separate workspaces bu
 process, and network boundary. OpenShell isolates each Agent revision from other workloads, not mutually
 untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
-hosted session releases its slot; idle workers are not retired automatically.
+session releases its slot; idle workers are not retired automatically.
 
 [Harness providers and exposure](openshell-sandbox/harness-providers.md)
 covers credential attachments, the dedicated runtime providers and the

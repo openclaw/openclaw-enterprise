@@ -119,7 +119,7 @@ printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 
 Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
 
-Before changing OCC workloads, verify real API-server admission through every installed prerequisite webhook using its owning infrastructure procedure. Controller readiness alone does not prove webhook connectivity. For cert-manager, also confirm that a certificate request produces a Ready certificate under strict NetworkPolicy.
+Before changing OCC workloads, verify real API-server admission through every installed prerequisite webhook using its owning infrastructure procedure. Controller readiness alone does not prove webhook connectivity. For cert-manager, also confirm that a certificate request produces a Ready certificate under strict NetworkPolicy. The production upgrade command checks server-side admission for rendered Certificates before stopping the controllers.
 
 ### Authenticate the image builder to ECR
 

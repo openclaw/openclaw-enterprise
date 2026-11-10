@@ -131,7 +131,7 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
 
 Each command selects one case and skips the other. Both verify setup and
 Workspace reconciliation. The Kubernetes case first uses the authorized Codex
-account for real Agent/browser/model checks, then runs the seven Namespace and
+account with an OIDC protocol fixture for real Agent/browser/model checks, then runs the seven Namespace and
 revision cleanup scenarios. Those scenarios use synthetic source material and
 prevent Harness execution where preparation is refused. The Compose case uses
 synthetic material without Agent/model execution. Both default to Docker; set

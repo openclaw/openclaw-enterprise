@@ -32,12 +32,17 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
+import {
+  repositoryRestartInventory,
+  repositoryRestartState,
+} from "./postgres-repository-restart-inventory.ts";
 import { standingGitConversation } from "./standing-git-conversation.ts";
 import { expireStoppedClaims, expireWorkLease } from "./postgres-worker-revision-support.mjs";
 import {
@@ -522,6 +527,33 @@ async function repositoryGitJourney(
     { namespaceId: f.namespace.id, agentId: agent.id },
     resolveApprovedHarness,
   ));
+  // This is a different API process's owner: production composition supplies its
+  // read callback, while the live worker retains its route and launch witness.
+  const inventory =
+    pendingSuccessor === "cold-worker"
+      ? (
+          await repositoryRestartInventory(
+            t,
+            revision,
+            {
+              sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
+              createSandbox: (configuration, selection) =>
+                new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
+              backend: {
+                ...backend,
+                client: { ...backend.client, close: async () => {} },
+              } as never,
+              operatorOwnedKubernetesResources: false,
+              repository: {
+                configuration: runtime.configuration,
+                resolveDelivery: createGitHubRepositoryDeliveryResolver(peer.registry),
+              },
+              proxy: { id, configuration: opts, preparedProviders: [] },
+            },
+            f,
+          )
+        ).read
+      : undefined;
   const queued = await f.observerPool.query(
     "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",
     [revision.id],
@@ -566,7 +598,7 @@ async function repositoryGitJourney(
   const nativeRelease = deferred<ReturnType<typeof signComputeExecutionRelease> | undefined>();
   let launching:
     ReturnType<Awaited<ReturnType<typeof standingGitConversation>>["launch"]> | undefined;
-  let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
+  let askModel: Awaited<NonNullable<typeof launching>> | undefined;
   let signed = false;
   let reducedAttachmentEpoch: string | undefined;
   let wrongIdentity = false;
@@ -1136,7 +1168,9 @@ async function repositoryGitJourney(
       const request = () => peer.exchange(() => evaluate(probe), state.installed!, false);
       assert.equal(((await request()) as { status: number }).status, 200);
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
-      await f.stop();
+      if (pendingSuccessor !== "cold-worker") {
+        await f.stop();
+      }
       if (coldWorker) {
         const queue = new f.PostgresWorkQueue(f.observerPool);
         const maintenance = await queue.latestRevisionMaintenanceKey(ownerKey);
@@ -1155,25 +1189,147 @@ async function repositoryGitJourney(
           ).rows[0];
         const route = await readRoute();
         assert.ok(route.worker_instance, "the original runtime committed its route ownership");
+        if (pendingSuccessor === "cold-worker") {
+          // The separate API observes while the original worker still owns the launch.
+          const beforeInventory = await repositoryRestartState(f.observerPool, revision.id);
+          const issued = peer.gh.issuesOfTokens.length;
+          const origins = peer.originCalls();
+          assert.ok(inventory);
+          assert.equal(await inventory(), "original-worker-required");
+          assert.deepEqual(
+            await repositoryRestartState(f.observerPool, revision.id),
+            beforeInventory,
+          );
+          assert.equal(peer.gh.issuesOfTokens.length, issued);
+          assert.equal(peer.originCalls(), origins);
+          assert.equal(wire.world.writes, writes);
+          assert.equal(state.installed, installed);
+          assert.equal((await f.deploymentStatus(agent, revision)).repositoryAccess, undefined);
+          await f.stop();
+          await bound.close();
+
+          // Delay only handoff of a real PostgreSQL connection. Cancellation must release
+          // it without beginning a stale observation transaction or changing custody.
+          const beforeCancellation = await repositoryRestartState(f.observerPool, revision.id);
+          const acquired = Promise.withResolvers<void>();
+          const resume = Promise.withResolvers<void>();
+          let queries = 0;
+          let releases = 0;
+          const delayedRoutes = new PostgresOpenShellGitRouteStore({
+            end: async () => {},
+            async connect() {
+              const connection = await f.observerPool.connect();
+              acquired.resolve();
+              await resume.promise;
+              return {
+                async query(sql, values) {
+                  queries++;
+                  return connection.query(sql, values && [...values]);
+                },
+                release(discard) {
+                  releases++;
+                  connection.release(discard);
+                },
+              };
+            },
+          });
+          const observer = new OpenShellGitRuntime(
+            runtime.configuration,
+            createGitHubRepositoryDeliveryResolver(peer.registry),
+          );
+          t.after(() => observer.close());
+          observer.connectRestartObservation(delayedRoutes.restartEvidence.bind(delayedRoutes));
+          const cancelled = new AbortController();
+          const pending = observer.repositoryWorkerRestartDisposition(revision, cancelled.signal);
+          await acquired.promise;
+          cancelled.abort();
+          resume.resolve();
+          assert.equal(await pending, "unknown");
+          assert.equal(queries, 0);
+          assert.equal(releases, 1);
+          assert.deepEqual(
+            await repositoryRestartState(f.observerPool, revision.id),
+            beforeCancellation,
+          );
+
+          // Persist a contradictory route observation through its fenced store, not a
+          // simulated process replacement. The immutable standing witness stays unchanged.
+          const restartRoutes = new PostgresOpenShellGitRouteStore(f.observerPool);
+          const saved = await restartRoutes.standing(revision);
+          assert.ok(saved);
+          const generation = saved.route.generation;
+          const observed = saved.route.observed;
+          assert.ok(generation);
+          assert.ok(observed);
+          const snapshot = {
+            generation,
+            observed,
+            material: saved.route.material,
+            retainedLaunchHash: saved.retainedLaunchHash,
+          };
+          try {
+            assert.equal(
+              await restartRoutes.record(revision.id, saved.route.fence, {
+                ...snapshot,
+                observed: { ...observed, processInstanceId: randomUUID() },
+              }),
+              true,
+            );
+            assert.equal(
+              await restartRoutes.standing(revision),
+              undefined,
+              "the observed process no longer matches the protected installation recipient",
+            );
+            const beforeMismatchRead = await repositoryRestartState(f.observerPool, revision.id);
+            assert.deepEqual(
+              beforeMismatchRead.repository_standing_executions,
+              beforeCancellation.repository_standing_executions,
+              "the immutable standing witness is unchanged",
+            );
+            assert.equal(await inventory(), "unknown");
+            assert.deepEqual(
+              await repositoryRestartState(f.observerPool, revision.id),
+              beforeMismatchRead,
+            );
+            assert.equal(peer.gh.issuesOfTokens.length, issued);
+            assert.equal(peer.originCalls(), origins);
+            assert.equal(wire.world.writes, writes);
+            assert.equal(state.installed, installed);
+          } finally {
+            assert.equal(
+              await restartRoutes.record(revision.id, saved.route.fence, snapshot),
+              true,
+            );
+          }
+          assert.deepEqual(await restartRoutes.standing(revision), saved);
+          assert.equal(await inventory(), "original-worker-required");
+        }
         // Replace the actual runtime owner and listener, not only its worker loop. The
         // durable route remains owned by the departed process and must not be adopted.
         const approval = await f.state.read((v) =>
           v.repositorySessions.findStandingApproval(revision.namespaceId, revision.agentId, "A"),
         );
         assert.ok(approval);
-        if (podContinuity) {
-          // Neither the worker nor its in-process Git writer runs across the deadline.
-          await bound.close();
-          assert.ok(
-            Date.now() < credentials.deadlineWallMs,
-            "both owners stopped before the real session deadline",
-          );
-          await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
-          if (pendingSuccessor === "expired-replaced-supervisor") {
-            pods[0]!.metadata.uid = randomUUID();
+        // Keep parallel fixtures from claiming the authority port while both
+        // owners are stopped. The reservation serves no Git or worker requests.
+        const stoppedPort = podContinuity ? await reservePort({ port }) : undefined;
+        try {
+          if (podContinuity) {
+            // Neither the worker nor its in-process Git writer runs across the deadline.
+            await bound.close();
+            assert.ok(
+              Date.now() < credentials.deadlineWallMs,
+              "both owners stopped before the real session deadline",
+            );
+            await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
+            if (pendingSuccessor === "expired-replaced-supervisor") {
+              pods[0]!.metadata.uid = randomUUID();
+            }
           }
+          await replaceRuntime();
+        } finally {
+          await stoppedPort?.release();
         }
-        await replaceRuntime();
         assert.deepEqual(await readRoute(), route);
         assert.equal(Date.now() >= credentials.deadlineWallMs, podContinuity);
         assert.deepEqual(

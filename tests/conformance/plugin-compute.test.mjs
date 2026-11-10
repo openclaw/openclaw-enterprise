@@ -20,7 +20,6 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
-  gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -43,9 +42,9 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
+import { startCodexGatewaySupervisor as startGatewaySupervisor } from "../helpers/codex-gateway-supervisor.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
-import { listen as listenServer } from "../helpers/listen.mjs";
 import {
   gatewayExitedBeforeServing,
   invalidGatewayConfiguration,
@@ -3845,279 +3844,25 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
   );
 });
 
-// Runs the Kubernetes Codex Gateway wrapper against a real HTTP Harness peer
-// status endpoint and a real readiness endpoint standing in for OpenClaw. Only
-// process spawning and the filesystem are substituted.
-async function startCodexGatewaySupervisor(
-  t,
-  {
-    bindingDeviceId,
-    writableConfig = false,
-    managedMode = false,
-    savedFiles,
-    initialPeerStatus,
-    runtimeStatus = false,
-    expectStart = true,
-  } = {},
-) {
-  const peerHttp = await import("node:http");
-  const configurationPath = writableConfig
-    ? "/home/node/.openclaw/openclaw.json"
-    : "/etc/openclaw/openclaw.json";
-  const revisionId = "revision-plugin-compute-1";
-  const initialFailure = {
-    pluginId: "codex-plugin:linear@openai-curated-remote",
-    code: "PLUGIN_AUTH_REQUIRED",
-  };
-  const fixture = {
-    revisionId,
-    initialFailure,
-    peerStatus: {
-      revisionId,
-      container: "agent",
-      startupId: "agent-startup-1",
-      podUid: "agent-pod-1",
-      phase: "ready",
-      successfulPluginIds: [],
-      failures: [initialFailure],
-    },
-    peerAvailable: true,
-    peerRequests: 0,
-    serving: true,
-    readinessProbes: [],
-    // What OpenClaw's config validator reports, and how often the wrapper ran it.
-    validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
-    validations: 0,
-    children: [],
-    exits: [],
-    intervals: [],
-    logs: [],
-    signalHandlers: {},
-    statusHandler: undefined,
-    files: new Map([
-      ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
-      [
-        configurationPath,
-        JSON.stringify({
-          gateway: { port: 8080 },
-          plugins: { installs: { keep: { source: "npm" } }, load: { paths: ["existing"] } },
-          tools: { alsoAllow: ["existing-tool"] },
-        }),
-      ],
-    ]),
-  };
-  if (writableConfig) {
-    fixture.files.set("/etc/openclaw-managed/openclaw.json", fixture.files.get(configurationPath));
-  }
-  if (savedFiles !== undefined) {
-    fixture.files = new Map(savedFiles);
-  }
-  if (initialPeerStatus !== undefined) {
-    fixture.peerStatus = initialPeerStatus;
-  }
-  if (bindingDeviceId !== undefined) {
-    fixture.files.set(
-      "/home/node/workspace-node-binding/workspace-node.json",
-      JSON.stringify({ revisionId, deviceId: bindingDeviceId }),
-    );
-  }
-  const listen = (handler) => listenServer(t, peerHttp.createServer(handler));
-  const peerPort = await listen(async (request, response) => {
-    assert.equal(request.url, "/openclaw/plugin-runtime/status");
-    fixture.peerRequests++;
-    if (fixture.peerGate !== undefined) {
-      fixture.peerRequestPending = true;
-      await fixture.peerGate;
-    }
-    if (!fixture.peerAvailable) {
-      response.writeHead(503).end();
-      return;
-    }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(fixture.peerStatus));
-  });
-  // The native Gateway's own readiness endpoints, answered only while serving.
-  const gatewayPort = await listen((request, response) => {
-    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
-    const live = fixture.children.at(-1);
-    const status = fixture.serving && live?.exited === undefined ? 200 : 503;
-    fixture.readinessProbes.push({ child: fixture.children.length, status });
-    response.writeHead(status).end();
-  });
-  fixture.gatewayPort = gatewayPort;
-  const sandbox = {
-    AbortSignal,
-    Buffer,
-    structuredClone,
-    JSON,
-    URL,
-    console: {
-      error(value) {
-        fixture.logs.push(value);
-      },
-    },
-    fetch,
-    process: {
-      env: {
-        APP_SERVER_TOKEN: "base-app-server-token",
-        APP_SERVER_URL: `ws://127.0.0.1:${peerPort}`,
-        HOME: "/home/node",
-        OPENCLAW_AGENT_REVISION_ID: revisionId,
-        OPENCLAW_CONFIG_PATH: configurationPath,
-        OPENCLAW_GATEWAY_PORT: String(gatewayPort),
-        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({
-          manifest: pluginRuntimeSpecForRevision(
-            revision({
-              plugins: codexLinearPluginState({
-                toolDefaults: { approval: "provider_default", reviewer: "auto" },
-              }),
+function startCodexGatewaySupervisor(t, options) {
+  return startGatewaySupervisor(
+    t,
+    {
+      provenance: gatewayRuntimeProvenance,
+      buildManifest: () =>
+        pluginRuntimeSpecForRevision(
+          revision({
+            plugins: codexLinearPluginState({
+              toolDefaults: { approval: "provider_default", reviewer: "auto" },
             }),
-          ),
-        }),
-        OPENCLAW_PLUGIN_STATUS_CONTAINER: "gateway",
-        OPENCLAW_PLUGIN_STATUS_PORT: String(peerPort),
-        OPENCLAW_POD_UID: "gateway-pod-1",
-        ...(bindingDeviceId === undefined
-          ? {}
-          : {
-              OPENCLAW_WORKSPACE_NODE_PATH: "/home/node/workspace-node-binding/workspace-node.json",
-            }),
-        ...(bindingDeviceId === undefined && !runtimeStatus
-          ? {}
-          : {
-              OPENCLAW_RUNTIME_STATUS_PORT: "18792",
-              OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
-            }),
-      },
-      on(signal, handler) {
-        fixture.signalHandlers[signal] = handler;
-      },
-      exit(code) {
-        fixture.exits.push(code);
-      },
+          }),
+        ),
+      pluginAppServerToken,
+      waitForCondition,
+      nodeRequire,
     },
-    setInterval(callback, delay) {
-      fixture.intervals.push({ callback, delay });
-      return { unref() {} };
-    },
-    clearInterval() {},
-    setTimeout,
-    clearTimeout,
-    require(specifier) {
-      if (specifier === "node:http") {
-        return {
-          createServer(handler) {
-            fixture.statusHandler = handler;
-            return { listen() {} };
-          },
-          // Readiness reaches the fixture's native Gateway port.
-          get: peerHttp.get,
-        };
-      }
-      if (specifier === "node:fs") {
-        return {
-          existsSync: (path) => fixture.files.has(path),
-          lstatSync(path) {
-            if (!fixture.files.has(path)) {
-              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
-            }
-            return { isFile: () => true, mode: 0o600 };
-          },
-          mkdirSync() {},
-          readFileSync(path) {
-            if (!fixture.files.has(path)) {
-              throw new Error(`Missing mocked file: ${path}`);
-            }
-            return fixture.files.get(path);
-          },
-          writeFileSync(path, data) {
-            // A write that stops half-way, as a crash would leave the file.
-            if (fixture.tearWrite?.(path)) {
-              fixture.tearWrite = undefined;
-              fixture.files.set(path, String(data).slice(0, -5));
-              throw new Error("Interrupted write");
-            }
-            fixture.files.set(path, String(data));
-          },
-          renameSync(from, to) {
-            const failure = fixture.failConfigWrite;
-            if (to === configurationPath && failure !== undefined && --failure.remaining === 0) {
-              fixture.failConfigWrite = undefined;
-              if (failure.after) {
-                fixture.files.set(to, fixture.files.get(from));
-                fixture.files.delete(from);
-              }
-              throw new Error("Interrupted configuration replacement");
-            }
-            fixture.files.set(to, fixture.files.get(from));
-            fixture.files.delete(from);
-          },
-          rmSync(path) {
-            fixture.files.delete(path);
-          },
-        };
-      }
-      if (specifier === "node:child_process") {
-        return {
-          spawn(command, args, options) {
-            assert.equal(command, "node");
-            assert.deepEqual(plain(args), [
-              "/app/openclaw.mjs",
-              "gateway",
-              "--port",
-              String(gatewayPort),
-            ]);
-            const child = {
-              token: sandbox.process.env.APP_SERVER_TOKEN,
-              env: { ...options.env },
-              config: JSON.parse(fixture.files.get("/home/node/.openclaw/openclaw.json")),
-              killed: [],
-              exited: undefined,
-              listeners: [],
-              kill(signal) {
-                this.killed.push(signal);
-              },
-              on(event, listener) {
-                if (event === "exit") {
-                  this.listeners.push(listener);
-                }
-              },
-              exit(code, signal) {
-                this.exited = { code, signal };
-                for (const listener of this.listeners) {
-                  listener(code, signal);
-                }
-              },
-            };
-            fixture.children.push(child);
-            return child;
-          },
-          spawnSync(command, args, options) {
-            // Native image tests separately exercise the real config validator.
-            assert.equal(command, "node");
-            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
-            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
-            fixture.validations++;
-            return fixture.validation;
-          },
-        };
-      }
-      return nodeRequire(specifier);
-    },
-  };
-  fixture.sandbox = sandbox;
-  fixture.status = () => readStatusFromHandler(fixture.statusHandler);
-  fixture.runtimeStatus = () => readRuntimeStatusFromHandler(fixture.statusHandler);
-  fixture.token = (startupId) =>
-    pluginAppServerToken("base-app-server-token", revisionId, startupId);
-  // The peer poll is the last interval the wrapper registers.
-  // The peer status poll runs every two seconds; a Gateway stop adds its own recheck.
-  fixture.pollPeer = () => fixture.intervals.findLast(({ delay }) => delay === 2_000).callback();
-  vm.runInNewContext(gatewayRuntimeEntrypoint(managedMode), sandbox);
-  if (expectStart) {
-    await waitForCondition("gateway supervisor start", () => fixture.children.length === 1);
-  }
-  return fixture;
+    options,
+  );
 }
 
 test("Codex gateway supervisor recovers a changed peer after restarting with its writable copy", async (t) => {

@@ -14,6 +14,8 @@ import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { injectLocalhost as injectRequest } from "../helpers/inject-json.mjs";
 import {
   assertProviderAttached,
+  fakeOidc,
+  fixtureOidcIssuer,
   authRowCounts,
   currentSession,
   readAccount,
@@ -65,7 +67,14 @@ test(
       authSecret,
       authBaseURL: origin,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-      github: { clientId: "commit-client", clientSecret: "commit-secret", recoveryUserId },
+      oidc: {
+        ...fixtureOidcIssuer,
+        tokenAuth: "client_secret_post",
+        displayName: "single sign-on",
+        clientId: "commit-client",
+        clientSecret: "commit-secret",
+        recoveryUserId,
+      },
     };
     const drivers = () => ({
       computeDriver: createDevelopmentComputeDriver(),
@@ -290,31 +299,18 @@ test(
     );
 
     await t.test(
-      "a lost GitHub session COMMIT reply preserves the committed login without identity denial",
+      "a lost OIDC session COMMIT reply preserves the committed login without identity denial",
       async (callbackTest) => {
         await assertProviderAttached(
           ordinary,
           recoveredHeaders,
           recoveryUserId,
-          "github",
+          "oidc",
           "12345678",
         );
-        const originalFetch = globalThis.fetch;
-        let exchanges = 0;
-        callbackTest.mock.method(globalThis, "fetch", async (input, init) => {
-          const url = new URL(input instanceof Request ? input.url : input);
-          if (url.href === "https://github.com/login/oauth/access_token") {
-            exchanges += 1;
-            return Response.json({
-              access_token: "fixture-provider-token",
-              token_type: "bearer",
-              scope: "read:user",
-            });
-          }
-          if (url.href === "https://api.github.com/user") {
-            return Response.json({ id: 12345678 });
-          }
-          return originalFetch(input, init);
+        const idp = fakeOidc(callbackTest, {
+          clientId: "commit-client",
+          clientSecret: "commit-secret",
         });
         const callbackProxy = await commitAckProxy(databaseUrl);
         proxies.push(callbackProxy);
@@ -326,11 +322,12 @@ test(
         await callbackApp.ready();
         const started = await callbackApp.inject({
           method: "POST",
-          url: "/api/auth/providers/github/start",
+          url: "/api/auth/providers/oidc/start",
           headers: { host: new URL(origin).host, origin },
         });
         assert.equal(started.statusCode, 200, started.body);
         const state = new URL(started.json().data.url).searchParams.get("state");
+        const code = idp.authorize(started.json().data.url, { subject: "12345678" });
         async function counts() {
           return (
             await observer.query(`SELECT
@@ -346,7 +343,7 @@ test(
         // real COMMIT writes the session, method binding and successful audit.
         callbackProxy.arm({ skipCommits: 2 });
         const unknownCallback = await callbackApp.inject({
-          url: `/api/auth/providers/github/callback?state=${state}&code=fixture-code`,
+          url: `/api/auth/providers/oidc/callback?state=${state}&code=${code}`,
           headers: { cookie: cookieHeaderFromSetCookie(started.headers["set-cookie"]) },
         });
         assert.equal(callbackProxy.observedCommit, true);
@@ -354,10 +351,10 @@ test(
         // The outcome is unknown inside OCE, so the Console reports an outage, not a refusal.
         assert.equal(
           unknownCallback.headers.location,
-          "/console/?authError=github&authReason=unavailable",
+          "/console/?authError=oidc&authReason=unavailable",
         );
         assert.equal(unknownCallback.headers["set-cookie"], undefined);
-        assert.equal(exchanges, 1, "the uncertain operation is not replayed");
+        assert.equal(idp.tokens.length, 1, "the uncertain operation is not replayed");
         assert.deepEqual(await counts(), {
           sessions: before.sessions + 1,
           logins: before.logins + 1,

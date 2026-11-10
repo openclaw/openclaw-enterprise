@@ -64,6 +64,7 @@
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
     "tests/integration/ci-download-pinned.test.mjs",
+    "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
@@ -78,6 +79,7 @@
     "tests/integration/oidc-login-transport.test.mjs",
     "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
     "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
@@ -249,6 +251,9 @@
       "path": "tests/integration/ci-cleanup.test.mjs"
     },
     {
+      "path": "tests/integration/ci-prepare-postgres.test.ts"
+    },
+    {
       "path": "tests/integration/runtime-image-failure-output.test.mjs"
     },
     {
@@ -277,6 +282,9 @@
     },
     {
       "path": "tests/integration/ci-download-pinned.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

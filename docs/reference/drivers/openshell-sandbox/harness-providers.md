@@ -105,19 +105,29 @@ sweep covers Agent revisions without a current reconciliation pass and failed ca
 
 ## Harness observation
 
-Dedicated Codex revisions using a `credential_source` with login mode `codex_pat`
-require authentication in the serving app-server before `harnessStatus` reports
-`serving`. The Driver initializes the exact bearer-authenticated WebSocket service,
-then calls `getAuthStatus` with `includeToken: false` and `refreshToken: false`.
-It requires `authMethod: personalAccessToken`, `authToken: null` and
-`requiresOpenaiAuth: true`. Missing, mismatched or malformed authentication stays
-`starting` under the existing readiness deadline. The earlier `codex login status`
-check alone does not establish authentication in this fresh process.
+Dedicated Codex readiness initializes the exact bearer-authenticated WebSocket
+and reads `configRequirements/read` for every login mode. Requirements must allow
+the required sandbox mode, named profile and human reviewer. Refusal produces
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`; missing or malformed replies stay
+`starting`. Explicit null means the server reports no managed requirements.
 
-The check neither logs in nor refreshes credentials, and successful authentication
-is not model-inference proof. Other login modes retain their existing transport
-handshake. TLS verification, cancellation and held-startup-failure reporting remain
-in force; an unavailable WebSocket still permits the held-failure document read.
+Requirements replies have a 1 MiB limit; other replies and notifications share
+16 KiB. Each message and the full exchange, including earlier initialization
+and notifications, have a 1 MiB + 16 KiB cap. A complete, correlated, usable
+requirements reply above 1 MiB produces `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`
+only within the remaining budget; otherwise readiness stays pending.
+
+For `credential_source`/`codex_pat`, the same connection then requests
+`getAuthStatus` with `includeToken:false` and `refreshToken:false`. Only
+`authMethod:personalAccessToken`, `authToken:null` and `requiresOpenaiAuth:true`
+report `serving`. Missing, mismatched or malformed authentication stays `starting`.
+The earlier `codex login status` cannot establish this fresh process's state.
+
+These checks neither change managed policy, log in, refresh credentials nor
+prove inference. The Gateway still checks policy on real threads. Native
+OpenClaw retains the authenticated WebSocket handshake. TLS verification,
+cancellation and held-failure reads remain: an unavailable WebSocket permits
+a held-failure read, and timeouts yield transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 
 OpenShell reads the phase from `GetSandbox`. A completed phase maps to `lost`
 with `HARNESS_EXITED`. An error phase, including a deleted or evicted Pod, maps

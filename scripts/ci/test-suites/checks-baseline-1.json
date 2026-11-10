@@ -20,7 +20,6 @@
     "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
-    "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
@@ -129,6 +128,7 @@
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
+    "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
@@ -208,13 +208,7 @@
       "path": "tests/conformance/iam.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-compute.test.mjs",
-      "expectedTests": [
-        "external Namespace teardown removes the Namespace policy created after preparation",
-        "external Namespace cleanup refuses a late policy replacement after a finalizer wait",
-        "external Namespace policy capture refuses a placement replacement during its read",
-        "external Namespace cleanup confirms a late policy removed during its delete"
-      ]
+      "path": "tests/conformance/kubernetes-compute.test.mjs"
     },
     {
       "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
@@ -233,6 +227,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-network-policy.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
@@ -514,9 +511,6 @@
       ]
     },
     {
-      "path": "tests/integration/github-login-transport.test.mjs"
-    },
-    {
       "path": "tests/conformance/plugin-compute.test.mjs"
     },
     {
@@ -598,6 +592,7 @@
         "Responses output text assembled across parts and messages cannot reveal selected material",
         "Responses assistant projections protect independent items and seeded deltas",
         "Responses incremental text snapshots cannot reveal selected material",
+        "Responses follow-up replays assistant text with empty provider metadata",
         "signed Responses Plan projections protect completed and response-wide streamed text",
         "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
         "protected admission refuses an Agent's network policy additions instead of dropping them",
@@ -731,6 +726,15 @@
       ]
     },
     {
+      "path": "tests/integration/agent-grant-rehearsal.test.ts",
+      "expectedTests": [
+        "grant rehearsal rejects a cached or wrong Git object",
+        "grant rehearsal requires a fresh denial without origin traffic or object arrival",
+        "grant rehearsal requires a new model turn on the original Agent session",
+        "grant rehearsal fails when an adapter returns after Git refusal"
+      ]
+    },
+    {
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
@@ -780,6 +784,12 @@
         "selected repository issuance sends every selected stable ID and explicit permissions",
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
+    },
+    {
+      "path": "tests/conformance/topology-controller-manifests.test.ts",
+      "expectedTests": [
+        "controller topology keeps API-only fixture inputs separate from the worker"
       ]
     },
     {

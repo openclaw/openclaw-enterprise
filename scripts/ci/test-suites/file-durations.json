@@ -259,7 +259,7 @@
     "tests/integration/postgres-egress-policy-transaction.test.ts": 6300,
     "tests/integration/postgres-egress-send-receipts.test.mjs": 1100,
     "tests/integration/postgres-external-protected-git.test.ts": 75000,
-    "tests/integration/postgres-github-recovery-replacement.test.mjs": 5000,
+    "tests/integration/postgres-oidc-recovery-replacement.test.mjs": 5000,
     "tests/integration/postgres-namespace-iam-policy.test.mjs": 3700,
     "tests/integration/postgres-native-iam-policy-barrier.test.mjs": 44300,
     "tests/integration/postgres-openshell-git-routes.test.ts": 700,
