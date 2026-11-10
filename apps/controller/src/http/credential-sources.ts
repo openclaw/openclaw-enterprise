@@ -14,9 +14,11 @@ function clientCredentialSource(
     namespaceId: source.namespaceId,
     name: source.name,
     type: source.type,
+    ownerCapability: source.ownerCapability,
     config: source.config,
     secrets: source.secrets,
     state: source.state,
+    ...(source.egress === undefined ? {} : { egress: source.egress }),
     ref: source.ref,
     ...(source.status === undefined ? {} : { status: source.status }),
   };
@@ -98,6 +100,10 @@ export const credentialSourceHandlers = {
         {
           namespaceId,
           credentialSourceId,
+          ...(body?.adoption === undefined ? {} : { adoption: body.adoption as "live" }),
+          ...(body?.authorityScope === undefined
+            ? {}
+            : { authorityScope: body.authorityScope as "execution" }),
           ...(body?.secrets === undefined
             ? {}
             : { secrets: body.secrets as Record<string, SecretReference> }),
@@ -120,15 +126,13 @@ export const credentialSourceHandlers = {
   }) {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-    const source = await controller.transact(async (unit) => {
-      const rotated = await controller.rotateCredentialSource(
-        context.actorId,
-        { namespaceId, credentialSourceId },
-        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
-      );
-      await unit.audit.append(mutationEvent(resource));
-      return clientCredentialSource(rotated);
-    });
+    const rotated = await controller.rotateCredentialSource(
+      context.actorId,
+      { namespaceId, credentialSourceId },
+      (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
+      mutationEvent(resource),
+    );
+    const source = clientCredentialSource(rotated);
     reply.send({ data: source, meta: { requestId: request.id } });
   },
   async withdrawAgentCredentialSource({

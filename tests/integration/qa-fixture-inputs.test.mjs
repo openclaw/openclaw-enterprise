@@ -1,14 +1,85 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { randomUUID } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText } from "../helpers/qa-secrets.mjs";
+import { fileURLToPath } from "node:url";
+import {
+  protectedText,
+  protectedModelApiKey,
+  registerQaSecret,
+  redactQaError,
+} from "../helpers/qa-secrets.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+test("QA Agent reads the selected Preset in its Namespace", async (t) => {
+  const { createQaAgent } = await import("../helpers/qa-installation.mjs");
+  function fixture(namespaceId, presetNamespaceId = namespaceId) {
+    const calls = [];
+    const stopped = new Error("stop after Preset lookup");
+    return {
+      calls,
+      stopped,
+      installation: {
+        retained: false,
+        defaultNamespace: { id: "ns-default" },
+        namespace: { id: namespaceId },
+        presets: [{ id: "pre-codex", namespaceId: presetNamespaceId, name: "Standard Codex" }],
+        async api(method, path) {
+          calls.push({ method, path });
+          throw stopped;
+        },
+      },
+    };
+  }
+
+  for (const namespaceId of ["ns-default", "ns-compose"]) {
+    await t.test(`fetches the selected Preset in ${namespaceId}`, async () => {
+      const { calls, stopped, installation } = fixture(namespaceId);
+      // Stop after the lookup, before credential reads or Agent creation.
+      await assert.rejects(createQaAgent(installation, "Codex"), (error) => error === stopped);
+      assert.deepEqual(calls, [
+        { method: "GET", path: `/namespaces/${namespaceId}/presets/pre-codex` },
+      ]);
+    });
+  }
+
+  await t.test("refuses a Preset summary from another Namespace", async () => {
+    const { calls, installation } = fixture("ns-compose", "ns-other");
+    await assert.rejects(
+      createQaAgent(installation, "Codex"),
+      /Preset must belong to the QA Namespace/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  await t.test("reports a missing Standard Preset before making a request", async () => {
+    const { calls, installation } = fixture("ns-compose");
+    installation.presets = [];
+    await assert.rejects(
+      createQaAgent(installation, "Codex"),
+      /Standard Codex Preset must be available/,
+    );
+    assert.deepEqual(calls, []);
+  });
+});
 
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credential-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
   await writeFile(credential, " test-only-credential\n", { mode: 0o600 });
   assert.equal(await protectedText(credential, "test credential"), "test-only-credential");
@@ -26,12 +97,37 @@ test("QA credentials require a private regular file and reject symlink substitut
   await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
 });
 
+test("API-key QA injection stays in the consumer and its errors are redacted", async () => {
+  const secret = "synthetic-environment-model-credential";
+  const env = { OCC_TEST_QA_MODEL_API_KEY: secret };
+  assert.equal(await protectedModelApiKey(env), secret);
+  const failure = redactQaError(new Error("provider rejected " + secret));
+  assert.equal(failure.message, "provider rejected [REDACTED]");
+  await assert.rejects(
+    protectedModelApiKey({ OCC_TEST_QA_MODEL_API_KEY: "  " }),
+    /must not be empty/,
+  );
+  const helper = new URL("../helpers/qa-installation.mjs", import.meta.url).href;
+  const result = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import { launcherEnvironment } from ${JSON.stringify(helper)};
+    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+  `,
+    ],
+    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+  );
+  assert.equal(result.trim(), "false");
+});
+
 test(
   "parallel QA stages publish complete outcomes, failures and timings",
   { timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "qa-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-report-");
     const output = join(directory, "matrix.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
@@ -111,21 +207,113 @@ test(
   },
 );
 
+test("QA matrix summary refuses malformed evidence without printing its contents", async (t) => {
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const summary = join(directory, "summary.md");
+  const existingSummary = "Previous summary content.\n";
+  const marker = "invented report text";
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+  await writeFile(summary, existingSummary);
+
+  for (const [name, evidence] of [
+    ["invalid JSON", `not JSON: ${marker}`],
+    ["missing selection", JSON.stringify({ scope: marker, outcomes: [] })],
+    [
+      "invalid scenario list",
+      JSON.stringify({
+        scope: marker,
+        selection: [{ cell: "compose/Codex", scenarios: "model-ui", unselected: [] }],
+        outcomes: [],
+      }),
+    ],
+    ["null report", "null"],
+  ]) {
+    await t.test(name, async () => {
+      await writeFile(join(evidenceDirectory, "matrix.json"), evidence);
+      const child = spawnSync(process.execPath, [script], {
+        encoding: "utf8",
+        env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+        timeout: 5_000,
+      });
+      assert.ifError(child.error);
+      assert.equal(child.status, 1);
+      assert.equal(child.stdout, "");
+      assert.equal(
+        child.stderr,
+        "Malformed QA matrix evidence: expected a JSON report with scope, selection, and outcomes.\n",
+      );
+      assert.equal(await readFile(summary, "utf8"), existingSummary);
+    });
+  }
+});
+
+test("QA matrix summary distinguishes an initial snapshot from recorded outcomes", async (t) => {
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const directory = await temporaryDirectory(t, "qa-summary-");
+  const evidenceDirectory = join(directory, "qa-matrix-evidence");
+  const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.mjs", import.meta.url));
+  await mkdir(evidenceDirectory);
+
+  async function summarize(name) {
+    const summary = join(directory, name);
+    const child = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+      timeout: 5_000,
+    });
+    assert.ifError(child.error);
+    assert.equal(child.status, 0);
+    assert.equal(child.stderr, "");
+    return readFile(summary, "utf8");
+  }
+
+  assert.match(await summarize("missing.md"), /No scenario results were produced/);
+
+  const { stage, save } = createQaReport(join(evidenceDirectory, "matrix.json"), {
+    scope: "partial",
+    selection: [{ cell: "compose/Codex", scenarios: ["model-ui"], unselected: [] }],
+  });
+  await save();
+  const initial = await summarize("initial.md");
+  assert.match(initial, /Scope: partial/);
+  assert.match(initial, /compose\/Codex \| model-ui \| none/);
+  assert.match(initial, /No stage outcomes were recorded/);
+  assert.doesNotMatch(initial, /Stages absent from this table/);
+  assert.doesNotMatch(initial, /\| Cell \| Scenario \| Stage \| Outcome \|/);
+
+  await stage(t, "compose/Codex", "synthetic stage", () => true, "model-ui");
+  const populated = await summarize("populated.md");
+  assert.match(populated, /compose\/Codex \| model-ui \| synthetic stage \| passed/);
+  assert.doesNotMatch(populated, /No stage outcomes were recorded/);
+});
+
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
-  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,calendar" });
+  const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });
   assert.equal(selected.scope, "partial:selected");
   assert.deepEqual(
     selected.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
     [
-      { cell: "compose/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "compose/Codex", scenarios: ["model-ui", "calendar"] },
-      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui"] },
-      { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
+      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["console-secrets"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, ["git-full", "git-read", "slack"]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[1].unselected, [
+    "codex-search-config",
+    "git-write",
+    "git-push-denied",
+    "slack",
+  ]);
+  assert.deepEqual(selected.cells[0].notApplicable, [
+    "codex-search-config",
+    "git-write",
+    "git-push-denied",
+    "slack",
+  ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -133,21 +321,118 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.throws(() => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "" }), /invalid QA scenario/);
   assert.throws(
-    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "calendar", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui", OCC_TEST_QA_PRESET: "Codex" }),
     /not applicable/,
   );
-  const calendar = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "calendar",
+  const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets"]);
+  assert.equal(openclaw.repository, false);
+  assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
+  const git = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write,git-push-denied" });
+  assert.deepEqual(
+    git.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: [] },
+      { cell: "compose/Codex", scenarios: ["git-write", "git-push-denied"] },
+      { cell: "kubernetes/OpenClaw", scenarios: [] },
+      { cell: "kubernetes/Codex", scenarios: ["git-write", "git-push-denied"] },
+    ],
+  );
+  assert.ok(git.repository);
+  assert.ok(!git.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
+  assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const secrets = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "console-secrets",
+    OCC_TEST_QA_PRESET: "Codex",
     OCC_TEST_QA_INSTALLATION: "compose",
   });
-  assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
-  assert.deepEqual(calendar.cells[0].scenarios, []);
-  const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
-  assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  assert.equal(secrets.browser, true);
+  assert.deepEqual(secrets.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  const sandbox = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "sandbox-policy",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.equal(sandbox.sandboxPolicy, true);
+  const oidcSelection = {
+    OCC_TEST_QA_SCENARIOS: "oidc-agent-chat",
+    OCC_TEST_QA_PRESET: "OpenClaw",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const oidc = selectQaMatrix(oidcSelection);
+  assert.equal(oidc.oidcAgentChat, true);
+  assert.ok(oidc.cells.every((cell) => cell.scenarios.length === 0));
+  assert.ok(oidc.requiredEnv.includes("OCC_TEST_KEYCLOAK_ISSUER"));
+  assert.ok(oidc.requiredEnv.includes("OPENAI_API_KEY"));
+  assert.throws(() => validateQaInputs(oidc, {}), /KUBERNETES_KUBECONFIG is required/);
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_INSTALLATION: "compose" }),
+    /requires Kubernetes/,
+  );
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_SCENARIOS: "oidc-agent-chat,model-ui" }),
+    /exclusive QA selection/,
+  );
+  assert.deepEqual(sandbox.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_SANDBOX_ENV",
+  ]);
+  assert.ok(
+    sandbox.cells.every((cell) => cell.scenarios.length === 0),
+    "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
+  const searchConfig = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.deepEqual(searchConfig.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.equal(searchConfig.browser, false);
+  const injectedSearch = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.deepEqual(injectedSearch.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
+      }),
+    /exclusive QA selection/,
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
+  const isolated = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "git-write",
+    QA_REPOSITORY_FIXTURE: "isolated",
+    OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
+    OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/token",
+  });
+  assert.ok(isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY"));
+  assert.ok(!isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_BINARY"));
+  assert.ok(!isolated.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
+  assert.throws(
+    () =>
+      validateQaInputs(isolated, {
+        OCC_TEST_QA_OPENAI_KEY_FILE: "/private/openai",
+        OCC_TEST_QA_CODEX_TOKEN_FILE: "/private/codex",
+        OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
+        OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY: "/private/repository",
+      }),
+    /GITHUB_OBSERVER_APP_INPUT_DIRECTORY is required/,
+  );
   assert.throws(
     () =>
       validateQaInputs(full, Object.fromEntries(full.requiredEnv.map((name) => [name, "fixture"]))),
@@ -158,19 +443,16 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
 test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
   const { spawnSync } = await import("node:child_process");
   const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
-  const directory = await mkdtemp(join(tmpdir(), "qa-hosted-inputs-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
   const githubEnv = join(directory, "github-env");
   const result = spawnSync(process.execPath, [script.pathname], {
     encoding: "utf8",
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets",
       OPENAI_API_KEY: "synthetic-model-key",
       CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "test.calendar.read",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
       // Even if a caller supplies unrelated credentials, do not write them.
       SLACK_APP_TOKEN: "unselected-secret",
       REPOSITORY_APP_KEY: "unselected-secret",
@@ -186,7 +468,11 @@ test("hosted QA materializes only selected credentials and rejects missing selec
   );
   const exported = await readFile(githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_QA_CODEX_TOKEN_FILE=/);
-  assert.doesNotMatch(exported, /synthetic-|unselected-secret|SLACK|REPOSITORY/);
+  assert.doesNotMatch(
+    exported,
+    /synthetic-|unselected-secret|SLACK|REPOSITORY_(?:APP|OBSERVER|REGISTRY)/,
+  );
+  assert.doesNotMatch(exported, /QA_REPOSITORY_FIXTURE/);
   await rm(privateDirectory, { recursive: true });
   await rm(githubEnv);
   const missing = spawnSync(process.execPath, [script.pathname], {
@@ -194,17 +480,16 @@ test("hosted QA materializes only selected credentials and rejects missing selec
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "calendar",
-      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+      OCC_TEST_QA_SCENARIOS: "console-secrets",
+      OCC_TEST_QA_PRESET: "Codex",
     },
   });
   assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /CALENDAR_TOOL_NAME is required/);
+  assert.match(missing.stderr, /CODEX_ACCESS_TOKEN is required/);
   await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
 });
 
-test("QA command diagnostics retain the error while hiding generated and environment secrets", async () => {
+test("QA command diagnostics retain the error while hiding generated and environment secrets", async (t) => {
   const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   registerQaSecret("generated-private-value");
   const output = qaCommandFailureDetail(
@@ -218,6 +503,421 @@ test("QA command diagnostics retain the error while hiding generated and environ
     output,
     /generated-private-value|process-private-value|example-private-value/,
   );
+  await t.test(
+    "native failure metadata keeps fixed classes without echoing response or log values",
+    async () => {
+      const { nativeTaskFailureSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const summary = nativeTaskFailureSummary(
+        "thread/start: Codex did not grant the requested permission profile. Authorization: Bearer native-private-value",
+      );
+      assert.deepEqual(summary, {
+        classes: ["profile-grant-mismatch"],
+        nativeMethod: "thread/start",
+      });
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /native-private-value|Authorization|Codex did not/,
+      );
+      assert.deepEqual(nativeTaskFailureSummary("unrecognized private-native-message"), {
+        classes: ["unclassified"],
+        nativeMethod: "unknown",
+      });
+    },
+  );
+  await t.test(
+    "native requirements distinguish missing experimental fields from an explicit allowlist",
+    async () => {
+      const { nativePolicyRequirementsSummary } = await import("../helpers/normal-agent-tools.mjs");
+      assert.deepEqual(nativePolicyRequirementsSummary({}), { available: false });
+      assert.equal(
+        nativePolicyRequirementsSummary({ requirements: {} }).profileAllowlistPresent,
+        "unknown",
+      );
+      const expected = "openclaw-network-0123456789abcdef";
+      const summary = nativePolicyRequirementsSummary({
+        requirements: {
+          allowedPermissionProfiles: {
+            ":workspace": true,
+            ":read-only": true,
+            [expected]: false,
+          },
+          defaultPermissions: ":workspace",
+          modelProviders: { privateProvider: { apiKey: "native-private-value" } },
+        },
+      });
+      assert.equal(summary.profileAllowlistPresent, true);
+      assert.equal(summary.workspaceAllowed, true);
+      assert.equal(summary.generatedNetworkProfilesAllowed, 0);
+      assert.equal(summary.defaultProfileKind, "builtin-workspace");
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /0123456789abcdef|native-private-value|privateProvider|modelProviders/,
+      );
+    },
+  );
+});
+
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
+// Finding 2025: the QA installation's command runner is what records a failed image build's step
+// as uploaded evidence, so it is run here with a real failing subprocess and no cluster. The
+// evidence file must exist and carry the failed step with every secret the subprocess printed
+// masked; a protected command records nothing.
+test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const directory = await temporaryDirectory(t, "qa-run-evidence-");
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  registerQaSecret("registered-private-2025");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    // The subprocess sees the installation's environment, so it can print its private value.
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "env-private-value-2025" },
+    // The installation's own record: a confined JSON file in the uploaded artifacts directory.
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+      return file;
+    },
+  };
+  const longLine = "x".repeat(1_000);
+  const stderr = [
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [openclaw-build 14/18] RUN node scripts/test-projects.mts",
+    "#41 45.12  FAIL  src/gateway/placement.test.ts > keeps its token",
+    "#41 45.13 AssertionError: expected 'registered-private-2025' to be undefined",
+    "#41 45.14 env ${OCC_TEST_PRIVATE_INPUT}",
+    "#41 45.15 Authorization: Bearer fake-bearer-token-2025",
+    "#41 45.16 -----BEGIN PRIVATE KEY-----",
+    "#41 45.17 fakePemBodyLine2025AAAAAAAAAAAAAAAAAAAA",
+    "#41 45.18 -----END PRIVATE KEY-----",
+    `#41 45.19 ${longLine}`,
+    '#41 ERROR: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const script = `process.stderr.write(${JSON.stringify(stderr)}.replace("\${OCC_TEST_PRIVATE_INPUT}", process.env.OCC_TEST_PRIVATE_INPUT) + "\\n"); process.exit(1);`;
+
+  await assert.rejects(runQaCommand(f, process.execPath, ["-e", script]), (error) => {
+    assert.match(
+      error.message,
+      /; failed image build step output: kubernetes-image-build-failure-\d+\.json(?:;|$)/,
+    );
+    return true;
+  });
+  const files = (await readdir(artifacts)).filter((file) => file.includes("image-build-failure"));
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { lines } = JSON.parse(evidence);
+  assert.ok(lines.some((line) => line.includes("FAIL  src/gateway/placement.test.ts")));
+  assert.doesNotMatch(
+    evidence,
+    /registered-private-2025|env-private-value-2025|fake-bearer-token-2025|fakePemBodyLine2025/,
+  );
+  // Each line is cut to 800 characters.
+  assert.ok(lines.includes(`#41 45.19 ${longLine}`.slice(0, 800) + "... [truncated]"));
+
+  // A command whose output is protected records no evidence, even from a failed image build.
+  await assert.rejects(
+    runQaCommand(f, process.execPath, ["-e", script], { privateFailureOutput: true }),
+    (error) => {
+      assert.doesNotMatch(error.message, /failed image build step output/);
+      return true;
+    },
+  );
+  assert.deepEqual(
+    (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
+    files,
+  );
+});
+
+// Real children distinguish an elapsed command deadline from an ordinary signal exit.
+// Neither private output nor argv may escape through the added timing diagnostics.
+test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-command-timeout-");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH },
+  };
+  for (const scenario of [
+    {
+      name: "deadline",
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => process.exit(0)); console.error('private-timeout-canary'); setInterval(() => {}, 1000)",
+      ],
+      timeout: 1000,
+      timedOut: true,
+      // A graceful zero exit (or signal before the handler starts) cannot hide a timeout.
+      allowExitCodes: [0, null],
+    },
+    {
+      name: "signal",
+      command: "/bin/sh",
+      args: ["-c", "echo private-timeout-canary >&2; kill -PIPE $$"],
+      timeout: 5000,
+      timedOut: false,
+      signal: "SIGPIPE",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(
+        runQaCommand(f, scenario.command, scenario.args, {
+          timeout: scenario.timeout,
+          allowExitCodes: scenario.allowExitCodes,
+          privateFailureOutput: true,
+        }),
+        (error) => {
+          assert.equal(error.timedOut, scenario.timedOut);
+          assert.equal(error.timeoutMs, scenario.timeout);
+          assert.ok(Number.isInteger(error.elapsedMs) && error.elapsedMs >= 0);
+          assert.ok(
+            error.message.includes(`after ${error.elapsedMs} ms (limit ${scenario.timeout} ms)`),
+          );
+          if (scenario.timedOut) {
+            assert.ok(error.elapsedMs >= scenario.timeout);
+            assert.match(error.message, /timed out/);
+          } else {
+            assert.equal(error.signal, scenario.signal);
+            assert.doesNotMatch(error.message, /timed out/);
+          }
+          assert.doesNotMatch(
+            JSON.stringify(error),
+            /private-timeout-canary|process\.on|kill -PIPE/,
+          );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
+          assert.equal(error.stdout, undefined);
+          assert.equal(error.stderr, undefined);
+          assert.equal(error.cmd, undefined);
+          return true;
+        },
+      );
+    });
+  }
+  // Explicitly allowed ordinary exits still succeed; timeout classification must not
+  // turn a supported nonzero exit into a failure when no deadline fired.
+  assert.equal(
+    await runQaCommand(
+      f,
+      process.execPath,
+      ["-e", "process.stdout.write('allowed'); process.exit(7)"],
+      {
+        timeout: 5000,
+        allowExitCodes: [7],
+      },
+    ),
+    "allowed",
+  );
+});
+
+test("failed QA startup retains only bounded timing records and respects output protection", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-timings-");
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "private-startup-canary" },
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value), { flag: "wx" });
+      return file;
+    },
+  };
+  // Only exact records from the CLI's timing protocol may cross into uploaded evidence.
+  // Unknown stages, extra fields, malformed numbers and ordinary output stay private.
+  const lines = [
+    ...Array.from(
+      { length: 65 },
+      (_, i) => `[occ-dev-timing] stage=runtime-build elapsed_ms=${i} failed=false`,
+    ),
+    "[occ-dev-timing] stage=private-startup-canary elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false token=private-startup-canary",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=-1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1.5 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=9007199254740992 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=unknown",
+    "prefix [occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=kubernetes-readiness elapsed_ms=80 failed=true",
+  ];
+  const write = `process.stdout.write(process.env.OCC_TEST_PRIVATE_INPUT + '\\n' + ${JSON.stringify(lines.join("\n") + "\n")});`;
+  const run = (end, options = {}, installation = f) =>
+    runQaCommand(installation, process.execPath, ["-e", write + end], options);
+
+  // A real child emits timing records, then reaches the command deadline. The evidence
+  // must survive timeout teardown even when the child handles SIGTERM with exit zero.
+  await assert.rejects(
+    run("process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)", {
+      timeout: 1000,
+      captureStartupTimings: true,
+    }),
+    (error) => {
+      assert.equal(error.timedOut, true);
+      assert.match(error.message, /startup timings: kubernetes-startup-timings-\d+\.json/);
+      assert.doesNotMatch(error.message, /private-startup-canary|process\.stdout/);
+      assert.equal(error.stdout, undefined);
+      return true;
+    },
+  );
+  const files = await readdir(artifacts);
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { records, omittedRecords } = JSON.parse(evidence);
+  assert.equal(records.length, 64);
+  assert.equal(omittedRecords, 2);
+  assert.deepEqual(records[0], { stage: "runtime-build", elapsedMs: 2, failed: false });
+  assert.deepEqual(records.at(-1), { stage: "kubernetes-readiness", elapsedMs: 80, failed: true });
+  assert.ok(Buffer.byteLength(evidence) < 6_000);
+  assert.doesNotMatch(
+    evidence,
+    /private-startup-canary|process\.stdout|token=|prefix|9007199254740992/,
+  );
+
+  // Neither a protected command, an ordinary command, nor an allowed exit writes evidence.
+  for (const options of [{ captureStartupTimings: true, privateFailureOutput: true }, {}]) {
+    await assert.rejects(run("process.exit(7)", options), (error) => {
+      assert.equal(error.code, 7);
+      assert.doesNotMatch(error.message, /startup timings|private-startup-canary/);
+      return true;
+    });
+  }
+  await run("process.exit(7)", { captureStartupTimings: true, allowExitCodes: [7] });
+  assert.deepEqual(await readdir(artifacts), files);
+
+  // Evidence is best effort: a storage failure cannot replace the original command failure
+  // or disclose a storage error's potentially private details.
+  await assert.rejects(
+    run(
+      "process.exit(7)",
+      { captureStartupTimings: true },
+      {
+        ...f,
+        async record() {
+          throw new Error("private-startup-canary");
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error.code, 7);
+      assert.match(error.message, /startup timings: unavailable/);
+      assert.doesNotMatch(error.message, /private-startup-canary/);
+      return true;
+    },
+  );
+});
+
+// Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
+// line, must lose every body line, not only the lines the tail still shows its BEGIN for.
+test("an image build step's unterminated private key is masked past the evidence window", async () => {
+  const { recordImageBuildFailure } = await import("../helpers/qa-installation.mjs");
+  const body = Array.from(
+    { length: 250 },
+    (_, index) =>
+      `#41 ${index}.0 fakeKeyBody${String(index).padStart(3, "0")}QUJDREVGR0hJSktMTU5PUFFSU1RVVldY`,
+  );
+  const stderr = [
+    "#41 [runtime 4/9] RUN cat /run/secrets/key",
+    "#41 0.1 -----BEGIN RSA PRIVATE KEY-----",
+    ...body,
+    '#41 ERROR: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const records = [];
+  await recordImageBuildFailure(
+    async (name, value) => {
+      records.push(value);
+      return `kubernetes-${name}.json`;
+    },
+    stderr,
+    {},
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].lines.length, 200);
+  assert.doesNotMatch(JSON.stringify(records[0]), /fakeKeyBody/);
 });
 
 test("QA waits report the last observation when they time out", async () => {
@@ -266,6 +966,228 @@ test("QA waits report the last observation when they time out", async () => {
   assert.equal(
     await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
     "value",
+  );
+});
+
+// Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
+  const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  // An invented 48-character registered value. Runtime text that OCC shortened could keep
+  // part of it, which whole-value redaction cannot match.
+  const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
+  assert.equal(privateValue.length, 48);
+  registerQaSecret(privateValue);
+  const base = "/namespaces/namespace-1/agents/agent-1";
+  function fixture({ runtime, finalStatus = "running" } = {}) {
+    let clock = 0;
+    const calls = [];
+    const records = [];
+    const lastAttempt = {
+      at: "2026-10-19T19:40:00.000Z",
+      code: "RUNTIME_NOT_READY",
+      message: "The Agent runtime is not ready yet.",
+    };
+    const f = {
+      async api(method, path) {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === `${base}/deploy`) {
+          return { id: "rev-1" };
+        }
+        if (path === `${base}/deployments/rev-1`) {
+          clock += 100;
+          // Queued for the first observations, then running until the wait ends.
+          const status = clock <= 200 ? "queued" : finalStatus;
+          return {
+            status,
+            progress: status === "succeeded" ? null : { lastAttempt, nextAttemptAt: null },
+            error: null,
+            cleanup: null,
+            warnings: [],
+          };
+        }
+        if (path === `${base}/deployments/rev-1/runtime`) {
+          if (!runtime) {
+            throw new Error(`OCC GET ${path}: HTTP 404`);
+          }
+          return runtime;
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      async record(name, value) {
+        records.push({ name, value });
+      },
+    };
+    const agent = { id: "agent-1", namespaceId: "namespace-1", preset: "Codex" };
+    return { f, agent, calls, records, options: { timeout: 1_000, interval: 0, now: () => clock } };
+  }
+
+  const runtime = {
+    revisionId: "rev-1",
+    observedAt: "2026-10-19T19:46:00.000Z",
+    sources: [],
+    pods: [
+      {
+        role: "gateway",
+        cluster: "control",
+        name: "gateway-0",
+        uid: "uid-1",
+        phase: "Pending",
+        ready: false,
+        createdAt: "2026-10-19T19:36:10.000Z",
+        containers: [
+          {
+            name: "gateway",
+            state: "waiting",
+            reason: "ContainerCreating",
+            ready: false,
+            restartCount: 0,
+            startedAt: null,
+            lastTermination: null,
+          },
+          {
+            name: "setup",
+            state: "terminated",
+            // Cut at the API's 128 characters, inside the registered value.
+            reason: ("r".repeat(100) + privateValue).slice(0, 128),
+            ready: false,
+            restartCount: 1,
+            startedAt: null,
+            lastTermination: null,
+          },
+        ],
+        // Newest first, as the API lists them.
+        events: [
+          {
+            type: "Warning",
+            container: null,
+            reason: "Unhealthy",
+            // Probe output can reach an event message; the value starts at character 176.
+            message: "Readiness probe failed: " + "x".repeat(152) + privateValue,
+            count: 4,
+            lastObservedAt: "2026-10-19T19:45:00Z",
+          },
+          {
+            type: "Normal",
+            container: null,
+            reason: "Pulled",
+            message: "Container image already present",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:44:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            // A long reason from a legacy Event producer, cut inside the registered value.
+            reason: ("e".repeat(100) + privateValue).slice(0, 128),
+            message: "Back-off pulling image",
+            count: 2,
+            lastObservedAt: "2026-10-19T19:43:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedScheduling",
+            message: "0/1 nodes are available",
+            count: 3,
+            lastObservedAt: "2026-10-19T19:38:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedCreatePodSandBox",
+            message: "Failed to create pod sandbox",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:37:00Z",
+          },
+        ],
+      },
+    ],
+  };
+  // Through the real report stage, which redacts before it saves the reason.
+  const directory = await temporaryDirectory(t, "qa-deploy-timeout-");
+  const reportPath = join(directory, "matrix.json");
+  const report = createQaReport(reportPath, {});
+  const parent = { test: async (_name, _options, run) => run() };
+  const timedOut = fixture({ runtime });
+  await assert.rejects(
+    report.stage(parent, "compose/Codex", "deploy", () =>
+      deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    ),
+    (error) => {
+      // No runtime text that could hold part of a secret reaches the error.
+      assert.doesNotMatch(error.message, /qa-deploy-fixture|Readiness probe failed|rrrr|eeee/);
+      const [observation, pods] = error.message
+        .replace(/^Timed out: Agent deployment; last observation: /, "")
+        .split("; runtime: ");
+      assert.deepEqual(JSON.parse(observation), {
+        status: "running",
+        // Running since the third observation (clock 300) until the last one (clock 1,000).
+        statusForMs: 700,
+        lastAttempt: {
+          at: "2026-10-19T19:40:00.000Z",
+          code: "RUNTIME_NOT_READY",
+          message: "The Agent runtime is not ready yet.",
+        },
+        nextAttemptAt: null,
+        error: null,
+      });
+      assert.deepEqual(JSON.parse(pods), {
+        pods: [
+          {
+            role: "gateway",
+            phase: "Pending",
+            ready: false,
+            containers: [
+              { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+              { name: "setup", state: "terminated", reason: "other", restartCount: 1 },
+            ],
+            // The three newest Warnings, by familiar reason and count only.
+            warnings: [
+              { reason: "Unhealthy", count: 4 },
+              { reason: "other", count: 2 },
+              { reason: "FailedScheduling", count: 3 },
+            ],
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
+  assert.deepEqual(timedOut.records, []);
+  const saved = await readFile(reportPath, "utf8");
+  const [outcome] = JSON.parse(saved).outcomes;
+  assert.equal(outcome.outcome, "failed");
+  assert.match(outcome.reason, /^Timed out: Agent deployment; last observation: /);
+  assert.doesNotMatch(saved, new RegExp(privateValue.slice(0, 8)));
+
+  // Runtime details are best effort: the timeout keeps its status when they are unavailable.
+  const noRuntime = fixture();
+  await assert.rejects(
+    deployQaAgentAndWait(noRuntime.f, noRuntime.agent, noRuntime.options),
+    (error) =>
+      error.message.startsWith(
+        'Timed out: Agent deployment; last observation: {"status":"running","statusForMs":700,',
+      ) &&
+      error.message.endsWith(
+        `; runtime unavailable (OCC GET ${base}/deployments/rev-1/runtime: HTTP 404)`,
+      ),
+  );
+
+  // A deployment that succeeds is recorded and returned, with no runtime request.
+  const succeeded = fixture({ finalStatus: "succeeded" });
+  const result = await deployQaAgentAndWait(succeeded.f, succeeded.agent, succeeded.options);
+  assert.equal(result.status.status, "succeeded");
+  assert.deepEqual(result.revision, { id: "rev-1" });
+  assert.deepEqual(
+    succeeded.records.map(({ name }) => name),
+    ["Codex-agent-1-rev-1-deployment"],
+  );
+  assert.equal(
+    succeeded.calls.some((call) => call.endsWith("/runtime")),
+    false,
   );
 });
 
@@ -524,7 +1446,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   // A single worker Pod is the Deployment read: no per-Pod copies.
   platformPods.splice(0, 1);
-  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing));
+  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing), {
+    message: /^Timed out: ordinary Agent stop removes every runtime Pod; last observation: /,
+  });
   assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
@@ -1095,8 +2019,7 @@ test(
   async (t) => {
     const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
     const value = "synthetic-qa-reporter-secret-2026";
-    const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-reporter-");
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
     const file = join(directory, "redacted.test.mjs");
     await writeFile(
@@ -1176,4 +2099,1644 @@ test("QA log tails drop the body of an unregistered key that starts above the ta
     "[redacted credential-bearing line]",
     "after",
   ]);
+});
+
+test("failed native Gateway turns capture private bounded logs for the original revision", async (t) => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const mode of ["capture", "read-unavailable", "write-unavailable", "success"]) {
+    await t.test(mode, async () => {
+      const credential = `private-runtime-fixture-${randomUUID()}`;
+      const password = `private-gateway-fixture-${randomUUID()}`;
+      const target = {
+        namespaceId: "ns_log_fixture",
+        agentId: "agt_log_fixture",
+        revisionId: "rev_original",
+      };
+      const agent = {
+        namespaceId: target.namespaceId,
+        id: target.agentId,
+        revision: { id: target.revisionId },
+      };
+      const reads = [];
+      const records = [];
+      let closed = false;
+      // A real HTTP error crosses normalGatewayTurn. The log reader substitutes only
+      // the external OCC response; this proves harness privacy, not a live model turn.
+      const server = createServer((request, response) => {
+        assert.equal(request.url, "/v1/chat/completions");
+        // Simulate the fixture advancing after request admission: diagnostics stay pinned.
+        agent.revision = { id: "rev_replaced" };
+        response.writeHead(mode === "success" ? 200 : 500, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(
+            mode === "success"
+              ? { choices: [{ message: { content: "expected reply" } }] }
+              : { error: { message: "internal error" } },
+          ),
+        );
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const fixture = createNativePluginAssertions({
+        gatewayUrl: async () => ({
+          url: `http://127.0.0.1:${server.address().port}`,
+          gatewayPassword: password,
+          close: async () => {
+            closed = true;
+          },
+        }),
+        execGateway: async () => ({
+          label: "fixture",
+          stdout: JSON.stringify({ chatCompletionsEnabled: true }),
+        }),
+        readRuntimeLogs: async (identity) => {
+          reads.push(identity);
+          if (mode === "read-unavailable" && identity.source === "agent") {
+            throw new Error(credential);
+          }
+          return {
+            records: [
+              ...Array.from({ length: 120 }, () => ({
+                type: "line",
+                level: "info",
+                message: "startup",
+              })),
+              {
+                type: "line",
+                level: "error",
+                message: `native review failed ${password} ${credential} ${Buffer.from(credential).toString("base64")}`,
+              },
+              {
+                type: "withheld",
+                reason: "unrecognised_structured",
+                count: 1,
+                message: credential,
+                fields: { raw: credential },
+              },
+            ],
+          };
+        },
+        recordRuntimeLogs: async (record) => {
+          if (mode === "write-unavailable") {
+            throw new Error(credential);
+          }
+          records.push(record);
+        },
+      });
+      try {
+        const run = () =>
+          fixture.normalGatewayTurn({
+            agent,
+            prompt: "fixture prompt",
+            expectedPatterns: ["expected reply"],
+            secrets: [credential],
+          });
+        if (mode === "success") {
+          assert.equal(await run(), "expected reply");
+          assert.deepEqual(reads, []);
+          assert.deepEqual(records, []);
+        } else {
+          await assert.rejects(run, (error) => {
+            assert.equal(error.name, "AssertionError");
+            assert.equal(
+              error.actual,
+              500,
+              "log collection failure must not replace the Gateway failure",
+            );
+            assert.equal(error.message.includes(credential), false);
+            return true;
+          });
+          assert.deepEqual(
+            reads,
+            ["gateway", "agent"].map((source) => ({ ...target, source })),
+          );
+          if (mode === "write-unavailable") {
+            assert.deepEqual(records, []);
+          } else {
+            assert.equal(records.length, 1);
+            const { sources, ...identity } = records[0];
+            assert.deepEqual(identity, target);
+            const text = JSON.stringify(records);
+            for (const secret of [
+              credential,
+              password,
+              Buffer.from(credential).toString("base64"),
+            ]) {
+              assert.equal(
+                text.includes(secret),
+                false,
+                "public artifacts must omit raw and encoded credentials",
+              );
+            }
+            assert.match(text, /native review failed/);
+            assert.match(text, /unrecognised_structured/);
+            assert.equal(
+              text.includes('"raw"'),
+              false,
+              "withheld API fields must not be resurrected",
+            );
+            assert.ok(
+              sources.every((source) => source.unavailable === true || source.lines.length <= 80),
+            );
+            assert.ok(text.length < 150_000);
+            if (mode === "read-unavailable") {
+              assert.deepEqual(sources[1], { source: "agent", unavailable: true });
+            }
+          }
+        }
+        assert.equal(closed, true, "diagnostics must run before normal gateway cleanup completes");
+      } finally {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  }
+});
+
+test("native cron positive control requires its own successful completed run", async (t) => {
+  const { assertNativeCronRunSucceeded } = await import("../helpers/plugin-driver-real.mjs");
+  const accepted = { ok: true, enqueued: true, runId: "control-run" };
+  const finished = {
+    jobId: "control-job",
+    runId: "control-run",
+    action: "finished",
+    status: "ok",
+  };
+  async function exercise(ack, entry) {
+    const calls = [];
+    const proof = await assertNativeCronRunSucceeded({
+      jobId: "control-job",
+      async request(method, params) {
+        calls.push({ method, params });
+        if (method === "cron.run") {
+          return ack;
+        }
+        assert.equal(method, "cron.runs");
+        return { entries: entry === undefined ? [] : [entry] };
+      },
+      // One observation represents completion or exhausted polling, without a real timer.
+      waitFor: async (_description, inspect) => inspect(),
+    });
+    return { proof, calls };
+  }
+
+  await t.test("records the accepted run only after its successful terminal result", async () => {
+    const { proof, calls } = await exercise(accepted, finished);
+    assert.deepEqual(proof, { jobId: "control-job", runId: "control-run", status: "ok" });
+    assert.deepEqual(calls, [
+      {
+        method: "cron.run",
+        params: { id: "control-job", mode: "force", waitTimeoutMs: 5_000 },
+      },
+      { method: "cron.runs", params: { id: "control-job", runId: "control-run", limit: 1 } },
+    ]);
+  });
+  for (const [name, ack, entry, expected] of [
+    [
+      "a successful RPC that did not run the job",
+      { ok: true, ran: false, reason: "invalid-spec" },
+      finished,
+      /must enqueue a run/,
+    ],
+    ["a different completed run", accepted, { ...finished, runId: "other-run" }, /enqueued run/],
+    ["an unfinished run", accepted, { ...finished, action: "started" }, /must finish/],
+    ["a failed terminal run", accepted, { ...finished, status: "error" }, /must succeed/],
+  ]) {
+    await t.test(`rejects ${name}`, async () => {
+      await assert.rejects(exercise(ack, entry), expected);
+    });
+  }
+});
+
+test("native tool evidence reads compressed rows, prompt snapshots and command exit status", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { zstdCompressSync } = await import("node:zlib");
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const directory = await temporaryDirectory(t, "oce-tool-evidence-");
+  const databasePath = join(directory, "transcript.sqlite");
+  const db = new DatabaseSync(databasePath);
+  db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);
+    CREATE TABLE session_entry_snapshots(session_key TEXT, field TEXT, value_json TEXT);
+    CREATE TABLE transcript_events(session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER);`);
+  const sessionKey = "agent:main:evidence-fixture";
+  db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run(sessionKey, "session-fixture", "{}");
+  db.prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)").run(
+    sessionKey,
+    "systemPromptReport",
+    JSON.stringify({
+      source: "run",
+      tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+    }),
+  );
+  const toolErrorSecret = "fixture-tool-error-secret";
+  registerQaSecret(toolErrorSecret);
+  const rows = [
+    { role: "user", content: "allowed-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "allowed-call",
+          name: "exec",
+          arguments: { command: "printf TOOL-SUCCESS" },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "allowed-call",
+      toolName: "exec",
+      content: [{ type: "text", text: "TOOL-SUCCESS" }],
+      isError: false,
+      details: { exitCode: 0 },
+    },
+    { role: "assistant", content: [{ type: "text", text: "allowed-fixture" }], stopReason: "stop" },
+    { role: "user", content: "denied-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "denied-call",
+          name: "automations",
+          arguments: {
+            action: "update",
+            jobId: "fixture-job",
+            job: { payload: { timeoutSeconds: 5 } },
+          },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "denied-call",
+      toolName: "automations",
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: [
+            "earlier error context omitted from bounded diagnostic",
+            "Automation not found: fixture-job",
+            `private fixture value: ${toolErrorSecret}`,
+            "x".repeat(3_000),
+          ].join("\n"),
+        },
+      ],
+    },
+    { role: "assistant", content: [{ type: "text", text: "denied-fixture" }], stopReason: "stop" },
+  ];
+  for (const [seq, message] of rows.entries()) {
+    const text = JSON.stringify({ type: "message", message });
+    const compressed = [1, 2, 4, 5, 7].includes(seq);
+    db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)").run(
+      "session-fixture",
+      seq,
+      compressed ? null : text,
+      compressed ? zstdCompressSync(text) : null,
+      Buffer.byteLength(text),
+    );
+  }
+  db.close();
+  // Run the real evidence program against disposable SQLite storage. This tests
+  // evidence decoding/correlation, not a live model or deployment policy.
+  const assertionOptions = {
+    gatewayUrl: async () => {
+      throw new Error("no Gateway connection in this fixture");
+    },
+    execGateway: async (_agent, [command, flag, script, ...args]) => {
+      assert.equal(command, "node");
+      assert.equal(flag, "-e");
+      const localScript = script.replace(
+        '"/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"',
+        JSON.stringify(databasePath),
+      );
+      return {
+        label: "sqlite-fixture",
+        stdout: execFileSync(process.execPath, ["-e", localScript, ...args], { encoding: "utf8" }),
+      };
+    },
+    waitFor: async (_description, check) => check(),
+    proofMode: "openclaw",
+  };
+  const native = createNativePluginAssertions(assertionOptions);
+  const shellEvidence = {
+    sessionKey,
+    turnMarker: "allowed-fixture",
+    toolName: "exec",
+    resultPattern: "TOOL-SUCCESS",
+  };
+  const allowed = await native.assertSessionToolCallEvidence(
+    {},
+    {
+      ...shellEvidence,
+      expectedExitCode: 0,
+    },
+  );
+  assert.equal(allowed.toolCallId, "allowed-call");
+  assert.equal(allowed.promptAdvertised, true);
+  assert.equal(allowed.exitCode, 0);
+  assert.equal(allowed.promptReport.source, "run");
+  assert.deepEqual(allowed.promptReport.toolNames, ["exec", "automations"]);
+  await t.test("positive direct evidence matches the requested arguments", async () => {
+    assert.equal(
+      (
+        await native.assertSessionToolCallEvidence(
+          {},
+          { ...shellEvidence, expectedArguments: { command: "printf TOOL-SUCCESS" } },
+        )
+      ).toolCallId,
+      "allowed-call",
+    );
+    await assert.rejects(
+      native.assertSessionToolCallEvidence(
+        {},
+        { ...shellEvidence, expectedArguments: { command: "a different task" } },
+      ),
+      /matching successful result/,
+    );
+  });
+  for (const [report, expectedShape] of [
+    [
+      undefined,
+      { present: false, valueType: "undefined", entriesType: "undefined", entriesCount: null },
+    ],
+    [
+      { source: "estimate", tools: { entries: [{ name: "exec" }] } },
+      {
+        present: true,
+        valueType: "object",
+        source: "estimate",
+        entriesType: "array",
+        entriesCount: 1,
+      },
+    ],
+    [
+      { source: "run", tools: { entries: {} } },
+      {
+        present: true,
+        valueType: "object",
+        source: "run",
+        entriesType: "object",
+        entriesCount: null,
+      },
+    ],
+  ]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM session_entry_snapshots");
+      if (report !== undefined) {
+        update
+          .prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)")
+          .run(sessionKey, "systemPromptReport", JSON.stringify(report));
+      }
+    } finally {
+      update.close();
+    }
+    await assert.rejects(native.assertSessionToolCallEvidence({}, shellEvidence), (error) => {
+      const diagnostic = JSON.parse(error.message.split("tools.entries snapshot: ")[1]);
+      assert.equal(diagnostic.sessionId, "session-fixture");
+      assert.deepEqual(diagnostic.promptReport, expectedShape);
+      return true;
+    });
+  }
+  const restore = new DatabaseSync(databasePath);
+  try {
+    restore
+      .prepare("UPDATE session_entry_snapshots SET value_json = ?")
+      .run(JSON.stringify({ source: "run", tools: { entries: [] } }));
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, shellEvidence),
+      /prompt tools must advertise exec: .*"promptToolNames":\[\]/,
+    );
+    restore.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+      JSON.stringify({
+        source: "run",
+        tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+      }),
+    );
+  } finally {
+    restore.close();
+  }
+  for (const details of [
+    { exitCode: 1 },
+    undefined,
+    { status: "running", sessionId: "fixture-process" },
+  ]) {
+    const text = JSON.stringify({ type: "message", message: { ...rows[2], details } });
+    const update = new DatabaseSync(databasePath);
+    try {
+      update
+        .prepare("UPDATE transcript_events SET event_zstd = ?, event_utf8_bytes = ? WHERE seq = 2")
+        .run(zstdCompressSync(text), Buffer.byteLength(text));
+    } finally {
+      update.close();
+    }
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, { ...shellEvidence, expectedExitCode: 0 }),
+      details?.status === "running"
+        ? /must exit with code 0: .*"status":"running"/
+        : /must exit with code 0/,
+    );
+  }
+  // Tools without structured exit status retain their existing evidence contract.
+  assert.equal(
+    (await native.assertSessionToolCallEvidence({}, shellEvidence)).toolCallId,
+    "allowed-call",
+  );
+  const denial = {
+    sessionKey,
+    turnMarker: "denied-fixture",
+    toolName: "automations",
+    expectedArguments: {
+      action: "update",
+      jobId: "fixture-job",
+      job: { payload: { timeoutSeconds: 5 } },
+    },
+    resultPattern: ["job.payload.kind:", "Automation not found: fixture-job"],
+  };
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).toolCallId,
+    "denied-call",
+  );
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).matchedRefusal,
+    "Automation not found: fixture-job",
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      { ...denial, expectedArguments: { ...denial.expectedArguments, jobId: "wrong-target" } },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        resultPattern: [
+          "job.payload.kind:",
+          "automation command payloads cannot be created or edited",
+        ],
+      },
+    ),
+    /the attempted tool must return the policy refusal/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        expectedArguments: { ...denial.expectedArguments, job: { payload: { timeoutSeconds: 6 } } },
+      },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(native.assertSessionToolCallEvidence({}, denial), (error) => {
+    const diagnostic = JSON.parse(error.message.slice(error.message.indexOf("{")));
+    const [result] = diagnostic.results;
+    assert.equal(result.toolCallId, "denied-call");
+    assert.equal(result.errorText, undefined);
+    assert.equal(result.errorLines.length, 3);
+    assert.equal(result.errorLines[0], "Automation not found: fixture-job");
+    assert.equal(result.errorLines[1], "private fixture value: [env:qa-secret]");
+    assert.equal(error.message.includes(toolErrorSecret), false);
+    assert.ok(result.errorLines.every((line) => line.length <= 900 + "... [truncated]".length));
+    assert.match(result.errorLines[2], /\[truncated\]$/);
+    return true;
+  });
+
+  function replaceTranscript(messages, promptNames = ["exec", "dispatch_action", "tool_search"]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM transcript_events");
+      update.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+        JSON.stringify({
+          source: "run",
+          tools: { entries: promptNames.map((name) => ({ name })) },
+        }),
+      );
+      for (const [seq, message] of messages.entries()) {
+        const text = JSON.stringify({ type: "message", message });
+        const compressed = seq % 2 === 0;
+        update
+          .prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)")
+          .run(
+            "session-fixture",
+            seq,
+            compressed ? null : text,
+            compressed ? zstdCompressSync(text) : null,
+            Buffer.byteLength(text),
+          );
+      }
+    } finally {
+      update.close();
+    }
+  }
+  await t.test("does not treat an assistant refusal as a denied tool call", async () => {
+    replaceTranscript([
+      { role: "user", content: "denied-fixture" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I cannot call that tool. denied-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+    await assert.rejects(native.assertSessionToolPolicyDeniedEvidence({}, denial), (error) => {
+      assert.match(error.message, /the denied turn must attempt exactly the requested tool/);
+      const [summary] = error.message.split("\n");
+      const diagnostic = JSON.parse(summary.slice(summary.indexOf("{")));
+      assert.deepEqual(diagnostic.observedToolNames, []);
+      assert.equal(diagnostic.finalAssistantDiagnostics.mentionsUnavailable, true);
+      return true;
+    });
+  });
+  const dispatchedCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "dispatched-call",
+        name: "dispatch_action",
+        arguments: { id: "openclaw:core:automations", args: { action: "list" } },
+      },
+    ],
+  };
+  const targetResult = { content: [{ type: "text", text: '{"jobs":[]}' }], details: { jobs: [] } };
+  const envelope = {
+    tool: { id: "openclaw:core:automations", name: "automations", source: "openclaw" },
+    result: targetResult,
+  };
+  const dispatchedResult = {
+    role: "toolResult",
+    toolCallId: "dispatched-call",
+    toolName: "dispatch_action",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(envelope) }],
+    details: envelope,
+  };
+  const dispatchedMessages = (call = dispatchedCall, result = dispatchedResult) => [
+    { role: "user", content: "dispatched-fixture" },
+    call,
+    result,
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "dispatched-fixture" }],
+      stopReason: "stop",
+    },
+  ];
+  const dispatchedEvidence = {
+    sessionKey,
+    turnMarker: "dispatched-fixture",
+    toolName: "automations",
+    expectedArguments: { action: "list" },
+    resultPattern: "jobs",
+  };
+  await t.test(
+    "correlates the real dispatcher and target without a direct target schema",
+    async () => {
+      for (const id of [
+        "openclaw:core:automations",
+        "automations",
+        " openclaw:core:automations ",
+        "\tautomations\n",
+      ]) {
+        const call = structuredClone(dispatchedCall);
+        call.content[0].arguments.id = id;
+        replaceTranscript(dispatchedMessages(call));
+        await assert.rejects(
+          native.assertNoSessionToolCallEvidence({}, dispatchedEvidence),
+          /still invoked automations/,
+        );
+        const proof = await native.assertSessionToolCallEvidence({}, dispatchedEvidence);
+        assert.equal(proof.toolName, "dispatch_action");
+        assert.equal(proof.targetName, "automations");
+        assert.equal(proof.targetId, id.trim());
+        assert.equal(proof.toolCallId, "dispatched-call");
+      }
+    },
+  );
+  for (const [name, change] of [
+    [
+      "wrong call target",
+      (call) => {
+        call.content[0].arguments.id = "openclaw:core:nodes";
+      },
+    ],
+    [
+      "wrong target arguments",
+      (call) => {
+        call.content[0].arguments.args.action = "run";
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "different-call";
+      },
+    ],
+    [
+      "wrong envelope target",
+      (_call, result) => {
+        result.details.tool.name = "nodes";
+      },
+    ],
+    [
+      "target failure behind an ordinary outer result",
+      (_call, result) => {
+        result.details.status = "failed";
+      },
+    ],
+  ]) {
+    await t.test(`rejects dispatched ${name}`, async () => {
+      const call = structuredClone(dispatchedCall);
+      const result = structuredClone(dispatchedResult);
+      change(call, result);
+      replaceTranscript(dispatchedMessages(call, result));
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, dispatchedEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("correlates a thrown dispatcher refusal to its exact target arguments", async () => {
+    const call = structuredClone(dispatchedCall);
+    call.content[0].arguments.args = { action: "run", jobId: "fixture-job" };
+    const result = { ...rows[6], toolCallId: "dispatched-call", toolName: "dispatch_action" };
+    const options = {
+      ...denial,
+      turnMarker: "dispatched-fixture",
+      expectedArguments: { action: "run", jobId: "fixture-job" },
+    };
+    for (const details of [
+      undefined,
+      { status: "error", tool: "dispatch_action", error: "Automation not found: fixture-job" },
+    ]) {
+      result.details = details;
+      replaceTranscript(dispatchedMessages(call, result));
+      assert.equal(
+        (await native.assertSessionToolPolicyDeniedEvidence({}, options)).targetId,
+        "openclaw:core:automations",
+      );
+    }
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence(
+        {},
+        {
+          ...options,
+          expectedArguments: { action: "run", jobId: "wrong-target" },
+        },
+      ),
+      /exact requested action and target/,
+    );
+    result.details = {
+      tool: { ...envelope.tool, name: "nodes" },
+      result: { content: result.content },
+    };
+    replaceTranscript(dispatchedMessages(call, result));
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence({}, options),
+      /the refusal must belong to the attempted target/,
+    );
+  });
+
+  const expectedCatalog = { present: ["read"], absent: ["agents_list", "gateway"] };
+  const searchCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "search-call",
+        name: "tool_search",
+        arguments: {
+          queries: ["read", "agents_list", "gateway"].map((query) => ({ query, limit: 1 })),
+        },
+      },
+    ],
+  };
+  const readCandidate = { id: "openclaw:core:read", name: "read", source: "openclaw" };
+  const searchPayload = {
+    results: [
+      { query: "read", candidates: [readCandidate] },
+      // Exact-name search may return a fuzzy alternative when the exact tool is absent.
+      { query: "agents_list", candidates: [readCandidate] },
+      { query: "gateway", candidates: [] },
+    ],
+  };
+  const searchResult = {
+    role: "toolResult",
+    toolCallId: "search-call",
+    toolName: "tool_search",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(searchPayload) }],
+    details: searchPayload,
+  };
+  const searchEvidence = {
+    sessionKey,
+    turnMarker: "search-fixture",
+    toolName: "tool_search",
+    expectedCatalog,
+  };
+  function replaceSearch(call = searchCall, result = searchResult) {
+    replaceTranscript([
+      { role: "user", content: "search-fixture" },
+      call,
+      result,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "search-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+  }
+  await t.test("proves complete exact discovery with an allowed positive control", async () => {
+    replaceSearch();
+    const proof = await native.assertSessionToolCallEvidence({}, searchEvidence);
+    assert.equal(proof.toolCallId, "search-call");
+    assert.deepEqual(proof.catalog, [
+      { query: "read", names: ["read"], truncated: false },
+      { query: "agents_list", names: ["read"], truncated: false },
+      { query: "gateway", names: [], truncated: false },
+    ]);
+  });
+  for (const [name, change] of [
+    [
+      "nonexact request",
+      (call) => {
+        call.content[0].arguments.queries[1].query = "agents";
+      },
+    ],
+    [
+      "different request limit",
+      (call) => {
+        call.content[0].arguments.queries[1].limit = 2;
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "other-search";
+      },
+    ],
+    [
+      "missing result group",
+      (_call, result) => {
+        result.details.results.pop();
+      },
+    ],
+    [
+      "duplicate result group",
+      (_call, result) => {
+        result.details.results[2] = result.details.results[0];
+      },
+    ],
+    [
+      "truncated response",
+      (_call, result) => {
+        result.details.truncated = true;
+      },
+    ],
+    [
+      "truncated group",
+      (_call, result) => {
+        result.details.results[1].truncated = true;
+      },
+    ],
+    [
+      "missing allowed control",
+      (_call, result) => {
+        result.details.results[0].candidates = [];
+      },
+    ],
+    [
+      "forbidden exact match",
+      (_call, result) => {
+        result.details.results[1].candidates = [
+          { id: "openclaw:core:agents_list", name: "agents_list", source: "openclaw" },
+        ];
+      },
+    ],
+  ]) {
+    await t.test(`rejects catalog proof with ${name}`, async () => {
+      const call = structuredClone(searchCall);
+      const result = structuredClone(searchResult);
+      change(call, result);
+      replaceSearch(call, result);
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, searchEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("binds Code Mode evidence to the exact real-tool program", async (t) => {
+    const codeModeCall = {
+      title: "Gateway policy qualification",
+      code: 'return await exec({"command":"printf TOOL-SUCCESS","awaitResults":true});',
+      awaitResults: true,
+    };
+    const completed = {
+      status: "completed",
+      value: { status: "completed", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+    };
+    const replaceCodeMode = (details, args = codeModeCall) =>
+      replaceTranscript(
+        [
+          { role: "user", content: "code-mode-fixture" },
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "code-mode-call", name: "exec", arguments: args }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "code-mode-call",
+            toolName: "exec",
+            isError: false,
+            content: [{ type: "text", text: JSON.stringify(details) }],
+            details,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "code-mode-fixture" }],
+            stopReason: "stop",
+          },
+        ],
+        ["exec"],
+      );
+    const options = {
+      sessionKey,
+      turnMarker: "code-mode-fixture",
+      toolName: "exec",
+      codeModeCall,
+      resultPattern: "TOOL-SUCCESS",
+      expectedExitCode: 0,
+    };
+    replaceCodeMode(completed);
+    const proof = await native.assertSessionToolCallEvidence({}, options);
+    assert.equal(proof.codeModeProgramVerified, true);
+    assert.equal(proof.exitCode, 0);
+    await t.test("rejects guest-manufactured success without the exact program", async () => {
+      replaceCodeMode(completed, {
+        ...codeModeCall,
+        code: 'return {status:"completed",exitCode:0,aggregated:"TOOL-SUCCESS"};',
+      });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /matching successful result/,
+      );
+    });
+    for (const value of [
+      { status: "running", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+      { status: "completed", exitCode: 1, aggregated: "TOOL-SUCCESS" },
+    ]) {
+      replaceCodeMode({ ...completed, value });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /must exit with code 0/,
+      );
+    }
+    await t.test("correlates returned Gateway errors and thrown bridge errors", async () => {
+      const refusal = "cron job not found: fixture-job";
+      const call = {
+        ...codeModeCall,
+        code: 'return await automations({"action":"update","jobId":"fixture-job","job":{"payload":{"timeoutSeconds":1}}});',
+      };
+      const denied = {
+        sessionKey,
+        turnMarker: options.turnMarker,
+        toolName: "exec",
+        codeModeCall: call,
+        resultPattern: refusal,
+      };
+      for (const details of [
+        { status: "completed", value: { status: "error", error: refusal } },
+        { status: "failed", bridgeDispatchStarted: true, error: refusal },
+      ]) {
+        replaceCodeMode(details, call);
+        assert.equal(
+          (await native.assertSessionToolPolicyDeniedEvidence({}, denied)).codeModeProgramVerified,
+          true,
+        );
+      }
+      replaceCodeMode({ status: "failed", bridgeDispatchStarted: false, error: refusal }, call);
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /refusal must belong to the attempted target/,
+      );
+      replaceCodeMode(
+        { status: "completed", value: { status: "error", error: "unrelated fixture error" } },
+        call,
+      );
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /must return the policy refusal/,
+      );
+    });
+    await t.test(
+      "checks the actual complete catalog alongside the child's command result",
+      async () => {
+        const call = {
+          ...codeModeCall,
+          code: 'const command = await exec({"command":"printf TOOL-SUCCESS","awaitResults":true}); return {...command, catalog: catalog.all().filter(tool => ["read","gateway"].includes(tool.toolName)).map(tool => ({name: tool.toolName, source: tool.source, callableName: tool.callableName}))};',
+        };
+        const readHandle = { name: "read", source: "openclaw", callableName: "read" };
+        const details = {
+          status: "completed",
+          value: { ...completed.value, catalog: [readHandle] },
+        };
+        const catalogOptions = {
+          ...options,
+          codeModeCall: call,
+          expectedCatalog: { present: ["read"], absent: ["gateway"] },
+        };
+        replaceCodeMode(details, call);
+        const proof = await native.assertSessionToolCallEvidence({}, catalogOptions);
+        assert.deepEqual(proof.catalog, [readHandle]);
+        assert.equal(proof.exitCode, 0);
+        details.value.catalog.push({
+          name: "gateway",
+          source: "openclaw",
+          callableName: "gateway",
+        });
+        replaceCodeMode(details, call);
+        await assert.rejects(
+          native.assertSessionToolCallEvidence({}, catalogOptions),
+          /matching successful result/,
+        );
+      },
+    );
+  });
+  await t.test("binds Codex tool work to its native terminal or Gateway finalizer", async () => {
+    const prefix = "codex:thread-fixture:turn-fixture";
+    const runId = "gateway-run";
+    const mirror = (mirrorIdentity, terminal = false) => ({
+      mirrorIdentity,
+      mirrorOrigin: "codex-app-server",
+      mirrorSourceFingerprint: "fixture-fingerprint",
+      runId,
+      ...(terminal ? { runTerminal: true } : {}),
+    });
+    const messages = [
+      {
+        role: "user",
+        content: "codex-fixture",
+        __openclaw: mirror(`${prefix}:prompt`),
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "codex-call",
+            name: "automations",
+            arguments: { action: "list" },
+          },
+        ],
+        __openclaw: mirror(`${prefix}:tool:codex-call:call`),
+      },
+      {
+        role: "toolResult",
+        toolCallId: "codex-call",
+        toolName: "automations",
+        isError: false,
+        content: targetResult.content,
+        __openclaw: mirror(`${prefix}:tool:codex-call:result`),
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "codex-fixture" }],
+        stopReason: "stop",
+        __openclaw: mirror(`${prefix}:assistant`, true),
+      },
+    ];
+    replaceTranscript(messages, []);
+    const codex = createNativePluginAssertions({ ...assertionOptions, proofMode: "codex" });
+    const proof = await codex.assertSessionToolCallEvidence(
+      {},
+      { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+    );
+    assert.equal(proof.toolName, "automations");
+    assert.equal(proof.codexMirrorTurnVerified, true);
+    const evidence = { ...dispatchedEvidence, turnMarker: "codex-fixture" };
+    const absence = { ...evidence, toolName: "agents_list" };
+    const [prompt, call, result, answer] = messages;
+    const write = (...rows) => replaceTranscript(rows, []);
+    const finalizer = { ...answer, __openclaw: mirror(`settled-finalizer:${runId}`, true) };
+    const continuation = { ...answer, __openclaw: mirror("continuation-turn:assistant", true) };
+    for (const [terminal, kind] of [
+      [finalizer, "settled-finalizer"],
+      [continuation, "native-continuation"],
+    ]) {
+      const progress =
+        kind === "native-continuation"
+          ? [
+              {
+                role: "assistant",
+                content: "Finishing",
+                __openclaw: mirror("continuation-turn:commentary:item"),
+              },
+            ]
+          : [];
+      write(prompt, call, result, ...progress, terminal);
+      const finalized = await codex.assertSessionToolCallEvidence({}, evidence);
+      assert.equal(finalized.codexGatewayRunCompletion, kind);
+      assert.equal(finalized.codexMirrorTurnVerified, undefined);
+      await codex.assertNoSessionToolCallEvidence({}, absence);
+      await assert.rejects(
+        codex.assertNoSessionToolCallEvidence({}, evidence),
+        /still invoked automations/,
+      );
+    }
+    // A completed run cannot supply missing IDs or substitute another tool's mirror pair.
+    const unidentified = { ...call, content: [{ ...call.content[0], id: undefined }] };
+    write(prompt, unidentified, { ...result, toolCallId: undefined }, finalizer);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+
+    const other = {
+      ...call,
+      content: [{ ...call.content[0], id: "other", name: "other" }],
+      __openclaw: mirror(`${prefix}:tool:other:call`),
+    };
+    const otherResult = {
+      ...result,
+      toolCallId: "other",
+      toolName: "other",
+      __openclaw: mirror(`${prefix}:tool:other:result`),
+    };
+    const wrongResult = { ...result, __openclaw: mirror(`${prefix}:tool:wrong:result`) };
+    write(prompt, other, otherResult, call, wrongResult, continuation);
+    await assert.rejects(codex.assertSessionToolCallEvidence({}, evidence), /terminal/);
+    await codex.assertNoSessionToolCallEvidence({}, absence);
+    write(
+      prompt,
+      other,
+      otherResult,
+      call,
+      {
+        ...wrongResult,
+        isError: true,
+        content: [{ type: "text", text: "user rejected MCP tool call" }],
+      },
+      continuation,
+    );
+    await assert.rejects(codex.assertSessionToolDeniedEvidence({}, evidence), /owned terminal/);
+
+    for (const rows of [
+      [
+        prompt,
+        call,
+        result,
+        { ...continuation, __openclaw: { ...continuation.__openclaw, runId: "other" } },
+      ],
+      [prompt, call, result, { ...finalizer, __openclaw: mirror(`settled-finalizer:${runId}`) }],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror("settled-finalizer:different-run", true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...finalizer, __openclaw: mirror(`${prefix}:commentary:other-item`, true) },
+      ],
+      [
+        prompt,
+        call,
+        result,
+        { ...answer, __openclaw: mirror(`${prefix}:commentary:item`) },
+        { ...finalizer, content: [{ type: "text", text: "another answer" }] },
+      ],
+      [prompt, call, finalizer, result],
+      [prompt, { ...call, __openclaw: { ...call.__openclaw, runId: "other" } }, result, finalizer],
+      [prompt, call, result, { ...prompt, __openclaw: mirror("unrelated:prompt") }, finalizer],
+    ]) {
+      write(...rows);
+      await assert.rejects(
+        codex.assertSessionToolCallEvidence({}, evidence),
+        /terminal|matching successful result/,
+      );
+      await assert.rejects(codex.assertNoSessionToolCallEvidence({}, absence), /completed/);
+    }
+    messages[2].__openclaw.mirrorIdentity = "codex:other:turn:tool:codex-call:result";
+    replaceTranscript(messages, []);
+    await assert.rejects(
+      codex.assertSessionToolCallEvidence(
+        {},
+        { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+      ),
+      /share one mirrored turn/,
+    );
+  });
+});
+
+test("Gateway policy evidence identifies a fresh native Codex child and its own completed work", async (t) => {
+  const { assertCodexPolicyChild, parseCodexPolicyMetadata, readCodexPolicyRolloutHead } =
+    await import("../helpers/plugin-driver-real.mjs");
+  const metadata = (id, dynamic_tools = [], parent_thread_id) =>
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id, dynamic_tools, parent_thread_id },
+    });
+  const parentLine = metadata("parent", [
+    {
+      type: "namespace",
+      name: "openclaw",
+      tools: [
+        {
+          type: "function",
+          name: "agents_list",
+          description: "private description",
+          inputSchema: {},
+        },
+      ],
+    },
+  ]);
+  const childLine = metadata("child", [], "parent");
+  const fixture = (version = "v1") => ({
+    childMarker: "child-done",
+    childResult: "command-result",
+    parent: {
+      id: "parent",
+      turns: [
+        {
+          id: "parent-turn",
+          status: "completed",
+          error: null,
+          items:
+            version === "v2"
+              ? [
+                  {
+                    type: "userMessage",
+                    content: [{ type: "text", text: "run native work and reply child-done" }],
+                  },
+                  {
+                    type: "subAgentActivity",
+                    id: "spawn-call",
+                    kind: "started",
+                    agentThreadId: "child",
+                    agentPath: "/root/policy_child",
+                  },
+                ]
+              : [
+                  {
+                    type: "collabAgentToolCall",
+                    tool: "spawnAgent",
+                    status: "completed",
+                    senderThreadId: "parent",
+                    receiverThreadIds: ["child"],
+                    prompt: "run native work and reply child-done",
+                  },
+                ],
+        },
+      ],
+    },
+    child: {
+      id: "child",
+      parentThreadId: "parent",
+      forkedFromId: null,
+      turns: [
+        {
+          id: "child-turn",
+          status: "completed",
+          error: null,
+          items: [
+            {
+              type: "commandExecution",
+              status: "completed",
+              exitCode: 0,
+              aggregatedOutput: "42 command-result\n",
+            },
+            { type: "agentMessage", text: "child-done" },
+          ],
+        },
+      ],
+    },
+    parentMetadata: parseCodexPolicyMetadata(parentLine, "parent"),
+    childMetadata: parseCodexPolicyMetadata(childLine, "child"),
+  });
+  for (const version of ["v1", "v2"]) {
+    const result = assertCodexPolicyChild(fixture(version));
+    assert.equal(result.childTurnId, "child-turn");
+    assert.equal(result.nativeCommandSucceeded, true);
+    assert.deepEqual(result.childGatewayTools, []);
+    assert.deepEqual(result.parentGatewayTools, [{ namespace: "openclaw", name: "agents_list" }]);
+    assert.equal(JSON.stringify(result).includes("private description"), false);
+  }
+
+  for (const [label, mutate] of [
+    [
+      "activity in another turn",
+      (value) => {
+        const activity = value.parent.turns[0].items.pop();
+        value.parent.turns.push({
+          id: "other-turn",
+          status: "completed",
+          error: null,
+          items: [activity],
+        });
+      },
+    ],
+    [
+      "activity that did not start a child",
+      (value) => {
+        value.parent.turns[0].items[1].kind = "completed";
+      },
+    ],
+    [
+      "incomplete parent turn",
+      (value) => {
+        value.parent.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "activity identifying another child",
+      (value) => {
+        value.parent.turns[0].items[1].agentThreadId = "other-child";
+      },
+    ],
+  ]) {
+    await t.test(`rejects V2 ${label}`, () => {
+      const value = fixture("v2");
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+
+  await t.test("reports bounded spawn predicates without private native content", () => {
+    const value = fixture();
+    const spawn = value.parent.turns[0].items[0];
+    // Separate each rejected predicate so a real zero-match result identifies its cause.
+    value.parent.turns = [
+      ...Array.from({ length: 10 }, () => ({ status: "inProgress", error: null, items: [] })),
+      {
+        status: "completed",
+        error: null,
+        items: [
+          { ...spawn, status: "inProgress" },
+          { ...spawn, senderThreadId: "private-thread" },
+          { ...spawn, prompt: "private-prompt private-secret" },
+          {
+            type: "commandExecution",
+            command: "private-command",
+            aggregatedOutput: "private-result",
+          },
+        ],
+      },
+      { status: "completed", items: [spawn] },
+      { status: "inProgress", error: null, items: [spawn] },
+      { status: "failed", error: { message: "private-error" }, items: [spawn] },
+      { status: "private-status", error: "private-error", items: [] },
+    ];
+    assert.throws(
+      () => assertCodexPolicyChild(value),
+      (error) => {
+        assert.ok(error instanceof assert.AssertionError);
+        const prefix = "one completed native spawn must match the child task: ";
+        assert.ok(error.message.startsWith(prefix));
+        const diagnostic = JSON.parse(error.message.split("\n")[0].slice(prefix.length));
+        assert.deepEqual(diagnostic.counts, {
+          turns: 15,
+          completedErrorNullTurns: 1,
+          collabSpawns: 3,
+          completedSpawns: 2,
+          senderBoundSpawns: 1,
+          markerBoundSpawns: 0,
+          subAgentActivities: 0,
+          startedSubAgents: 0,
+          taskBoundSubAgents: 0,
+        });
+        assert.equal(diagnostic.recentTurns.length, 10);
+        assert.deepEqual(diagnostic.recentTurns.slice(-5), [
+          { status: "completed", hasError: false, errorIsNull: true },
+          { status: "completed", hasError: false, errorIsNull: false },
+          { status: "inProgress", hasError: false, errorIsNull: true },
+          { status: "failed", hasError: true, errorIsNull: false },
+          { status: "unknown", hasError: true, errorIsNull: false },
+        ]);
+        for (const privateText of [
+          "private-thread",
+          "private-prompt",
+          "private-secret",
+          "private-command",
+          "private-result",
+          "private-error",
+          "private-status",
+        ]) {
+          assert.equal(error.message.includes(privateText), false);
+        }
+        return true;
+      },
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "unrelated child",
+      (value) => {
+        value.child.id = "other";
+      },
+    ],
+    [
+      "wrong lineage",
+      (value) => {
+        value.child.parentThreadId = "other";
+      },
+    ],
+    [
+      "forked history",
+      (value) => {
+        value.child.forkedFromId = "parent";
+      },
+    ],
+    [
+      "wrong metadata identity",
+      (value) => {
+        value.childMetadata.threadId = "other";
+      },
+    ],
+    [
+      "missing parent catalog control",
+      (value) => {
+        value.parentMetadata.tools = [];
+      },
+    ],
+    [
+      "inherited Gateway tools",
+      (value) => {
+        value.childMetadata.tools = value.parentMetadata.tools;
+      },
+    ],
+    [
+      "unfinished child",
+      (value) => {
+        value.child.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "failed command",
+      (value) => {
+        value.child.turns[0].items[0].exitCode = 1;
+      },
+    ],
+    [
+      "reply without native work",
+      (value) => {
+        value.child.turns[0].items.shift();
+      },
+    ],
+  ]) {
+    await t.test(`rejects ${label}`, () => {
+      const value = fixture();
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+  await t.test("reads only the exact plain or compressed SessionMeta head", async () => {
+    const { zstdCompressSync } = await import("node:zlib");
+    const directory = await mkdtemp(join(tmpdir(), "codex-policy-metadata-"));
+    try {
+      const path = join(directory, "rollout.jsonl");
+      await writeFile(path, `${parentLine}\nnot-a-json-record\n`);
+      await writeFile(`${path}.zst`, zstdCompressSync(`${childLine}\n`));
+      assert.equal(await readCodexPolicyRolloutHead(`${path}.zst`), parentLine);
+      await rm(path);
+      assert.equal(await readCodexPolicyRolloutHead(path), childLine);
+      assert.throws(
+        () => parseCodexPolicyMetadata(childLine, "unrelated-thread"),
+        /SessionMeta must identify the requested thread/,
+      );
+      assert.throws(
+        () => parseCodexPolicyMetadata('{"type":"response_item"}', "child"),
+        /rollout head must be native SessionMeta/,
+      );
+      await writeFile(path, "x".repeat(4 * 1024 * 1024 + 1));
+      await assert.rejects(readCodexPolicyRolloutHead(path), /fixture read limit/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
+// judgement carries risk and authorization; a failed-closed review carries neither.
+const judgedDeny = {
+  id: "review-judged",
+  status: "denied",
+  riskLevel: "high",
+  userAuthorization: "low",
+  rationale: "The read targets a calendar the user did not mention.",
+};
+const failedClosed = {
+  id: "review-failed",
+  status: "denied",
+  rationale:
+    "Automatic approval review failed: guardian review completed without an assessment payload",
+};
+const timedOut = {
+  id: "review-timeout",
+  status: "timed_out",
+  rationale: "Automatic approval review timed out while evaluating the requested approval.",
+};
+
+test("approval review evidence tells a reviewer error from a deny judgement", async () => {
+  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
+    await import("../helpers/plugin-driver-real.mjs");
+  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
+  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
+  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
+  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
+  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
+  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
+  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
+  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
+    "judged-deny",
+    "a judged rationale that quotes the failure text is still a judgement",
+  );
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
+    "judged-deny",
+  );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
+
+  const failedResult = (reviews) => [
+    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
+  ];
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
+  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
+  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
+  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
+  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
+  assert.equal(
+    automaticReviewerErrored([
+      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
+    ]),
+    false,
+    "a call that did not fail was not blocked by its reviewer",
+  );
+
+  assert.equal(
+    describeApprovalReviews(failedResult([judgedDeny])),
+    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
+  );
+  assert.equal(
+    describeApprovalReviews(failedResult([failedClosed])),
+    `reviewer-error: ${failedClosed.rationale}`,
+  );
+  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
+});
+
+function calendarEvidence(reviews) {
+  return {
+    exists: true,
+    sessionId: "session-1",
+    userMarkerSeen: true,
+    assistantMarkerSeen: true,
+    assistantError: false,
+    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
+    results: [
+      {
+        seq: 8,
+        toolCallId: "call-1",
+        toolName: "calendar_read",
+        isError: true,
+        deniedByUser: false,
+        matchesResult: false,
+        mirrorIdentity: "t:tool:call-1:result",
+        approvalReviews: reviews,
+      },
+    ],
+    codexTurns: [],
+    diagnostics: {},
+  };
+}
+
+test("a failed reviewed read names the review outcome before the evidence", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const [reviews, errored, reason] of [
+    [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
+    [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
+  ]) {
+    const fixture = createNativePluginAssertions({
+      gatewayUrl: async () => assert.fail("no Gateway turn"),
+      proofMode: "codex",
+      execGateway: async () => ({
+        label: "fixture",
+        stdout: JSON.stringify(calendarEvidence(reviews)),
+      }),
+    });
+    await assert.rejects(
+      fixture.assertSessionToolCallEvidence(
+        {},
+        {
+          sessionKey: "agent:main:fixture",
+          turnMarker: "M",
+          toolName: "calendar_read",
+          resultPattern: "x",
+        },
+      ),
+      (error) => {
+        assert.equal(error.name, "AssertionError");
+        assert.equal(error.automaticReviewerErrored, errored);
+        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
+        const [head] = error.message.split(": {");
+        assert.ok(head.includes(`(approval reviews: ${reason}`), head);
+        assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
+        return true;
+      },
+    );
+  }
+});
+
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
+    },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
+
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
+  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
 });

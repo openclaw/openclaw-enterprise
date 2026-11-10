@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test, { after } from "node:test";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
@@ -22,6 +22,7 @@ import {
   resources,
   missing,
   waitFor,
+  waitForDeletedClaim,
   assertKubernetesFixtureAvailable,
   namespace,
   agentName,
@@ -34,11 +35,8 @@ import {
   workloadPod,
   assertExecDenied,
   createDnsTrafficFixture,
-  createNamespaceReaper,
+  deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
-
-const { deleteNamespaces, waitForDeletedVolumes } = createNamespaceReaper();
-after(waitForDeletedVolumes);
 
 test(
   "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions",
@@ -145,13 +143,16 @@ test(
         context: kubernetesContext,
       };
     }
-    const drivers = await loadInstallationConfiguration({
-      mode: "development",
-      environment: {},
-      startupConfiguration: { configuration, logging: { level: "info" } },
-    });
-    assert.ok(drivers);
-    const driver = drivers.computeDriver;
+    // Each API and worker process installs its own token issuers, including after a failed start.
+    async function loadDrivers() {
+      const drivers = await loadInstallationConfiguration({
+        mode: "development",
+        environment: {},
+        startupConfiguration: { configuration, logging: { level: "info" } },
+      });
+      assert.ok(drivers);
+      return drivers;
+    }
     const adminCredentials = {
       email: "admin-kubernetes-integration@example.test",
       password: "kubernetes-integration-admin-password",
@@ -162,8 +163,6 @@ test(
     let app;
     let worker;
     let workerPool;
-    let workerDrivers = drivers;
-    let workerStarts = 0;
     context.after(async () => {
       if (worker !== undefined) {
         await worker.stop();
@@ -184,7 +183,7 @@ test(
     });
 
     const authSecret = "kubernetes-integration-auth-secret-32-bytes";
-    const authBaseURL = "http://127.0.0.1";
+    const authBaseURL = "https://console.oce.localhost";
     if (previous === undefined) {
       await ensureDevelopmentBootstrap(context, {
         databaseUrl,
@@ -192,6 +191,7 @@ test(
         password: adminCredentials.password,
         authSecret,
         authBaseURL,
+        agentDomain: "agents.oce.localhost",
         installationName: "OpenClaw Kubernetes integration",
       });
     }
@@ -202,6 +202,7 @@ test(
       databaseUrl,
       authSecret,
       authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
     // Both supported startup callers must reject old storage before admitting
     // API writes or claiming work, even when running the development profile.
@@ -227,12 +228,12 @@ test(
       );
       const before = await resource("namespace", legacyName);
       await assert.rejects(async () => {
-        const unexpected = await composePostgresDevelopment(developmentConfig, drivers);
+        const unexpected = await composePostgresDevelopment(developmentConfig, await loadDrivers());
         await unexpected.close();
       }, /Existing split-layout Gateway storage/);
       const rejectedWorker = createControllerWorker({
+        drivers: await loadDrivers(),
         pool: new pg.Pool({ connectionString: databaseUrl, max: 2 }),
-        drivers,
         emit: () => {},
       });
       try {
@@ -247,7 +248,8 @@ test(
     } finally {
       await kubectl("delete", "namespace", legacyName, "--wait=true");
     }
-    app = await composePostgresDevelopment(developmentConfig, drivers);
+    const apiDrivers = await loadDrivers();
+    app = await composePostgresDevelopment(developmentConfig, apiDrivers);
     const session = await signInToControllerApp(app, adminCredentials);
 
     async function request(method, url, payload, options = {}) {
@@ -259,7 +261,7 @@ test(
           ...(options.session === false ? {} : authenticatedHeaders(options.session ?? session)),
           ...(mutation ? { origin: authBaseURL } : {}),
           ...options.headers,
-          host: "127.0.0.1",
+          host: new URL(authBaseURL).host,
         },
         ...(payload === undefined ? {} : { payload }),
       });
@@ -268,18 +270,9 @@ test(
 
     async function startWorker({ convergenceTimeoutMs } = {}) {
       workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-      if (workerStarts > 0) {
-        workerDrivers = await loadInstallationConfiguration({
-          mode: "development",
-          environment: {},
-          startupConfiguration: { configuration, logging: { level: "info" } },
-        });
-        assert.ok(workerDrivers);
-      }
-      workerStarts += 1;
       worker = createControllerWorker({
         pool: workerPool,
-        drivers: workerDrivers,
+        drivers: await loadDrivers(),
         pollIntervalMs: 25,
         leaseDurationMs: 30_000,
         maxAttempts: 20,
@@ -377,26 +370,23 @@ test(
       "the real worker must recover explicit namespace selection from PostgreSQL",
     );
 
-    async function grantSecretOperate(namespaceId, servicePrincipalId, secretId, label) {
-      const role = await request("POST", `/namespaces/${namespaceId}/iam/roles`, {
-        name: `${label} Secret operate ${randomUUID()}`,
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      });
-      assert.equal(role.status, 201, JSON.stringify(role.error));
-      const binding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
-        subjectKind: "identity",
-        subjectId: servicePrincipalId,
-        roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: secretId,
-      });
-      assert.equal(binding.status, 201, JSON.stringify(binding.error));
-      return { role: role.data, binding: binding.data };
-    }
-
-    async function assertDeployDenied(namespaceId, agentId, label) {
-      const denied = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-      assert.equal(denied.status, 403, `${label}: ${JSON.stringify(denied.error)}`);
+    // The caller can operate each Agent's Secrets, so its deploy gives the Agent's
+    // ServicePrincipal operate on exactly those Secrets (RFC-0026). A deploy by a caller who
+    // cannot operate a source writes no grant and is refused; postgres-default-users.test.ts
+    // covers it.
+    async function assertDeployGrants(namespaceId, agent) {
+      const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+      assert.equal(bindings.status, 200, JSON.stringify(bindings.error));
+      for (const secretId of [agent.modelSecretId, agent.boundSecretId].filter(Boolean)) {
+        const grant = bindings.data.find(
+          ({ id }) => id === `binding_${agent.id}_${secretId}_operate`,
+        );
+        assert.deepEqual(
+          grant && [grant.subjectId, grant.resourceKind, grant.resourceId],
+          [agent.servicePrincipalId, "secret", secretId],
+          `${agent.id}: deploy grants its Agent operate on Secret ${secretId}`,
+        );
+      }
     }
 
     const initialWorkspaceFilesByAgent = new Map();
@@ -471,7 +461,8 @@ test(
       };
       const missingChannelBindingValues = {
         ...baseValues,
-        plugins: { allow: ["slack"], entries: { slack: { enabled: true } } },
+        // A Dedicated Codex Gateway runs the codex plugin, so an allowlist must name it too.
+        plugins: { allow: ["codex", "slack"], entries: { slack: { enabled: true } } },
         channels: {
           slack: {
             enabled: true,
@@ -495,7 +486,7 @@ test(
         name: `${label}-${randomUUID()}`,
         configurationId: configuration.data.id,
         ...(runtimeImage === undefined
-          ? {}
+          ? { gatewayManagedMode: false }
           : {
               initialWorkspaceFiles: {
                 "USER.md": `Initial ${label} user directives\n`,
@@ -522,26 +513,24 @@ test(
           false,
         );
       }
-      await assertDeployDenied(namespaceId, created.data.id, `${label} before model Secret grant`);
-      await grantSecretOperate(namespaceId, created.data.servicePrincipalId, secret.data.id, label);
       if (boundSecret !== undefined) {
-        // Isolate missing channel credentials from the model permission denial above.
+        // Configuration save refuses channel credentials without Secret bindings, naming the
+        // setting and the binding, before any deployment (finding 2319).
         const missingConfiguration = await request(
           "PATCH",
           `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
           { values: missingChannelBindingValues },
         );
-        assert.equal(missingConfiguration.status, 200, JSON.stringify(missingConfiguration.error));
-        const missingBindings = await request(
-          "POST",
-          `/namespaces/${namespaceId}/agents/${created.data.id}/deploy`,
-        );
         assert.equal(
-          missingBindings.status,
+          missingConfiguration.status,
           400,
-          `${label} before channel Secret bindings: ${JSON.stringify(missingBindings.error)}`,
+          `${label} before channel Secret bindings: ${JSON.stringify(missingConfiguration.error)}`,
         );
-        assert.equal(missingBindings.error.code, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
+        assert.equal(missingConfiguration.error.code, "INVALID_REQUEST");
+        assert.match(
+          missingConfiguration.error.message,
+          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
+        );
         // This k3d fixture has no runtime.channels proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
@@ -559,20 +548,10 @@ test(
           },
         );
         assert.equal(updated.status, 200, JSON.stringify(updated.error));
-        await assertDeployDenied(
-          namespaceId,
-          created.data.id,
-          `${label} before bound Secret grant`,
-        );
-        await grantSecretOperate(
-          namespaceId,
-          created.data.servicePrincipalId,
-          boundSecret.data.id,
-          `${label} bound`,
-        );
       }
       return {
         ...created.data,
+        modelSecretId: secret.data.id,
         ...(boundSecret === undefined
           ? {}
           : { boundSecretId: boundSecret.data.id, boundSecretValue }),
@@ -583,8 +562,8 @@ test(
       const result = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
       assert.equal(result.status, 202, JSON.stringify(result.error));
       assert.deepEqual(result.data.compute, {
-        id: driver.id,
-        implementation: driver.implementation,
+        id: apiDrivers.computeDriver.id,
+        implementation: apiDrivers.computeDriver.implementation,
       });
       assert.equal(Object.hasOwn(result.data, "servicePrincipalId"), false);
       return result.data;
@@ -657,6 +636,16 @@ test(
       deploy(namespaceIds[2], adoptedTenant.id),
       deploy(namespaceIds[0], boundSecretAgent.id),
     ]);
+    for (const [namespaceId, agent] of [
+      [namespaceIds[0], first],
+      [namespaceIds[0], second],
+      [namespaceIds[1], separateTenant],
+      [namespaceIds[1], embeddedDelete],
+      [namespaceIds[2], adoptedTenant],
+      [namespaceIds[0], boundSecretAgent],
+    ]) {
+      await assertDeployGrants(namespaceId, agent);
+    }
     if (runtimeImage !== undefined) {
       const afterDeploy = await request(
         "GET",
@@ -1544,7 +1533,7 @@ test(
       deletedClaims.push(`gateway-state-${hash(adoptedTenant.id)}`);
     }
     for (const name of deletedClaims) {
-      assert.equal(await missing("persistentvolumeclaim", name, existingName), true);
+      await waitForDeletedClaim(name, existingName);
     }
     assert.equal(await missing("deployment", gatewayName(adoptedTenant.id), existingName), true);
     assert.equal(await missing("service", gatewayName(adoptedTenant.id), existingName), true);

@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 
 import { format, resolveConfig } from "prettier";
 
+import { documentApiExamples } from "./document-api-examples.ts";
 import { createFastifyApp } from "../apps/controller/src/index.ts";
 import {
   generateApiReferenceOutputs,
   removeGeneratedApiReferenceDirectory,
   unexpectedApiReferenceFiles,
-} from "./generate-occ-api-reference.mjs";
+} from "./generate-occ-api-reference.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const outputPath = fileURLToPath(
@@ -44,7 +45,7 @@ async function generateDocument() {
   let document;
   try {
     await app.ready();
-    document = app.swagger();
+    document = documentApiExamples(app.swagger());
   } finally {
     await app.close();
   }
@@ -85,8 +86,8 @@ for (const output of outputs) {
     try {
       existing = await readFile(output.path, "utf8");
     } catch (error) {
-      if (error?.code === "ENOENT") {
-        throw new Error(`Missing ${outputName}; run pnpm openapi:generate.`);
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        throw new Error(`Missing ${outputName}; run pnpm openapi:generate.`, { cause: error });
       }
       throw error;
     }

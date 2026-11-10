@@ -23,7 +23,8 @@ export function developmentBootstrapEnvironment({
   email,
   password,
   authSecret,
-  authBaseURL = "http://127.0.0.1",
+  authBaseURL = "https://console.oce.localhost",
+  agentDomain = "agents.oce.localhost",
   installationName,
   serviceKeyFile = "initial-admin-service-key.json",
   environment = process.env,
@@ -34,6 +35,7 @@ export function developmentBootstrapEnvironment({
     OCC_DATABASE_URL: databaseUrl,
     OCC_AUTH_SECRET: authSecret,
     OCC_AUTH_BASE_URL: authBaseURL,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OPENCLAW_DEV_EMAIL: email,
     OPENCLAW_DEV_PASSWORD: password,
     OPENCLAW_DEV_INSTALLATION_NAME: installationName,
@@ -46,7 +48,8 @@ export function productionBootstrapEnvironment({
   directory,
   email,
   authSecret,
-  authBaseURL = "http://127.0.0.1:0",
+  authBaseURL = "https://console.oce.localhost",
+  agentDomain = "agents.oce.localhost",
   installationName,
   environment = process.env,
 }) {
@@ -56,6 +59,7 @@ export function productionBootstrapEnvironment({
     OCC_DATABASE_URL: databaseUrl,
     OCC_AUTH_SECRET: authSecret,
     OCC_AUTH_BASE_URL: authBaseURL,
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OCC_BOOTSTRAP_ADMIN_EMAIL: email,
     OCC_BOOTSTRAP_PASSWORD_FILE: join(directory, "initial-admin-password"),
     OCC_BOOTSTRAP_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
@@ -82,12 +86,59 @@ export async function runBootstrapInstallation(environment, options = {}) {
   }
 }
 
+/** Collects what the in-process command writes to one of its streams. */
+export function outputSink() {
+  const chunks = [];
+  return {
+    write(chunk) {
+      chunks.push(String(chunk));
+      return true;
+    },
+    text() {
+      return chunks.join("");
+    },
+  };
+}
+
+/**
+ * The initialization Job's code (`bootstrapInstallation`, what scripts/bootstrap-installation.mjs
+ * runs) in this process, with `environment` instead of process.env. It returns the same shape as
+ * runBootstrapInstallation: stdout carries the result line, stderr the diagnostics and log events,
+ * in the order the Job writes them to its streams.
+ */
+export async function bootstrapInstallationInProcess(environment) {
+  const { bootstrapInstallation } = await import("../../scripts/bootstrap-installation.mjs");
+  const stdout = outputSink();
+  const stderr = outputSink();
+  const status = await bootstrapInstallation({
+    environment,
+    args: [],
+    stdout,
+    stderr,
+    logDestination: stderr,
+  });
+  return status === 0
+    ? { ok: true, stdout: stdout.text(), stderr: stderr.text() }
+    : {
+        ok: false,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        message: `bootstrap exited with status ${status}`,
+      };
+}
+
+/**
+ * Bootstraps the development Installation. `inProcess: true` runs the Job's code in this process
+ * (bootstrapInstallationInProcess), saving a Node start; otherwise it runs the real script.
+ */
 export async function ensureDevelopmentBootstrap(context, options) {
   const directory =
     options.directory ??
     (await privateBootstrapDirectory(context, "openclaw-development-bootstrap-"));
   const environment = developmentBootstrapEnvironment({ ...options, directory });
-  const result = await runBootstrapInstallation(environment, options);
+  const result = options.inProcess
+    ? await bootstrapInstallationInProcess(environment)
+    : await runBootstrapInstallation(environment, options);
   if (!result.ok) {
     throw new Error(`Development bootstrap failed:\n${result.stderr || result.stdout}`);
   }

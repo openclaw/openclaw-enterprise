@@ -5,6 +5,7 @@ import type {
   PluginDesiredState,
   PluginApprovers,
 } from "@openclaw-enterprise/contracts";
+import type { CodexPublicGithubRead } from "../repo/github/public-read/codex.ts";
 
 export type OpenClawRuntimeResolvedArtifacts = {
   readonly kind: "openclaw";
@@ -38,6 +39,14 @@ type PluginRuntimeFailureInput = readonly { readonly pluginId: string }[];
 export interface CodexRepositoryBrokerNetworkPolicy {
   readonly host: string;
   readonly domains: Readonly<Record<string, "allow" | "deny">>;
+}
+
+export interface CodexOpenClawRuntimePolicy {
+  readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+  readonly pluginApprovers?: PluginApprovers;
+  readonly publicGithubRead?: CodexPublicGithubRead;
+  readonly dedicatedCodex?: boolean;
+  readonly baseProxyEnabled?: boolean;
 }
 
 export type CodexPluginCatalogReader = {
@@ -331,8 +340,11 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           throw new Error("Codex destructiveEnabled must be a boolean.");
         }
         if (toolDefaults.enabled !== undefined && policy.destructiveEnabled !== undefined) {
-          throw new Error(
-            "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+          throw Object.assign(
+            new Error(
+              "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+            ),
+            { policyField: "conflictingEnablementDefaults" },
           );
         }
         for (const id of Object.keys(tools)) {
@@ -379,9 +391,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       if (kind === "codex") {
         return codexNativeIdFromPluginId(pluginId);
       }
-      return pluginId.startsWith(OCC_DRIVER_ID + ":")
-        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-        : pluginId;
+      return openClawNativeIdFromPluginId(pluginId);
     });
     return new Set(nativeIds).size !== nativeIds.length;
   }
@@ -396,9 +406,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       const key =
         kind === "codex"
           ? codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId))
-          : pluginId.startsWith(OCC_DRIVER_ID + ":")
-            ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-            : pluginId;
+          : openClawNativeIdFromPluginId(pluginId);
       const tools = Object.fromEntries(
         Object.entries(toolPolicies(selection))
           .filter(([, policy]) => policy.approvers !== undefined)
@@ -444,10 +452,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     return CODEX_DRIVER_ID + ":" + nativeId;
   }
 
+  function openClawNativeIdFromPluginId(pluginId: string): string {
+    const prefix = OCC_DRIVER_ID + ":";
+    return pluginId.startsWith(prefix) ? pluginId.slice(prefix.length) : pluginId;
+  }
+
   function openClawCatalogDescriptor(pluginId: string): OpenClawPluginDescriptor {
-    const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
-      ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-      : pluginId;
+    const nativeId = openClawNativeIdFromPluginId(pluginId);
     const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
     if (descriptor === undefined) {
       throw Object.assign(new Error("Unknown OpenClaw plugin selection."), {
@@ -525,7 +536,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (!isRecord(curated)) {
       return [];
     }
-    return array(curated.plugins).map(codexCatalogEntry);
+    return requiredArray(curated.plugins, "Codex catalog plugins").map(codexCatalogEntry);
   }
 
   function codexSummaryByNativeId(
@@ -562,6 +573,38 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         pluginName: codexSummaryRemotePluginId(summary),
       };
     });
+  }
+
+  function codexSearchPlan(selections: unknown) {
+    return selectionEntries(selections).map(([pluginId]) => ({
+      pluginId,
+      params: {
+        searchTerm: codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId)),
+        scope: "global",
+        limit: 100,
+      },
+    }));
+  }
+
+  function codexReadParamsFromSearch(pluginId: string, response: unknown) {
+    if (!isRecord(response)) {
+      throw new Error("Codex plugin search response is missing.");
+    }
+    const nativeId = codexNativeIdFromPluginId(pluginId);
+    for (const result of requiredArray(response.data, "Codex plugin search results")) {
+      if (
+        isRecord(result) &&
+        result.marketplaceName === CODEX_MARKETPLACE &&
+        isRecord(result.plugin) &&
+        result.plugin.id === nativeId
+      ) {
+        return {
+          remoteMarketplaceName: CODEX_MARKETPLACE,
+          pluginName: codexSummaryRemotePluginId(result.plugin),
+        };
+      }
+    }
+    return undefined;
   }
 
   function detailRecord(value: unknown): Record<string, unknown> {
@@ -798,7 +841,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
-  function codexBrokerOpenClawConfiguration(policy: unknown): Record<string, unknown> | undefined {
+  function codexBrokerNetworkProxy(policy: unknown): Record<string, unknown> | undefined {
     if (!isRecord(policy)) {
       return undefined;
     }
@@ -810,51 +853,56 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       }
     }
     return {
-      appServer: {
-        networkProxy: {
-          enabled: true,
-          mode: "full",
-          allowLocalBinding: true,
-          readOnlyPaths: CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS,
-          domains: { ...domains, [host]: "allow" },
-        },
-      },
+      enabled: true,
+      mode: "full",
+      allowLocalBinding: true,
+      domains: { ...domains, [host]: "allow" },
     };
   }
 
   function codexOpenClawConfiguration(
     selections: unknown,
     failures: unknown = [],
-    repositoryBrokerNetworkPolicy: unknown = undefined,
-    defaultApprovers?: unknown,
+    {
+      repositoryBrokerNetworkPolicy,
+      pluginApprovers,
+      publicGithubRead,
+      dedicatedCodex = false,
+      baseProxyEnabled = false,
+    }: CodexOpenClawRuntimePolicy = {},
   ): Record<string, unknown> | undefined {
-    validatePolicies("codex", selections, defaultApprovers);
+    validatePolicies("codex", selections, pluginApprovers);
     const selected = selectionEntries(selections);
-    const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
+    const broker = codexBrokerNetworkProxy(repositoryBrokerNetworkPolicy);
     const failedPluginIds = failedPluginIdSet(failures);
-    const pluginFilesystemConfiguration =
-      brokerConfiguration !== undefined
-        ? {}
-        : {
-            appServer: {
-              networkProxy: {
-                // The native sandbox helper is packaged here even without selected plugins.
-                readOnlyPaths:
-                  selected.length === 0
-                    ? CODEX_RUNTIME_READ_ONLY_PATHS
-                    : CODEX_PLUGIN_READ_ONLY_PATHS,
-              },
-            },
-          };
+    // The native sandbox helper is packaged here even without selected plugins.
+    const runtimePaths =
+      selected.length === 0 ? CODEX_RUNTIME_READ_ONLY_PATHS : CODEX_PLUGIN_READ_ONLY_PATHS;
+    const runtimeReadOnlyPaths =
+      broker === undefined ? runtimePaths : CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS;
+    const readOnlyPaths = [
+      ...runtimeReadOnlyPaths,
+      ...(dedicatedCodex && (broker !== undefined || baseProxyEnabled)
+        ? ["/home/node/.codex/skills/.system"]
+        : []),
+    ];
+    // Preserve the authored public-reader IP allow. Codex needs neither
+    // broader local binding nor a mode change to permit that literal IP.
+    const networkProxy = {
+      ...broker,
+      readOnlyPaths:
+        publicGithubRead === undefined
+          ? readOnlyPaths
+          : [...readOnlyPaths, publicGithubRead.skillPath],
+    };
     return {
-      ...pluginApprovalOverlay("codex", selections, defaultApprovers),
+      ...pluginApprovalOverlay("codex", selections, pluginApprovers),
       plugins: {
         entries: {
           codex: {
             enabled: true,
             config: {
-              ...brokerConfiguration,
-              ...pluginFilesystemConfiguration,
+              appServer: { networkProxy },
               ...(selected.length === 0
                 ? {}
                 : {
@@ -971,9 +1019,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     const alsoAllow: string[] = [];
     const deny: string[] = [];
     for (const [pluginId, selection] of selectionEntries(selections)) {
-      const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
-        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-        : pluginId;
+      const nativeId = openClawNativeIdFromPluginId(pluginId);
       const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
       if (descriptor === undefined) {
         throw new Error("Unknown OpenClaw plugin selection.");
@@ -1051,6 +1097,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     hasAliasedSelections,
     validatePolicies,
     codexReadParamsForSelections,
+    codexSearchPlan,
+    codexReadParamsFromSearch,
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,
@@ -1082,15 +1130,10 @@ export function codexRuntimeArtifact(
 export function codexOpenClawConfiguration(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
-  repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
-  defaultApprovers?: PluginApprovers,
+  policy?: CodexOpenClawRuntimePolicy,
 ): OpenClawConfigurationDocument | undefined {
-  return pluginRuntimeTranslator.codexOpenClawConfiguration(
-    selections,
-    failures,
-    repositoryBrokerNetworkPolicy,
-    defaultApprovers,
-  ) as OpenClawConfigurationDocument | undefined;
+  return pluginRuntimeTranslator.codexOpenClawConfiguration(selections, failures, policy) as
+    OpenClawConfigurationDocument | undefined;
 }
 
 export function openClawRuntimeArtifact(
@@ -1105,6 +1148,11 @@ export function openClawRuntimeArtifact(
     defaultApprovers,
     gatewayPublicOrigin,
   ) as PluginRuntimeResolvedArtifacts;
+}
+
+// The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.
+export function openClawManagedPluginIds(): readonly string[] {
+  return OPENCLAW_PLUGIN_CATALOG.map(({ nativeId }) => nativeId);
 }
 
 export function openClawCatalogEntries(): readonly PluginCatalogEntry[] {

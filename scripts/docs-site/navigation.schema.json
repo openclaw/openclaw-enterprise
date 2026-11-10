@@ -27,6 +27,32 @@
           }
         }
       }
+    },
+    "redirects": {
+      "type": "array",
+      "description": "Former site routes and optional mappings for moved heading anchors.",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "pattern": "^/(?:[a-z0-9-]+/)+$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "anchors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

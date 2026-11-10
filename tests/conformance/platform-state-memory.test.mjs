@@ -4,6 +4,7 @@ import test from "node:test";
 import { accessBindingsRemovedWithAgent } from "../../packages/occ/src/iam-policy-cleanup.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { verifyPlatformStateStoreContract } from "./platform-state-store.contract.mjs";
+import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
 import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.mjs";
 
 test("memory policy refuses new grants to an Agent after deletion admission", async () => {
@@ -71,7 +72,7 @@ test("memory policy refuses new grants to an Agent after deletion admission", as
         id: `binding_${randomUUID()}`,
       }),
     ),
-    /the ServicePrincipal of a live Agent here/,
+    { message: BINDING_SUBJECT_INELIGIBLE },
   );
 });
 

@@ -1,71 +1,46 @@
-# Slack tests
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
 
-Use the [shipped QA matrix](qa-matrix.md) for single-message live Slack ingress and a
-gateway-authored threaded reply through dedicated Codex. Until the protected matrix
-lane is qualified, the focused suite below also retains single-message delivery,
-credential-placement, proxy-isolation, and Socket Mode checks.
-Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets)
-and [private credential file](README.md#requirements-and-credentials) first.
+# Slack and ChatGPT service-account tests
+
+## Overview
+
+Run live Slack integration checks with the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
 
 ## Slack
 
-Use the linked Kubernetes runtime prerequisites and model credential, plus an
-authorized test channel. The gateway image must already contain the Slack plugin
-and its runtime dependencies. Run the [runtime image smoke](images.md#images-and-helm)
-before provisioning the cluster, and use a Codex app-server version accepted by
-the gateway's installed Codex plugin. Successful `--version` commands alone do
-not prove that the two runtimes are compatible.
+The [QA matrix](ci/qa-advisory.md) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
 
-Put the three Slack tokens in the private environment
-file. Set `OCC_TEST_SLACK_CHANNEL_ID` and `OCC_TEST_SLACK_PROXY_URL`; the proxy URL
-must have a literal IP and explicit port. Both bots must belong to the same
-workspace and have joined the channel. Use an existing Socket Mode app configured
-to receive the test messages.
+Use an authorized test channel in one Slack workspace. Both the gateway bot and a distinct sender bot must join it. Use an existing Socket Mode app and compatible controller, Gateway, and Codex app-server images. CI builds the controller and the runtime with the pinned OpenClaw source, Codex, and Slack plugin when image overrides are absent. To select existing runtime images, supply both `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` as digest references; omit both to use the CI build. Direct test execution requires the imported immutable image references from [runtime preparation](kubernetes.md#kubernetes-model-turns-and-secrets). Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
 
-The in-cluster API uses the same approved proxy to validate Slack credentials
-before deployment. The fixture grants that API egress to the exact proxy address
-and port; the worker keeps its existing isolation policy.
+Install Helm and yq. The fixture renders the production Helm chart and applies its Slack proxy Deployment, Service, ServiceAccount, and NetworkPolicies in the disposable namespace. The API and Gateway use the proxy Service DNS name; the proxy permits Slack HTTPS only. The test checks selector-scoped Gateway egress and denies Codex Agent access to the proxy. This proves the rendered resources, not a Helm release installation or upgrade lifecycle.
+
+Put these settings in the private environment file:
+
+| Variable                          | Value                                                                            |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                             |
+| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                |
+| `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                        |
+| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token, starting with `xoxb-`; it stays with the test runner. |
 
 ```sh
 OCC_TEST_SLACK_LIVE=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-slack-real.test.mjs
 ```
 
-Both suites post one real message and verify its response, exact native session,
-and absence of delayed duplicate replies. They leave messages in the test channel.
-Run them serially so Socket Mode consumers do not compete. The sender bot must differ from the
-Agent bot; its credential remains with the test runner. Run this file and the
-ordinary runtime file for both coverage groups. See [Slack test settings](#slack-test-environment).
+The test posts a real message and leaves it in the channel. It checks the reply and delayed duplicates. Run live Slack suites serially so Socket Mode consumers do not compete. The fixture enables bot mentions only for the test channel and keeps `requireMention` enabled. Do not enable bot access account-wide. Run the ordinary runtime file separately for its coverage; this Slack test does not verify Teams.
 
-### Two-bot fixture configuration
+## Service-account coverage
 
-Slack is the only channel with live integration coverage; this suite does not
-verify Teams. The test temporarily adds `allowBots: "mentions"`,
-`users: ["<sender-bot-user-id>"]`, and a reply policy only on the exact test
-channel. `requireMention` stays enabled. Do not enable bot access account-wide.
+`tests/conformance/service-account-driver.test.mjs` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
 
-## Slack test environment
-
-`OCC_TEST_SLACK_LIVE=1` enables
-[`harness-topology-k3d-slack-real.test.mjs`](../../tests/integration/harness-topology-k3d-slack-real.test.mjs).
-Run the ordinary runtime file separately for its coverage. The Slack case uses the same production k3d,
-PostgreSQL, image, and model prerequisites. It retains root-reply delivery and
-duplicate observation until the protected QA lane is qualified; the matrix also
-checks threaded replies and native outbound messages.
-
-| Variable                          | Requirement                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------------ |
-| `OCC_TEST_SLACK_LIVE`             | Set to `1` to run the selected live Slack case instead of the ordinary real-runtime cases. |
-| `OCC_TEST_SLACK_PROXY_URL`        | Approved exact literal-IP proxy URL with an explicit port for channel egress.              |
-| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel joined by the gateway bot and the sender bot.                          |
-| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token; must start with `xapp-`.                                        |
-| `SLACK_BOT_TOKEN`                 | Gateway bot token; must start with `xoxb-`.                                                |
-| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token in the same Slack workspace; must start with `xoxb-`.            |
-
-See the [Slack testing guide](#slack) for setup and cleanup
-expectations before selecting the live case.
-
-## Related
-
-- [Choose another test suite](README.md).
-- [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+[`postgres-service-account-issuance-recovery.test.mjs`](../../tests/integration/postgres-service-account-issuance-recovery.test.mjs)
+runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
+issuance that never committed. The next issuance and account deletion reclaim
+the leftover Secret and credential. Ending a session during reclamation must
+preserve a later issuance. The provider and Secret store are in-memory; conformance
+tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).

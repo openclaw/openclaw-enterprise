@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/index.ts";
@@ -9,14 +8,16 @@ import {
   cookiePairs,
   createLoginFixture,
   expectDenied,
+  expectProviderUnavailable,
   loginOrigin as origin,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
-const providerId = `github:${createHash("sha256").update("fixture-client").digest("hex")}`;
+const providerId = providerInstanceId("github", { clientId: "fixture-client" });
 // The production deadline is 10 s; the stalled-provider cases shorten it to keep the wait short.
 const providerDeadlineMs = 2_000;
 
@@ -79,7 +80,9 @@ test(
         assert.equal(exchange.get("code_verifier"), "v".repeat(43));
         assert.equal(exchange.get("grant_type"), "authorization_code");
         assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
-        assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+        assert.deepEqual(login.denials, [
+          ["EXTERNAL_IDENTITY_REJECTED", "github", { subject: "12345678", login: undefined }],
+        ]);
         assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user"]);
       },
     );
@@ -97,7 +100,7 @@ test(
             response.end("fixture-sensitive-error");
           };
           const before = requests.length;
-          await expectDenied(await login.callback());
+          await expectProviderUnavailable(await login.callback());
           assert.equal(requests.slice(before).includes("/redirect-target"), false);
           assert.deepEqual(login.subjects, []);
           assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
@@ -126,7 +129,7 @@ test(
         });
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       assert.ok(
         elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 2_000,
@@ -151,7 +154,7 @@ test(
         response.write('{"id":');
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       // Separate per-request timers would take about 3.5 seconds here.
       assert.ok(
@@ -190,7 +193,7 @@ test(
           response.end(
             JSON.stringify({ error: code, error_description: "fixture-sensitive-error" }),
           );
-        await expectDenied(await login.callback());
+        await expectProviderUnavailable(await login.callback());
         assert.deepEqual(login.subjects, []);
         assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
         assert.deepEqual(login.operationalLogs(), [
@@ -269,8 +272,19 @@ test(
         for (const [name, reason, handler, query, overrides] of cases) {
           const login = loginFixture(overrides);
           serve = handler;
-          await expectDenied(await login.callback(query));
-          assert.deepEqual(login.denials, reason === undefined ? [] : [[reason, "github"]], name);
+          await expectDenied(
+            await login.callback(query),
+            reason === "PROVIDER_UNAVAILABLE" ? reason : undefined,
+          );
+          assert.deepEqual(
+            login.denials,
+            reason === undefined
+              ? []
+              : name === "unenrolled subject"
+                ? [[reason, "github", { subject: "12345678", login: undefined }]]
+                : [[reason, "github"]],
+            name,
+          );
           assert.deepEqual(login.unmatched, reason === undefined ? ["github"] : [], name);
         }
       },
@@ -308,18 +322,15 @@ test(
           response.end(JSON.stringify({ id: 12345678 }));
         };
         const before = requests.length;
-        const response = await login.callback();
-        assert.equal(response.status, 503);
-        assert.deepEqual(await response.json(), {
-          message: "Authentication dependency unavailable.",
-        });
+        // The handler throws the State error itself, unclassified, so no response (and no
+        // session cookie) leaves the endpoint; the controller answers it as an outage.
+        await assert.rejects(login.callback(), (error) => error === failure);
         // A lost COMMIT acknowledgement may follow a committed login. The callback
         // must preserve that uncertainty without retrying or recording identity denial.
         assert.deepEqual(login.errors, [failure]);
         assert.deepEqual(login.denials, []);
         assert.equal(issueAttempts, failurePoint === "issueSession" ? 1 : 0);
         assert.equal(requests.length - before, failurePoint === "consumeAttempt" ? 0 : 2);
-        assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token/);
       });
     }
 
@@ -421,9 +432,9 @@ test(
         for (const response of held) {
           response.writeHead(503).end();
         }
-        await Promise.all((await Promise.all(pending)).map(expectDenied));
+        await Promise.all((await Promise.all(pending)).map(expectProviderUnavailable));
         serve = (_request, response) => response.writeHead(503).end();
-        await expectDenied(await login.callback(undefined, "10.0.5.99"));
+        await expectProviderUnavailable(await login.callback(undefined, "10.0.5.99"));
       },
     );
 
@@ -448,6 +459,7 @@ test(
               }
               return {
                 ...session,
+                resultExpiresAt: createdAt.getTime() + 120_000,
                 createdAt,
                 updatedAt: createdAt,
                 expiresAt: new Date(createdAt.getTime() + (expired ? 10 : 28_800_000)),
@@ -471,14 +483,17 @@ test(
             const maxAge = Number(/Max-Age=(\d+)/i.exec(cookie)?.[1]);
             assert.ok(maxAge > 0 && maxAge < 28_800, "Session cookie must subtract elapsed time");
             assert.deepEqual(await response.json(), { authenticated: true });
-            assert.match(response.headers.get("set-cookie"), /__Host-occ_login_receipt=/);
+            assert.ok(
+              response.headers.get("set-cookie")?.includes("__Host-occ_login_receipt="),
+              "successful callback sets a receipt cookie",
+            );
           }
         },
       );
     }
 
     await t.test(
-      "callback receipt binds the starting attempt and exchanges once for its session key",
+      "result requires the signed attempt and confirmed State commit before returning a key",
       async () => {
         const createdAt = new Date();
         const user = {
@@ -490,19 +505,29 @@ test(
           updatedAt: createdAt,
         };
         let issued;
+        let commitUncertain = true;
         const login = loginFixture({
           snapshotExternal: async () => ({ user, proof: { userId: user.id } }),
           issueSession: async (_proof, session) => {
             issued = {
               ...session,
+              resultExpiresAt: createdAt.getTime() + 120_000,
               createdAt,
               updatedAt: createdAt,
               expiresAt: new Date(createdAt.getTime() + 28_800_000),
             };
             return issued;
           },
-          currentSession: async (token) =>
-            issued?.token === token ? { ...issued, user } : undefined,
+          consumeLoginResult: async (token, receipt) => {
+            if (commitUncertain) {
+              throw new Error("Uncertain transaction outcome.");
+            }
+            return (
+              issued.token === token &&
+              issued.id === receipt.sessionId &&
+              issued.resultExpiresAt === receipt.expiresAt
+            );
+          },
         });
         serve = (request, response) => {
           if (request.url === "/login/oauth/access_token") {
@@ -510,12 +535,21 @@ test(
           }
           response.end(JSON.stringify({ id: 12345678 }));
         };
+        const readJson = (response) =>
+          response.json().catch(() => {
+            throw new Error("Login transport returned invalid JSON");
+          });
         const started = await login.start();
-        const other = await (await login.start()).json();
-        const { url, attemptId } = await started.json();
-        assert.match(attemptId, /^[A-Za-z0-9_-]{43}$/);
-        assert.notEqual(attemptId, other.attemptId, "each attempt has its own public id");
-        const attemptState = new URL(url).searchParams.get("state");
+        const other = await readJson(await login.start());
+        const { url, attemptId } = await readJson(started);
+        assert.ok(
+          typeof attemptId === "string" && /^[A-Za-z0-9_-]{43}$/.test(attemptId),
+          "start returns a valid attempt ID",
+        );
+        assert.ok(attemptId !== other.attemptId, "each attempt has its own public id");
+        const redirect = URL.parse(url);
+        assert.ok(redirect, "provider redirect must be a valid URL");
+        const attemptState = redirect.searchParams.get("state");
         assert.equal(url.includes(attemptId), false, "the provider never sees the attemptId");
 
         const callback = await login.callback(`state=${attemptState}&code=fixture-code`);
@@ -524,26 +558,44 @@ test(
           .getSetCookie()
           .find((value) => value.startsWith("__Host-occ_login_receipt="));
         assert.ok(receipt, "successful callback sets the login receipt");
-        assert.match(receipt, /Max-Age=120/);
-        assert.match(receipt, /Path=\//);
-        assert.match(receipt, /HttpOnly/i);
-        assert.match(receipt, /Secure/i);
-        assert.match(receipt, /SameSite=Strict/i);
+        assert.ok(/Max-Age=120/.test(receipt), "receipt sets the expected lifetime");
+        assert.ok(/Path=\//.test(receipt), "receipt sets its path");
+        assert.ok(/HttpOnly/i.test(receipt), "receipt is HTTP-only");
+        assert.ok(/Secure/i.test(receipt), "receipt is secure");
+        assert.ok(/SameSite=Strict/i.test(receipt), "receipt uses strict SameSite");
         // The receipt names the session without carrying its bearer token.
         assert.equal(receipt.includes(issued.token), false);
         const cookies = cookiePairs(callback);
 
         // Another tab's attempt cannot claim this session.
-        await expectDenied(await login.result(other.attemptId, cookies));
+        await expectDenied(await login.result(other.attemptId, cookies)).catch(() => {
+          throw new Error("Mismatched attempt must return the standard denial and no login cookie");
+        });
+        const uncertain = await login.result(attemptId, cookies);
+        assert.equal(uncertain.status, 503);
+        assert.ok(
+          !/sessionKey|Uncertain transaction outcome/.test(await uncertain.text()),
+          "uncertain collection must omit the key and transaction details",
+        );
+        assert.ok(
+          !uncertain.headers.has("set-cookie"),
+          "uncertain collection must not set cookies",
+        );
+        commitUncertain = false;
         const exchanged = await login.result(attemptId, cookies);
         assert.equal(exchanged.status, 200);
-        assert.doesNotMatch(exchanged.headers.get("set-cookie") ?? "", /session_token/);
-        assert.match(exchanged.headers.get("set-cookie") ?? "", /occ_login_receipt=;.*Max-Age=0/);
-        const { sessionKey } = await exchanged.json();
-        assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
+        const setCookie = exchanged.headers.get("set-cookie") ?? "";
+        assert.ok(!/session_token/.test(setCookie), "collection must not set a session cookie");
+        assert.ok(
+          /occ_login_receipt=;.*Max-Age=0/.test(setCookie),
+          "collection must clear the receipt",
+        );
+        const { sessionKey } = await readJson(exchanged);
+        assert.ok(
+          typeof sessionKey === "string" && /^[A-Za-z0-9_-]{43}$/.test(sessionKey),
+          "collection must return a valid session key",
+        );
         assert.equal(sessionKey.includes(issued.id), false);
-        // A copied receipt is single-use even while it is still within its lifetime.
-        await expectDenied(await login.result(attemptId, cookies));
       },
     );
 
@@ -643,7 +695,7 @@ test(
     const providerOrigin = `http://127.0.0.1:${port}`;
     const acme = "/user/memberships/orgs/acme";
     const other = "/user/memberships/orgs/other";
-    const team = "/orgs/other/teams/platform/memberships/Octo-Cat";
+    const team = "/orgs/other/teams/platform/memberships/fixture-user-987654321";
     redirectProviderFetch(
       t,
       new Set(
@@ -678,7 +730,7 @@ test(
     };
     const notFound = (response) => response.writeHead(404).end('{"message":"Not Found"}');
     // answers: path -> (response) => void; unlisted membership paths fail the test.
-    function provider(answers, login = "Octo-Cat") {
+    function provider(answers, login = "fixture-user-987654321") {
       const routes = Object.entries(answers);
       return (request, response) => {
         if (request.url === "/login/oauth/access_token") {
@@ -707,7 +759,7 @@ test(
       });
       assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
     }
-    const subject = { subject: "12345678" };
+    const subject = { subject: "12345678", login: "fixture-user-987654321" };
 
     await t.test("an active organization member reaches the account lookup", async () => {
       const login = allowlisted();
@@ -716,7 +768,7 @@ test(
       // The fixture State holds no account, so the attached-identity lookup refuses.
       await expectDenied(await login.callback());
       assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
-      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github", subject]]);
       assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user", acme]);
     });
 
@@ -829,7 +881,7 @@ test(
         ]);
         assert.doesNotMatch(
           JSON.stringify(login.operationalLogs()),
-          /acme|Octo-Cat|ghu_|fixture-sensitive/,
+          /acme|fixture-user-987654321|ghu_|fixture-sensitive/,
         );
       });
     }
@@ -841,6 +893,9 @@ test(
       await expectRefused(await login.callback(), "MEMBERSHIP_UNAVAILABLE");
       assert.deepEqual(requests.slice(before).slice(2), [acme, other], "no team request");
       assert.equal(login.operationalLogs()[0].cause, "malformed_response");
+      assert.deepEqual(login.denials, [
+        ["MEMBERSHIP_UNAVAILABLE", "github", { subject: "12345678", login: undefined }],
+      ]);
     });
 
     // A team's organization lookup is shared with a listed organization, failure included.

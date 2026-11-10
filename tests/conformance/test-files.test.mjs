@@ -18,9 +18,10 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const runner = join(root, "scripts/test-files.mjs");
+const runner = join(root, "scripts/test-files.ts");
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
 
@@ -209,11 +210,9 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       child.stderr.resume();
       const closed = once(child, "close");
       let testPid;
-      t.after(() => {
+      t.after(async () => {
         output.close();
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
-        }
+        await stopProcess(child, { signal: "SIGKILL" });
         if (testPid) {
           try {
             process.kill(testPid, "SIGKILL");

@@ -159,7 +159,7 @@ test(
 );
 
 test(
-  "demo chart refuses image digests that are not lowercase SHA-256",
+  "demo chart refuses unusable image digest and repository spellings",
   await helmAvailable(),
   async () => {
     const render = (overrides) =>
@@ -190,6 +190,30 @@ test(
           ({ stderr }) => stderr.includes(`images.${name} must use an immutable SHA-256 reference`),
           `${name} ${digest.slice(0, 8)}`,
         );
+      }
+      const digest = `@sha256:${"a".repeat(64)}`;
+      for (const image of [
+        `docker.io/Team/${name}${digest}`,
+        `Registry.Example.invalid/team/${name.toUpperCase()}:release_1${digest}`,
+        `[FD00::1]:5000/team/${name.toUpperCase()}${digest}`,
+        `${name.toUpperCase()}${digest}`,
+      ]) {
+        await assert.rejects(
+          render([`images.${name}=${image}`]),
+          ({ stderr }) => stderr.includes(`images.${name} repository path must be lowercase`),
+          image,
+        );
+      }
+      for (const image of [
+        `Registry.Example.invalid/team/${name}:RELEASE_1${digest}`,
+        `[FD00::1]:5000/team/${name}:RELEASE_1${digest}`,
+        `${name}:RELEASE_1${digest}`,
+      ]) {
+        const { stdout } = await render([`images.${name}=${image}`]);
+        const deployment = loadAllYaml(stdout).find(
+          (object) => object?.kind === "Deployment" && object.metadata.name === `demo-${name}`,
+        );
+        assert.equal(deployment.spec.template.spec.containers[0].image, image);
       }
     }
   },
@@ -353,5 +377,41 @@ test(
     ]);
     assert.match(stdout, /port: 6443/);
     assert.match(stdout, /port: 9464/);
+  },
+);
+
+test(
+  "demo chart refuses cluster CIDRs that are not one IPv4 host",
+  await helmAvailable(),
+  async () => {
+    const render = (cidr) =>
+      execute(
+        helm,
+        [
+          "template",
+          "demo",
+          "deploy/helm/openclaw-observability-demo",
+          "--namespace",
+          "oce-observability-demo",
+          "--set",
+          "occ.namespace=openclaw-system",
+          "--set",
+          "occ.release=oce",
+          "--set",
+          "grafana.adminSecretName=grafana-admin",
+          "--set",
+          `cluster.cidrs[0]=${cidr}`,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    for (const cidr of ["999.1.2.3/32", "010.0.0.1/32", "10.43.0.1/24", "not-a-cidr"]) {
+      await assert.rejects(
+        render(cidr),
+        ({ stderr }) => stderr.includes("cluster.cidrs requires exact IPv4 /32 endpoints"),
+        cidr,
+      );
+    }
+    const { stdout } = await render("10.43.0.1/32");
+    assert.match(stdout, /cidr: 10\.43\.0\.1\/32/);
   },
 );

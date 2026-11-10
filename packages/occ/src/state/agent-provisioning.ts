@@ -114,10 +114,22 @@ export interface AgentProvisioningRepository extends AgentProvisioningReadReposi
     claim: WorkClaim,
     error: { readonly code: string; readonly message: string },
   ): Promise<Readonly<AgentProvisioningRecord>>;
+  /**
+   * Cancels the Agent's job before handoff. When a worker still held its claim, the job keeps
+   * that claim's lease expiry, the latest moment its former attempt can still be writing.
+   */
   cancelByAgent(
     namespaceId: string,
     agentId: string,
     error: { readonly code: string; readonly message: string },
+  ): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  /**
+   * Records the receipt for a cancelled job's unsettled transport write once the claim that
+   * began it has lapsed, on the database clock. Returns undefined when nothing was settled.
+   */
+  settleAbandonedEffect(
+    namespaceId: string,
+    agentId: string,
   ): Promise<Readonly<AgentProvisioningRecord> | undefined>;
   retryByWorkId(
     namespaceId: string,

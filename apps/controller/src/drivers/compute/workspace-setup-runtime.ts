@@ -1,30 +1,38 @@
 import { WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_VERSION } from "@openclaw-enterprise/contracts";
+import { keyedSettingPath } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { OpenClawConfigurationDocument, WorkspaceSetup } from "@openclaw-enterprise/contracts";
 
-/** Only native main can consume the four setup documents. Undefined means unsupported. */
-export function workspaceSetupMainAgent(
+/**
+ * The roster entry that consumes the four setup documents: the sole `agents.entries` key, which
+ * must be main in any letter case (OpenClaw normalizes Agent ids case-insensitively), or main
+ * itself when the roster is omitted. `setting` names that entry. Undefined means unsupported.
+ */
+export function workspaceSetupMainEntry(
   configuration: OpenClawConfigurationDocument,
-): Readonly<Record<string, unknown>> | undefined {
+):
+  | { readonly setting: string; readonly agent: Readonly<Record<string, unknown>> | undefined }
+  | undefined {
+  const omitted = { setting: "agents.entries.main", agent: {} };
   if (configuration.agents === undefined) {
-    return {};
+    return omitted;
   }
   const agents = asRecord(configuration.agents);
   if (agents === undefined || Object.hasOwn(agents, "list")) {
     return undefined;
   }
   if (!Object.hasOwn(agents, "entries")) {
-    return {};
+    return omitted;
   }
   const entries = asRecord(agents.entries);
-  if (
-    entries === undefined ||
-    Object.keys(entries).length !== 1 ||
-    !Object.hasOwn(entries, "main")
-  ) {
+  const keys = Object.keys(entries ?? {});
+  if (entries === undefined || keys.length !== 1 || keys[0]!.trim().toLowerCase() !== "main") {
     return undefined;
   }
-  return asRecord(entries.main);
+  return {
+    setting: keyedSettingPath("agents.entries", keys[0]!),
+    agent: asRecord(entries[keys[0]!]),
+  };
 }
 
 /** The managed durable workspace native OpenClaw reads its setup documents from. */
@@ -33,6 +41,25 @@ export const MANAGED_WORKSPACE = "/home/node/.openclaw/workspace";
 export const HARNESS_WORKSPACE = "/home/node/workspace";
 
 type SettingError = (setting: string, requirement: string) => Error;
+
+/**
+ * The roster rule for initial workspace files: only the native main Agent reads them, so the
+ * roster must be main alone (or omitted). Docker, Kubernetes and SSH Compute apply it at Agent
+ * save, so each refusal names the same setting with the same text. Returns that entry.
+ */
+export function requireWorkspaceSetupMainEntry(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): { readonly setting: string; readonly agent: Readonly<Record<string, unknown>> } {
+  const entry = workspaceSetupMainEntry(configuration);
+  if (entry?.agent === undefined) {
+    throw createError(
+      "agents.entries",
+      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
+    );
+  }
+  return { setting: entry.setting, agent: entry.agent };
+}
 
 /**
  * Initial workspace files reach only the native main Agent's managed durable workspace, so the
@@ -46,16 +73,11 @@ export function requireWorkspaceSetupConfiguration(
   workspaces: readonly string[],
   createError: SettingError,
 ): string {
-  const main = workspaceSetupMainAgent(configuration);
-  if (main === undefined) {
-    throw createError(
-      "agents.entries",
-      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
-    );
-  }
+  const entry = requireWorkspaceSetupMainEntry(configuration, createError);
+  const main = entry.agent;
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const setting =
-    main.workspace !== undefined ? "agents.entries.main.workspace" : "agents.defaults.workspace";
+    main.workspace !== undefined ? `${entry.setting}.workspace` : "agents.defaults.workspace";
   const workspace = main.workspace ?? defaults?.workspace ?? MANAGED_WORKSPACE;
   if (typeof workspace !== "string" || !workspaces.includes(workspace)) {
     throw createError(
@@ -65,6 +87,14 @@ export function requireWorkspaceSetupConfiguration(
   }
   return workspace;
 }
+
+/**
+ * A refusal no retry can change. Other statuses remain retryable diagnostics.
+ * Kubernetes Compute reports it as WORKSPACE_SETUP_REFUSED (finding 1677).
+ */
+export const WORKSPACE_SETUP_REFUSED_EXIT_STATUS = 2;
+export const WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS = 3;
+export const WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS = 4;
 
 /** Shared, non-executing setup entrypoint. Drivers own private delivery and exclusive startup. */
 export const WORKSPACE_SETUP_RUNTIME = String.raw`
@@ -76,7 +106,11 @@ const { spawnSync } = require("node:child_process");
 
 const names = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 const markerName = ".oce-workspace-setup.json";
-function fail() { throw new Error("WORKSPACE_SETUP_FAILED"); }
+// A refusal: the delivery, the image's defaults or the workspace's own state disagree, so no
+// retry can change the outcome. Any other error (native setup, I/O) may pass on a retry.
+class Refusal extends Error {}
+let failureExitStatus = 1;
+function fail() { throw new Refusal("WORKSPACE_SETUP_FAILED"); }
 function inspect(file) {
   try { return fs.lstatSync(file); }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
@@ -148,7 +182,8 @@ function main() {
     ...(setup.defaultsId === undefined ? {} : { defaultsId: setup.defaultsId }) };
   const marker = readRegular(markerPath, 4096);
   if (marker !== undefined) {
-    const saved = JSON.parse(marker);
+    let saved;
+    try { saved = JSON.parse(marker); } catch { fail(); }
     if (JSON.stringify(saved) !== JSON.stringify(identity)) fail();
   } else {
     if (setup.completed) fail();
@@ -188,7 +223,12 @@ function main() {
           env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
           stdio: ["ignore", "pipe", "pipe"], timeout: 120000, maxBuffer: 1048576,
         });
-        if (result.error || result.status !== 0) fail();
+        if (result.error || result.status !== 0) {
+          failureExitStatus = result.error?.code === "ETIMEDOUT"
+            ? ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}
+            : ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS};
+          throw new Error("WORKSPACE_SETUP_FAILED");
+        }
       };
       nativeSetup();
       for (const [name, value] of Object.entries(files)) {
@@ -214,14 +254,21 @@ function main() {
   process.stdout.write(JSON.stringify({ completed: true, id: setup.id }) + "\n");
 }
 try { main(); }
-catch { process.stderr.write("WORKSPACE_SETUP_FAILED\n"); process.exitCode = 1; }
+catch (error) {
+  process.stderr.write("WORKSPACE_SETUP_FAILED\n");
+  process.exitCode = error instanceof Refusal ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : failureExitStatus;
+}
 `;
 
 /** Metadata-only guard for Harness processes that share the initialized workspace. */
 export function workspaceSetupVerifier(
   setup: Pick<WorkspaceSetup, "id" | "namespaceId" | "agentId" | "defaultsId">,
-  workspace: string,
+  workspace: string | { readonly environment: "OPENCLAW_WORKSPACE_DIR" },
 ): string {
+  const workspaceExpression =
+    typeof workspace === "string"
+      ? JSON.stringify(workspace)
+      : "process.env.OPENCLAW_WORKSPACE_DIR";
   const identity = {
     id: setup.id,
     namespaceId: setup.namespaceId,
@@ -234,7 +281,7 @@ export function workspaceSetupVerifier(
       ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}], {
         input: ${JSON.stringify(JSON.stringify(identity))},
         env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined,
-          OPENCLAW_WORKSPACE_DIR: ${JSON.stringify(workspace)} },
+          OPENCLAW_WORKSPACE_DIR: ${workspaceExpression} },
         stdio: ["pipe", "pipe", "pipe"], timeout: 10000, maxBuffer: 4096,
       });
     if (verification.error || verification.status !== 0) {

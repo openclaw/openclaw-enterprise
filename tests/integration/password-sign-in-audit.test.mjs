@@ -2,22 +2,50 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import {
   issueKnownDevice,
   knownDeviceCookieName,
   knownDeviceFromCookieHeader,
   verifyKnownDevice,
 } from "../../apps/controller/src/auth/known-device.ts";
+import {
+  SIGN_IN_RATE_LIMITED_MINUTE,
+  SIGN_IN_UNAVAILABLE,
+  signInRateLimited,
+} from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
+const { APIError } = await import(require.resolve("better-auth"));
 
-const baseURL = "http://127.0.0.1";
+const baseURL = "https://console.oce.localhost";
 const email = "audited@example.test";
 const password = "audited-account-password";
 
 const secret = "password-sign-in-audit-secret-at-least-32-bytes";
+
+const REFUSED = "The caller did not provide valid authentication credentials.";
+const UNAVAILABLE = SIGN_IN_UNAVAILABLE;
+
+// An outage and a rate limit each say what happened; neither reads as a wrong password.
+function assertUnavailable(response) {
+  assert.equal(response.status, 503, JSON.stringify(response.payload));
+  assert.deepEqual(response.payload.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: UNAVAILABLE,
+  });
+}
+
+function assertLimited(response) {
+  assert.equal(response.status, 429, JSON.stringify(response.payload));
+  const seconds = Number(response.headers["retry-after"]);
+  assert.ok(seconds >= 1 && seconds <= 60, String(seconds));
+  assert.deepEqual(response.payload.error, {
+    code: "RATE_LIMITED",
+    message: signInRateLimited(seconds),
+  });
+}
 
 function controller(audit, extra = {}) {
   const memoryDatabase = { user: [], session: [], account: [], verification: [], apikey: [] };
@@ -25,8 +53,8 @@ function controller(audit, extra = {}) {
     mode: "development",
     installationId: "ins_sign_in_audit",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     memoryDatabase,
     passwordSignInAudit: audit,
     ...extra,
@@ -35,6 +63,18 @@ function controller(audit, extra = {}) {
 }
 
 async function signIn(auth, body, headers = {}) {
+  return send(auth.signInEmail, {
+    id: "req_audit",
+    ip: "127.0.0.1",
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    headers: { origin: baseURL, ...headers },
+    body,
+  });
+}
+
+// Calls one auth endpoint handler and records what it sends.
+async function send(handler, request) {
   const sent = { status: 200, headers: {} };
   const reply = {
     header(name, value) {
@@ -50,17 +90,7 @@ async function signIn(auth, body, headers = {}) {
       return reply;
     },
   };
-  await auth.signInEmail(
-    {
-      id: "req_audit",
-      ip: "127.0.0.1",
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { origin: baseURL, ...headers },
-      body,
-    },
-    reply,
-  );
+  await handler(request, reply);
   return sent;
 }
 
@@ -72,11 +102,12 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
   });
   const account = await auth.createAccount({ email, password });
   assert.equal((await signIn(auth, { email, password })).status, 200);
-  assert.equal((await signIn(auth, { email, password: "wrong-password-guess" })).status, 401);
-  assert.equal(
-    (await signIn(auth, { email: "nobody@example.test", password: "wrong-password-guess" })).status,
-    401,
-  );
+  // A wrong password and an unknown email get the same answer, so it names no account.
+  for (const guess of [email, "nobody@example.test"]) {
+    const refused = await signIn(auth, { email: guess, password: "wrong-password-guess" });
+    assert.equal(refused.status, 401);
+    assert.deepEqual(refused.payload.error, { code: "UNAUTHENTICATED", message: REFUSED });
+  }
   assert.deepEqual(outcomes, [["accepted", account.id], ["refused"], ["refused"]]);
   assert.equal(memoryDatabase.session.length, 1);
 });
@@ -94,13 +125,11 @@ test("a sign-in that fails on its dependency is 503, not an audited or counted r
       throw new Error("database unavailable");
     },
   });
-  const statuses = [];
-  for (let attempt = 0; attempt < 11; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // Nothing was refused, so nothing is audited as a refusal and no budget is spent: the
   // email lane admits ten failures, so the eleventh attempt would be 429 if these counted.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.deepEqual(outcomes, []);
 });
 
@@ -118,6 +147,73 @@ test("a sign-in whose audit cannot be written is refused and its session revoked
   assert.equal(memoryDatabase.session.length, 0);
 });
 
+for (const status of [500, 503, 599]) {
+  test(`a dependency APIError ${status} is unavailable without spending the password budget`, async () => {
+    const outcomes = [];
+    const { auth, memoryDatabase } = controller({
+      accepted: async (userId) => outcomes.push(["accepted", userId]),
+      refused: async () => outcomes.push(["refused"]),
+    });
+    const account = await auth.createAccount({ email, password });
+    const users = memoryDatabase.user;
+    let unavailable = true;
+    Object.defineProperty(memoryDatabase, "user", {
+      get() {
+        if (unavailable) {
+          throw new APIError(status, { message: "synthetic dependency failure" });
+        }
+        return users;
+      },
+    });
+    // Eleven admitted failures distinguish an outage from the ten-failure email budget.
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const response = await signIn(auth, { email, password });
+      assert.equal(response.status, 503);
+      assert.equal(response.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(response.headers["set-cookie"], undefined);
+    }
+    assert.deepEqual(outcomes, []);
+    assert.equal(memoryDatabase.session.length, 0);
+    unavailable = false;
+    assert.equal((await signIn(auth, { email, password })).status, 200);
+    assert.deepEqual(outcomes, [["accepted", account.id]]);
+  });
+}
+
+for (const [status, expectedStatus, expectedCode] of [
+  [400, 400, "FORBIDDEN"],
+  [401, 401, "UNAUTHENTICATED"],
+  [409, 409, "RESOURCE_CONFLICT"],
+  [429, 429, "RATE_LIMITED"],
+  [499, 499, "FORBIDDEN"],
+  [399, 401, "UNAUTHENTICATED"],
+  [600, 401, "UNAUTHENTICATED"],
+  [500.5, 401, "UNAUTHENTICATED"],
+  ["500", 401, "UNAUTHENTICATED"],
+]) {
+  test(`dependency APIError ${JSON.stringify(status)} preserves its non-5xx classification`, async () => {
+    let refusals = 0;
+    const { auth, memoryDatabase } = controller({
+      accepted: async () => assert.fail("a failed dependency cannot sign in"),
+      refused: async () => {
+        refusals += 1;
+      },
+    });
+    await auth.createAccount({ email, password });
+    Object.defineProperty(memoryDatabase, "user", {
+      get() {
+        throw new APIError(status, { message: "synthetic dependency failure" });
+      },
+    });
+    const response = await signIn(auth, { email, password });
+    assert.equal(response.status, expectedStatus);
+    assert.equal(response.payload.error.code, expectedCode);
+    assert.equal(response.headers["set-cookie"], undefined);
+    assert.equal(refusals, 1);
+    assert.equal(memoryDatabase.session.length, 0);
+  });
+}
+
 test("a wrong password whose denial audit fails is 503 and still spends the budget", async () => {
   let refusals = 0;
   const events = [];
@@ -132,16 +228,13 @@ test("a wrong password whose denial audit fails is 503 and still spends the budg
     { onOperationalEvent: (event) => events.push(event) },
   );
   await auth.createAccount({ email, password });
-  const statuses = [];
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // The audit outage is reported, never hidden behind a 401.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.equal(refusals, 10);
   // Every failed guess counted: the next attempt is refused before the password is checked.
-  const limited = await signIn(auth, { email, password: "wrong-password-guess" });
-  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
   assert.equal(refusals, 10);
   assert.deepEqual(
     events.map(({ event, lane }) => [event, lane]),
@@ -175,27 +268,78 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     mode: "development",
     installationId: "ins_sign_in_audit_guarded",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret: "password-sign-in-audit-secret-at-least-32-bytes",
-    secureCookies: false,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     onOperationalEvent: (event) => events.push(event),
   });
-  const statuses = [];
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
-  }
   // The audit outage is reported, never hidden behind a 401.
-  assert.deepEqual(new Set(statuses), new Set([503]));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
   assert.equal(denials, 10);
   // Every failed guess counted: the next attempt is refused before the password is checked.
-  const limited = await signIn(auth, { email, password: "wrong-password-guess" });
-  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
   assert.equal(denials, 10);
   assert.deepEqual(
     events.map(({ event, lane }) => [event, lane]),
     [["authentication.sign-in-limited", "email"]],
   );
+});
+
+// The external sign-in budgets refill each minute and set no Retry-After, so the answer says to
+// wait a minute; only the password limiter names a wait (findings 2535, 2555). The console shows
+// this text's meaning from the status alone, so the API text is pinned here.
+test("guarded profile: a spent provider result budget says to wait a minute, with no Retry-After", async () => {
+  const humanLogin = createHumanLogin(
+    {
+      createAttempt: async () => {
+        throw new Error("not used");
+      },
+      consumeAttempt: async () => undefined,
+      snapshotExternal: async () => undefined,
+      snapshotPassword: async () => undefined,
+      recordDenied: async () => {},
+    },
+    {
+      recoveryUserId: "guarded-recovery",
+      github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+    },
+    baseURL,
+  );
+  const auth = createControllerAuth({
+    mode: "development",
+    installationId: "ins_sign_in_audit_provider_limit",
+    baseURL,
+    agentDomain: "agents.oce.localhost",
+    secret,
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
+    humanLogin,
+  });
+  const result = () =>
+    send(auth.githubResult, {
+      id: "req_provider_limit",
+      ip: "127.0.0.1",
+      method: "POST",
+      url: "/api/auth/providers/github/result",
+      headers: { origin: baseURL },
+      body: { attemptId: "a".repeat(43) },
+    });
+  // Without a receipt every exchange is refused, and each one spends the browser's budget of
+  // 30 a minute.
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const refused = await result();
+    assert.equal(refused.status, 401, JSON.stringify(refused.payload));
+    assert.equal(refused.payload.error.message, "GitHub sign-in could not be confirmed.");
+  }
+  const limited = await result();
+  assert.equal(limited.status, 429, JSON.stringify(limited.payload));
+  assert.equal(limited.headers["retry-after"], undefined);
+  assert.deepEqual(limited.payload.error, {
+    code: "RATE_LIMITED",
+    message: SIGN_IN_RATE_LIMITED_MINUTE,
+  });
 });
 
 test("a password reset during a sign-in revokes the known-device entry that sign-in sets", async () => {
@@ -221,10 +365,10 @@ test("a password reset during a sign-in revokes the known-device entry that sign
   const response = await signIn(auth, { email, password });
   assert.equal(response.status, 200, JSON.stringify(response.payload));
   const cookies = [response.headers["set-cookie"]].flat();
-  const name = knownDeviceCookieName(false);
+  const name = knownDeviceCookieName(true);
   const entry = cookies.find((value) => value.startsWith(`${name}=`));
   assert.ok(entry, "a successful sign-in marks the browser");
-  const value = knownDeviceFromCookieHeader(entry.split(";", 1)[0], false);
+  const value = knownDeviceFromCookieHeader(entry.split(";", 1)[0], true);
   assert.deepEqual(reads, [email], "the state is read once per attempt");
   assert.equal(
     await verifyKnownDevice(secret, email, value, Date.now(), knownDeviceState),
@@ -273,8 +417,8 @@ test("an email no account can hold is a 400 that spends the password budget", as
     mode: "development",
     installationId: "ins_sign_in_audit_unstorable",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     database: nulRefusingDatabase(memoryDatabase),
     passwordSignInAudit: {
       accepted: async (userId) => outcomes.push(["accepted", userId]),
@@ -347,8 +491,8 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
     mode: "development",
     installationId: "ins_sign_in_audit_guarded_unstorable",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret,
-    secureCookies: false,
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
     humanLogin,
     passwordSlowLaneFloors: { floorMs: 1, maxFloorMs: 1 },
@@ -414,8 +558,8 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       mode: "development",
       installationId: "ins_invalid_email_known_device",
       baseURL,
+      agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: false,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       ...(humanLogin
         ? { humanLogin }
@@ -432,7 +576,7 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       "test-password-state",
       Date.now(),
     );
-    const headers = { cookie: `${knownDeviceCookieName(false)}=${cookie}` };
+    const headers = { cookie: `${knownDeviceCookieName(true)}=${cookie}` };
     assertUnstorableEmail(
       await signIn(auth, { email: malformed, password }, headers),
       "an unpaired UTF-16 surrogate",
@@ -515,8 +659,8 @@ for (const passwordSignIn of ["all", "recovery-only"]) {
       mode: "development",
       installationId: "ins_literal_email_guarded",
       baseURL,
+      agentDomain: "agents.oce.localhost",
       secret,
-      secureCookies: false,
       database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
       humanLogin,
     });

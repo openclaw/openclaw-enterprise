@@ -10,11 +10,13 @@ import {
   DependencyUnavailableError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { DEPENDENCY_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
-const GENERIC = "A required platform dependency is unavailable.";
 const SECRET_VALUE = "sk-proj-dependencylogvalue0123456789";
 // What a Kubernetes client error can carry: the request and the answer's body.
 const CLIENT_TEXT =
@@ -25,17 +27,7 @@ function capturedLogger() {
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        lines.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(lines),
   });
   return { lines, logger };
 }
@@ -87,7 +79,10 @@ test("a 503 DEPENDENCY_UNAVAILABLE keeps its generic body and logs its cause by 
   const response = await createConfiguration(fixture, namespace);
 
   assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, { code: "DEPENDENCY_UNAVAILABLE", message: GENERIC });
+  assert.deepEqual(response.body.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: DEPENDENCY_UNAVAILABLE,
+  });
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
   const { time: _time, ...warning } = warnings[0];
@@ -116,7 +111,7 @@ test("a dependency message that resembles a credential is withheld from the log"
   const response = await createConfiguration(fixture, namespace);
 
   assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.equal(response.body.error.message, GENERIC);
+  assert.equal(response.body.error.message, DEPENDENCY_UNAVAILABLE);
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
   assert.equal(warnings[0].message, WITHHELD_ERROR_TEXT);
@@ -151,8 +146,7 @@ test("a dependency error answered with its own code logs no dependency warning",
     }),
   );
   const response = await createConfiguration(fixture, namespace);
-  assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.equal(response.body.error.code, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
+  assertApiError(response, 503, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 
@@ -167,7 +161,10 @@ test("a dependency 503 that no dependency error raised logs no dependency warnin
   };
   const response = await fixture.request("GET", `/namespaces/${namespace.id}`, { session });
   assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, { code: "DEPENDENCY_UNAVAILABLE", message: GENERIC });
+  assert.deepEqual(response.body.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: DEPENDENCY_UNAVAILABLE,
+  });
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 
@@ -182,7 +179,10 @@ test("a dependency error whose fields cannot be read keeps its 503 and a bare wa
   const { fixture, lines, namespace } = await configurationFixture(t, error);
   const response = await createConfiguration(fixture, namespace);
   assert.equal(response.status, 503, JSON.stringify(response.body));
-  assert.deepEqual(response.body.error, { code: "DEPENDENCY_UNAVAILABLE", message: GENERIC });
+  assert.deepEqual(response.body.error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: DEPENDENCY_UNAVAILABLE,
+  });
   const warnings = dependencyWarnings(lines);
   assert.equal(warnings.length, 1, JSON.stringify(warnings));
   assert.deepEqual(Object.keys(warnings[0]).sort(), [

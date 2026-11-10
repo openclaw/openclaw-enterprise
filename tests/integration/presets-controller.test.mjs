@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  OCCPluginDriver,
+  CodexPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  NAME_RULE,
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
@@ -21,15 +22,26 @@ import {
   InMemoryPlatformState,
   OpenClawController,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import {
+  assertWriteAuthorizationDenial,
+  partialWrite,
+} from "../helpers/partial-write-authorization.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  callerDenied,
+  createDenied,
+  PRESET_NAME_CONFLICT,
+  unsupportedChannelRefusal,
+} from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
-  const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-presets-");
   const audit = options.auditSink ?? new InMemoryAuditSink();
   let policy;
   const state = new InMemoryPlatformState({
@@ -65,8 +77,22 @@ const iamOf = (fixture) => fixture.controller.selectDriver("iam", "console-nativ
 const collection = (namespaceId) => `/namespaces/${namespaceId}/presets`;
 const presetPath = (namespaceId, presetId) => `${collection(namespaceId)}/${presetId}`;
 const agentsPath = (namespaceId) => `/namespaces/${namespaceId}/agents`;
+// The list route returns summaries without templates (finding 1323).
 const listPresets = async (fixture, namespaceId) =>
   (await fixture.request("GET", collection(namespaceId))).data;
+const presetSummary = ({ id, namespaceId, name, createdAt }) => ({
+  id,
+  namespaceId,
+  name,
+  createdAt,
+});
+// Each listed Preset with its template, read one by one as clients do.
+const listPresetDocuments = async (fixture, namespaceId) =>
+  Promise.all(
+    (await listPresets(fixture, namespaceId)).map(
+      async ({ id }) => (await fixture.request("GET", presetPath(namespaceId, id))).data,
+    ),
+  );
 const presetNames = async (fixture, namespaceId) =>
   (await listPresets(fixture, namespaceId)).map((preset) => preset.name).sort();
 const readPreset = (fixture, namespaceId, presetId) =>
@@ -212,56 +238,16 @@ function failPresetAuthorization(t, iam, action) {
   });
 }
 
-// Sends a write's head and its first 64 KiB, declaring a body of `declaredBytes`, and never the
-// rest. Resolves with the response, or with null if the controller is still waiting for the body
-// after the deadline (it would buffer it before answering). A correct controller answers at once,
-// so the deadline is generous: it only bounds how long a real failure takes to report.
-function partialWrite(fixture, method, path, session, declaredBytes) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (callback, value) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        request.destroy();
-        callback(value);
-      }
-    };
-    const request = httpRequest(new URL(path, fixture.origin), {
-      method,
-      headers: {
-        ...authenticatedHeaders(session, { origin: fixture.origin }),
-        "content-type": "application/json",
-        "content-length": String(declaredBytes),
-      },
-    });
-    const timer = setTimeout(() => settle(resolve, null), 15_000);
-    request.on("response", (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => {
-        try {
-          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          settle(resolve, { status: response.statusCode, body });
-        } catch (error) {
-          settle(reject, error);
-        }
-      });
-      response.on("error", (error) => settle(reject, error));
-    });
-    request.on("error", (error) => settle(reject, error));
-    request.write(
-      `{"name":"Unread","template":{"variables":{"guidance":{"type":"string","default":"${"x".repeat(64 * 1024)}`,
-    );
-  });
-}
-
 // Installs a shipped standard Preset and reads it back from the catalog, as the console chooser does.
 async function installFromCatalog(fixture, namespaceId, file) {
   const { artifact, installed } = await installShipped(fixture, namespaceId, file);
   const catalog = await fixture.request("GET", collection(namespaceId));
   assert.equal(catalog.status, 200);
-  return { artifact, installed, preset: catalog.data.find(({ id }) => id === installed.data.id) };
+  const listed = catalog.data.find(({ id }) => id === installed.data.id);
+  // The catalog lists a summary; the template comes from the exact Preset.
+  assert.deepEqual(listed, presetSummary(installed.data));
+  const preset = (await fixture.request("GET", presetPath(namespaceId, listed.id))).data;
+  return { artifact, installed, preset };
 }
 
 // Creates a rendered standard Preset's Configuration and Agent with a same-Namespace model key,
@@ -329,13 +315,8 @@ describe("Presets", { concurrency: 2 }, () => {
       ["PATCH", presetPath(alpha.id, hidden.id), { name: "Shared name" }],
     ]) {
       const conflict = await fixture.request(method, path, { body });
-      assert.equal(conflict.status, 409, method);
-      assert.equal(conflict.body.error.code, "RESOURCE_CONFLICT", method);
-      assert.equal(
-        conflict.body.error.message,
-        "A Preset with this name already exists in this Namespace. Choose a different name.",
-        method,
-      );
+      assertApiError(conflict, 409, "RESOURCE_CONFLICT", method);
+      assert.equal(conflict.body.error.message, PRESET_NAME_CONFLICT, method);
     }
 
     const limited = await fixture.createAccountWithPolicy("preset-reader", (principal) => {
@@ -385,8 +366,7 @@ describe("Presets", { concurrency: 2 }, () => {
         presetPath(beta.id, visible.id),
         method === "PATCH" ? { body: { name: "Moved" } } : {},
       );
-      assert.equal(misdirected.status, 404, `${method}: ${JSON.stringify(misdirected.body)}`);
-      assert.equal(misdirected.body.error.code, "NOT_FOUND", method);
+      assertApiError(misdirected, 404, "NOT_FOUND", method);
     }
 
     const renamed = await fixture.request("PATCH", presetPath(alpha.id, visible.id), {
@@ -459,14 +439,16 @@ describe("Presets", { concurrency: 2 }, () => {
       /[A-Za-z .]/g,
       (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-    const escaped = await fetch(fixture.origin + collection(namespace.id), {
-      method: "POST",
-      headers: {
-        ...authenticatedHeaders(await fixture.signIn()),
-        "content-type": "application/json",
-      },
-      body: encoded,
-    });
+    const escaped = await fixture.fetch(
+      new Request(fixture.origin + collection(namespace.id), {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(await fixture.signIn()),
+          "content-type": "application/json",
+        },
+        body: encoded,
+      }),
+    );
     assert.equal(escaped.status, 201, await escaped.text());
 
     const oversized = structuredClone(template);
@@ -498,9 +480,10 @@ describe("Presets", { concurrency: 2 }, () => {
     const session = await fixture.signIn(member.credentials);
     // Over the general 64 KiB limit and under the Preset route limit (6 MiB + 8 KiB).
     const declaredBytes = 6 * 1024 * 1024;
+    // Each refusal names the grant it checked, the same before and after the body arrives.
     const forbidden = {
-      code: "FORBIDDEN",
-      message: "The exact platform operation was not authorized.",
+      POST: { code: "FORBIDDEN", message: createDenied("Preset", namespace.id) },
+      PATCH: { code: "FORBIDDEN", message: callerDenied("Preset update", `Preset ${existing.id}`) },
     };
     for (const [method, path, action, grant, targetId] of [
       ["POST", collection(namespace.id), "openclaw.presets.create", "create", namespace.id],
@@ -518,27 +501,25 @@ describe("Presets", { concurrency: 2 }, () => {
         body: { name: "Unauthorized", template: {} },
       });
       assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
-      assert.deepEqual(small.body.error, forbidden, method);
-      const denials = () =>
-        fixture.audit.events.filter(
-          (event) =>
-            event.kind === "authorization_denial" &&
-            event.actor?.principalId === memberId &&
-            event.action === action,
-        );
-      const before = denials().length;
-      const refused = await partialWrite(fixture, method, path, session, declaredBytes);
+      assert.deepEqual(small.body.error, forbidden[method], method);
+      const auditStart = fixture.audit.events.length;
+      const refused = await partialWrite({
+        origin: fixture.origin,
+        transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
+        method,
+        path,
+        session,
+        declaredBytes,
+        bodyPrefix:
+          '{"name":"Unread","template":{"variables":{"guidance":{"type":"string","default":"',
+      });
       assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
       assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-      assert.deepEqual(refused.body.error, forbidden, method);
+      assert.deepEqual(refused.body.error, forbidden[method], method);
       // The refusal keeps its audit row, naming the exact grant the write itself checks.
-      const recorded = denials().slice(before);
-      assert.equal(recorded.length, 1, method);
-      assert.equal(recorded[0].reasonCode, "AUTHORIZATION_DENIED", method);
-      assert.deepEqual(recorded[0].resource, target, method);
-      assert.deepEqual(
-        recorded[0].authorization,
-        { principalId: memberId, action: grant, resource: target },
+      assertWriteAuthorizationDenial(
+        fixture.audit.events.slice(auditStart),
+        { principalId: memberId, action, grant, resource: target },
         method,
       );
     }
@@ -582,13 +563,12 @@ describe("Presets", { concurrency: 2 }, () => {
         session,
         body: { name: "Withdrawn", template: {} },
       });
-      assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-      assert.equal(refused.body.error.code, "FORBIDDEN", method);
+      assertApiError(refused, 403, "FORBIDDEN", method);
       // The pre-body check passed and withdrew the grant; restore it for the next write.
       assert.equal(fixture.policy.bindings.includes(writer), false, method);
       fixture.policy.bindings.push(writer);
     }
-    assert.deepEqual(await listPresets(fixture, namespace.id), [existing]);
+    assert.deepEqual(await listPresets(fixture, namespace.id), [presetSummary(existing)]);
   });
 
   test("Preset variables create independent ordinary Agent drafts that survive template replacement and deletion", async (t) => {
@@ -854,7 +834,7 @@ describe("Presets", { concurrency: 2 }, () => {
             values: { ...openaiModel, channels: { discord: { enabled: true } } },
           },
         },
-        "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+        unsupportedChannelRefusal("channels.discord"),
       ],
       [
         {
@@ -867,17 +847,91 @@ describe("Presets", { concurrency: 2 }, () => {
         },
         "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
       ],
+      // A literal both rule sets refuse gets the Compute message, as on Configuration save.
+      [
+        {
+          configuration: {
+            values: {
+              ...openaiModel,
+              models: {
+                providers: {
+                  openai: {
+                    request: { auth: { mode: "authorization-bearer", token: "sk-literal" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: model credentials come from the Agent's Harness authentication binding.`,
+      ],
     ];
     for (const [template, message, details] of cases) {
       const rejected = await fixture.request("POST", collection(namespace.id), {
         body: { name: "Rejected", template },
       });
-      assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-      assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+      assertApiError(rejected, 400, "INVALID_REQUEST");
       assert.equal(rejected.body.error.message, message);
       assert.deepEqual(rejected.body.error.details, details);
     }
     assert.deepEqual(await listPresets(fixture, namespace.id), []);
+  });
+
+  test("Preset save refuses literal Agent launch fields every launch refuses", async (t) => {
+    // Finding 1808: these saved and failed only at Agent create. A field that holds a variable
+    // token waits for its launch, even with a default, since a launch may fill it differently.
+    const fixture = await createFixture(t);
+    const namespace = await fixture.createNamespace("Preset launch fields", { ready: true });
+    // Agent create checks plugin approvers only with a Plugin Driver selected, so without one
+    // Preset save leaves even a channel the Driver refuses to the launch.
+    const unplugged = await createPreset(fixture, namespace.id, "Approvers without plugins", {
+      agent: { pluginApprovers: [{ channel: "teams", id: "U123" }] },
+    });
+    assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
+    await deletePreset(fixture, namespace.id, unplugged.id);
+    fixture.controller.installPluginDrivers([new OCCPluginDriver(), new CodexPluginDriver()]);
+    const cases = [
+      [
+        { agent: { executionMode: "turbo" } },
+        'Preset agent.executionMode: must be "embedded" or "dedicated".',
+      ],
+      [
+        { agent: { backendId: "missing-backend" } },
+        "Preset agent.backendId: Backend does not match a configured Backend.",
+      ],
+      [
+        { agent: { pluginApprovers: [{ channel: "teams", id: "U123" }] } },
+        "Preset agent.pluginApprovers: The supplied plugin policies are invalid.",
+      ],
+      [{ agent: { name: " padded " } }, `Preset agent.name: must be ${NAME_RULE}.`],
+    ];
+    for (const [template, message] of cases) {
+      const rejected = await fixture.request("POST", collection(namespace.id), {
+        body: { name: "Rejected", template },
+      });
+      assertApiError(rejected, 400, "INVALID_REQUEST");
+      assert.equal(rejected.body.error.message, message);
+    }
+    assert.deepEqual(await listPresets(fixture, namespace.id), []);
+    // Tokens, valid literals and a null Backend still save.
+    const saved = await createPreset(fixture, namespace.id, "Launch fields", {
+      variables: { mode: { type: "string", default: "turbo" }, user: { type: "string" } },
+      agent: {
+        name: "Reviewer",
+        executionMode: "{{ vars.mode }}",
+        backendId: null,
+        pluginApprovers: [{ channel: "slack", id: "{{ vars.user }}" }],
+      },
+    });
+    assert.equal(saved.name, "Launch fields");
+    const replaced = await fixture.request("PATCH", presetPath(namespace.id, saved.id), {
+      body: { template: { agent: { executionMode: "turbo" } } },
+    });
+    assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
+    assert.equal(
+      replaced.body.error.message,
+      'Preset agent.executionMode: must be "embedded" or "dedicated".',
+    );
   });
 
   test("method-only Preset authentication is a default, not an Agent credential", async () => {
@@ -1298,7 +1352,8 @@ describe("Presets", { concurrency: 2 }, () => {
       "Standard OpenClaw",
     ].sort();
     assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
-    const named = (name) => list.data.find((preset) => preset.name === name);
+    const documents = await listPresetDocuments(fixture, namespace.id);
+    const named = (name) => documents.find((preset) => preset.name === name);
     assert.equal(named("Standard Codex").template.variables.modelSecret.type, "password");
     const customDefault = named(customPreset.name);
     assert.ok(customDefault, `missing ${customPreset.name}`);
@@ -1369,8 +1424,7 @@ describe("Presets", { concurrency: 2 }, () => {
       ["PATCH", presetPath(permitted.data.id, provisioningPresets[0].id), { name: "Too early" }],
     ]) {
       const early = await fixture.request(method, path, { body });
-      assert.equal(early.status, 409, `${method}: ${JSON.stringify(early.body)}`);
-      assert.equal(early.body.error.code, "NAMESPACE_NOT_READY", method);
+      assertApiError(early, 409, "NAMESPACE_NOT_READY", method);
     }
     // Startup must skip a persisted non-administrator even when it is returned first.
     await initializeInstallationPresets(
@@ -1515,8 +1569,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     const blockingSecret = await fixture.createSecret(edited.id, "blocking-secret", "value");
     const blocked = await fixture.request("DELETE", `/namespaces/${edited.id}`);
-    assert.equal(blocked.status, 409);
-    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
     // Only the edited default is named; unmodified defaults are deleted with the Namespace.
     assert.equal(
       blocked.body.error.message,
@@ -1531,7 +1584,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const principal = fixture.admin;
     const byName = async (namespaceId) =>
       Object.fromEntries(
-        (await listPresets(fixture, namespaceId)).map((preset) => [preset.name, preset]),
+        (await listPresetDocuments(fixture, namespaceId)).map((preset) => [preset.name, preset]),
       );
     // What the running release seeds into a new Namespace is the refresh target.
     const fresh = await fixture.createNamespace("Seeded by this release", { ready: true });
@@ -1704,12 +1757,9 @@ describe("Presets", { concurrency: 2 }, () => {
     const frozen = await staleCopy("Frozen presets");
     const open = await staleCopy("Open presets");
     // An administrator froze one Namespace's Presets before the upgrade.
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "update", "preset", {
       id: "freeze-presets",
       namespaceId: frozen.namespace.id,
-      action: "update",
-      resourceKind: "preset",
-      effect: "deny",
     });
     const { lines, emit } = captureLog();
     const refreshes = () => auditFrom(fixture, "installation-defaults-refresh");
@@ -1789,12 +1839,9 @@ describe("Presets", { concurrency: 2 }, () => {
     };
     // An operator removed one default copy, then froze the Namespace's Presets.
     const frozen = await missingDefault("Frozen presets");
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "create", "preset", {
       id: "freeze-preset-creation",
       namespaceId: frozen.id,
-      action: "create",
-      resourceKind: "preset",
-      effect: "deny",
     });
     // Another Namespace is missing the same default and may still receive it.
     const open = await missingDefault("Open presets");
@@ -1863,8 +1910,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const editedCopy = await createPreset(fixture, edited.id, shipped[2].name, old);
     const renamedCopy = await createPreset(fixture, edited.id, "my-codex", shipped[3].template);
     const blocked = await fixture.request("DELETE", `/namespaces/${edited.id}`);
-    assert.equal(blocked.status, 409);
-    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    assertApiError(blocked, 409, "NAMESPACE_NOT_EMPTY");
     // The message lists them in storage order.
     const listed = (await listPresets(fixture, edited.id)).map(({ id }) => id);
     assert.deepEqual([...listed].sort(), [editedCopy.id, renamedCopy.id].sort());

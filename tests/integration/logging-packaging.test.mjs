@@ -319,6 +319,19 @@ test(
         ),
       "uppercase Collector image digest",
     );
+    // Kubernetes refuses to pull an image whose repository path has an uppercase letter.
+    await assert.rejects(
+      render({
+        ...loggingValues,
+        "logging.collector.image": `docker.io/Otel/opentelemetry-collector-contrib:0.159.0@sha256:${"c".repeat(64)}`,
+      }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(
+          "logging.collector.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one",
+        ),
+      "uppercase Collector repository path",
+    );
     const oidc = {
       "auth.oidc.enabled": "true",
       "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
@@ -334,6 +347,8 @@ test(
     };
     const repositoryCredentials = {
       "repositoryCredentials.enabled": "true",
+      "repositoryCredentials.authority": "prepared-git",
+      "repositoryCredentials.preparedCustodySecretName": "repository-custody",
       "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
       "repositoryCredentials.backendId": "github-primary",
       "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
@@ -354,7 +369,13 @@ test(
       [gatewayRouting, ["occ-gateway-api-key"]],
       [
         repositoryCredentials,
-        ["repository-config", "repository-app-key", "repository-tls", "repository-public-ca"],
+        [
+          "repository-config",
+          "repository-app-key",
+          "repository-custody",
+          "repository-tls",
+          "repository-public-ca",
+        ],
       ],
       [executionCluster, ["execution-api", "execution-worker"]],
     ]) {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { RepositorySessionWithdrawnError } from "../../packages/occ/src/errors.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import {
   repositoryBinding,
   repositoryCredentials,
@@ -11,7 +13,8 @@ export async function seedSessionRevision(
   credentials = repositoryCredentials(),
   options = {},
 ) {
-  const createdAt = "2030-03-17T17:46:40.000Z";
+  const createdAt = options.createdAt ?? "2030-03-17T17:46:40.000Z";
+  const executionMode = options.executionMode ?? "embedded";
   const namespace = {
     id: options.namespaceId ?? `ns_${randomUUID()}`,
     name: `Repository session ${randomUUID()}`,
@@ -49,7 +52,8 @@ export async function seedSessionRevision(
     configurationId: configuration.id,
     backendId: null,
     harnessAuth,
-    executionMode: "embedded",
+    executionMode,
+    gatewayManagedMode: true,
     servicePrincipalId: `service-agent-${randomUUID()}`,
     repositoryBindings: credentials.bindings.map(({ repositoryRef, profile }) => ({
       repositoryRef,
@@ -58,6 +62,7 @@ export async function seedSessionRevision(
     createdAt,
   };
   const revision = {
+    executionAdmission: { version: 2, mode: "unprotected" },
     id: `rev_${randomUUID()}`,
     namespaceId: namespace.id,
     agentId: agent.id,
@@ -65,10 +70,17 @@ export async function seedSessionRevision(
     configurationId: configuration.id,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: agent.gatewayManagedMode,
     backendId: null,
     harnessAuth: { ...harnessAuth, secretDriverId: secret.driverId },
     configuration: { agents: { defaults: { model: "openai/gpt-fixture" } } },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: executionMode,
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "compute-test", implementation: "deterministic-test" },
     servicePrincipalId: agent.servicePrincipalId,
     repositoryCredentials: credentials,
@@ -196,6 +208,128 @@ export async function verifyRepositorySessions(t, store) {
       );
     },
   );
+
+  for (const intent of ["running", "stopped"]) {
+    await t.test(
+      `finite withdrawal with ${intent} intent requires original deployment authority and commits atomically`,
+      async () => {
+        const { namespace, agent, revision, configuration } = await seedSessionRevision(store);
+        const owner = { namespaceId: namespace.id, agentId: agent.id, revisionId: revision.id };
+        const attempt = sessionAttempt(revision);
+        await store.transact(async (unit) => {
+          await unit.agents.compareAndSetActiveRevision(
+            namespace.id,
+            agent.id,
+            undefined,
+            revision.id,
+          );
+          await unit.repositorySessions.createAttempt(attempt);
+        });
+        const remove = () =>
+          store.transact(async (unit) => {
+            await unit.namespaces.lockNamespace(namespace.id);
+            await unit.agents.lockAgent(namespace.id, agent.id);
+            await unit.agents.updateConfiguration(
+              namespace.id,
+              agent.id,
+              configuration.id,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              [],
+            );
+            await unit.repositorySessions.withdrawFinite(owner, later);
+          });
+        const key = repositoryRemovalWorkKey(revision.id);
+        if (intent === "stopped") {
+          await store.transact((unit) =>
+            unit.agents.transitionAgentDesiredRuntimeState(
+              namespace.id,
+              agent.id,
+              "running",
+              "stopped",
+            ),
+          );
+        }
+        // An editor cannot substitute for missing original runtime authority. Failed mutation
+        // must preserve both configuration and opening-session custody in either State adapter.
+        await assert.rejects(remove(), scopeError);
+        assert.deepEqual(
+          (await store.read((v) => v.agents.findAgent(namespace.id, agent.id))).repositoryBindings,
+          agent.repositoryBindings,
+        );
+        assert.equal(
+          (await store.read((v) => v.repositorySessions.findAttempt(attempt.admissionId))).phase,
+          "opening",
+        );
+        assert.equal(await store.read((v) => v.operations.findWork(key)), undefined);
+        const actorId = "original-deployer";
+        await store.transact((unit) =>
+          unit.operations.append({
+            kind: "agent_revision",
+            action: "reconcile",
+            namespaceId: namespace.id,
+            resourceId: revision.id,
+            actorId,
+          }),
+        );
+        await remove();
+        const work = await store.read((v) => v.operations.findWork(key));
+        assert.equal(work.actorId, actorId);
+        assert.equal(work.state, "queued");
+        assert.equal(work.revisionId, revision.id);
+        assert.equal(
+          (await store.read((v) => v.repositorySessions.findAttempt(attempt.admissionId))).phase,
+          "closing",
+        );
+        await remove();
+        assert.deepEqual(
+          await store.read((v) => v.operations.findWork(key)),
+          work,
+          "repeat removal retains original work custody",
+        );
+        // Disposal and a later editable re-add cannot revive the immutable admission.
+        await store.transact(async (unit) => {
+          await unit.repositorySessions.advanceAttempt({
+            admissionId: attempt.admissionId,
+            expectedPhase: "closing",
+            phase: "disposed",
+            sessionId: `session-${randomUUID()}`,
+            updatedAt: later,
+          });
+          await unit.agents.updateConfiguration(
+            namespace.id,
+            agent.id,
+            configuration.id,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            agent.repositoryBindings,
+          );
+        });
+        if (intent === "stopped") {
+          await store.transact((unit) =>
+            unit.agents.transitionAgentDesiredRuntimeState(
+              namespace.id,
+              agent.id,
+              "stopped",
+              "running",
+            ),
+          );
+        }
+        await assert.rejects(
+          store.transact((unit) => unit.repositorySessions.createAttempt(sessionAttempt(revision))),
+          RepositorySessionWithdrawnError,
+        );
+        assert.equal(
+          (await store.read((view) => view.repositorySessions.listRevisionAttempts(owner))).length,
+          1,
+        );
+      },
+    );
+  }
 
   await t.test(
     "invalid draft and admitted repository identities cannot be persisted",

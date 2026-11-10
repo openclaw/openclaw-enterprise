@@ -1,31 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertProviderAttached,
   assertReservedLane,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   githubSignIn,
   githubUpgradeSettings,
   memoryLogger,
-  onboardPasswordAccounts,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "replacement-recovery@example.test";
-const password = "replacement-member-password";
-const authSecret = "replacement-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "replacement-client-id",
-  "occ-github-login/client-secret": "replacement-client-secret",
-};
 const secondSubject = "9200002";
 // The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
 // 1 s doubling to 8 s). This suite spends password budgets but does not measure pacing, and
@@ -40,20 +31,24 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "replacement-recovery@example.test",
+        password: "replacement-member-password",
+        secrets: {
+          "occ-auth/secret": "replacement-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "replacement-client-id",
+          "occ-github-login/client-secret": "replacement-client-secret",
+        },
+      },
+    );
     const address = clientAddresses();
     const {
       admin,
       accounts: { second, third, member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: {
         second: { email: "replacement-second@example.test", role: "admin" },
@@ -61,10 +56,7 @@ test(
         member: { email: "replacement-member@example.test" },
       },
     });
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
+    app = await composeApp(githubUpgradeSettings(admin.id), {
       passwordSlowLaneFloors: slowLane,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
@@ -102,8 +94,7 @@ test(
         };
         assert.equal((await replace({ cookie: secondHeaders.cookie }, body)).statusCode, 403);
         const taken = await replace(secondHeaders, body);
-        assert.equal(taken.statusCode, 403, "a narrower administrator cannot take it");
-        assert.equal(taken.json().error.code, "FORBIDDEN");
+        assertApiError(taken, 403, "FORBIDDEN", "a narrower administrator cannot take it");
         assert.equal(
           (await replace(secondHeaders, { ...body, expectedCurrentUserId: second.id })).statusCode,
           409,
@@ -178,20 +169,15 @@ test(
         });
         // The former holder still administers the Installation, so it stays reserved too.
         assert.deepEqual(lane, { fresh: 429, former: 200, holder: 200 });
+        const disabled = await changeAccount(app, adminHeaders, holder.id, "disable");
         assert.equal(
-          (
-            await app.inject({
-              method: "POST",
-              url: `/api/auth/accounts/${holder.id}/disable`,
-              headers: adminHeaders,
-              payload: {
-                expectedVersion: (await readAccount(app, adminHeaders, holder.id)).version,
-              },
-            })
-          ).statusCode,
+          disabled.statusCode,
           409,
           "the new holder is protected like the recovery account",
         );
+        // Enable answers 409 too for an account that is not disabled; only the recovery guard
+        // names the recovery account.
+        assert.equal(disabled.json().error.message, "The recovery account cannot be disabled.");
       },
     );
 
@@ -201,10 +187,7 @@ test(
         await app.close();
         app = undefined;
         const log = memoryLogger();
-        app = await composeProductionSignIn(t, {
-          databaseUrl,
-          settings: githubUpgradeSettings(admin.id),
-          secrets,
+        app = await composeApp(githubUpgradeSettings(admin.id), {
           logger: log.logger,
           passwordSlowLaneFloors: slowLane,
         });

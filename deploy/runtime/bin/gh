@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /usr/local/bin/node /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js gh "$@"
+exec /usr/local/bin/node /opt/oce/repository-credentials/dist/drivers/repo/github/access/client/router.js gh "$@"

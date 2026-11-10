@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -19,8 +15,14 @@ import {
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
@@ -132,15 +134,12 @@ async function fixture({
       externalAccounts.delete(account.id);
     },
   };
-  for (const selected of [
+  registerAndSelectDrivers(controller, [
     iam,
     compute,
     configuration,
     ...(selectServiceAccountDriver ? [driver] : []),
-  ]) {
-    controller.registerDriver(selected);
-    controller.selectDriver(selected.capability, selected.id);
-  }
+  ]);
   const namespace = await controller.createNamespace(administrator, {
     name: "ServiceAccount Driver conformance tenant",
   });
@@ -579,35 +578,11 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
 });
 
 test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
-  assert.doesNotThrow(
-    () => execFileSync("openssl", ["version"], { stdio: "ignore" }),
-    "This native HTTPS regression requires openssl on PATH.",
-  );
-  const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      join(directory, "key.pem"),
-      "-out",
-      join(directory, "cert.pem"),
-      "-subj",
-      "/CN=api.chatgpt.com",
-      "-addext",
-      "subjectAltName=DNS:api.chatgpt.com",
-    ],
-    { stdio: "ignore" },
-  );
-  const key = await readFile(join(directory, "key.pem"));
-  const cert = await readFile(join(directory, "cert.pem"));
+  const directory = await temporaryDirectory(t, "chatgpt-backend-tls-");
+  const { key, cert } = await selfSigned(directory, {
+    commonName: "api.chatgpt.com",
+    subjectAltName: "DNS:api.chatgpt.com",
+  });
   const workspaceId = backend.configuration.workspaceId;
   for (const fault of [
     { name: "HTTP 429", status: 429, reason: /failed with HTTP 429/ },
@@ -618,9 +593,17 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
       length: 4 * 1024 * 1024 + 1,
       reason: /invalid response/,
     },
+    {
+      name: "oversized chunked response",
+      status: 200,
+      stream: true,
+      reason: /invalid response/,
+    },
   ]) {
     await t.test(fault.name, async () => {
       const requests = [];
+      let streamTimer;
+      let streamedBytes = 0;
       const server = createServer({ key, cert }, (request, response) => {
         requests.push({ method: request.method, path: request.url });
         request.resume();
@@ -629,8 +612,17 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
             response.setHeader("content-length", fault.length);
           }
           response.writeHead(fault.status);
-          // The native response stays open after the Backend rejects its headers.
-          response.write("unfinished synthetic response");
+          if (fault.stream) {
+            const chunk = Buffer.alloc(64 * 1024, 0x20);
+            streamTimer = setInterval(() => {
+              response.write(chunk);
+              streamedBytes += chunk.length;
+            }, 2);
+            response.once("close", () => clearInterval(streamTimer));
+          } else {
+            // The native response stays open after the Backend rejects its headers.
+            response.write("unfinished synthetic response");
+          }
         } else {
           response.setHeader("content-type", "application/json");
           response.end(
@@ -656,7 +648,6 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
           ),
       });
       let retry;
-      let timer;
       try {
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
@@ -664,17 +655,12 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
         const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
         await assert.rejects(client.createServiceAccount({ name: "first" }), fault.reason);
         retry = client.createServiceAccount({ name: "retry" });
-        const account = await Promise.race([
+        // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
+        const account = await within(
           retry,
-          new Promise((_, reject) => {
-            // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
-            timer = setTimeout(
-              () =>
-                reject(new Error("The next account call stalled behind the rejected response.")),
-              5000,
-            );
-          }),
-        ]);
+          "the next account call stalled behind the rejected response",
+          5_000,
+        );
         assert.deepEqual(account, { id: "recovered-account" });
         assert.deepEqual(
           requests,
@@ -683,8 +669,12 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
             path: `/v1/manage/workspaces/${workspaceId}/service-accounts`,
           }),
         );
+        if (fault.stream) {
+          assert.ok(streamedBytes > 4 * 1024 * 1024, String(streamedBytes));
+          assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
+        }
       } finally {
-        clearTimeout(timer);
+        clearInterval(streamTimer);
         setGlobalDispatcher(originalDispatcher);
         await agent.destroy();
         await retry?.catch(() => {});
@@ -695,6 +685,49 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
   }
 });
 
+test("ChatGPT Backend reads a response of exactly 4 MiB, declared or streamed", async () => {
+  // The cap refuses a body larger than 4 MiB; one at the cap is read whole, whether its length
+  // is declared or only counted as it streams.
+  const workspaceId = backend.configuration.workspaceId;
+  const limit = 4 * 1024 * 1024;
+  const empty = JSON.stringify({
+    id: "acct-exact",
+    workspace_id: workspaceId,
+    enabled: true,
+    pad: "",
+  });
+  const body = (bytes) => empty.replace('"pad":""', `"pad":"${"x".repeat(bytes - empty.length)}"`);
+  const original = globalThis.fetch;
+  try {
+    for (const [declared, bytes, accepted] of [
+      [true, limit, true],
+      [false, limit, true],
+      [false, limit + 1, false],
+    ]) {
+      const label = `${declared ? "declared" : "streamed"} ${bytes} bytes`;
+      const text = body(bytes);
+      assert.equal(Buffer.byteLength(text), bytes, label);
+      globalThis.fetch = async () =>
+        new Response(text, {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            ...(declared ? { "content-length": String(bytes) } : {}),
+          },
+        });
+      const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
+      const created = client.createServiceAccount({ name: "exact" });
+      if (accepted) {
+        assert.deepEqual(await created, { id: "acct-exact" }, label);
+      } else {
+        await assert.rejects(created, /invalid response/, label);
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 // An in-memory ChatGPT Admin API behind a replaced global fetch. Each fault applies the
 // request first (or not), then answers as the test asks.
 function fakeChatGPT(workspaceId) {
@@ -702,11 +735,7 @@ function fakeChatGPT(workspaceId) {
   const requests = [];
   const faults = [];
   let next = 0;
-  const json = (status, body) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+  const json = (status, body) => Response.json(body, { status });
   const fetch = async (url, init) => {
     const path = new URL(url).pathname;
     const base = `/v1/manage/workspaces/${workspaceId}/service-accounts`;
@@ -954,6 +983,25 @@ test("a ChatGPT account create whose reply is lost deletes nothing it cannot pro
       }),
     );
   }
+});
+
+test("a ChatGPT credential revocation never sends a dot path segment", async () => {
+  // `.../credentials/..` would resolve to the account itself, so a revocation naming a dot
+  // segment (for example from an edited leftover Secret annotation) is refused before any
+  // request.
+  await withFakeChatGPT(async ({ client, server }) => {
+    server.accounts.set("acct-own", { name: "own", credentials: new Set(["cred-own"]) });
+    for (const credentialId of [".", ".."]) {
+      await assert.rejects(
+        client.deleteCredential({ accountId: "acct-own", credentialId }),
+        (error) =>
+          error instanceof DependencyUnavailableError &&
+          error.message === "The ChatGPT account identity is invalid.",
+      );
+    }
+    assert.deepEqual(server.requests, []);
+    assert.equal(server.accounts.has("acct-own"), true);
+  });
 });
 
 test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {

@@ -1,25 +1,35 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import {
+  captureChild,
+  concurrencyLimit,
+  eachSettled as all,
+  settled,
+} from "../helpers/child-processes.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
-const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.mjs");
+const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.mjs");
 const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -58,59 +68,13 @@ const reasons = [
 
 // Every case spawns Git, the selector or a workflow script, so independent
 // processes run concurrently, about one per CPU (each spawns more of its own).
-const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
-async function run(program, args, { encoding = "utf8", ...options } = {}) {
-  if (slots.free > 0) {
-    slots.free -= 1;
-  } else {
-    await new Promise((resolve) => slots.waiting.push(resolve));
-  }
-  try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(program, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-      const stdout = [];
-      const stderr = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", reject);
-      child.on("close", (status) => {
-        const text = (chunks) =>
-          encoding === null ? Buffer.concat(chunks) : Buffer.concat(chunks).toString(encoding);
-        resolve({ status, stdout: text(stdout), stderr: text(stderr) });
-      });
-    });
-  } finally {
-    const next = slots.waiting.shift();
-    if (next) {
-      next();
-    } else {
-      slots.free += 1;
-    }
-  }
-}
+const limit = concurrencyLimit();
+const run = (program, args, options) => limit(() => captureChild(program, args, options));
 
-async function command(cwd, program, args) {
-  const result = await run(program, args, { cwd });
+async function command(cwd, program, args, input) {
+  const result = await run(program, args, { cwd, input });
   assert.equal(result.status, 0, `${program} ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
-}
-
-// Like Promise.all, but waits for every check so no process outlives its
-// test's temporary directories, then rethrows the first failure.
-async function settled(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
-}
-const all = (items, each) => settled(items.map(each));
-
-function tempDir(t, prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
 }
 
 // An executable placed first on PATH; returns the environment override.
@@ -126,13 +90,7 @@ const pr = (base, head) => ({ pull_request: { base: { sha: base }, head: { sha: 
 const untrustedSelector = (marker, output) =>
   `import { writeFileSync, appendFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nappendFileSync(process.argv[3], '${output}');\n`;
 
-// `moveMain`, when given, commits to the base branch after the pull request
-// branched, then merges onto that newer base. The event keeps the older
-// base.sha, as GitHub's pull_request payload does when main moves after a push.
-async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } = {}) {
-  const dir = tempDir(t, "ci-impact-");
-  const repo = join(dir, "repo");
-  mkdirSync(repo);
+function repository(repo) {
   const git = (...args) => command(repo, "git", args);
   const put = (path, content = "text\n") => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -143,10 +101,32 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
     await git("commit", "-qm", message, ...flags);
     return git("rev-parse", "HEAD");
   };
+  return { git, put, commit };
+}
+
+// A repository holding only the base commit. Fixtures with the same initial
+// files and modes copy one built per file instead of each committing it again.
+const baseRepositories = new Map();
+const baseRoot = fileTemporaryDirectory("ci-impact-bases-");
+function baseRepository(initial, initialModes) {
+  const key = JSON.stringify([initial, initialModes]);
+  if (!baseRepositories.has(key)) {
+    const repo = join(baseRoot, String(baseRepositories.size));
+    mkdirSync(repo);
+    baseRepositories.set(
+      key,
+      initBase(repo, initial, initialModes).then((base) => ({ repo, base })),
+    );
+  }
+  return baseRepositories.get(key);
+}
+
+async function initBase(repo, initial, initialModes) {
+  const { git, put, commit } = repository(repo);
   await git("init", "-q");
   // Commit and merge otherwise start `git maintenance run --auto --detach`,
   // which outlives them and can rewrite .git/objects under the test and
-  // tempDir's removal (ENOTEMPTY); Git 2.55, for one, repacks in the
+  // the temporary directory's removal (ENOTEMPTY); Git 2.55, for one, repacks in the
   // background once objects/17 holds two loose objects.
   appendFileSync(
     join(repo, ".git/config"),
@@ -159,18 +139,144 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   for (const [path, mode] of Object.entries(initialModes)) {
     chmodSync(join(repo, path), mode);
   }
-  const base = await commit("base");
-  await git("checkout", "-qb", "feature");
-  await change({ repo, put, git });
-  const head = await commit("change", "--allow-empty");
-  await git("checkout", "-q", "--detach", base);
-  if (moveMain) {
-    await moveMain({ repo, put, git });
-    await commit("main moved");
+  return commit("base");
+}
+
+// The selector's classification of the checkout in `cwd` under `env`, run in
+// this process. classify() reads process.env and runs Git synchronously in the
+// working directory, so both are swapped for the call alone: no other code runs
+// until they are restored. The call blocks the event loop, so concurrent cases'
+// in-process classifications run one at a time.
+function classifyIn(cwd, env) {
+  const saved = { ...process.env };
+  const previous = process.cwd();
+  const replace = (values) => {
+    for (const key of Object.keys(process.env)) {
+      if (values[key] === undefined) {
+        delete process.env[key];
+      }
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      }
+    }
+  };
+  replace(env);
+  try {
+    process.chdir(cwd);
+    return classify();
+  } finally {
+    process.chdir(previous);
+    replace(saved);
   }
-  const mergeBase = await git("rev-parse", "HEAD");
-  await git("merge", "--no-ff", "-qm", "merge", head);
-  const tested = await git("rev-parse", "HEAD");
+}
+
+// The selector's exit status for a command line and a classification: main()
+// exits 1 when it refuses the command line or the mode does not verify.
+function verifyStatus(args, result) {
+  try {
+    checkArguments(args);
+  } catch {
+    return 1;
+  }
+  return respond(args, result).verified ? 0 : 1;
+}
+
+// The selections a selector process has made, by mode and reason. expect,
+// expectReason and expectTests classify in this process; the first of them to
+// reach a mode and reason also runs the selector CLI and checks that it writes
+// the same GitHub output, and later ones skip that process. Every outcome the
+// file reaches keeps a real selector run (which fixture provides it can vary
+// with scheduling); the CLI's own behaviour (arguments, output file, exit
+// status, the workflow's bootstrap) has its own cases that always run it.
+const cliSelections = new Set();
+function needsCliSelection(output) {
+  const key = output.split("\n", 2).join("\n");
+  if (cliSelections.has(key)) {
+    return false;
+  }
+  cliSelections.add(key);
+  return true;
+}
+
+// The pull request commit (the change on top of `base`) and its --no-ff merge onto
+// `base`, with the merge checked out: what checkout -b, commit, checkout and merge
+// make when the base has not moved, from three Git processes instead of seven.
+// The merge's tree is the change's, so one written tree serves both commits;
+// fast-import writes them and moves the checked-out branch to the merge.
+async function commitAndMerge(repo, git, base, change) {
+  await change();
+  await git("add", "-A");
+  const tree = await git("write-tree");
+  const branch = /^ref: (refs\/heads\/\S+)\n$/.exec(readFileSync(join(repo, ".git/HEAD"), "utf8"));
+  assert.ok(branch, "the fixture checkout is on a branch");
+  const commitStream = (ref, mark, message, parents) =>
+    [
+      `commit ${ref}`,
+      `mark :${mark}`,
+      "committer CI test <ci@example.test> now",
+      `data ${Buffer.byteLength(`${message}\n`)}`,
+      message,
+      ...parents,
+      `M 040000 ${tree} ""`,
+      "",
+    ].join("\n");
+  const marks = join(repo, ".git/fixture-marks");
+  await command(
+    repo,
+    "git",
+    // A small import is written as loose objects (fastimport.unpackLimit), which
+    // a merge-evidence case deletes.
+    ["fast-import", "--quiet", "--date-format=now", `--export-marks=${marks}`],
+    commitStream("refs/heads/feature", 1, "change", [`from ${base}`]) +
+      commitStream(branch[1], 2, "merge", [`from ${base}`, "merge :1"]),
+  );
+  const ids = Object.fromEntries(
+    readFileSync(marks, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" ")),
+  );
+  rmSync(marks);
+  return { head: ids[":1"], tested: ids[":2"] };
+}
+
+// `moveMain`, when given, commits to the base branch after the pull request
+// branched, then merges onto that newer base. The event keeps the older
+// base.sha, as GitHub's pull_request payload does when main moves after a push.
+// `cliVerify` runs every --verify-mode command line of expect, expectReason and
+// expectTests as its own selector process (see f.verify).
+async function fixture(
+  t,
+  change,
+  initial = {},
+  initialModes = {},
+  { moveMain, cliVerify = false } = {},
+) {
+  const dir = temporaryDirectorySync(t, "ci-impact-");
+  const repo = join(dir, "repo");
+  const template = await baseRepository(initial, initialModes);
+  // The copy's index keeps the template's stat data; Git re-hashes a file whose
+  // stat data differs, so status and diff still see the committed content.
+  cpSync(template.repo, repo, { recursive: true, verbatimSymlinks: true });
+  const { git, put, commit } = repository(repo);
+  const { base } = template;
+  let head;
+  let tested;
+  let mergeBase = base;
+  if (moveMain) {
+    await git("checkout", "-qb", "feature");
+    await change({ repo, put, git });
+    head = await commit("change", "--allow-empty");
+    await git("checkout", "-q", "--detach", base);
+    await moveMain({ repo, put, git });
+    mergeBase = await commit("main moved");
+    await git("merge", "--no-ff", "-qm", "merge", head);
+    tested = await git("rev-parse", "HEAD");
+  } else {
+    ({ head, tested } = await commitAndMerge(repo, git, base, () => change({ repo, put, git })));
+  }
   const eventPath = join(dir, "event.json");
   const event = pr(base, head);
   const writeEvent = (value = event) =>
@@ -199,40 +305,83 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
     assert.equal(selected.status, 0, selected.stderr);
     return readFileSync(path, "utf8");
   };
-  f.expect = async (mode, overrides = {}) => {
+  // Exit statuses of --verify-mode command lines for the current checkout and
+  // event, and the GitHub output the same evidence selects (null with
+  // `cliVerify`). With `cliVerify` each command line is its own selector
+  // process. Otherwise the selector classifies once in this process and answers
+  // each command line with the code its CLI runs (checkArguments, respond), so
+  // a selection's verifications cost one Git inspection instead of one
+  // selector process each; its caller still runs the CLI selection and checks
+  // that the CLI wrote the same output.
+  f.verify = async (commandLines, overrides = {}) => {
+    if (cliVerify) {
+      const results = await settled(commandLines.map((args) => f.run(args, overrides)));
+      return { statuses: results.map((result) => result.status), output: null };
+    }
+    const result = classifyIn(repo, { ...env, ...overrides });
+    return {
+      statuses: commandLines.map((args) => verifyStatus(args, result)),
+      output: respond(["--github-output", "-"], result).output,
+    };
+  };
+  // The selection for the verified evidence: the in-process classification's
+  // output, which a selector process must also write when it is the first of its
+  // mode and reason (see cliSelections) or the case runs every check as a CLI.
+  // The CLI appends to an output file that already holds a line.
+  const selection = async (verified, overrides) => {
+    if (verified.output !== null && !needsCliSelection(verified.output)) {
+      return verified.output;
+    }
     const path = output("prior=value\n");
-    const lanes = JSON.stringify(["checks-baseline-1"]);
-    const [selected, same, other, tests] = await settled([
-      f.run(["--github-output", path], overrides),
-      f.run(["--verify-mode", mode], overrides),
-      f.run(["--verify-mode", mode === "docs" ? "full" : "docs"], overrides),
-      f.run(["--verify-mode", "tests", "--lanes", lanes], overrides),
-    ]);
+    const selected = await f.run(["--github-output", path], overrides);
     assert.equal(selected.status, 0, selected.stderr);
-    assert.match(
-      readFileSync(path, "utf8"),
-      new RegExp(`^prior=value\nmode=${mode}\nreason=(?:${reasons})\n$`),
-      selected.stdout,
+    const written = readFileSync(path, "utf8");
+    assert.ok(written.startsWith("prior=value\n"), written);
+    const cli = written.slice("prior=value\n".length);
+    if (verified.output !== null) {
+      assert.equal(cli, verified.output);
+    }
+    return cli;
+  };
+  // `reason`, when given, is the exact reason the selection must report.
+  f.expect = async (mode, overrides = {}, reason = reasons) => {
+    const lanes = JSON.stringify(["checks-baseline-1"]);
+    const verified = await f.verify(
+      [
+        ["--verify-mode", mode],
+        ["--verify-mode", mode === "docs" ? "full" : "docs"],
+        ["--verify-mode", "tests", "--lanes", lanes],
+      ],
+      overrides,
     );
-    assert.equal(same.status, 0);
-    assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
+    const [same, other, tests] = verified.statuses;
+    assert.match(
+      await selection(verified, overrides),
+      new RegExp(`^mode=${mode}\nreason=(?:${reason})\n$`),
+    );
+    assert.equal(same, 0);
+    assert.notEqual(other, 0);
+    assert.notEqual(tests, 0);
   };
   // Full mode with an exact reason, verified as full and not as docs.
   f.expectReason = async (reason, overrides = {}) => {
-    const [selected, full, docs] = await settled([
-      f.select(overrides),
-      f.run(["--verify-mode", "full"], overrides),
-      f.run(["--verify-mode", "docs"], overrides),
-    ]);
-    assert.equal(selected, `mode=full\nreason=${reason}\n`);
-    assert.equal(full.status, 0);
-    assert.notEqual(docs.status, 0);
+    const verified = await f.verify(
+      [
+        ["--verify-mode", "full"],
+        ["--verify-mode", "docs"],
+      ],
+      overrides,
+    );
+    const [full, docs] = verified.statuses;
+    assert.equal(await selection(verified, overrides), `mode=full\nreason=${reason}\n`);
+    assert.equal(full, 0);
+    assert.notEqual(docs, 0);
   };
   f.expectTests = async (lanes, overrides = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
       ["--verify-mode", "tests"],
+      ["--verify-mode", "tests", "--lanes", ""],
       ["--verify-mode", "docs"],
       ["--verify-mode", "full"],
       ["--verify-mode", "docs", "--lanes", json],
@@ -243,14 +392,17 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const [selected, verified, ...rejected] = await settled([
-      f.select(overrides),
-      f.run(["--verify-mode", "tests", "--lanes", json], overrides),
-      ...bad.map((args) => f.run(args, overrides)),
-    ]);
-    assert.equal(selected, `mode=tests\nreason=tests_only\nlanes=${json}\n`);
-    assert.equal(verified.status, 0);
-    rejected.forEach((result, i) => assert.notEqual(result.status, 0, bad[i].join(" ")));
+    const verifications = await f.verify(
+      [["--verify-mode", "tests", "--lanes", json], ...bad],
+      overrides,
+    );
+    const [verified, ...rejected] = verifications.statuses;
+    assert.equal(
+      await selection(verifications, overrides),
+      `mode=tests\nreason=tests_only\nlanes=${json}\n`,
+    );
+    assert.equal(verified, 0);
+    rejected.forEach((status, i) => assert.notEqual(status, 0, bad[i].join(" ")));
   };
   return f;
 }
@@ -302,10 +454,10 @@ test("pnpm impact reports a changed workspace package and its dependents", async
   // GitHub merges onto the current base, which can be newer than base.sha.
   const stale = join(f.dir, "stale-event.json");
   writeFileSync(stale, JSON.stringify(pr("1".repeat(40), f.head)));
-  for (const packages of await all([{}, { GITHUB_EVENT_PATH: stale }], (overrides) =>
-    affectedPackages(f, overrides),
-  )) {
-    assert.deepEqual(packages, affected);
+  // One at a time: every `pnpm list` briefly creates a _tmp_ file in the project root (its
+  // store-path probe), which a concurrent run's dirty-checkout check would report.
+  for (const overrides of [{}, { GITHUB_EVENT_PATH: stale }]) {
+    assert.deepEqual(await affectedPackages(f, overrides), affected);
   }
 });
 
@@ -380,6 +532,20 @@ test("pnpm impact reports unavailable without exposing a failed tool's output", 
   }
 });
 
+test("pnpm impact safely handles non-record JSON values from the event and pnpm", async (t) => {
+  const f = await fixture(t, sharedChange, workspaceFiles());
+  for (const event of [null, false, "text", { pull_request: { base: null, head: 1 } }]) {
+    f.writeEvent(JSON.stringify(event));
+    assert.deepEqual(await affectedPackages(f), unavailable("invalid_identity"));
+  }
+  f.writeEvent();
+  for (const value of [null, false, 1, "text", [], { name: 7, path: "/" }]) {
+    const json = JSON.stringify([value]);
+    const path = shim(join(f.dir, "json-bin"), "pnpm", `#!/bin/sh\nprintf '%s' '${json}'\n`);
+    assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
+  }
+});
+
 test("pnpm impact summary prints only validated package names", async (t) => {
   const f = await fixture(t, sharedChange, workspaceFiles());
   assert.match(await pnpmImpactOutput(f, {}, ["--summary"]), /^- `@fixture\/shared`$/m);
@@ -446,7 +612,7 @@ test("affected-package advisory is isolated from required jobs and tolerates sum
   const match = / {8}run: \|\n((?: {10}.*\n)+)/.exec(advisory);
   assert.ok(match, "summary script exists");
   const script = match[1].replace(/^ {10}/gm, "");
-  const dir = tempDir(t, "ci-advisory-summary-");
+  const dir = temporaryDirectorySync(t, "ci-advisory-summary-");
   await all(["", join(dir, "missing", "summary")], async (summary) => {
     const result = await run("bash", ["-e", "-c", script], {
       cwd: repositoryRoot,
@@ -517,6 +683,9 @@ test("verified merge selects documentation and handles unusual names and deletio
       rmSync(join(repo, "docs/deleted.md"));
     },
     { "README.md": "old\n", "docs/deleted.md": "old\n" },
+    {},
+    // Verifies docs, and refuses full and tests, in selector processes.
+    { cliVerify: true },
   );
   await f.expect("docs");
 });
@@ -638,20 +807,27 @@ test("symlinks and executable documentation select full", async (t) => {
 });
 
 test("submodule changes remain visible even when Git configuration ignores them", async (t) => {
-  const f = await fixture(t, async ({ put, git, repo }) => {
-    put("docs/change.md");
-    const vendor = join(repo, "vendor");
-    mkdirSync(vendor);
-    const nested = (...args) => command(vendor, "git", args);
-    await nested("init", "-q");
-    await nested("config", "user.name", "CI test");
-    await nested("config", "user.email", "ci@example.test");
-    await nested("config", "maintenance.auto", "false");
-    writeFileSync(join(vendor, "file"), "content");
-    await nested("add", "file");
-    await nested("commit", "-qm", "nested");
-    await git("config", "diff.ignoreSubmodules", "all");
-  });
+  const f = await fixture(
+    t,
+    async ({ put, git, repo }) => {
+      put("docs/change.md");
+      const vendor = join(repo, "vendor");
+      mkdirSync(vendor);
+      const nested = (...args) => command(vendor, "git", args);
+      await nested("init", "-q");
+      await nested("config", "user.name", "CI test");
+      await nested("config", "user.email", "ci@example.test");
+      await nested("config", "maintenance.auto", "false");
+      writeFileSync(join(vendor, "file"), "content");
+      await nested("add", "file");
+      await nested("commit", "-qm", "nested");
+      await git("config", "diff.ignoreSubmodules", "all");
+    },
+    {},
+    {},
+    // Verifies full, and refuses docs and tests, in selector processes.
+    { cliVerify: true },
+  );
   await f.expect("full");
 });
 
@@ -705,7 +881,11 @@ test("output must be an existing regular file and mode must verify", async (t) =
       ["--github-output", join(f.dir, "link")],
       ["--verify-mode", "invalid"],
     ],
-    async (args) => assert.notEqual((await f.run(args)).status, 0, args.join(" ")),
+    async (args) => {
+      const result = await f.run(args);
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+    },
   );
 });
 
@@ -774,23 +954,26 @@ async function shallowBootstrap(f) {
     assert.equal(selected.status, 0, selected.stderr);
     return selected.output;
   };
-  shallow.expect = async (mode, overrides = {}) => {
-    const lanes = { EXPECTED_LANES: JSON.stringify(["checks-baseline-1"]), ...overrides };
-    const [selected, same, other, tests] = await settled([
+  // `reason`, when given, is the exact reason the selection must report. The
+  // step's tests-mode verification has its own runs in expectTests.
+  shallow.expect = async (mode, overrides = {}, reason) => {
+    const [selected, same, other] = await settled([
       shallow.run("select", "", overrides),
       shallow.run("verify", mode, overrides),
       shallow.run("verify", mode === "docs" ? "full" : "docs", overrides),
-      shallow.run("verify", "tests", lanes),
     ]);
     assert.equal(selected.status, 0, selected.stderr);
     assert.match(
       selected.output,
-      new RegExp(`^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`),
+      new RegExp(
+        reason === undefined
+          ? `^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`
+          : `^mode=${mode}\nreason=${reason}\n$`,
+      ),
       selected.stdout,
     );
     assert.equal(same.status, 0);
     assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
   };
   shallow.expectReason = async (reason, overrides = {}) => {
     const [selected, full, docs] = await settled([
@@ -802,15 +985,14 @@ async function shallowBootstrap(f) {
     assert.equal(full.status, 0);
     assert.notEqual(docs.status, 0);
   };
+  // Each caller also runs f.expectTests on the same evidence, which checks that the
+  // selector refuses every other lane list and mode in process. Here the workflow
+  // step refuses one wrong lane list and one wrong mode, one through each branch
+  // that runs the selector's verification.
   shallow.expectTests = async (lanes, overrides = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
-      ["tests", ""],
-      ["tests", "[]"],
       ["tests", JSON.stringify(lanes.slice(1))],
-      ["tests", JSON.stringify(lanes, null, 1)],
-      ...(lanes.length > 1 ? [["tests", JSON.stringify([...lanes].reverse())]] : []),
-      ["full", json],
       ["docs", json],
     ];
     const [selected, verified, ...rejected] = await settled([
@@ -842,6 +1024,107 @@ function laneTable() {
   return JSON.parse(match[1]);
 }
 
+const mainPushEnvironment = {
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_REF: "refs/heads/main",
+};
+
+function mainPushEvent(f, overrides = {}) {
+  f.writeEvent({
+    before: f.base,
+    after: f.tested,
+    ref: "refs/heads/main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    forced: false,
+    deleted: false,
+    created: false,
+    ...overrides,
+  });
+}
+
+test("main push uses the before-tree policy to select and verify documentation", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange);
+  mainPushEvent(f);
+  await f.expect("docs", mainPushEnvironment, "docs_only");
+  await shallow.expect("docs", mainPushEnvironment, "docs_only");
+  for (const changed of [
+    { forced: true },
+    { created: true },
+    { deleted: true },
+    { forced: null },
+  ]) {
+    mainPushEvent(f, changed);
+    await f.expectReason("invalid_event", mainPushEnvironment);
+    await shallow.expectReason("invalid_event", mainPushEnvironment);
+  }
+  mainPushEvent(f, { after: f.head });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expectReason("bootstrap_checkout_mismatch", mainPushEnvironment);
+  mainPushEvent(f, { before: "0".repeat(40) });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expect("full", mainPushEnvironment);
+  mainPushEvent(f);
+  for (const changed of [
+    { GITHUB_REPOSITORY: "another/repository" },
+    { GITHUB_REF: "refs/heads/another" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch" },
+  ]) {
+    await f.expectReason("non_pr_event", { ...mainPushEnvironment, ...changed });
+    await shallow.expectReason("bootstrap_non_pr_event", { ...mainPushEnvironment, ...changed });
+  }
+});
+
+test("main push compares every commit since before, not just the last commit", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange, {
+    moveMain: ({ put }) => put("src/main.ts", "export const changed = true;\n"),
+  });
+  mainPushEvent(f);
+  await f.expectReason("ineligible_change", mainPushEnvironment);
+  // A shallow checkout lacking the before commit must fail closed.
+  await shallow.expect("full", mainPushEnvironment);
+});
+
+test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
+  for (const change of [
+    ({ put }) => put("tests/integration/ci-impact.test.mjs"),
+    ({ put }) => put(".github/workflows/ci.yml"),
+    ({ put }) => put("scripts/ci/impact.mjs", policy + "\n// changed\n"),
+    ({ put, repo }) => {
+      put("docs/executable.md");
+      chmodSync(join(repo, "docs/executable.md"), 0o755);
+    },
+    ({ repo }) => {
+      mkdirSync(join(repo, "docs"));
+      symlinkSync("../base.txt", join(repo, "docs/link.md"));
+    },
+  ]) {
+    const [f, shallow] = await policyFixture(t, change);
+    mainPushEvent(f);
+    await f.expect("full", mainPushEnvironment);
+    await shallow.expect("full", mainPushEnvironment);
+  }
+});
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, ({ put }) => {
+    put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
+    put("docs/change.md");
+  });
+  mainPushEvent(f);
+  await shallow.expectReason("ineligible_change", mainPushEnvironment);
+  assert.equal(existsSync(marker), false);
+  const old = await fixture(t, docsChange, {
+    "scripts/ci/impact.mjs": `import { appendFileSync } from "node:fs";
+if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
+else if (process.argv[3] !== "full") process.exit(1);
+`,
+  });
+  mainPushEvent(old);
+  await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
+});
+
 test("the checked-in policy can select a documentation-only pull request", async (t) => {
   // Use the actual Git mode so a policy the bootstrap rejects cannot pass by
   // being recreated with a different mode in the fixture.
@@ -864,7 +1147,7 @@ test("the checked-in policy can select a documentation-only pull request", async
 
 test("workflow executes only the base policy on a shallow merge checkout", async (t) => {
   // The PR selector would select docs and leave a marker if the bootstrap ran it.
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const [[, docs], [, mixed], [, code]] = await settled([
     policyFixture(t, docsChange),
     policyFixture(t, ({ put }) => {
@@ -895,15 +1178,13 @@ test("a documentation-only pull request stays documentation-only after main move
     cwd: shallow.checkout,
   });
   assert.notEqual(stale.status, 0);
-  await settled([f.expect("docs"), shallow.expect("docs")]);
-  assert.equal(await f.select(), "mode=docs\nreason=docs_only\n");
-  assert.equal(await shallow.select(), "mode=docs\nreason=docs_only\n");
+  await settled([f.expect("docs", {}, "docs_only"), shallow.expect("docs", {}, "docs_only")]);
 });
 
 test("a non-documentation change still selects full after main moves", async (t) => {
   const moveMain = ({ put }) => put("docs/main.md");
   // The pull request's own selector still never runs, even on a moved base.
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const untrusted = ({ put }) => {
     put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
     put("docs/change.md");
@@ -924,9 +1205,10 @@ test("a non-documentation change still selects full after main moves", async (t)
         return shallow.expect("full");
       }
       assert.notEqual(f.base, f.mergeBase);
-      await settled([f.expect("full"), shallow.expect("full")]);
-      assert.equal(await f.select(), "mode=full\nreason=ineligible_change\n");
-      assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n");
+      await settled([
+        f.expect("full", {}, "ineligible_change"),
+        shallow.expect("full", {}, "ineligible_change"),
+      ]);
     },
   );
   assert.equal(existsSync(marker), false);
@@ -966,8 +1248,7 @@ test("an event base that is present but not behind the tested base selects full"
   const shallow = await shallowBootstrap(f);
   for (const base of [side, f.head]) {
     f.writeEvent(pr(base, f.head));
-    await f.expect("full");
-    assert.equal(await f.select(), "mode=full\nreason=checkout_mismatch\n");
+    await f.expect("full", {}, "checkout_mismatch");
   }
   // A depth-two checkout lacks the side commit, so it is ignored like any
   // stale base: the ancestor rule can only add full selections there.
@@ -975,8 +1256,7 @@ test("an event base that is present but not behind the tested base selects full"
   await shallow.expect("docs");
   // The pull request head is in the shallow checkout and is not an ancestor.
   f.writeEvent(pr(f.head, f.head));
-  await shallow.expect("full");
-  assert.equal(await shallow.select(), "mode=full\nreason=bootstrap_checkout_mismatch\n");
+  await shallow.expect("full", {}, "bootstrap_checkout_mismatch");
   // A head that is not the tested merge's second parent still selects full.
   f.writeEvent(pr(f.base, f.mergeBase));
   await settled([f.expect("full"), shallow.expect("full")]);
@@ -1030,7 +1310,7 @@ test("unusable base policy cannot select documentation", async (t) => {
 
 test("documentation workflow selects documentation checks and omits product tests", () => {
   const docs = job("static-checks");
-  assert.match(docs, /needs\.impact\.outputs\.mode == 'docs'/);
+  assert.doesNotMatch(docs, /^ {4}(?:needs|if):/m);
   for (const command of [
     "check:workspace",
     "lint",
@@ -1076,17 +1356,15 @@ test("CI Required always reports and fails at once when a dependency was cancell
 });
 
 test("full-integration lanes read NODE_BASE_IMAGE from a variable their environment has", () => {
-  // Only the integration-model and integration-otel environments define NODE_BASE_IMAGE; every
-  // other lane reads the repository variable, or it can never start (finding 662).
+  // The shared integration-main environment defines NODE_BASE_IMAGE. Jobs without it
+  // must read the repository variable, or they can never start (finding 662).
   const path = ".github/workflows/full-integration.yml";
   const lanes = Object.entries(loadYaml(path).jobs).filter(([, job]) => job.env?.NODE_BASE_IMAGE);
   const repository = "${{ vars.CONTAINER_NODE_BASE_IMAGE }}";
   const environment = "${{ vars.NODE_BASE_IMAGE }}";
   for (const [lane, job] of lanes) {
     const name = job.environment?.name ?? job.environment;
-    const allowed = ["integration-model", "integration-otel"].includes(name)
-      ? [repository, environment]
-      : [repository];
+    const allowed = name === "integration-main" ? [repository, environment] : [repository];
     assert.ok(allowed.includes(job.env.NODE_BASE_IMAGE), lane);
   }
   // No workflow- or step-level read escapes the job check.
@@ -1100,7 +1378,53 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("Static Checks runs every check the CI lanes skip", () => {
+test("full-integration preserves qualified runners for kernel, sandbox, and image lanes", () => {
+  // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
+  // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
+  // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
+  // Full Integration allocation while ordinary CI uses four CPUs. Observability
+  // retains four CPUs here while ordinary CI qualifies two CPUs.
+  const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
+  const job = jobs["pr-safe-same-sha"];
+  const runnerFor = (target, lane) => {
+    const runner = target["runs-on"];
+    return runner.startsWith("${{")
+      ? runInNewContext(runner.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+          matrix: { lane },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+        })
+      : runner;
+  };
+  const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
+  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
+  const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
+    (entry) => entry.lane,
+  );
+  const pinned = lanes.filter(
+    (lane) =>
+      lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
+  );
+  for (const lane of ["postgres-auth", "k3d-observability"]) {
+    assert.ok(pinned.includes(lane), lane);
+  }
+  for (const lane of pinned) {
+    assert.equal(
+      runnerFor(job, lane),
+      lane === "k3d-fixture-state"
+        ? "blacksmith-8vcpu-ubuntu-2404"
+        : lane === "k3d-observability"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : ciRunners.get(lane),
+      lane,
+    );
+  }
+  const images = jobs["image-lanes-same-sha"];
+  for (const { lane } of images.strategy.matrix.include) {
+    assert.equal(runnerFor(images, lane), ciRunners.get(lane), lane);
+  }
+});
+
+test("Suite Audit and Static Checks runs the audit and every check the lanes skip", () => {
   const workflow = loadYaml(".github/workflows/ci.yml");
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const lane = workflow.jobs["pr-safe"].steps.find(
@@ -1108,8 +1432,8 @@ test("Static Checks runs every check the CI lanes skip", () => {
   );
   assert.equal(lane.with["static-checks"], "false");
   assert.equal(action.inputs["static-checks"].default, "true");
-  const skipped = action.runs.steps.filter((step) =>
-    String(step.if ?? "").includes("inputs.static-checks != 'false'"),
+  const skipped = action.runs.steps.filter(
+    (step) => step.run && String(step.if ?? "").includes("inputs.static-checks != 'false'"),
   );
   assert.deepEqual(
     skipped.map((step) => step.run),
@@ -1118,15 +1442,344 @@ test("Static Checks runs every check the CI lanes skip", () => {
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
-  const runs = workflow.jobs["static-checks"].steps.map((step) => step.run);
-  for (const step of skipped) {
-    assert.ok(runs.includes(step.run), step.run);
+  const staticChecks = workflow.jobs["static-checks"];
+  assert.equal(staticChecks.needs, undefined, "start alongside CI Impact");
+  assert.equal(staticChecks.if, undefined, "every selection needs these checks");
+  assert.equal(staticChecks["continue-on-error"], undefined);
+  const commands = [
+    "bash scripts/ci/setup-tools.sh workflows",
+    "actionlint .github/workflows/*.yml",
+    "node scripts/ci/run-tests.mjs audit",
+    ...skipped.map((step) => step.run),
+  ];
+  const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
+  assert.deepEqual(
+    checks.map((step) => step.run),
+    commands,
+    "require the suite audit before static checks",
+  );
+  for (const step of checks) {
+    assert.equal(step.if, undefined, step.name);
+    assert.equal(step["continue-on-error"], undefined, step.name);
   }
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
+});
+
+test("every formatting check provisions pinned Bun and scans without a formatter cache", () => {
+  const scripts = JSON.parse(read("package.json")).scripts;
+  assert.equal(
+    scripts["format:check"],
+    scripts["format:fix"].replace("bun fmt --no-script", "bun fmt --no-script --check"),
+  );
+  assert.match(read(".bun-version").trim(), /^\d+\.\d+\.\d+$/);
+  const staticSteps = loadYaml(".github/workflows/ci.yml").jobs["static-checks"].steps;
+  const laneSteps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  for (const steps of [staticSteps, laneSteps]) {
+    const setup = steps.find((step) => step.name === "Set up formatter");
+    assert.match(setup.uses, /^oven-sh\/setup-bun@[a-f0-9]{40}$/);
+    assert.deepEqual(setup.with, { "bun-version-file": ".bun-version" });
+    const check = steps.find((step) => step.run === "pnpm format:check");
+    assert.ok(steps.indexOf(setup) < steps.indexOf(check));
+    if (steps === staticSteps) {
+      assert.equal(setup.if, undefined);
+      assert.equal(check.if, undefined);
+    }
+    assert.equal(setup["continue-on-error"], undefined);
+    assert.equal(check["continue-on-error"], undefined);
+    assert.equal(
+      steps.some((step) => JSON.stringify(step).includes("prettier-cache")),
+      false,
+    );
+    assert.equal(
+      steps.some((step) => step.run?.includes("pnpm format:check --cache")),
+      false,
+    );
+  }
+  const setup = laneSteps.find((step) => step.name === "Set up formatter");
+  const check = laneSteps.find((step) => step.run === "pnpm format:check");
+  for (const { lane } of laneTable()) {
+    for (const staticChecks of ["true", "false"]) {
+      assert.equal(
+        runInNewContext(setup.if, { inputs: { lane, staticChecks } }),
+        lane === "checks-baseline-1",
+      );
+      assert.equal(
+        runInNewContext(check.if.replace("inputs.static-checks", "inputs.staticChecks"), {
+          inputs: { lane, staticChecks },
+        }),
+        lane === "checks-baseline-1" && staticChecks !== "false",
+      );
+    }
+  }
+});
+
+test("failed lane summary preserves the first unsuccessful step", (t) => {
+  const steps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  const summary = steps.at(-1);
+  assert.equal(summary.name, "Summarize first lane failure");
+  assert.equal(summary.if, "failure() || cancelled()");
+  assert.equal(summary["continue-on-error"], true);
+  const order = steps
+    .slice(0, -1)
+    .filter((step) => step["continue-on-error"] !== true)
+    .map((step) => step.id);
+  assert.ok(order.every(Boolean));
+  assert.equal(new Set(order).size, order.length);
+  assert.deepEqual(
+    summary.env.CI_LANE_CONCLUSIONS.trimEnd().split("\n"),
+    order.map((id) => `${id}=\${{ steps.${id}.conclusion }}`),
+  );
+
+  const root = temporaryDirectorySync(t, "lane-failure-summary-");
+  const cases = [
+    {
+      name: "pre-run",
+      outcomes: {
+        "static-lint": "failure",
+        "run-lane": "skipped",
+        "cleanup-lane": "failure",
+        "aggregate-results": "failure",
+        "attempt-results": "success",
+      },
+      first: "static-lint (failure)",
+      run: "skipped",
+    },
+    {
+      name: "runner",
+      outcomes: { "run-lane": "failure", "cleanup-lane": "failure" },
+      first: "run-lane (failure)",
+      run: "failure",
+    },
+    {
+      name: "retention",
+      outcomes: { "run-lane": "success", "aggregate-results": "failure" },
+      first: "aggregate-results (failure)",
+      run: "success",
+    },
+    {
+      name: "cancelled",
+      outcomes: { "run-lane": "cancelled" },
+      first: "run-lane (cancelled)",
+      run: "cancelled",
+    },
+    { name: "missing", outcomes: {}, first: "unavailable", run: "unavailable" },
+  ];
+  for (const { name, outcomes, first, run } of cases) {
+    const output = join(root, name);
+    const env = Object.fromEntries(
+      Object.entries(summary.env).map(([key, value]) => [
+        key,
+        value.replace(/\$\{\{ steps\.([\w-]+)\.conclusion \}\}/g, (_, id) => outcomes[id] ?? ""),
+      ]),
+    );
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = readFileSync(output, "utf8");
+    assert.equal(
+      receipt,
+      [
+        "",
+        "### CI lane failure",
+        "",
+        `- First unsuccessful step: \`${first}\``,
+        `- Run lane: \`${run}\``,
+        `- Cleanup lane: \`${outcomes["cleanup-lane"] ?? "unavailable"}\``,
+        `- Aggregate result upload: \`${outcomes["aggregate-results"] ?? "unavailable"}\``,
+        `- Attempt result upload: \`${outcomes["attempt-results"] ?? "unavailable"}\``,
+        "",
+      ].join("\n"),
+    );
+  }
+});
+
+test("lane lists outside the lane table name every lane they must", async (t) => {
+  const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
+  // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
+  // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
+  // from either condition builds its images cold, and nothing fails.
+  const action = loadYaml(".github/actions/run-ci-lane/action.yml");
+  const { imageCacheLanes } = await import(
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
+  );
+  const cached = [...imageCacheLanes.keys()].sort();
+  const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
+  const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const root = temporaryDirectorySync(t, "cache-lane-selection-");
+  const output = join(root, "outputs");
+  const openshell = JSON.parse(read("scripts/ci/test-suites/openshell.json"));
+  const installation = JSON.parse(read("scripts/ci/test-suites/dev-up-k3d.json"));
+  const qaMatrix = JSON.parse(read("scripts/ci/test-suites/qa-matrix.json"));
+  const observed = new Set();
+  for (const lane of Object.keys(suiteIndex.lanes)) {
+    const files = [
+      "",
+      ...({ openshell, "dev-up-k3d": installation, "qa-matrix": qaMatrix }[lane]?.files ?? []).map(
+        ({ path }) => path,
+      ),
+    ];
+    for (const file of files) {
+      writeFileSync(output, "");
+      const selection = spawnSync("bash", ["-c", mode.run], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CI_SELECTED_LANE: lane,
+          CI_SELECTED_TEST_FILE: file,
+          GITHUB_OUTPUT: output,
+        },
+      });
+      assert.equal(selection.status, 0, selection.stderr);
+      const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(firstAgent);
+      const sourceBuild = /^source-build=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(sourceBuild);
+      const evaluate = (expression) =>
+        runInNewContext(
+          expression
+            .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+            .replaceAll(
+              "steps.image-mode.outputs.first-agent",
+              'steps["image-mode"].outputs["first-agent"]',
+            )
+            .replaceAll(
+              "steps.image-mode.outputs.source-build",
+              'steps["image-mode"].outputs["source-build"]',
+            ),
+          {
+            inputs: { lane },
+            steps: {
+              "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+            },
+          },
+        );
+      const expected = ["dev-up-k3d", "qa-matrix"].includes(lane)
+        ? { "dev-up-k3d": installation, "qa-matrix": qaMatrix }[
+            lane
+          ].prepare.sourceBuildFiles.includes(file)
+        : cached.includes(lane);
+      assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
+      assert.equal(
+        evaluate(prepareStep.env.OCC_CI_IMAGE_CACHE),
+        expected ? "1" : "",
+        `${lane}: ${file}: cache flag`,
+      );
+      if (expected) {
+        observed.add(lane);
+      }
+    }
+  }
+  assert.deepEqual([...observed].sort(), cached);
+  for (const lane of Object.keys(suiteIndex.lanes).filter((name) => name.startsWith("images-"))) {
+    assert.ok(cached.includes(lane), `${lane} restores the image cache`);
+  }
+
+  // A full-integration "all" run reports every same-SHA matrix lane, and with the
+  // jobs it reads directly covers the whole full group. A lane missing here fails
+  // only a manual full run, as "missing".
+  const fullIntegration = loadYaml(".github/workflows/full-integration.yml");
+  const aggregate = fullIntegration.jobs["full-aggregate"];
+  const script = aggregate.steps.find((step) => step.name === "Write selected job state").run;
+  const lists = [...script.matchAll(/for \(const name of (\[[^\]]*\])\)/g)].map((match) =>
+    JSON.parse(match[1]),
+  );
+  assert.equal(lists.length, 2, "full-aggregate names the same-SHA lanes and its own jobs");
+  const [sameSha, ownJobs] = lists;
+  assert.deepEqual(
+    [...sameSha].sort(),
+    [
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")),
+      ...fullIntegration.jobs["image-lanes-same-sha"].strategy.matrix.include,
+    ]
+      .map((entry) => entry.lane)
+      .sort(),
+  );
+  for (const job of [
+    "pr-safe-same-sha",
+    "image-lanes-same-sha",
+    "runtime-artifact",
+    "runtime-image-fixture",
+    ...ownJobs,
+  ]) {
+    assert.ok(aggregate.needs.includes(job), `full-aggregate needs ${job}`);
+  }
+  assert.deepEqual(
+    ["runtime-image-fixture", ...sameSha, ...ownJobs].sort(),
+    [...suiteIndex.groups.full].sort(),
+  );
+});
+
+// Finding 1209: a hung file outlived its 25-minute job under the runner's 60-minute per-file
+// timeout, so GitHub cancelled the job with no results file and no test name. Every lane job
+// gives the lane action its own timeout-minutes, and the action stops the lane's files five
+// minutes before it.
+test("every lane job stops its test files before its own timeout", (t) => {
+  const action = loadYaml(".github/actions/run-ci-lane/action.yml");
+  const deadline = action.runs.steps[0];
+  assert.equal(deadline.id, "deadline", "the deadline counts the lane's setup too");
+  const runLane = action.runs.steps.find((step) => step.name === "Run lane");
+  assert.equal(runLane.env.CI_RUNNER_DEADLINE_MS, "${{ steps.deadline.outputs.ms }}");
+  // Lane image builds keep part of the same time for the tests (finding 2103).
+  const prepareLane = action.runs.steps.find((step) => step.name === "Prepare lane");
+  assert.equal(prepareLane.env.CI_RUNNER_DEADLINE_MS, "${{ steps.deadline.outputs.ms }}");
+
+  const callers = [];
+  for (const name of readdirSync(join(repositoryRoot, ".github/workflows"))) {
+    const workflow = loadYaml(`.github/workflows/${name}`);
+    for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (step.uses !== "./.github/actions/run-ci-lane") {
+          continue;
+        }
+        callers.push(`${name} ${id}`);
+        const timeout = job["timeout-minutes"];
+        assert.equal(String(step.with["job-timeout-minutes"]), String(timeout), `${name} ${id}`);
+        let minutes = [timeout];
+        if (timeout === "${{ matrix.timeout }}") {
+          const rows =
+            name === "full-integration.yml" && id === "pr-safe-same-sha"
+              ? JSON.parse(read("scripts/ci/full-integration-lanes.json"))
+              : job.strategy.matrix.include;
+          minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
+        }
+        for (const value of minutes) {
+          assert.ok(Number.isInteger(value) && value > 5, `${name} ${id} timeout ${value}`);
+        }
+      }
+    }
+  }
+  for (const caller of ["ci.yml pr-safe", "ci.yml runtime-image-fixture", "qa-advisory.yml qa"]) {
+    assert.ok(callers.includes(caller), caller);
+  }
+
+  // The step itself: five minutes before the job's timeout, measured from its start.
+  const root = temporaryDirectorySync(t, "lane-deadline-");
+  const output = join(root, "output");
+  const setDeadline = (minutes) => {
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-c", deadline.run], {
+      encoding: "utf8",
+      env: { ...process.env, JOB_TIMEOUT_MINUTES: minutes, GITHUB_OUTPUT: output },
+    });
+    return { status: result.status, output: readFileSync(output, "utf8") };
+  };
+  const before = Date.now();
+  const set = setDeadline("25");
+  const after = Date.now();
+  assert.equal(set.status, 0);
+  const ms = Number(/^ms=(\d+)\n$/.exec(set.output)?.[1]);
+  assert.ok(ms >= before + 20 * 60_000 && ms <= after + 20 * 60_000, set.output);
+  for (const minutes of ["", "5", "25.5", "x", "${{ matrix.timeout }}"]) {
+    assert.deepEqual(setDeadline(minutes), { status: 1, output: "" }, minutes);
+  }
 });
 
 // Runs impact-gate.mjs on a needs object, writing needs.json in `root`.
@@ -1199,45 +1852,24 @@ const hasIssue = (result, code, lane) =>
   );
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
-  const lanes = [
-    "checks-baseline-1",
-    "checks-baseline-2",
-    "checks-browser",
-    "checks-browser-2",
-    "postgres",
-    "postgres-application",
-    "postgres-auth",
-    "postgres-platform",
-    "images-packaging",
-    "images-model-probes",
-    "images-runtime-startup",
-    "images-runtime-startup-2",
-    "runtime-image-fixture",
-    "k3d-fixture-configuration",
-    "k3d-fixture-state",
-    "k3d-fixture-plugins",
-    "k3d-observability",
-    "logging-collector",
-    "repository-credentials-container",
-    "repository-credentials-platform",
-  ];
   // A declared lane must actually have a runner in both full-coverage paths.
   // This catches a manifest/gate update that accidentally omits a new matrix job.
   const matrixLanes = (source) =>
     [...source.matchAll(/- lane: ([a-z0-9-]+)/g)].map((match) => match[1]);
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
-  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...lanes].sort());
+  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...expectedFullLanes].sort());
   assert.deepEqual(matrixLanes(ciWorkflow), []);
   assert.deepEqual(
     ["runtime-image-fixture", ...laneTable().map((row) => row.lane)].sort(),
-    [...lanes].sort(),
+    [...expectedFullLanes].sort(),
   );
   assert.deepEqual(
     [
       "runtime-image-fixture",
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")).map((row) => row.lane),
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...lanes, "k3d-observability-demo", "keycloak-oidc"].sort(),
+    [...expectedFullLanes, "k3d-observability-demo"].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {
@@ -1254,19 +1886,13 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     assert.equal((await bootstrap.run("verify", mode)).status, 0);
 
     const root = bootstrap.checkout;
-    const needs = {
-      impact: { result: "success", outputs: { mode } },
-      audit: { result: "success", outputs: {} },
-      "static-checks": { result: "success", outputs: {} },
-      "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-      "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-    };
+    const needs = passingGateNeeds(mode);
     const gateResult = await runGate(root, needs, mode);
     assert.equal(gateResult.status, 0, gateResult.stderr);
     const selectedNeeds = JSON.parse(readFileSync(join(root, "needs.json"), "utf8"));
     if (mode === "docs") {
       // An omitted product lane must not be represented by a successful receipt.
-      for (const lane of lanes) {
+      for (const lane of expectedFullLanes) {
         assert.notEqual(selectedNeeds[lane]?.result, "success", lane);
       }
       needs["static-checks"].result = "failure";
@@ -1278,9 +1904,20 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     }
     // Three synthetic lanes cover cross-lane aggregation and failures.
     // The inventory checks above still require every production CI lane.
-    assert.deepEqual(Object.keys(selectedNeeds).sort(), ["impact", "audit", ...lanes].sort());
-    for (const lane of lanes) {
-      assert.equal(selectedNeeds[lane].result, "success", lane);
+    assert.deepEqual(
+      Object.keys(selectedNeeds).sort(),
+      Object.keys(passingGateNeeds("full")).sort(),
+    );
+    assert.deepEqual(
+      [
+        ...selectedNeeds["pr-safe"].lanes,
+        ...selectedNeeds["image-lanes"].lanes,
+        "runtime-image-fixture",
+      ].sort(),
+      [...expectedFullLanes].sort(),
+    );
+    for (const [name, state] of Object.entries(selectedNeeds)) {
+      assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
     const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
@@ -1316,9 +1953,61 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
       );
       assert.notEqual((await runLane(lane)).status, 0);
+      // A failed matrix job does not make its passing sibling lanes fail.
+      needs["pr-safe"].result = "failure";
+      assert.notEqual((await runGate(root, needs, mode)).status, 0);
       const failed = await aggregate();
       assert.notEqual(failed.status, 0);
       assert.ok(hasIssue(failed, "lane-failed", lane));
+      const summary = JSON.parse(failed.stdout);
+      assert.deepEqual(
+        summary.issues
+          .filter((entry) => entry.code === "need-not-success")
+          .map((entry) => entry.need),
+        ["pr-safe"],
+      );
+      assert.deepEqual(
+        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+        [lane],
+      );
+      assert.ok(
+        summary.lanes
+          .filter((entry) => entry.lane !== lane)
+          .every((entry) => entry.status === "passed"),
+      );
+      if (lane === "postgres") {
+        // Keep the runner-produced failure intact: an old revision's receipt
+        // cannot attribute an outcome to the revision being aggregated.
+        await command(root, "git", ["checkout", "-q", "--detach", f.head]);
+        const stale = await aggregate({ sha: f.head });
+        assert.notEqual(stale.status, 0);
+        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
+        assert.equal(hasIssue(stale, "lane-failed"), false);
+        assert.deepEqual(JSON.parse(stale.stdout).lanes, []);
+        await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+        // A misplaced real receipt likewise cannot fail its passing sibling.
+        const sibling = join(root, "results/checks-baseline-1.json");
+        const siblingOriginal = readFileSync(sibling);
+        cpSync(artifact, sibling);
+        const misfiled = await aggregate();
+        assert.notEqual(misfiled.status, 0);
+        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
+        const misplaced = JSON.parse(misfiled.stdout);
+        assert.deepEqual(
+          misplaced.issues
+            .filter((entry) => entry.code === "lane-failed")
+            .map((entry) => entry.lane),
+          [lane],
+        );
+        assert.deepEqual(
+          misplaced.lanes.map((entry) => entry.lane),
+          ["checks-baseline-2", lane],
+        );
+        writeFileSync(sibling, siblingOriginal);
+      }
+      needs["pr-safe"].result = "success";
+      assert.equal((await runGate(root, needs, mode)).status, 0);
       writeFileSync(artifact, original);
     }
     needs["pr-safe"].result = "failure";
@@ -1330,7 +2019,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
 });
 
 async function summarizeImpact(t, outcome, mode, reason, extra = {}) {
-  const summary = join(tempDir(t, "ci-impact-summary-"), "summary");
+  const summary = join(temporaryDirectorySync(t, "ci-impact-summary-"), "summary");
   writeFileSync(summary, "");
   const result = await run(
     "bash",
@@ -1447,7 +2136,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
   mkdirSync(objects);
   await all(
     [
-      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" }],
+      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
       ["bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") }],
       ["bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" }],
       ["bootstrap_checkout_mismatch", { GITHUB_SHA: f.head }],
@@ -1476,7 +2165,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
   await all(
     [
       [f, {}, "docs", "docs_only"],
-      [f, { GITHUB_EVENT_NAME: "push" }, "full", "non_pr_event"],
+      [f, { GITHUB_EVENT_NAME: "workflow_dispatch" }, "full", "non_pr_event"],
       [f, { GITHUB_SHA: "invalid" }, "full", "invalid_identity"],
       [f, { GITHUB_SHA: f.head }, "full", "checkout_mismatch"],
       [
@@ -1568,8 +2257,7 @@ test("real Git empty, type-change and non-UTF-8 diffs have accurate conservative
       const raw = await rawDiff(f);
       assert.equal(raw.status, 0);
       checkRaw(raw.stdout);
-      assert.equal(await f.select(), `mode=full\nreason=${reason}\n`);
-      await f.expect("full");
+      await f.expect("full", {}, reason);
       await assertFullSummary(t, reason, /SECRET|type\.md/);
     },
   );
@@ -1633,10 +2321,11 @@ test("event inspection failures in actual bootstrap and selector are unavailable
   ]);
 });
 
-// A small suite index with the shape of scripts/ci/test-suites.json: three CI
+// A small suite index with the shape of scripts/ci/test-suites.json: four CI
 // lanes, the separate fixture job and one manual (non-CI) lane.
 const suiteLanes = {
-  "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs"],
+  "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs", "tests/integration/typed.test.ts"],
+  "checks-baseline-2": [],
   postgres: ["tests/integration/postgres-a.test.mjs", "tests/integration/postgres-b.test.mjs"],
   "k3d-fixture-state": ["tests/integration/k3d-a.test.mjs"],
   "runtime-image-fixture": ["tests/integration/fixture-image.test.mjs"],
@@ -1658,7 +2347,13 @@ function suiteFiles(base = policy) {
           Object.keys(suiteLanes).map((lane) => [lane, `./test-suites/${lane}.json`]),
         ),
         groups: {
-          ci: ["checks-baseline-1", "postgres", "k3d-fixture-state", "runtime-image-fixture"],
+          ci: [
+            "checks-baseline-1",
+            "checks-baseline-2",
+            "postgres",
+            "k3d-fixture-state",
+            "runtime-image-fixture",
+          ],
           full: Object.keys(suiteLanes),
         },
       },
@@ -1666,6 +2361,7 @@ function suiteFiles(base = policy) {
       2,
     )}\n`,
     "tests/helpers/shared.mjs": "export const shared = 1;\n",
+    "tests/helpers/shared.ts": "export const shared = 1;\n",
     "tests/fixtures/data.json": "{}\n",
   };
   for (const [lane, paths] of Object.entries(suiteLanes)) {
@@ -1696,6 +2392,12 @@ async function suiteFixture(t, change, extra = {}, options) {
 test("a test-only change selects the lanes that list its files", async (t) => {
   await all(
     [
+      // TypeScript changes need the compiler even when another lane owns them.
+      [editTest("tests/integration/typed.test.ts"), ["checks-baseline-1", "checks-baseline-2"]],
+      [
+        async ({ git }) => git("rm", "-q", "tests/integration/typed.test.ts"),
+        ["checks-baseline-1", "checks-baseline-2"],
+      ],
       [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
       [
         withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
@@ -1708,6 +2410,8 @@ test("a test-only change selects the lanes that list its files", async (t) => {
           put("tests/integration/fixture-image.test.mjs", "// edited\n"),
         ),
         ["k3d-fixture-state", "runtime-image-fixture"],
+        // Verifies the lanes, and refuses every other form, in selector processes.
+        { cliVerify: true },
       ],
       // Checks and Conformance 1 runs when it lists the test, and as the matrix
       // lane when only the fixture job would run.
@@ -1720,16 +2424,16 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         postgresEdit(({ put }) => put("tests/conformance/lint-rules.test.mjs", "// edited\n")),
         ["checks-baseline-1", "postgres"],
       ],
-      // A new file registered in its lane's manifest.
+      // The owning lane runs a new TypeScript test; baseline 2 type-checks it.
       [
         ({ put }) => {
-          put("tests/integration/postgres-c.test.mjs", "// new\n");
+          put("tests/integration/postgres-c.test.ts", "// new\n");
           put(
             "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.mjs"]),
+            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
           );
         },
-        ["postgres"],
+        ["checks-baseline-2", "postgres"],
       ],
       // A deleted file and its manifest entry.
       [
@@ -1755,9 +2459,15 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         ["k3d-fixture-state", "postgres"],
       ],
     ],
-    async ([change, lanes]) => {
-      const [f, shallow] = await suiteFixture(t, change);
+    async ([change, lanes, options]) => {
+      const [f, shallow] = await suiteFixture(t, change, {}, options);
       await settled([f.expectTests(lanes), shallow.expectTests(lanes)]);
+      const matrix = await buildMatrix(t, "tests", JSON.stringify(lanes));
+      assert.equal(matrix.status, 0, matrix.stderr);
+      assert.deepEqual(
+        matrix.matrix.map((row) => row.lane).sort(),
+        lanes.filter((lane) => lane !== "runtime-image-fixture"),
+      );
     },
   );
 });
@@ -1779,6 +2489,11 @@ test("a test-only change keeps its lanes after main moves", async (t) => {
 });
 
 test("helper, fixture and other test-tree changes select full", async (t) => {
+  // A helper-only edit must still select the full matrix, including typecheck.
+  const [helper, bootstrap] = await suiteFixture(t, ({ put }) =>
+    put("tests/helpers/shared.ts", "export const shared = 2;\n"),
+  );
+  await settled([helper.expect("full"), bootstrap.expect("full")]);
   await all(
     [
       "tests/helpers/shared.mjs",
@@ -1787,15 +2502,18 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
       "tests/integration/support.mjs",
       "tests/integration/nested/deep.test.mjs",
       "tests/unknown/other.test.mjs",
-      "tests/integration/postgres-a.test.ts",
+      "tests/integration/support.ts",
     ],
     async (path) => {
       const [f, shallow] = await suiteFixture(
         t,
         postgresEdit(({ put }) => put(path, "// changed\n")),
       );
-      await settled([f.expect("full"), shallow.expect("full")]);
-      assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n", path);
+      await settled([f.expect("full"), shallow.expect("full", {}, "ineligible_change")]).catch(
+        (error) => {
+          throw new Error(`${path}: ${error.message}`, { cause: error });
+        },
+      );
     },
   );
 });
@@ -1865,11 +2583,16 @@ test("manifest changes beyond the changed test files select full", async (t) => 
 test("unmapped, non-CI, referenced or irregular test files select full", async (t) => {
   const index = JSON.parse(suiteFiles()["scripts/ci/test-suites.json"]);
   index.groups.ci = ["postgres"];
+  const withoutTypecheck = JSON.parse(suiteFiles()["scripts/ci/test-suites.json"]);
+  withoutTypecheck.groups.ci = withoutTypecheck.groups.ci.filter(
+    (lane) => lane !== "checks-baseline-2",
+  );
   const editA = editTest("tests/integration/postgres-a.test.mjs");
   const cases = {
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
       [({ put }) => put("tests/integration/unlisted.test.mjs", "// new\n")],
+      [({ put }) => put("tests/integration/postgres-c.test.ts", "// new\n")],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
@@ -1905,6 +2628,10 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // A malformed or missing manifest is never trusted.
     manifest_unavailable: [
+      [
+        editTest("tests/integration/typed.test.ts"),
+        { "scripts/ci/test-suites.json": JSON.stringify(withoutTypecheck) },
+      ],
       [editA, { "scripts/ci/test-suites/k3d-fixture-state.json": "{not json" }],
       [editA, { "scripts/ci/test-suites.json": "{}\n" }],
       [editA, { "scripts/ci/test-suites.json": JSON.stringify(index) }],
@@ -1920,7 +2647,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
 });
 
 test("the pull request's own selector never decides test-only mode", async (t) => {
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const untrusted = untrustedSelector(
     marker,
     'mode=tests\\nreason=tests_only\\nlanes=["checks-baseline-1"]\\n',
@@ -1938,14 +2665,12 @@ test("the pull request's own selector never decides test-only mode", async (t) =
     ],
     async ([change, initial]) => shallowBootstrap(await fixture(t, change, initial)),
   );
-  await shallow.expect("full");
-  assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n");
+  await shallow.expect("full", {}, "ineligible_change");
   // Checked before the legacy base policy below runs, since it writes the same marker.
   assert.equal(existsSync(marker), false);
   const verify = await legacy.run("verify", "tests", { EXPECTED_LANES: '["checks-baseline-1"]' });
   assert.notEqual(verify.status, 0);
-  await fallback.expect("full");
-  assert.equal(await fallback.select(), "mode=full\nreason=bootstrap_policy_unavailable\n");
+  await fallback.expect("full", {}, "bootstrap_policy_unavailable");
 });
 
 test("test-only selection is limited to pull request events", async (t) => {
@@ -1959,7 +2684,7 @@ test("test-only selection is limited to pull request events", async (t) => {
 });
 
 async function buildMatrix(t, mode, lanes) {
-  const output = join(tempDir(t, "ci-impact-matrix-"), "output");
+  const output = join(temporaryDirectorySync(t, "ci-impact-matrix-"), "output");
   writeFileSync(output, "");
   const result = await run(
     "bash",
@@ -1980,11 +2705,22 @@ async function buildMatrix(t, mode, lanes) {
       .filter(Boolean)
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
   );
-  return { ...result, matrix: values.matrix && JSON.parse(values.matrix), fixture: values.fixture };
+  return {
+    ...result,
+    matrix: values.matrix && JSON.parse(values.matrix),
+    images: values["image-matrix"] && JSON.parse(values["image-matrix"]),
+    hasMatrix: values["has-matrix"],
+    hasImages: values["has-images"],
+    fixture: values.fixture,
+  };
 }
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
   const table = laneTable();
+  assert.equal(
+    table.find((row) => row.lane === "checks-baseline-1").runner,
+    "blacksmith-4vcpu-ubuntu-2404",
+  );
   // A runner label nobody provides leaves the job queued until it times out.
   // Every lane must use a self-hosted label that actionlint knows (the only
   // list in .github/actionlint.yaml).
@@ -2001,12 +2737,24 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-32vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability"
+          ? "blacksmith-2vcpu-ubuntu-2404"
+          : "blacksmith-4vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [
     ["full", "", table, "true"],
     ["docs", "", table, "true"],
+    [
+      "tests",
+      '["images-runtime-startup-2"]',
+      table.filter((row) => row.lane === "images-runtime-startup-2"),
+      "false",
+    ],
     [
       "tests",
       '["checks-baseline-1","k3d-fixture-state"]',
@@ -2034,7 +2782,16 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     ...valid.map(async ([mode, lanes, matrix, withFixture]) => {
       const result = await buildMatrix(t, mode, lanes);
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(result.matrix, matrix);
+      assert.deepEqual(
+        result.matrix,
+        matrix.filter((row) => !row.lane.startsWith("images-")),
+      );
+      assert.deepEqual(
+        result.images,
+        matrix.filter((row) => row.lane.startsWith("images-")),
+      );
+      assert.equal(result.hasMatrix, String(result.matrix.length > 0));
+      assert.equal(result.hasImages, String(result.images.length > 0));
       assert.equal(result.fixture, withFixture);
     }),
     ...invalid.map(async (lanes) => {
@@ -2084,7 +2841,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const prSafe = job("pr-safe");
   assert.match(
     prSafe,
-    /if: \$\{\{ needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests' \}\}/,
+    /if: \$\{\{ \(needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests'\) && needs\.impact\.outputs\.has-matrix == 'true' \}\}/,
   );
   assert.match(prSafe, /include: \$\{\{ fromJSON\(needs\.impact\.outputs\.matrix\) \}\}/);
   assert.match(
@@ -2093,10 +2850,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   );
   // Static checks (lint, format, OpenAPI, docs) run in every mode; the smoke
   // and the advisory job stay off in tests mode.
-  assert.match(
-    job("static-checks"),
-    /if: \$\{\{ needs\.impact\.outputs\.mode == 'docs' \|\| needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests' \}\}/,
-  );
+  assert.doesNotMatch(job("static-checks"), /^ {4}(?:needs|if):/m);
   for (const name of ["first-agent-smoke", "affected-packages"]) {
     assert.doesNotMatch(job(name), /'tests'/, name);
   }
@@ -2128,9 +2882,10 @@ async function gatedTestLanes(t, change, expected) {
   const root = bootstrap.checkout;
   const needs = {
     impact: { result: "success", outputs: { mode: "tests", lanes } },
-    audit: { result: "success", outputs: {} },
     "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
+    "image-lanes": { result: "skipped", outputs: {} },
+    "runtime-artifact": { result: "skipped", outputs: {} },
     "runtime-image-fixture": { result: "skipped", outputs: {} },
   };
   const gated = await runGate(root, needs, "tests", lanes);
@@ -2144,7 +2899,8 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "audit", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "pr-safe"]);
+  assert.deepEqual(needs["pr-safe"].lanes, ["postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {
@@ -2211,4 +2967,184 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const f = await fixture(t, ({ put }) => put(manifest.files[0].path, "// edited\n"), initial);
   const shallow = await shallowBootstrap(f);
   await settled([f.expectTests([lane]), shallow.expectTests([lane])]);
+  // The handoff proof must keep its real fixture lane and TypeScript check.
+  const handoff = await fixture(
+    t,
+    editTest("tests/integration/installation-handoff-k3d-real.test.ts"),
+    initial,
+  );
+  const handoffShallow = await shallowBootstrap(handoff);
+  const handoffLanes = ["checks-baseline-2", "k3d-fixture-configuration"];
+  await settled([handoff.expectTests(handoffLanes), handoffShallow.expectTests(handoffLanes)]);
+});
+
+test("shared runtime DAG selects only image consumers while other checks stay independent", async (t) => {
+  const workflow = loadYaml(".github/workflows/ci.yml");
+  const selected = (name, mode, matrix) =>
+    runInNewContext(
+      workflow.jobs[name].if
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replaceAll("outputs.has-matrix", 'outputs["has-matrix"]')
+        .replaceAll("outputs.has-images", 'outputs["has-images"]'),
+      {
+        needs: {
+          impact: {
+            outputs: {
+              mode,
+              "has-matrix": matrix.hasMatrix,
+              "has-images": matrix.hasImages,
+            },
+          },
+        },
+      },
+    );
+  assert.equal(workflow.jobs["pr-safe"].needs, "impact");
+  assert.deepEqual(workflow.jobs["image-lanes"].needs, ["impact", "runtime-artifact"]);
+  assert.deepEqual(workflow.jobs["first-agent-smoke"].needs, ["impact", "runtime-artifact"]);
+  assert.ok(!workflow.jobs["ci-required"].needs.includes("first-agent-smoke"));
+  for (const [mode, lanes, expected] of [
+    ["docs", "", [false, false, false, false]],
+    ["full", "", [true, true, true, true]],
+    ["tests", '["postgres"]', [true, false, false, false]],
+    ["tests", '["images-packaging"]', [false, true, true, false]],
+    ["tests", '["postgres","images-runtime-startup-2"]', [true, true, true, false]],
+  ]) {
+    const matrix = await buildMatrix(t, mode, lanes);
+    assert.equal(matrix.status, 0, matrix.stderr);
+    assert.deepEqual(
+      ["pr-safe", "image-lanes", "runtime-artifact", "first-agent-smoke"].map((name) =>
+        selected(name, mode, matrix),
+      ),
+      expected,
+      `${mode}: ${lanes}`,
+    );
+  }
+});
+
+test("shared runtime consumers omit idle builders and preserve source builders", () => {
+  const action = read(".github/actions/run-ci-lane/action.yml");
+  const expression = action
+    .match(/- id: builder[\s\S]*?\n {6}if: >-\n([\s\S]*?)\n {6}with:/)?.[1]
+    ?.trim()
+    .replaceAll("inputs.runtime-artifact-id", 'inputs["runtime-artifact-id"]');
+  assert.ok(expression, "the builder step has an explicit condition");
+  for (const [lane, profile, source, artifact] of [
+    ["images-runtime-startup", "full", true, false],
+    ["images-runtime-startup-2", "images", true, false],
+    ["images-runtime-startup-3", "images", true, false],
+    ["images-packaging", "full", true, true],
+    ["runtime-image-fixture", "full", true, true],
+    ["checks-browser", "baseline", false, false],
+    ["k3d-fixture-state", "k3d", false, false],
+    ["k3d-observability", "k3d", false, false],
+    ["docker-model", "full", false, false],
+    ["logging-collector", "images", false, false],
+  ]) {
+    for (const [id, expected] of [
+      ["", source],
+      ["123", artifact],
+    ]) {
+      assert.equal(
+        runInNewContext(expression, {
+          inputs: { lane, profile, "runtime-artifact-id": id },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+          contains: (values, value) => values.includes(value),
+          fromJSON: JSON.parse,
+        }),
+        expected,
+        `${lane}: ${id ? "shared artifact" : "source build"}`,
+      );
+    }
+  }
+});
+
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
+  const workflow = loadYaml(".github/workflows/full-integration.yml");
+  // This workflow uses !cancelled(), which disables GitHub's implicit success()
+  // guard. A failed producer must therefore be rejected explicitly.
+  const condition = workflow.jobs["image-lanes-same-sha"].if
+    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+    .replaceAll("needs.runtime-artifact", 'needs["runtime-artifact"]');
+  for (const producer of ["success", "failure", "cancelled", "skipped"]) {
+    for (const runAll of ["true", "false"]) {
+      assert.equal(
+        runInNewContext(condition, {
+          cancelled: () => false,
+          github: {
+            repository: "openclaw/openclaw-enterprise",
+            ref: "refs/heads/main",
+            ref_type: "branch",
+            event_name: "push",
+          },
+          needs: {
+            preflight: { result: "success", outputs: { run_all: runAll } },
+            "runtime-artifact": { result: producer },
+          },
+        }),
+        producer === "success" && runAll === "true",
+      );
+    }
+  }
+  const script = workflow.jobs["full-aggregate"].steps.find(
+    (step) => step.name === "Write selected job state",
+  ).run;
+  const directory = temporaryDirectorySync(t, "full-shared-runtime-gate-");
+  const execute = (lane, updates) => {
+    const needs = Object.fromEntries(
+      workflow.jobs["full-aggregate"].needs.map((name) => [name, { result: "success" }]),
+    );
+    Object.assign(needs, updates);
+    const result = spawnSync("bash", ["-e", "-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        RUNNER_TEMP: directory,
+        SELECTED_LANE: lane,
+        NEEDS_JSON: JSON.stringify(needs),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(readFileSync(join(directory, "needs.json"), "utf8"));
+  };
+  // Failed or cancelled compilation skips image tests; unrelated passing tests
+  // cannot replace their results when the aggregate checks coverage.
+  for (const result of ["failure", "cancelled"]) {
+    const output = execute("all", {
+      "runtime-artifact": { result },
+      "image-lanes-same-sha": { result: "skipped" },
+    });
+    assert.equal(output["runtime-artifact"].result, result);
+    assert.equal(output["image-lanes-same-sha"].result, "skipped");
+    assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
+    assert.equal(output["pr-safe-same-sha"].result, "success");
+    assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
+  }
+  for (const selection of ["all", "openshell"]) {
+    const output = execute(selection, { openshell: { result: "failure" } });
+    const lanes = ["openshell-policy", "openshell-installers"];
+    assert.deepEqual(output.openshell, { result: "failure", lanes });
+    for (const lane of lanes) {
+      assert.equal(output[lane], undefined);
+    }
+  }
+  const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
+  assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");
+  assert.equal(imageFailure["pr-safe-same-sha"].result, "success");
+  const unrelatedFailure = execute("all", { "pr-safe-same-sha": { result: "failure" } });
+  assert.equal(unrelatedFailure["image-lanes-same-sha"].result, "success");
+  assert.equal(unrelatedFailure["pr-safe-same-sha"].result, "failure");
+  assert.equal(unrelatedFailure.postgres, undefined);
+  assert.equal(unrelatedFailure["logging-collector"], undefined);
+  assert.ok(unrelatedFailure["pr-safe-same-sha"].lanes.includes("logging-collector"));
+  const logging = execute("logging-collector", { "logging-collector": { result: "failure" } });
+  assert.deepEqual(logging, {
+    preflight: { result: "success" },
+    "logging-collector": { result: "failure" },
+  });
+  const targeted = execute("docker-model", {
+    "runtime-artifact": { result: "skipped" },
+    "image-lanes-same-sha": { result: "skipped" },
+    "pr-safe-same-sha": { result: "skipped" },
+  });
+  assert.deepEqual(Object.keys(targeted).sort(), ["docker-model", "preflight"]);
 });

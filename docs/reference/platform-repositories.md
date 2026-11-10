@@ -1,9 +1,8 @@
 # Platform repository transactions
 
 The memory and PostgreSQL implementations of `PlatformStateStore` bind every
-repository handle to one `read` or `transact` callback. The controller uses this
-boundary for resource mutations and audit records; the worker shares it with
-its durable work queue.
+repository handle to one `read` or `transact` callback. The controller can save a resource change, record its audit event, and queue
+the corresponding operation for the worker in one transaction.
 
 ## Caller contract
 
