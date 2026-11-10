@@ -80,7 +80,7 @@ The credential owner approves the version. Compute checks the Service again at a
 
 Compute creates an egress NetworkPolicy for the revision’s OpenShell supervisor. For a Service, the policy permits the ClusterIP and Service port, and the selected Pods and target port, so it can apply before or after Kubernetes translates the address. For a private server, the policy permits one `/32` and port. The destination owner still controls ingress. Kubernetes combines the allowances from all policies that select a Pod. Stock OpenShell 0.1.6 maintains an allow-all egress policy for supervisors and suspends the workload if that managed policy changes. On this release, OpenShell checks the approved hostname, resolved address, port and POST route before injecting the key.
 
-An Agent that uses an ordinary private model credential cannot also use a separately protected Git connection. OCC refuses that combination before provisioning. For an ordinary private credential, OpenShell disables automatic Sandbox replacement. Start the replacement through OCC so it verifies the new supervisor before that supervisor can send an authenticated inference request.
+An Agent that uses an ordinary private model credential cannot also use a separately protected Git connection. OCC refuses that combination before provisioning. For an ordinary private credential, OpenShell disables automatic Sandbox replacement. If a serving Sandbox is lost, select **Deploy new version** on the Agent. OCC verifies the new supervisor before it can send an authenticated inference request.
 
 ## Deployment overrides
 
