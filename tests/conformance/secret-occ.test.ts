@@ -2,6 +2,22 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import type {
+  Agent,
+  AuthorizationRequest,
+  ComputeDriver,
+  Driver,
+  HarnessAuthBinding,
+  OpenClawConfigurationDocument,
+  PermissionAction,
+  ResourceKind,
+  Secret,
+  SecretBindings,
+  SecretMetadata,
+  SecretReference,
+} from "../../packages/contracts/src/index.ts";
+import type { ChannelCredentialReader } from "../../packages/contracts/src/drivers/channel/index.ts";
+import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -59,16 +75,19 @@ function configurationValues() {
 }
 
 /** The GATEWAY_TOOL_TOKEN binding of `ref`, as written and as stored. */
-const gatewayBinding = (ref) => ({ GATEWAY_TOOL_TOKEN: { source: ref } });
-const storedBinding = (ref) => ({ GATEWAY_TOOL_TOKEN: { source: ref, delivery: { type: "env" } } });
+const gatewayBinding = (ref: SecretReference) => ({ GATEWAY_TOOL_TOKEN: { source: ref } });
+const storedBinding = (ref: SecretReference) => ({
+  GATEWAY_TOOL_TOKEN: { source: ref, delivery: { type: "env" } },
+});
 
 /** A requested Secret the Namespace does not hold is a scope miss, never a driver 503. */
-const scopeMiss = (error) =>
+const scopeMiss = (error: unknown) =>
   error instanceof ScopeViolationError && !(error instanceof DependencyUnavailableError);
 
 /** A refused grant (optionally exactly `authorization`) that answers before any driver check. */
-function deniedFirst(authorization) {
-  return (error) => {
+function deniedFirst(authorization?: Pick<AuthorizationRequest, "action" | "resource">) {
+  return (error: unknown) => {
+    assert.ok(error instanceof Error);
     assert.ok(error instanceof AuthorizationDeniedError, `${error.name}: ${error.message}`);
     assert.ok(!(error instanceof DependencyUnavailableError));
     if (authorization !== undefined) {
@@ -79,11 +98,17 @@ function deniedFirst(authorization) {
 }
 
 /** A refusal after a Secret Driver change: still a 503, of `ErrorClass`, naming the fix. */
-function namesFix(ErrorClass, remedy, operation) {
-  return (error) => {
+function namesFix(
+  ErrorClass: abstract new (...args: never[]) => SecretDriverOwnershipError,
+  remedy: RegExp,
+  operation?: string,
+) {
+  return (error: unknown) => {
+    assert.ok(error instanceof Error);
     assert.ok(error instanceof ErrorClass, `${error.name}: ${error.message}`);
     assert.ok(error instanceof DependencyUnavailableError);
     if (operation !== undefined) {
+      assert.ok("operation" in error);
       assert.equal(error.operation, operation);
     }
     assert.match(error.message, remedy);
@@ -95,17 +120,59 @@ const configurationFix = namesFix(
   /update the Configuration's secretBindings/,
 );
 
+type MutableIAMState = { -readonly [K in keyof NativeIAMState]: NativeIAMState[K][number][] };
+type FixtureOptions = {
+  computeOverrides?: Partial<ComputeDriver>;
+  secretDriver?: ReturnType<typeof createTestSecretDriver>;
+  namespaceName?: string;
+  skipAgent?: boolean;
+  ready?: boolean;
+};
+type AgentUpdate = Partial<Parameters<OpenClawController["updateAgent"]>[1]>;
+type AgentCreate = Partial<Parameters<OpenClawController["createAgent"]>[1]>;
+type ConfigurationUpdate = Partial<Parameters<OpenClawController["updateConfiguration"]>[1]>;
+
+function assertInitialIAMState(
+  state: unknown,
+  principalIds: readonly string[],
+  issuer: string,
+): asserts state is MutableIAMState {
+  assert.deepEqual(state, {
+    identities: principalIds.map((id) => ({ kind: "principal", id, issuer, subject: id })),
+    groups: [],
+    memberships: [],
+    roles: [],
+    bindings: [],
+    restrictions: [],
+  });
+}
+
 /** A ready Namespace (unless `ready: false`) with one Agent (unless `skipAgent`) and helpers. */
-async function fixture(options = {}) {
-  const iamState = principalIAMState(
-    [administrator, deployer, noSecretOperator, secretConsumer, metadataReader, zeroGrant],
-    "secret-occ-conformance",
-  );
-  const grant = (subjectId, name, permissions, bindingName = name) =>
+async function buildFixture(options: FixtureOptions) {
+  const principalIds = [
+    administrator,
+    deployer,
+    noSecretOperator,
+    secretConsumer,
+    metadataReader,
+    zeroGrant,
+  ];
+  const issuer = "secret-occ-conformance";
+  const initialIAMState: unknown = principalIAMState(principalIds, issuer);
+  assertInitialIAMState(initialIAMState, principalIds, issuer);
+  const iamState = initialIAMState;
+  const grant = (
+    subjectId: string,
+    name: string,
+    permissions: Partial<Record<ResourceKind, PermissionAction[]>>,
+    bindingName = name,
+  ) =>
     grantRole(iamState, subjectId, {
       id: `secret-occ-${name}-role`,
       bindingId: `secret-occ-${bindingName}-binding`,
       permissions,
+      namespaceId: undefined,
+      resource: undefined,
     });
   grant(administrator, "administrator", {
     namespace: ["create", "read", "delete"],
@@ -151,13 +218,16 @@ async function fixture(options = {}) {
     name: options.namespaceName ?? "Secret OCC tenant",
   });
   const namespaceId = namespace.id;
-  const createSecret = (name, value = `synthetic-${name}`) =>
+  const createSecret = (name: string, value = `synthetic-${name}`) =>
     controller.createSecret(administrator, { namespaceId, name, value });
-  const updateSecret = (secretId, value, principalId = administrator) =>
+  const updateSecret = (secretId: string, value: string, principalId = administrator) =>
     controller.updateSecret(principalId, { namespaceId, secretId, value });
   const configure = (
-    secretBindings,
-    { values = configurationValues(), principalId = administrator } = {},
+    secretBindings?: SecretBindings,
+    {
+      values = configurationValues(),
+      principalId = administrator,
+    }: { values?: OpenClawConfigurationDocument; principalId?: string } = {},
   ) =>
     controller.createConfiguration(principalId, {
       namespaceId,
@@ -165,48 +235,60 @@ async function fixture(options = {}) {
       values,
       ...(secretBindings === undefined ? {} : { secretBindings }),
     });
-  const reconfigure = (configurationId, fields = {}, principalId = administrator) =>
+  const reconfigure = (
+    configurationId: string,
+    fields: ConfigurationUpdate = {},
+    principalId = administrator,
+  ) =>
     controller.updateConfiguration(principalId, {
       namespaceId,
       configurationId,
       values: configurationValues(),
       ...fields,
     });
-  const createAgent = (name, configurationId, fields = {}, principalId = administrator) =>
-    controller.createAgent(principalId, { namespaceId, name, configurationId, ...fields });
+  const createAgent = (
+    name: string,
+    configurationId: string,
+    fields: AgentCreate = {},
+    principalId = administrator,
+  ) => controller.createAgent(principalId, { namespaceId, name, configurationId, ...fields });
   const baseConfiguration = options.skipAgent
     ? undefined
     : await configure(undefined, { values: {} });
   const agent =
     baseConfiguration && (await createAgent("Secret owner agent", baseConfiguration.id));
   /** Updates the fixture Agent (or `fields.agentId`), keeping its first Configuration by default. */
-  const updateAgent = (principalId, fields = {}) =>
-    controller.updateAgent(principalId, {
+  const updateAgent = (principalId: string, fields: AgentUpdate = {}) => {
+    assert.ok(agent);
+    return controller.updateAgent(principalId, {
       namespaceId,
       agentId: agent.id,
       configurationId: agent.configurationId,
       ...fields,
     });
-  const deploy = (principalId = administrator) =>
-    controller.deployAgent(
+  };
+  const deploy = (principalId = administrator) => {
+    assert.ok(agent);
+    return controller.deployAgent(
       principalId,
       { namespaceId, agentId: agent.id },
       resolveApprovedDevelopmentHarness,
     );
+  };
   /** Assigns the Agent a new Configuration that binds GATEWAY_TOOL_TOKEN to `secret`. */
-  async function assignBound(secret, fields = {}) {
+  async function assignBound(secret: Pick<SecretMetadata, "ref">, fields: AgentUpdate = {}) {
     const configuration = await configure(gatewayBinding(secret.ref));
     await updateAgent(administrator, { configurationId: configuration.id, ...fields });
     return configuration;
   }
-  function select(driver) {
+  function select<T extends Driver>(driver: T) {
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
     return driver;
   }
   /** The Installation re-selects its Secret Driver; Secrets stored so far keep the old one. */
   const replaceSecretDriver = () => select(createTestSecretDriver({ id: "secret-replacement" }));
-  const denyOperate = (resourceId) =>
+  const denyOperate = (resourceId: string) =>
     iamState.restrictions.push({
       id: `deny-operate-${resourceId}`,
       namespaceId,
@@ -216,7 +298,7 @@ async function fixture(options = {}) {
       effect: "deny",
     });
 
-  function grantAgentSecretOperate(targetAgent, secret) {
+  function grantAgentSecretOperate(targetAgent: Agent, secret: Pick<SecretMetadata, "id">) {
     if (!iamState.identities.some(({ id }) => id === targetAgent.servicePrincipalId)) {
       iamState.identities.push({
         kind: "service_principal",
@@ -268,7 +350,7 @@ async function fixture(options = {}) {
     grantAgentSecretOperate,
     iamState,
     makeReady,
-    missingRef: { kind: "secret", namespaceId, id: missingSecretId },
+    missingRef: { kind: "secret", namespaceId, id: missingSecretId } satisfies SecretReference,
     namespace,
     reconfigure,
     replaceSecretDriver,
@@ -277,6 +359,19 @@ async function fixture(options = {}) {
     updateAgent,
     updateSecret,
   };
+}
+
+type Fixture = Awaited<ReturnType<typeof buildFixture>>;
+function fixture(options: FixtureOptions & { skipAgent: true }): Promise<Fixture>;
+function fixture(
+  options?: FixtureOptions & { skipAgent?: false },
+): Promise<Fixture & { agent: Agent }>;
+async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
+  const result = await buildFixture(options);
+  if (!options.skipAgent) {
+    assert.ok(result.agent);
+  }
+  return result;
 }
 
 test("Secret storage requires a ready Namespace and no Agent owner before any gateway deployment", async () => {
@@ -481,8 +576,10 @@ test("deployment admission stamps immutable native logging after sandbox policy"
     implementation: "test-sandbox",
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["filesystem"],
-    configureAgent(values) {
-      return { ...values, sandboxed: true, logging: { ...values.logging, level: "error" } };
+    configureAgent(values: OpenClawConfigurationDocument) {
+      const logging = values.logging;
+      assert.ok(typeof logging === "object" && logging !== null && !Array.isArray(logging));
+      return { ...values, sandboxed: true, logging: { ...logging, level: "error" } };
     },
     async cleanup() {},
   });
@@ -547,7 +644,7 @@ test("Secret binding admission fails closed for missing selection and backend id
   f.select(createTestSecretDriver({ id: "secret-unselected" }));
   await assert.rejects(deploy(), DependencyUnavailableError);
   controller.selectDriver("secret", secretDriver.id);
-  const foreignUid = (matches) =>
+  const foreignUid = (matches: (stored: Secret) => boolean) =>
     secretDriver.setResolveOverride((stored) =>
       matches(stored) ? { ...stored.backendRef, uid: "uid-foreign" } : stored.backendRef,
     );
@@ -604,7 +701,9 @@ test("failed Secret updates do not roll back or leak the old value", async () =>
       !error.message.includes("sk-test-v2"),
   );
   assert.equal(secretDriver.valueFor(secret), "sk-test-v1");
-  const sent = JSON.stringify(secretDriver.calls.at(-1).secret);
+  const lastCall = secretDriver.calls.at(-1);
+  assert.ok(lastCall && "secret" in lastCall);
+  const sent = JSON.stringify(lastCall.secret);
   assert.equal(sent.includes("sk-test-v1"), false);
   assert.equal(sent.includes("sk-test-v2"), false);
 });
@@ -615,17 +714,17 @@ test("failed Secret updates do not roll back or leak the old value", async () =>
  */
 function directoryLookup() {
   const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
-  return (input) =>
+  return (input: Partial<Parameters<OpenClawController["lookupChannelDirectory"]>[2]>) =>
     controller.lookupChannelDirectory(administrator, "ns_directory", {
       secretId: "secret_directory",
       kind: "users",
       ...input,
     });
 }
-const lookupRefused = (error) =>
+const lookupRefused = (error: unknown) =>
   error instanceof ScopeViolationError &&
   error.message === "The channel directory lookup input is invalid.";
-const lookupAdmitted = (error) =>
+const lookupAdmitted = (error: unknown) =>
   error instanceof DependencyUnavailableError &&
   error.message === "The selected authorization Driver is unavailable.";
 
@@ -660,7 +759,7 @@ test("channel directory lookup refuses saved IDs with C0 controls or DEL before 
 test("channel directory lookup measures the query and saved IDs in characters, as the contract does", async () => {
   const lookup = directoryLookup();
   // Each emoji is one character (code point) but two UTF-16 code units; the contract allows 200.
-  const emoji = (count) => "\u{1f600}".repeat(count);
+  const emoji = (count: number) => "\u{1f600}".repeat(count);
   await assert.rejects(lookup({ query: emoji(200) }), lookupAdmitted, "200-character query");
   await assert.rejects(lookup({ query: emoji(201) }), lookupRefused, "201-character query");
   await assert.rejects(lookup({ ids: ["U0001", emoji(200)] }), lookupAdmitted, "200-character ID");
@@ -682,8 +781,8 @@ test("Secret values are checked before the Secret Driver sees them, on create an
     ["lone \ud800 surrogate", "INVALID_VALUE"],
     [`${largest}x`, "TOO_LONG"],
     ["\u00e9".repeat(32_769), "TOO_LONG"],
-  ]) {
-    const invalid = (error) => error instanceof SecretValueError && error.code === code;
+  ] as const) {
+    const invalid = (error: unknown) => error instanceof SecretValueError && error.code === code;
     await assert.rejects(createSecret(`rejected-${code}`, value), invalid);
     await assert.rejects(updateSecret(secret.id, value), invalid);
   }
@@ -700,13 +799,12 @@ test("a Secret whose metadata does not commit leaves no backend copy behind", as
   const kept = await createSecret("model-key", "sk-test-kept");
   // The duplicate name is refused by State after the driver stored the second value.
   await assert.rejects(createSecret("model-key", "sk-test-orphan"), ResourceConflictError);
-  const [, orphan] = secretDriver.calls.filter(({ operation }) => operation === "create");
+  const [, orphan] = secretDriver.calls.filter((call) => call.operation === "create");
+  assert.ok(orphan);
   assert.equal(orphan.value, "sk-test-orphan");
   assert.equal(secretDriver.has(orphan.identity), false);
   assert.deepEqual(
-    secretDriver.calls
-      .filter(({ operation }) => operation === "delete")
-      .map(({ secret }) => secret.id),
+    secretDriver.calls.filter((call) => call.operation === "delete").map(({ secret }) => secret.id),
     [orphan.identity.id],
   );
   assert.equal(secretDriver.valueFor(kept), "sk-test-kept");
@@ -721,9 +819,9 @@ test("after a Secret Driver change a Secret still reads, but update and delete n
   await f.configure(gatewayBinding(bound.ref));
   // A reconfigured Installation selects a new driver; it must not write the old driver's Secret.
   const replacement = f.replaceSecretDriver();
-  const update = (principalId, secretId = secret.id) =>
+  const update = (principalId: string, secretId = secret.id) =>
     f.updateSecret(secretId, "sk-test-rotated", principalId);
-  const remove = (principalId, secretId = secret.id) =>
+  const remove = (principalId: string, secretId = secret.id) =>
     controller.deleteSecret(principalId, namespace.id, secretId);
 
   // Reads return OCC metadata and never call a driver.
@@ -787,7 +885,7 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
   const stored = async () =>
     (await controller.getAgent(administrator, namespace.id, agent.id)).harnessAuth;
   const oldHarnessAuth = await stored();
-  assert.equal(oldHarnessAuth.method, "api_key");
+  assert.ok(oldHarnessAuth?.method === "api_key");
 
   // The Installation re-selects its Secret Driver; the old Harness Secret stays stored.
   f.replaceSecretDriver();
@@ -806,7 +904,7 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
   // Any update still needs operate on the bound Secret, denied before any lookup, including
   // the lookup of a requested Secret that does not exist.
   f.denyOperate(oldHarnessAuth.source.id);
-  const missing = { method: "api_key", source: f.missingRef };
+  const missing = { method: "api_key", source: f.missingRef } satisfies HarnessAuthBinding;
   for (const fields of [{}, { harnessAuth: null }, { harnessAuth: missing }]) {
     await assert.rejects(
       updateAgent(administrator, fields),
@@ -833,7 +931,7 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
 
   // A Secret stored through the new driver binds as usual.
   const current = await f.createSecret("replacement-harness-key");
-  const harnessAuth = { method: "api_key", source: current.ref };
+  const harnessAuth = { method: "api_key", source: current.ref } satisfies HarnessAuthBinding;
   assert.deepEqual((await updateAgent(administrator, { harnessAuth })).harnessAuth, harnessAuth);
 });
 
@@ -844,7 +942,7 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
   grantAgentSecretOperate(agent, old);
   // With runtime Harness authentication, only the Configuration binds an old-driver Secret.
   const configuration = await f.assignBound(old, { harnessAuth: { method: "runtime" } });
-  const update = (principalId, fields = {}) =>
+  const update = (principalId: string, fields: AgentUpdate = {}) =>
     f.updateAgent(principalId, { configurationId: configuration.id, ...fields });
   const replacement = f.replaceSecretDriver();
 
@@ -906,13 +1004,16 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
 });
 
 /** A Channel Driver that reads one bound Secret through OCC when `binding` is set. */
-function createTestChannelDriver(binding) {
+function createTestChannelDriver(binding?: string) {
   const driver = {
     id: "channel-test",
-    capability: "channel",
+    capability: "channel" as const,
     implementation: "test-channel",
     binding,
-    async validateCredentials(_values, withSecret) {
+    async validateCredentials(
+      _values: Readonly<Record<string, unknown>>,
+      withSecret: ChannelCredentialReader,
+    ) {
       if (driver.binding !== undefined) {
         await withSecret(driver.binding, "/channels/test/token", async () => {});
       }
@@ -942,6 +1043,8 @@ test("after a Secret Driver change Agent provisioning names the fix for its old-
   grantRole(iamState, administrator, {
     id: "secret-occ-installation-administrator-role",
     permissions: { installation: ["administer"] },
+    namespaceId: undefined,
+    resource: undefined,
   });
   Object.assign(configurationDriver, {
     async createExact() {
@@ -959,7 +1062,7 @@ test("after a Secret Driver change Agent provisioning names the fix for its old-
   const currentKey = await createSecret("current-model-key");
 
   let request = 0;
-  const provision = (token, key) =>
+  const provision = (token: Pick<SecretMetadata, "ref">, key: Pick<SecretMetadata, "ref">) =>
     controller.provisionAgent(administrator, {
       namespaceId: namespace.id,
       requestId: `req_secret_occ_${(request += 1)}`,
@@ -1022,16 +1125,22 @@ test("an Agent update needs read on its current ServiceAccount, before any looku
   grantRole(iamState, administrator, {
     id: "secret-occ-service-account-role",
     permissions: { service_account: ["create", "read"] },
+    namespaceId: undefined,
+    resource: undefined,
   });
   const account = await controller.createServiceAccount(administrator, {
     namespaceId: namespace.id,
     name: "harness-account",
   });
-  const accountRef = { kind: "service_account", namespaceId: namespace.id, id: account.id };
+  const accountRef = {
+    kind: "service_account",
+    namespaceId: namespace.id,
+    id: account.id,
+  } as const;
   await updateAgent(administrator, { harnessAuth: { method: "codex_pat", source: accountRef } });
 
   // metadataReader may update the Agent but not read the account it binds.
-  const missing = { method: "api_key", source: missingRef };
+  const missing = { method: "api_key", source: missingRef } satisfies HarnessAuthBinding;
   for (const fields of [{}, { harnessAuth: null }, { harnessAuth: missing }]) {
     await assert.rejects(
       updateAgent(metadataReader, fields),

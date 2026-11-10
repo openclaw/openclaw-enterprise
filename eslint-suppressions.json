@@ -77,11 +77,6 @@
       "count": 1
     }
   },
-  "tests/integration/controller-lifecycle.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "tests/integration/docker-compute-real.test.mjs": {
     "preserve-caught-error": {
       "count": 2
