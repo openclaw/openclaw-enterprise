@@ -31,6 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -858,7 +859,7 @@ function addLiveGroup(pgid) {
 // gets SIGKILL once the grace period is over, and whenever the runner exits:
 // anything still in its group then has outlived its file. ENOBUFS discards the
 // rest of the output, so it kills the group at once.
-function runNode(args, { cwd, env, timeout }) {
+function runNode(args, { cwd, env, timeout, onProgress }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
@@ -902,18 +903,35 @@ function runNode(args, { cwd, env, timeout }) {
     }
     child.stdin.end();
     child.stderr.resume();
+    const readProgress = boundedProgressLines((line) => {
+      // Only this small closed record reaches the live log. Ordinary reporter
+      // output still waits for final accounting and failure redaction below.
+      try {
+        const event = JSON.parse(line);
+        const progress =
+          event?.type === "test:progress" ? openShellProgress(event.data) : undefined;
+        if (progress) {
+          onProgress(progress);
+        }
+      } catch {
+        // Final parsing owns malformed reporter output and its failure result.
+      }
+    });
     child.stdout.on("data", (chunk) => {
       if (error?.code === "ENOBUFS") {
         return;
       }
       if (bytes + chunk.length > maxReporterBytes) {
-        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        const admitted = chunk.subarray(0, maxReporterBytes - bytes);
+        chunks.push(admitted);
         bytes = maxReporterBytes;
+        readProgress(admitted.toString("utf8"));
         stop("ENOBUFS");
         return;
       }
       chunks.push(chunk);
       bytes += chunk.length;
+      readProgress(chunk.toString("utf8"));
     });
     const finish = (status, signal) => {
       if (settled) {
@@ -1466,6 +1484,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
+        onProgress: ({ kind, stage, outcome }) => {
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
