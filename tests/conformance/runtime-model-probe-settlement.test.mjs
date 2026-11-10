@@ -359,6 +359,87 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   }
 });
 
+test("an OpenClaw probe timeout is classified by CPU wait like the cap (finding 2675)", () => {
+  // --probe-timeout bounds OpenClaw's local preparation too, so under CPU
+  // starvation its own timer can fire before the wrapper cap. Run the real
+  // classifier and probe together: a starved run must report CPU starvation,
+  // whichever timer fired, and an unstarved one a timeout.
+  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+    "function probeOpenClawAuthenticationFailure() {",
+  );
+  const end =
+    GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+      "\n}\n",
+      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe("),
+    ) + 2;
+  assert.ok(begin >= 0 && end > begin);
+  const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end);
+  const classify = (spawnResult, pressureWaitUs) => {
+    let spawned = false;
+    const fs = {
+      readFileSync(path) {
+        if (path.endsWith("/cpu.max")) {
+          return "100000 100000\n";
+        }
+        if (path.endsWith("/cpu.pressure")) {
+          return `some avg10=0.00 total=${spawned ? pressureWaitUs : 0}\n`;
+        }
+        if (path.endsWith("/cpu.stat")) {
+          return "nr_throttled 0\nthrottled_usec 0\n";
+        }
+        throw new Error(`unexpected path ${path}`);
+      },
+      mkdtempSync: () => "/owned",
+      mkdirSync() {},
+      writeFileSync() {},
+      rmSync() {},
+    };
+    const spawnSync = () => {
+      spawned = true;
+      return spawnResult;
+    };
+    const failure = vm.runInNewContext(helper + "\nprobeOpenClawAuthenticationFailure()", {
+      Date,
+      JSON,
+      Math,
+      Number,
+      require: (name) => (name === "node:fs" ? fs : { spawnSync }),
+      process: {
+        env: {
+          OPENCLAW_HARNESS_MODEL: "fixture/model",
+          OPENCLAW_HARNESS_PROVIDER: "fixture",
+          OPENCLAW_HARNESS_CREDENTIAL_ENV: "FIXTURE_VALUE",
+          FIXTURE_VALUE: "synthetic",
+          OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({
+            agents: { defaults: { model: "fixture/model" } },
+          }),
+        },
+      },
+      console: { error() {} },
+    });
+    return failure?.code;
+  };
+  const openclawTimeout = {
+    status: 0,
+    stdout: JSON.stringify({
+      auth: {
+        probes: {
+          results: [
+            { provider: "fixture", model: "fixture/model", source: "env", status: "timeout" },
+          ],
+        },
+      },
+    }),
+  };
+  const cap = { error: { code: "ETIMEDOUT" } };
+  // Any positive elapsed time in this synchronous run is far below an hour of wait.
+  const starved = 3_600_000_000;
+  for (const result of [openclawTimeout, cap]) {
+    assert.equal(classify(result, starved), "MODEL_PROBE_CPU_STARVED");
+    assert.equal(classify(result, 0), "MODEL_PROBE_TIMEOUT");
+  }
+});
+
 // The generated upfront credential check, run with a recording spawnSync. `status`
 // is the child's exit status, or its whole `{ status, stdout }` result.
 function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {

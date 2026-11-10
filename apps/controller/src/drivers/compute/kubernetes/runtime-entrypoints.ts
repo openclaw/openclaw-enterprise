@@ -2280,13 +2280,15 @@ function probeExitFailure({ error, status, signal }) {
 //
 // The probe is a whole embedded agent run. Its local work (Node and OpenClaw
 // boot, SQLite session state, cleanup) took about 16 CPU-seconds on the runtime
-// image, on one core however many it may use; --probe-timeout bounds the model
-// turn itself. A fixed 30-second cap let the example 500m CPU limit starve that
+// image, on one core however many it may use. --probe-timeout bounds OpenClaw's
+// whole isolated completion, its local agent preparation included, not only the
+// model turn. A fixed 30-second cap let the example 500m CPU limit starve that
 // local work into MODEL_PROBE_TIMEOUT before the turn finished. The cap is now
-// the 15-second turn, 5 seconds of slack, and 45 CPU-seconds of local work at
+// the 15-second timeout, 5 seconds of slack, and 45 CPU-seconds of local work at
 // the container's CPU limit (cgroup cpu.max, at most one core), at most 600 s.
-// A probe that still reaches it after waiting for CPU for over a quarter of the
-// time reports MODEL_PROBE_CPU_STARVED: a restart would get the same CPU. The
+// A probe that reaches the cap, or whose OpenClaw status is "timeout", after
+// waiting for CPU for over a quarter of the time reports
+// MODEL_PROBE_CPU_STARVED: a restart would get the same CPU (finding 2675). The
 // wait is the larger of the cgroup cpu.pressure delta (throttling and node
 // contention) and the cpu.stat throttled time (throttling only), each used only
 // when both of its samples are valid: on one CI VM pressure read 8x low and hid
@@ -2452,7 +2454,7 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
-    if (status === "timeout") return "MODEL_PROBE_TIMEOUT";
+    if (status === "timeout") return "CAP";
     return { ...probeFailure("PROBE_STATUS", ["format", "rate_limit", "billing", "unknown", "no_model"].includes(status) ? status : "other"), ...providerErrorSummary(results[0].error) };
   } catch {
     return probeFailure("WRAPPER_ERROR");
