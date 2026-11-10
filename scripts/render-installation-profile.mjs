@@ -2248,6 +2248,16 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
+  const backendIds = new Set();
+  for (const backend of installation.backend) {
+    if (backendIds.has(backend.id)) {
+      diagnostics.errors.push(
+        `Generated Backend IDs must be unique; repository.backendId ${JSON.stringify(backend.id)} is already used by another configured Backend.`,
+      );
+    }
+    backendIds.add(backend.id);
+  }
+
   // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
   // the DNS egress rule needs every merged label. A null deletes the default for a selector
   // without it. `installation` keeps the exact selector, as Compute does not merge.
