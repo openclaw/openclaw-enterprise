@@ -114,6 +114,10 @@ export async function createRunEvidence(t, setup, progress) {
     await saveLedger();
     t.diagnostic(`egress-connected ${phase} ${JSON.stringify(details)}`);
   };
+  const recordFailure = async (failure) => {
+    ledger.failure = failure;
+    await saveLedger();
+  };
   const credentials = {
     initial: `SYNTHETIC-OCE-EGRESS-${runId}-v1`,
     rotated: `SYNTHETIC-OCE-EGRESS-${runId}-v2`,
@@ -217,6 +221,7 @@ export async function createRunEvidence(t, setup, progress) {
     directory,
     ledger,
     checkpoint,
+    recordFailure,
     credentials,
     protect,
     excludesCredentials,

@@ -26,21 +26,10 @@ import {
   syntheticResponsesEvents,
 } from "../fixtures/synthetic-egress-provider.mjs";
 
+import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
+
 const inputsPath = process.env.OCC_TEST_EGRESS_CONNECTED_INPUTS;
 const selected = process.env.OCC_TEST_EGRESS_CONNECTED === "1" || inputsPath !== undefined;
-
-function safeConnectedFailure(error, stage) {
-  // Assertions and subprocess errors may embed response bytes. Keep a source
-  // location and the durable phase, never raw error payloads or an unsafe cause.
-  const location =
-    String(error.stack).match(
-      /(?:agent-openshell-static-egress-k3d-real\.test|egress-[\w.-]+|openshell-kubernetes-real)\.mjs:\d+:\d+/,
-    )?.[0] ?? "external-operation";
-  const kind = error.code === "ERR_ASSERTION" ? "assertion" : "operation";
-  return new Error(
-    `Connected egress ${kind} failed at ${stage} (${location}); inspect the per-run ledger`,
-  );
-}
 
 /**
  * @typedef {Awaited<ReturnType<typeof arrangeRealPrerequisites>>} Prerequisites
@@ -60,6 +49,7 @@ test(
   },
   async (t) => {
     const progress = { stage: "input-preflight" };
+    let recordFailure;
     try {
       const setup = await arrangeRealPrerequisites(t, progress, inputsPath, {
         wholeExecution: true,
@@ -70,6 +60,7 @@ test(
         "run this qualification from the selected candidate checkout",
       );
       const evidence = await createRunEvidence(t, setup, progress);
+      recordFailure = evidence.recordFailure;
       const stack = await observePreparedStack(t, setup, evidence, progress);
       const owned = await registerCleanupAndStartProvider(t, setup, stack, evidence);
       const deployment = await deployProtectedAgent(setup, stack, evidence, owned);
@@ -89,7 +80,7 @@ test(
         "one startup probe, seventeen measured Codex sends and one managed sibling send; no retries",
       );
     } catch (error) {
-      throw safeConnectedFailure(error, progress.stage);
+      throw await safeConnectedFailure(error, progress.stage, recordFailure);
     }
   },
 );
