@@ -139,8 +139,22 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       assertStderrMatch(prepared.stderr, /synthetic import stop/);
       assert.equal(imports, 1);
       const calls = await commands.commands();
-      const builds = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
-      assert.equal(builds.length, 2, "prepare both the controller and runtime from this checkout");
+      const builds = calls.filter(({ args }) => args[0] === "buildx" && args[1] === "build");
+      assert.equal(builds.length, 4, "probe and load both checkout images");
+      for (const role of ["controller", "runtime"]) {
+        const roleBuilds = builds.filter(
+          ({ args }) => args.includes("--target") === (role === "controller"),
+        );
+        assert.equal(roleBuilds.filter(({ args }) => args.includes("--load")).length, 1, role);
+        assert.equal(
+          roleBuilds.filter(
+            ({ args }) =>
+              args[args.indexOf("--output") + 1] === "type=image,push=false,store=false",
+          ).length,
+          1,
+          role,
+        );
+      }
       for (const { args } of builds) {
         const role = args.includes("--target") ? "controller" : "runtime";
         assert.equal(
@@ -150,7 +164,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
       }
       assert.equal(
-        calls.some(({ args }) => args.includes("--cache-to")),
+        calls.some(({ args }) =>
+          args.some((arg) => arg === "--cache-to" || arg.startsWith("--cache-to=")),
+        ),
         false,
         "preparation must not export a cache, including in a separate build",
       );
