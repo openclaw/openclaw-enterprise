@@ -152,6 +152,7 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
     schemaVersion: 1,
     sourceType: {
       type: "openai",
+      staticKeyBaseUrlConfig: "authorized_base_url",
       config: [
         {
           name: "authorized_base_url",
@@ -184,9 +185,12 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
     routes(source, binding, harnessConfiguration) {
       this.normalizeConfig(source.config);
       const modelProvider = savedModelProvider(harnessConfiguration);
-      requireModelSourceDestination(source.config, modelProvider);
+      requireModelSourceDestination(source.config, modelProvider, source.staticKeyGrant);
       const base = new URL(modelProviderBaseUrl(modelProvider));
-      return ["responses", "chat/completions"].map((operation) =>
+      const operations = source.staticKeyGrant
+        ? [source.staticKeyGrant.protocol === "openai-responses" ? "responses" : "chat/completions"]
+        : ["responses", "chat/completions"];
+      return operations.map((operation) =>
         immutableCopy({
           route: {
             id: `${binding.binding.id}/${operation}`,

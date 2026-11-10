@@ -265,6 +265,10 @@ export const agents = occSchema.table(
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
     configurationId: text("configuration_id").notNull(),
+    modelProviderId: text("model_provider_id").references(() => modelProviders.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
@@ -295,6 +299,9 @@ export const agents = occSchema.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    index("agents_model_provider")
+      .on(table.modelProviderId)
+      .where(sql`${table.modelProviderId} IS NOT NULL`),
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
     unique("agents_namespace_id_id_service_principal_id_unique").on(

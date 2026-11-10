@@ -251,6 +251,7 @@ export interface AgentRepository extends AgentReadRepository {
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
     pluginDriver?: PluginDriverIdentity | null,
+    modelProviderId?: string | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -3654,6 +3655,7 @@ function repositories(
       nextCredentialSources,
       gatewayManagedMode,
       nextPluginDriver,
+      modelProviderId,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3719,11 +3721,14 @@ function repositories(
         pluginDriver: _currentPluginDriver,
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
+        modelProviderId: currentModelProviderId,
         credentialSources: _currentCredentialSources,
         ...withoutPlugins
       } = current;
+      const nextProvider = modelProviderId === undefined ? currentModelProviderId : modelProviderId;
       const updated = immutableCopy({
         ...withoutPlugins,
+        ...(nextProvider == null ? {} : { modelProviderId: nextProvider }),
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,

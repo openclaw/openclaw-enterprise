@@ -61,6 +61,33 @@ export async function verifyQaHarnessOverrides(context, artifacts, presets) {
       });
     }),
   );
+  const template = await f.api("POST", "/connection-templates", {
+    displayName: "QA inference key",
+    mode: "static_bearer",
+    baseUrl: endpoints[0],
+    protocol: "openai-responses",
+  });
+  const namedProvider = await f.api("POST", "/model-providers", {
+    displayName: "QA inference",
+    baseUrl: endpoints[0],
+    protocol: "openai-responses",
+    connectionTemplateId: template.id,
+    models: [
+      {
+        id: model,
+        contextWindow: 8192,
+        maxTokens: 512,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ],
+  });
+  const namedKey = await f.api("POST", `${root}/credential-sources`, {
+    name: "named-inference",
+    type: "openai",
+    secrets: sources[0].secrets,
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: template.current.version,
+  });
   const role = await f.api("POST", `${root}/iam/roles`, {
     name: "harness-destination-use",
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
@@ -98,6 +125,7 @@ export async function verifyQaHarnessOverrides(context, artifacts, presets) {
       ["standard", 0, true],
       ["evaluation", 1, true],
       ["inherited", 0, false],
+      ["named", 0, false],
     ]) {
       const rendered = renderPresetTemplate(template.template, {
         name: `qa-${f.suffix}-${preset}-${name}`,
@@ -111,10 +139,11 @@ export async function verifyQaHarnessOverrides(context, artifacts, presets) {
         kind: "agent",
         values,
       });
-      const source = sources[sourceIndex];
+      const source = name === "named" ? namedKey : sources[sourceIndex];
       const agent = await f.api("POST", `${root}/agents`, {
         name: rendered.agent.name,
         configurationId: configuration.id,
+        ...(name === "named" ? { modelProviderId: namedProvider.id } : {}),
         executionMode: "dedicated",
         harnessAuth: { method: "credential_source", sourceId: source.id },
         credentialSources: [{ sourceId: source.id }],
@@ -124,7 +153,7 @@ export async function verifyQaHarnessOverrides(context, artifacts, presets) {
       await f.api("POST", `${root}/agents/${agent.id}/runtime-credentials`, {});
       agents.push({ agent, sourceIndex, explicit });
     }
-    // Three real runtimes coexist; each uses its own source and saved destination.
+    // One Agent selects a saved provider while the others exercise inline overrides and inheritance.
     await Promise.all(
       agents.map(async ({ agent, sourceIndex, explicit }) => {
         await deployQaAgentAndWait(f, agent, {

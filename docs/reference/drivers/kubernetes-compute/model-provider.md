@@ -49,6 +49,25 @@ or workload changes. An unavailable endpoint does not cause fallback to a defaul
 Stop the Agent or withdraw its credential authorization to revoke access; changing
 a default is not revocation.
 
+## Deploy with a named provider
+
+Set `modelProviderId` on the Agent and select the model in Agent Configuration.
+Use the ID of a Namespace credential created from the provider's static-key
+Connection Template in `harnessAuth` and `credentialSources`. Deploy without
+`harnessOverrides`. Admission refuses a credential approved for a different
+template, destination or API format, even if the Secret is the same.
+
+Dedicated Codex accepts Responses. Dedicated OpenClaw also accepts Chat
+Completions and requires context and output limits and costs for each selected
+model. The revision saves the provider ID, resolved Harness settings, and the
+selected rows from the provider catalog. Updating that catalog affects future
+admissions. Existing revisions keep their saved values.
+
+The OpenShell Gateway installs a provider profile for the approved POST operation.
+The protected request sender admits one route for that operation. The sender needs
+an existing route to the endpoint. A catalog entry does not change Installation
+network policy.
+
 ## Deployment overrides
 
 Ordinary and first-deployment requests accept optional `harnessOverrides`:

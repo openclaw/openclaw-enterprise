@@ -229,6 +229,7 @@ import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts"
 import {
   modelProviderBaseUrl,
   normalizeHarnessSettings,
+  resolveKubernetesModelProvider,
   savedModelProvider,
   DEFAULT_MODEL_BASE_URL,
   modelProviderReferenceSetting,
@@ -11509,6 +11510,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       requireModelSourceDestination(
         source.config,
         savedModelProvider(revision.harness.configuration),
+        source.staticKeyGrant,
       );
     }
     const sourceId = revision.harnessAuth.sourceId;
@@ -14505,6 +14507,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
+  readonly resolveModelProvider = resolveKubernetesModelProvider;
+
   normalizeHarnessOverrides(overrides: Readonly<Record<string, unknown>>) {
     return normalizeHarnessSettings(overrides);
   }
@@ -14554,7 +14558,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const provider = savedModelProvider(harness.configuration);
     for (const source of sources) {
       if (source.type === "openai") {
-        requireModelSourceDestination(source.config, provider);
+        requireModelSourceDestination(source.config, provider, source.staticKeyGrant);
       }
     }
   }

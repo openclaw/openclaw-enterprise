@@ -42,6 +42,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `namespace_id`
 - `name`
 - `configuration_id`
+- `model_provider_id` (optional Installation provider selected for deployment)
 - `backend_id`
 - `execution_mode`
 - `gateway_managed_mode`

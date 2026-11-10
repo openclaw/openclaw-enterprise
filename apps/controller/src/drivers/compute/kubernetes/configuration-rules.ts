@@ -477,7 +477,7 @@ type Assign = (value: unknown) => void;
  * With `rewrite`, each string reference except a media or voice model is also replaced in place
  * by what `rewrite` returns (a policy map keeps its key order); other values are left as written.
  */
-function modelSelections(
+export function modelSelections(
   configuration: Readonly<OpenClawConfigurationDocument>,
   rewrite?: ModelSelectionRewrite,
 ): ModelSelection[] {
