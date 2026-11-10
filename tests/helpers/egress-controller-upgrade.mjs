@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { Check } from "typebox/value";
+import { CredentialSourceId } from "../../packages/contracts/src/index.ts";
 import { assertConnectedResponse, protectedSourceBody } from "./egress-connected-inputs.mjs";
 import { selectLiveControllerPods } from "./egress-installed-stack.mjs";
 import { waitFor } from "./wait-for.mjs";
@@ -433,6 +435,7 @@ export async function observeControllerUpgrade(
       // the following expected-409 assertion fails; never replay the request.
       if (response.status === 201) {
         const source = assertConnectedResponse(response, 201);
+        assert.ok(Check(CredentialSourceId, source?.id), "cleanup requires a valid source ID");
         evidence.ledger.resources.push({ kind: "credential-sources", id: source.id });
         delete evidence.ledger.pendingCreate;
       }
