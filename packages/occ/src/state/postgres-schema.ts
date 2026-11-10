@@ -1244,6 +1244,28 @@ export const auditEvents = occSchema.table(
   ],
 );
 
+/**
+ * Evidence the worker rechecked the actor's delete grant in the transaction that finalized the
+ * Agent's deletion (migration 0077). Only these completions show the actor `deleted`.
+ */
+export const agentDeletionRechecks = occSchema.table(
+  "agent_deletion_rechecks",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    recheckedAt: timestamp("rechecked_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({
+      name: "agent_deletion_rechecks_pkey",
+      columns: [table.namespaceId, table.agentId],
+    }),
+  ],
+);
+
 export const controllerWork = occSchema.table(
   "controller_work",
   {

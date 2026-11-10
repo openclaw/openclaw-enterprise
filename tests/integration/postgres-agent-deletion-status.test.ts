@@ -45,6 +45,7 @@ test(
     const { namespace, agent } = await f.deployAgent("Deletion status");
     const selfDeleted = await f.deployAgent("Deletion status self");
     const revoked = await f.deployAgent("Deletion status revoked");
+    const legacy = await f.deployAgent("Deletion status legacy");
     const installation = await f.state.loadInstallation();
     assert.ok(installation);
     const controller = new OpenClawController(installation, { state: f.state });
@@ -233,6 +234,12 @@ test(
     assert.equal(admin.statusCode, 200, admin.body);
     assert.deepEqual(admin.json().data, { ...scope, status: "deleted" });
     assert.equal((await f.inject("GET", otherAgent, undefined, fresh)).statusCode, 404);
+    // The finalizer recorded its recheck of the successor, the actor completion names.
+    const rechecks = (agentId: string) =>
+      f.pool
+        .query("SELECT actor_id FROM occ.agent_deletion_rechecks WHERE agent_id = $1", [agentId])
+        .then(({ rows }) => rows.map((row) => row.actor_id));
+    assert.deepEqual(await rechecks(agent.id), [successor.subjectId]);
     // Losing Namespace read ends even the finalizing actor's view of completion.
     await successor.revokeNamespace();
     assert.equal(
@@ -297,5 +304,42 @@ test(
       [revoked.agent.id],
     );
     assert.equal(deletions.length, 0);
+
+    // A completion finalized before migration 0077, or by a controller without the recheck,
+    // records AGENT_DELETED for its actor but no recheck row. That actor still holds Namespace
+    // read, yet gets the same denial as for an Agent that never existed; a Namespace-wide
+    // reader still sees `deleted`.
+    await worker.stop();
+    const legacyActor = await reader(legacy);
+    const legacyPaths = paths(legacy);
+    await legacyActor.request();
+    const legacyClaim = await waitFor("the legacy deletion claim", () => queue.claim());
+    assert.equal(legacyClaim.agentId, legacy.agent.id);
+    const { rows: legacyRows } = await f.pool.query(
+      "SELECT occ.finalize_agent_deletion($1, $2, $3, $4) AS completed",
+      [legacy.namespace.id, legacy.agent.id, legacyClaim.idempotencyKey, legacyClaim.claimToken],
+    );
+    assert.equal(legacyRows[0].completed, true);
+    assert.deepEqual(await rechecks(legacy.agent.id), []);
+    const { rows: legacyDeleted } = await f.pool.query(
+      `SELECT actor_id FROM occ.audit_events WHERE resource_id = $1
+         AND action = 'openclaw.agents.lifecycle.delete' AND details->>'reasonCode' = 'AGENT_DELETED'`,
+      [legacy.agent.id],
+    );
+    assert.deepEqual(
+      legacyDeleted.map((row) => row.actor_id),
+      [legacyActor.subjectId],
+    );
+    const legacyUnknown = legacyPaths.status.replace(legacy.agent.id, "agt_" + randomUUID());
+    assert.equal(
+      await legacyActor.denial(),
+      (await legacyActor.denial(legacyUnknown)).replaceAll(
+        legacyUnknown.split("/")[4]!,
+        legacy.agent.id,
+      ),
+    );
+    const legacyAdmin = await f.inject("GET", legacyPaths.status);
+    assert.equal(legacyAdmin.statusCode, 200, legacyAdmin.body);
+    assert.equal(legacyAdmin.json().data.status, "deleted");
   },
 );

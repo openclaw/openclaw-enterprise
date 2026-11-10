@@ -2995,9 +2995,9 @@ test(
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
-        // Prefix 76 has only 0077's completion index left to apply.
+        // Fail 0077's final grant after its index and recheck table exist; all of 0077 rolls back.
         const rollbackTag = [
-          [76, "CREATE INDEX"],
+          [76, "GRANT"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

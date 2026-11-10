@@ -5634,13 +5634,19 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         agentDeletionCompletedBy: async ({ installationId, namespaceId, agentId, actorId }) => {
           await this.requireInstallation(context, installationId);
-          // The finalizer records the claimed work's actor, whose delete grant the worker
-          // rechecked under the Namespace lock in the finalizing transaction.
+          // The finalizer records the claimed work's actor. Only a completion whose recheck
+          // row (migration 0077) names that actor counts: the worker writes it in the
+          // transaction that rechecked the actor's delete grant under the Namespace lock.
+          // Completions from before 0077, or from an older controller, have no row.
           const found = await client.query(
             `SELECT 1
              WHERE NOT EXISTS (SELECT FROM occ.agents WHERE namespace_id = $1 AND id = $2)
                AND EXISTS (SELECT FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL)
-               AND EXISTS (${AGENT_DELETED_SQL} AND actor_id = $3)`,
+               AND EXISTS (${AGENT_DELETED_SQL} AND actor_id = $3)
+               AND EXISTS (
+                 SELECT FROM occ.agent_deletion_rechecks
+                 WHERE namespace_id = $1 AND agent_id = $2 AND actor_id = $3
+               )`,
             [namespaceId, agentId, actorId],
           );
           return found.rows.length === 1;

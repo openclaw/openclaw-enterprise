@@ -1143,8 +1143,9 @@ export interface PlatformOperationReadRepository {
     request: AgentDeletionLookup,
   ): Promise<Pick<AgentDeletionStatusResponse["data"], "status" | "nextAttemptAt"> | undefined>;
   /**
-   * True only when the Agent is gone and its AGENT_DELETED record names `actorId`: the actor
-   * whose delete grant the worker verified when it finalized the deletion.
+   * True only when the Agent is gone, its AGENT_DELETED record names `actorId`, and the
+   * finalizer recorded that it rechecked that actor's delete grant (migration 0077). Older
+   * completions carry no recheck evidence and never qualify.
    */
   agentDeletionCompletedBy(
     request: AgentDeletionLookup & { readonly actorId: string },
@@ -1307,6 +1308,8 @@ interface PlatformSnapshot {
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly repositoryWithdrawals: Map<string, Readonly<ControllerWork>>;
+  /** occ.agent_deletion_rechecks: the actor whose delete grant the finalizer rechecked. */
+  readonly agentDeletionRechecks: Map<string, string>;
   readonly audit: Readonly<AuditEvent>[];
   readonly operations: Readonly<PlatformOperation>[];
 }
@@ -1450,6 +1453,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
+    agentDeletionRechecks: new Map(snapshot.agentDeletionRechecks),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
     ),
@@ -4426,6 +4430,7 @@ function repositories(
       agentDeletionCompletedBy: async ({ installationId, namespaceId, agentId, actorId }) =>
         liveNamespace(installationId, namespaceId) &&
         !snapshot.agents.has(agentKey(namespaceId, agentId)) &&
+        snapshot.agentDeletionRechecks.get(agentKey(namespaceId, agentId)) === actorId &&
         agentDeleted(installationId, namespaceId, agentId, actorId),
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
@@ -4582,6 +4587,10 @@ function finalizeAgentDeletion(
       details: { reasonCode: "AGENT_DELETED", attemptCount: 1 },
     }),
   );
+  // Memory has no worker; this completion stands in for the PostgreSQL finalizer, which records
+  // the actor it rechecked in the same transaction. Memory state never outlives its process, so
+  // it holds no completions from before that evidence existed.
+  snapshot.agentDeletionRechecks.set(key, work.actorId);
 
   // The Agent's own lifecycle work and its revisions' work end with it.
   const remaining = snapshot.operations.filter(
@@ -4628,6 +4637,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     repositoryStandingExecutions: new Map(),
     repositoryStandingApprovals: new Map(),
     repositoryWithdrawals: new Map(),
+    agentDeletionRechecks: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],
