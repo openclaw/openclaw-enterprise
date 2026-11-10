@@ -8,8 +8,8 @@ author: IsaiahStapleton
 
 - **ID:** RFC-0032
 - **Created:** 2026-11-09
-- **Last updated:** 2026-11-09
-- **RFC PR:** pending
+- **Last updated:** 2026-11-10
+- **RFC PR:** [#5286](https://github.com/openclaw/openclaw-enterprise/pull/5286)
 - **Related:** [PR #4847][pr-4847]
 
 <a id="problem-and-decision"></a>
