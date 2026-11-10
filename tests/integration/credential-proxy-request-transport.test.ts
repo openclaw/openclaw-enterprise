@@ -7,7 +7,11 @@ import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
-import type { RequestCredentialInput } from "../../packages/contracts/src/index.ts";
+import type {
+  CredentialProxyDriver,
+  RequestCredentialInput,
+} from "../../packages/contracts/src/index.ts";
+import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { bindOpenShellExchange } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts";
 import {
   COMPUTE_RELEASE_PUBLIC_KEY,
@@ -38,10 +42,6 @@ test(
   "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
   { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
-    const fixture = await requestCredentialFixture(t, {
-      credentialProxyCapacity: { operations: 2, authenticatingOperations: 1, sandboxOperations: 2 },
-    });
-    const { f } = fixture;
     const tls = await harnessTlsFixture(t);
     const issuerKeys = generateKeyPairSync("ed25519");
     const svidKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -78,11 +78,8 @@ test(
       privateKeyPath: tls.keyPath,
       issuerPublicKeyPath,
     };
-    const binding = await bindOpenShellExchange(
-      authority,
-      fixture.installation.sender,
-      (identity) => f.controller.createCredentialProxy(identity),
-      {
+    const bindExchange: NonNullable<CredentialProxyDriver["bindExchange"]> = (createProxy) =>
+      bindOpenShellExchange(authority, fixture.installation.sender, createProxy, {
         registrationName: "model-authority",
         tokenGrant: {
           endpoint: tokenEndpoint,
@@ -90,8 +87,16 @@ test(
           trustDomain: "fixture.test",
           bundlePath,
         },
-      },
-    );
+      });
+    const fixture = await requestCredentialFixture(t, {
+      credentialProxyCapacity: { operations: 2, authenticatingOperations: 1, sandboxOperations: 2 },
+      bindExchange,
+    });
+    const { f } = fixture;
+    // Production and development composition expose a restricted exchange facade to the
+    // selected Driver. Exercise that facade before sending any real TLS request.
+    const binding = await installEgressAuthority(f.controller, fixture.owner);
+    assert.ok(binding);
     t.after(() => binding.close());
     await grpcPort.release();
     await grantPort.release();

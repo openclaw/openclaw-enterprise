@@ -36,6 +36,7 @@ export async function requestCredentialFixture(
   configuration: {
     credentialProxyCapacity?: Partial<CredentialProxyCapacity>;
     poolOptions?: { options: string };
+    bindExchange?: CredentialProxyDriver["bindExchange"];
   } = {},
 ) {
   let owner!: InstalledDriver;
@@ -96,6 +97,7 @@ export async function requestCredentialFixture(
         id: "request-policy-fixture",
         implementation: "request-policy-fixture",
         capability: "credential_proxy",
+        ...(configuration.bindExchange && { bindExchange: configuration.bindExchange }),
         sourceControl: {
           ...original.sourceControl,
           providers: [createOpenAiRequestProvider(), ...original.sourceControl.providers],
