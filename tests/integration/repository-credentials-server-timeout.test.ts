@@ -1,4 +1,5 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { RepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import assert from "node:assert/strict";
 import { request as httpsRequest, createServer as createHttpsServer } from "node:https";
 import { connect as connectTcp } from "node:net";
@@ -13,8 +14,9 @@ import {
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
-async function fixture(t) {
-  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+async function fixture(t: TestContext) {
+  const options = {
+    github: true,
     clock: "system",
     limits: {
       headerMs: 200,
@@ -23,7 +25,12 @@ async function fixture(t) {
       firstHeaderMs: 2000,
       exchangeMs: 5000,
     },
-  });
+  };
+  const scope = await startTokenServiceScope(t, options);
+  const { resources, tls, github } = scope;
+  assert.ok(github);
+  const headerMs: unknown = scope.config.limits.headerMs;
+  assert.ok(typeof headerMs === "number");
   const upstream = createHttpsServer(tls, (request, response) => {
     if (!github.authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
@@ -33,16 +40,23 @@ async function fixture(t) {
     response.end("0000");
   });
   const upstreamOrigin = await listen(resources, upstream);
-  const { factory: actualFactory } = await createStaticTokenServiceFactory(resources, {
-    config,
-    clock,
+  const created = await createStaticTokenServiceFactory(resources, {
+    config: scope.config,
+    clock: scope.clock,
     tls,
     github,
     gitOrigin: upstreamOrigin,
+    configuration: undefined,
   });
+  const untypedFactory: unknown = created.factory;
+  assert.ok(untypedFactory && typeof untypedFactory === "object");
+  for (const method of ["parseAuthentication", "resolve", "create", "unauthenticated"]) {
+    assert.equal(typeof Reflect.get(untypedFactory, method), "function");
+  }
+  const actualFactory = untypedFactory as RepositoryBackendFactory;
   let acquisitionStarted = false;
   let acquisitionFinished = Promise.resolve();
-  const factory = {
+  const factory: RepositoryBackendFactory = {
     ...actualFactory,
     create(input) {
       const backend = actualFactory.create(input);
@@ -50,12 +64,12 @@ async function fixture(t) {
         ...backend,
         async acquire(...args) {
           acquisitionStarted = true;
-          const completion = Promise.withResolvers();
+          const completion = Promise.withResolvers<void>();
           acquisitionFinished = completion.promise;
           try {
             // Model a provider queue/acquisition delay after the authenticated
             // request has been admitted, before any provider dispatch occurs.
-            await delay(config.limits.headerMs * 3);
+            await delay(headerMs * 3);
             return await backend.acquire(...args);
           } finally {
             completion.resolve();
@@ -65,14 +79,23 @@ async function fixture(t) {
     },
   };
   resources.after(() => acquisitionFinished);
-  const { service, listeners } = await startServiceListeners(resources, {
-    config,
+  const started = await startServiceListeners(resources, {
+    config: scope.config,
     factory,
-    clock,
+    clock: scope.clock,
     tls,
     upstreamOrigins: [github.origin, upstreamOrigin],
+    log: undefined,
   });
-  return { resources, service, listeners, tls, acquisitionStarted: () => acquisitionStarted };
+  const port: unknown = started.listeners.address.port;
+  assert.ok(typeof port === "number");
+  return {
+    resources,
+    service: started.service,
+    port,
+    tls,
+    acquisitionStarted: () => acquisitionStarted,
+  };
 }
 
 test(
@@ -85,7 +108,7 @@ test(
       const outgoing = httpsRequest(
         {
           hostname: "127.0.0.1",
-          port: context.listeners.address.port,
+          port: context.port,
           path: `/${fixtureRepository}.git/info/refs?service=git-upload-pack`,
           ca: context.tls.ca,
           agent: false,
@@ -95,8 +118,8 @@ test(
           },
         },
         (response) => {
-          const chunks = [];
-          response.on("data", (chunk) => chunks.push(chunk));
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
           response.once("error", reject);
           response.once("end", () =>
             resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString() }),
@@ -126,10 +149,10 @@ for (const handshake of [false, true]) {
       const socket = handshake
         ? connectTls({
             host: "127.0.0.1",
-            port: context.listeners.address.port,
+            port: context.port,
             ca: context.tls.ca,
           })
-        : connectTcp({ host: "127.0.0.1", port: context.listeners.address.port });
+        : connectTcp({ host: "127.0.0.1", port: context.port });
       const closed = new Promise((done) => socket.once("close", done));
       context.resources.after(async () => {
         socket.destroy();
