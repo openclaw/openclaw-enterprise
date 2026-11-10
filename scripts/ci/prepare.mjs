@@ -2529,7 +2529,8 @@ export async function prepareDevUpImage(
 // cache, which its serial event monitor fills from containerd ImageCreate events.
 // A reference that `ctr images tag` just created is in containerd's image store
 // (and `ctr images list`) before that event is handled, so CRI can briefly report
-// "no such image". Wait a bounded time for that one answer; any other failure is final.
+// "no such image" or an image whose pin label event has not arrived. Wait a bounded
+// time for those states; a mismatched digest or any other failure is final.
 const criImageCacheWaitMs = 5_000;
 
 // Each check or tag on a node after the import is one short exec. The timeout stops the
@@ -2542,8 +2543,9 @@ async function k3dNodeImageCheck(node, args, what) {
 async function inspectK3dCriImage(lane, node, reference, envName) {
   const deadline = performance.now() + criImageCacheWaitMs;
   for (let attempt = 1; ; attempt += 1) {
+    let result;
     try {
-      return await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
+      result = await k3dNodeImageCheck(node, ["crictl", "inspecti", reference], "CRI");
     } catch (error) {
       const remainingMs = deadline - performance.now();
       if (!/\bno such image\b/i.test(error.stderr ?? "") || remainingMs <= 0) {
@@ -2554,7 +2556,21 @@ async function inspectK3dCriImage(lane, node, reference, envName) {
         `CRI on ${node} does not list the imported ${envName} reference yet (attempt ${attempt}); retrying.`,
       );
       await delay(Math.min(250 * attempt, 1_000, remainingMs));
+      continue;
     }
+    const { status } = JSON.parse(result.stdout);
+    if (!status?.repoDigests?.includes(reference)) {
+      throw new Error(`CRI on ${node} does not match the imported ${envName} digest.`);
+    }
+    if (status.pinned === true) {
+      return;
+    }
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      throw new Error(`CRI on ${node} did not report the imported ${envName} image pinned.`);
+    }
+    progress(lane, `CRI on ${node} has not pinned the imported ${envName} image yet; retrying.`);
+    await delay(Math.min(250 * attempt, 1_000, remainingMs));
   }
 }
 
@@ -2565,9 +2581,12 @@ async function assertK3dImageReference(lane, cluster, reference, envName) {
       ["ctr", "-n", "k8s.io", "images", "list"],
       "containerd",
     );
-    const found = listed.stdout.split(/\r?\n/).some((entry) => entry.split(/\s+/)[0] === reference);
+    const found = listed.stdout.split(/\r?\n/).find((entry) => entry.split(/\s+/)[0] === reference);
     if (!found) {
       throw new Error(`Unable to find imported ${envName} reference ${reference}.`);
+    }
+    if (found.split(/\s+/)[2] !== `sha256:${immutableDigest(reference)}`) {
+      throw new Error(`containerd on ${node} does not match the imported ${envName} digest.`);
     }
     await inspectK3dCriImage(lane, node, reference, envName);
   }
@@ -2665,7 +2684,20 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
   const imports = cluster.nodes.map((node) =>
     execFile(
       containerEngine,
-      ["exec", "-i", node, "ctr", "-n", "k8s.io", "images", "import", "--all-platforms", "-"],
+      [
+        "exec",
+        "-i",
+        node,
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "import",
+        "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
+        "-",
+      ],
       { timeoutMs: 600_000, input: save.stdout },
     ).catch((error) => {
       // The first node failure is the cause; later ones may follow from it.
@@ -2784,6 +2816,21 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
     await k3dNodeImageCheck(
       node,
       ["ctr", "-n", "k8s.io", "images", "tag", importReference, runtimeReference],
+      "containerd",
+    );
+    // The prepared cluster owns a fixed image set until cleanup. Keep its exact
+    // workload alias resident even while no Pod is using it between test cases.
+    await k3dNodeImageCheck(
+      node,
+      [
+        "ctr",
+        "-n",
+        "k8s.io",
+        "images",
+        "label",
+        runtimeReference,
+        "io.cri-containerd.pinned=pinned",
+      ],
       "containerd",
     );
   }

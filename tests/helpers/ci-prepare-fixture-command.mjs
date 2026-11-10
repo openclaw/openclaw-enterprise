@@ -525,6 +525,8 @@ async function fakeCommand({
         "images",
         "import",
         "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
         "-",
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
@@ -650,6 +652,18 @@ async function fakeCommand({
         }
         return finish();
       }
+      if (scenario === "missing-alias" && equals(args.slice(2, 7), [...ctr, "label"])) {
+        stderr("ctr: canonical image not found\n");
+        return exit(1);
+      }
+      if (
+        equals(args.slice(2), [...ctr, "label", alias, "io.cri-containerd.pinned=pinned"]) &&
+        alias
+      ) {
+        state.pinned ??= {};
+        state.pinned[node] = true;
+        return finish();
+      }
       if (
         equals(args.slice(2, 7), [...ctr, "rm"]) &&
         args.length === 8 &&
@@ -687,7 +701,24 @@ async function fakeCommand({
           );
           return exit(1);
         }
-        return finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
+        return finish(
+          JSON.stringify({
+            status: {
+              id: configId,
+              repoDigests:
+                scenario === "wrong-worker-cri-digest" && node === "agent-0"
+                  ? [alias.replace(manifestDigest, "sha256:" + "d".repeat(64))]
+                  : [alias],
+              pinned:
+                state.pinned?.[node] === true &&
+                !(
+                  node === "agent-0" &&
+                  (scenario === "unpinned-worker-cri" ||
+                    (scenario === "lagging-worker-pin" && state.criLookups[node] <= 2))
+                ),
+            },
+          }),
+        );
       }
     }
   }

@@ -389,11 +389,16 @@ describe("CI preparation", { concurrency }, () => {
     { scenario: "missing-tag", error: /Unable to find imported OCI manifest digest/ },
     {
       scenario: "missing-alias",
-      error: /Unable to find imported OCC_TEST_KUBERNETES_IMAGE reference/,
+      error: /canonical image not found/,
     },
     { scenario: "missing-cri", error: /synthetic CRI image not found/ },
     { scenario: "missing-worker-cri", error: /synthetic CRI image not found/ },
     { scenario: "lagging-worker-cri" },
+    // A present image may still await the CRI label event, but missing retention
+    // must never publish successful offline workload inputs.
+    { scenario: "lagging-worker-pin" },
+    { scenario: "unpinned-worker-cri", error: /CRI.*did not report the imported.*image pinned/ },
+    { scenario: "wrong-worker-cri-digest", error: /CRI.*does not match the imported.*digest/ },
     { scenario: "absent-worker-cri", error: /level=fatal msg="no such image / },
     // A hung check fails at its own timeout (3 s here, so a busy runner does not trip the
     // host inspects that share it), never retried as a cache miss.
@@ -505,6 +510,8 @@ describe("CI preparation", { concurrency }, () => {
       const expectedWorkerLookups = {
         "missing-worker-cri": 1,
         "lagging-worker-cri": 3,
+        "lagging-worker-pin": 3,
+        "wrong-worker-cri-digest": 1,
         "hung-worker-cri": 1,
       }[scenario];
       if (expectedWorkerLookups) {
