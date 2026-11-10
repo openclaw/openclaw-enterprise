@@ -147,7 +147,7 @@ test(
     const selected = new OpenClawController(installation, {
       state: p.state,
       driverConfigurations: registered,
-      recordOperations: false,
+      recordOperations: true,
     });
     for (const capability of [
       "iam",
