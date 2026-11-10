@@ -1,3 +1,4 @@
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
@@ -27,9 +28,7 @@ import { join } from "node:path";
 import test, { afterEach } from "node:test";
 import type {
   AgentRevision,
-  ComputeDriver,
   CredentialProxyDriver,
-  Driver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -47,7 +46,6 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
@@ -280,17 +278,16 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     "no release on changed runtime, substituted wiring or unauthenticated peer",
   );
 
-  // Selection of the two capabilities installs one real Compute lifecycle owner.
-  let hooks: readonly Driver[] = [];
-  const seed: ComputeDriver = Object.assign(Object.create(api.computeDriver), {
-    setLifecycleDrivers(selected: readonly Driver[]) {
-      hooks = selected;
-    },
-  });
-  controller.registerDriver(seed);
-  controller.selectDriver("compute", seed.id);
-  assert.equal(hooks.length, 1);
-  await new ComputeLifecycleDispatcher(hooks).afterNamespacePrepared(context.namespace);
+  const compute = createReadyComputeDriver("namespace-contract-compute");
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  // Both selected capabilities share one registration's Namespace effects.
+  await controller.observeNamespaceLifecycle(
+    context.namespace,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
   assert.equal(calls.lifecycle, 1);
 
   // Two separate registrations cannot establish a protected Backend, even with the same IDs.

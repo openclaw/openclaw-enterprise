@@ -1941,7 +1941,9 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   );
   const job = workflow.jobs["dev-up-k3d"];
   assert.equal(job.environment, undefined);
-  assert.equal(job.env, undefined);
+  assert.deepEqual(job.env, {
+    NODE_BASE_IMAGE: "${{ vars.CONTAINER_NODE_BASE_IMAGE }}",
+  });
   assert.equal(job.needs, "preflight");
   assert.equal(job["runs-on"], "ubuntu-22.04");
   for (const lane of ["dev-up-k3d", "all", "k3d-model"]) {
@@ -2094,5 +2096,5 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const secretStep = action.runs.steps.find(
     ({ name }) => name === "Expose image cache credentials",
   );
-  assert.equal(evaluate(secretStep.if), false);
+  assert.equal(evaluate(secretStep.if), true);
 });

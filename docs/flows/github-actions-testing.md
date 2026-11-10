@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9
+last_updated_session: authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc
 ---
 
 # GitHub Actions testing flow
@@ -59,8 +59,8 @@ graph TD
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
 `loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
-`scripts/ci/test-suites/<lane>.json` references. Lanes own their tests, environment,
-required inputs and preparation settings.
+`scripts/ci/test-suites/<lane>.json` references. Lanes own tests, environments,
+inputs and preparation.
 
 `run-tests.mjs:selectLane` and the action validate lane-owned focused paths before setup.
 Focused results retain expected cases, environment and cleanup;
@@ -69,13 +69,13 @@ Focused results retain expected cases, environment and cleanup;
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
 
 Pull requests compare the verified merge with its first parent using that parent’s
-policy; the second parent must match the event head. Canonical main pushes compare
-the complete `before` to verified `after` range using `before` policy. Missing history,
+policy; the second parent must match the event head. Canonical main pushes use `before` policy
+for the complete `before`→verified `after` diff. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
-to docs mode. Generated API references,
-executables and symlinks require full CI.
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
+and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
+symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
@@ -83,9 +83,8 @@ the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and 
 
 `CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
-source. Docs mode produces no test artifacts. The impact summary shows mode, fixed reason
-and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
-evidence is reported as unavailable.
+source. Docs mode produces no test artifacts. The impact summary reports mode, fixed reason and accepted lanes, excluding paths and
+raw output. Selector errors fail the job; missing evidence is unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
@@ -267,6 +266,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 19:00: Classify RFC PNG illustrations as documentation. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
 
 - 2026-11-10 18:32: Preserve safe Installed Skipper operation details for asynchronous failures. (authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9 - b4528e53458339a1df59473f068142675b1982a5)
 

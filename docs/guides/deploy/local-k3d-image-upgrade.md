@@ -59,7 +59,8 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
 - If the bundled Collector is enabled, including the [observability demo](../observability/demo.md)'s
   `occ-demo-collector-config`, [refresh the Secret named by `logging.collector.configSecretName`](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the `RELEASE_SOURCE_SHA` checkout and restart the Collector. Helm does not
-  update it, and the script stops while it differs from that checkout.
+  update it. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
 
 From a secure operator shell, replace placeholders with the existing paths and
 names. The evidence parent must exist; the final directory must be new.

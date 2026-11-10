@@ -570,13 +570,28 @@ export class DockerComputeDriver implements ComputeDriver {
         return result;
       }
       this.verifyOwnership(observed.Labels, ownership, `network ${name}`);
-      await this.lifecycle.afterNamespacePrepared(namespace);
       return { ...result, namespaceReady: true };
     } catch (error) {
       if (created) {
         await this.removeNetwork(name).catch(() => {});
       }
       return { ...result, failure: failure(error) };
+    }
+  }
+
+  async checkNamespaceDeletion(namespace: Readonly<Namespace>, signal: AbortSignal) {
+    signal.throwIfAborted();
+    try {
+      const name = this.networkName(namespace.id);
+      const existing = await this.network(name);
+      if (existing !== undefined) {
+        this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
+      }
+      signal.throwIfAborted();
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    } catch (error) {
+      signal.throwIfAborted();
+      return { namespaceId: namespace.id, deletionAllowed: false, failure: failure(error) };
     }
   }
 
@@ -589,7 +604,6 @@ export class DockerComputeDriver implements ComputeDriver {
       if (existing !== undefined) {
         this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       }
-      await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
         await this.removeContainer(containerId);
       }

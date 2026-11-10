@@ -700,10 +700,20 @@ test("mixed code, Helm, workflow and tooling changes select full", async (t) => 
       ".github/workflows/ci.yml",
       "scripts/check.mjs",
       "docs/data.json",
+      "docs/assets/provider.png",
+      "tests/fixtures/provider.png",
+      "apps/controller/src/console/assets/provider.png",
+      "specs/plans/provider.png",
+      "specs/rfcs-extra/provider.png",
+      "specs/rfcs/0034-reusable-model-providers/provider.jpg",
+      "specs/rfcs/0034-reusable-model-providers/provider.svg",
+      "specs/rfcs/0034-reusable-model-providers/provider.PNG",
+      "specs/rfcs/0034-reusable-model-providers/provider.png.ts",
       "AGENTS.md",
     ].map((path) => [
       ({ put }) => {
         put("docs/change.md");
+        put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
         put(path);
       },
     ]),
@@ -767,6 +777,14 @@ test("renames across the allowlist boundary in either direction select full", as
   await expectAll(t, "full", [
     [rename("docs/old.md", "src/old.md"), { "docs/old.md": "same\n" }],
     [rename("src/old.md", "docs/old.md"), { "src/old.md": "same\n" }],
+    [
+      rename("specs/rfcs/0034-reusable-model-providers/old.png", "tests/fixtures/old.png"),
+      { "specs/rfcs/0034-reusable-model-providers/old.png": "same\n" },
+    ],
+    [
+      rename("tests/fixtures/old.png", "specs/rfcs/0034-reusable-model-providers/old.png"),
+      { "tests/fixtures/old.png": "same\n" },
+    ],
   ]);
 });
 
@@ -793,10 +811,14 @@ test("symlinks and executable documentation select full", async (t) => {
   await expectAll(
     t,
     "full",
-    ["docs/guide.md", "docs/docs.json"].flatMap((path) => [
+    [
+      "docs/guide.md",
+      "docs/docs.json",
+      "specs/rfcs/0034-reusable-model-providers/agent-selection.png",
+    ].flatMap((path) => [
       [
         ({ repo }) => {
-          mkdirSync(join(repo, "docs"));
+          mkdirSync(dirname(join(repo, path)), { recursive: true });
           symlinkSync("../base.txt", join(repo, path));
         },
       ],
@@ -805,6 +827,13 @@ test("symlinks and executable documentation select full", async (t) => {
           put(path);
           chmodSync(join(repo, path), 0o755);
         },
+      ],
+      [
+        ({ repo }) => {
+          rmSync(join(repo, path));
+          symlinkSync("../base.txt", join(repo, path));
+        },
+        { [path]: "old contents\n" },
       ],
     ]),
   );
@@ -1047,6 +1076,34 @@ function mainPushEvent(f, overrides = {}) {
   });
 }
 
+test("RFC PNG illustrations select documentation for pull requests and main pushes", async (t) => {
+  const directory = "specs/rfcs/0034-reusable-model-providers";
+  // Binary contents remain opaque: selection depends on the path and Git modes.
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const f = await fixture(
+    t,
+    async ({ put, repo, git }) => {
+      put(`${directory}/agent-selection.png`, png);
+      put(`${directory}/updated.png`, png);
+      rmSync(join(repo, directory, "deleted.png"));
+      await git("mv", `${directory}/old.png`, `${directory}/new.png`);
+    },
+    {
+      "scripts/ci/impact.mjs": policy,
+      [`${directory}/updated.png`]: "old image",
+      [`${directory}/deleted.png`]: png,
+      [`${directory}/old.png`]: png,
+    },
+  );
+  const shallow = await shallowBootstrap(f);
+  await settled([f.expect("docs", {}, "docs_only"), shallow.expect("docs", {}, "docs_only")]);
+  mainPushEvent(f);
+  await settled([
+    f.expect("docs", mainPushEnvironment, "docs_only"),
+    shallow.expect("docs", mainPushEnvironment, "docs_only"),
+  ]);
+});
+
 test("main push uses the before-tree policy to select and verify documentation", async (t) => {
   const navigation = await fixture(
     t,
@@ -1100,6 +1157,10 @@ test("main push compares every commit since before, not just the last commit", a
 
 test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
   for (const change of [
+    ({ put }) => {
+      put("specs/rfcs/0034-reusable-model-providers/agent-selection.png");
+      put("apps/controller/src/changed.ts");
+    },
     ({ put }) => put("tests/integration/ci-impact.test.mjs"),
     ({ put }) => put(".github/workflows/ci.yml"),
     ({ put }) => put("scripts/ci/impact.mjs", policy + "\n// changed\n"),
@@ -1386,7 +1447,7 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
     lanes.filter(([, job]) => job.env.NODE_BASE_IMAGE === environment).length,
   );
   const names = lanes.map(([name]) => name);
-  for (const lane of ["gateway-routing", "slack", "openshell"]) {
+  for (const lane of ["gateway-routing", "slack", "openshell", "qa-matrix", "dev-up-k3d"]) {
     assert.ok(names.includes(lane), lane);
   }
 });
@@ -1623,6 +1684,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
     pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
   );
   const cached = [...imageCacheLanes.keys()].sort();
+  assert.ok(cached.includes("k3d-otel"), "OTEL preparation restores the image cache");
   const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
   const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
   const mode = action.runs.steps.find(({ id }) => id === "image-mode");
@@ -1676,9 +1738,9 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
           },
         );
       const expected = ["dev-up-k3d", "qa-matrix"].includes(lane)
-        ? { "dev-up-k3d": installation, "qa-matrix": qaMatrix }[
-            lane
-          ].prepare.sourceBuildFiles.includes(file)
+        ? { "dev-up-k3d": installation, "qa-matrix": qaMatrix }[lane].prepare.sourceBuildFiles.some(
+            (path) => !file || path === file,
+          )
         : cached.includes(lane);
       assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
       assert.equal(

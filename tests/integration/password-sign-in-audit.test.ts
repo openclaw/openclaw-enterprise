@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth as createFixtureAuth } from "../helpers/password-hasher.mjs";
+import type {
+  ControllerAuth,
+  ControllerAuthOptions,
+} from "../../apps/controller/src/auth/index.ts";
+import type { createFastifyApp } from "../../apps/controller/src/index.ts";
+import {
+  PostgresHumanAuthentication,
+  PostgresPlatformState,
+} from "../../packages/occ/src/index.ts";
 import {
   issueKnownDevice,
   knownDeviceCookieName,
@@ -16,8 +25,75 @@ import {
 } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
-const { APIError } = await import(require.resolve("better-auth"));
+type App = ReturnType<typeof createFastifyApp>;
+type Database = NonNullable<ControllerAuthOptions["memoryDatabase"]>;
+type AdapterFactory = ReturnType<ReturnType<typeof createHumanLogin>["database"]>;
+type Audit = NonNullable<ControllerAuthOptions["passwordSignInAudit"]>;
+type Outcome = ["accepted", string] | ["refused"];
+type OperationalEvent = Parameters<NonNullable<ControllerAuthOptions["onOperationalEvent"]>>[0];
+type HumanState = Pick<
+  PostgresHumanAuthentication,
+  "createAttempt" | "consumeAttempt" | "snapshotExternal" | "snapshotPassword" | "recordDenied"
+> &
+  Partial<Pick<PostgresHumanAuthentication, "knownDeviceState">>;
+const createControllerAuth: (options: ControllerAuthOptions) => ControllerAuth = createFixtureAuth;
+const memoryModule: unknown = await import(require.resolve("better-auth/adapters/memory"));
+assert.ok(
+  typeof memoryModule === "object" &&
+    memoryModule !== null &&
+    "memoryAdapter" in memoryModule &&
+    typeof memoryModule.memoryAdapter === "function",
+);
+const memoryAdapter = memoryModule.memoryAdapter as (database: Database) => AdapterFactory;
+const authModule: unknown = await import(require.resolve("better-auth"));
+assert.ok(
+  typeof authModule === "object" &&
+    authModule !== null &&
+    "APIError" in authModule &&
+    typeof authModule.APIError === "function",
+);
+const APIError = authModule.APIError as new (
+  status: string | number,
+  body: { message: string },
+) => Error;
+const fastifyModule: unknown = require("fastify");
+assert.equal(typeof fastifyModule, "function");
+const Fastify = fastifyModule as (options: { genReqId: () => string }) => App;
+
+function humanState(overrides: HumanState): PostgresHumanAuthentication {
+  const state = new PostgresPlatformState({
+    async connect() {
+      throw new Error("unexpected persistence access");
+    },
+    async end() {},
+  });
+  return Object.assign(
+    new PostgresHumanAuthentication(state, "ins_sign_in_audit", "fixture"),
+    overrides,
+  );
+}
+
+type Sent = {
+  status: number;
+  headers: Awaited<ReturnType<App["inject"]>>["headers"];
+  payload: unknown;
+};
+function isErrorPayload(error: unknown): error is { code: string; message: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    "message" in error &&
+    typeof error.message === "string"
+  );
+}
+function errorOf(response: Sent): { code: string; message: string } {
+  const payload = response.payload;
+  assert.ok(typeof payload === "object" && payload !== null && "error" in payload);
+  assert.ok(isErrorPayload(payload.error));
+  return payload.error;
+}
 
 const baseURL = "https://console.oce.localhost";
 const email = "audited@example.test";
@@ -29,25 +105,25 @@ const REFUSED = "The caller did not provide valid authentication credentials.";
 const UNAVAILABLE = SIGN_IN_UNAVAILABLE;
 
 // An outage and a rate limit each say what happened; neither reads as a wrong password.
-function assertUnavailable(response) {
+function assertUnavailable(response: Sent) {
   assert.equal(response.status, 503, JSON.stringify(response.payload));
-  assert.deepEqual(response.payload.error, {
+  assert.deepEqual(errorOf(response), {
     code: "DEPENDENCY_UNAVAILABLE",
     message: UNAVAILABLE,
   });
 }
 
-function assertLimited(response) {
+function assertLimited(response: Sent) {
   assert.equal(response.status, 429, JSON.stringify(response.payload));
   const seconds = Number(response.headers["retry-after"]);
   assert.ok(seconds >= 1 && seconds <= 60, String(seconds));
-  assert.deepEqual(response.payload.error, {
+  assert.deepEqual(errorOf(response), {
     code: "RATE_LIMITED",
     message: signInRateLimited(seconds),
   });
 }
 
-function controller(audit, extra = {}) {
+function controller(audit: Audit, extra: Partial<ControllerAuthOptions> = {}) {
   const memoryDatabase = { user: [], session: [], account: [], verification: [], apikey: [] };
   const auth = createControllerAuth({
     mode: "development",
@@ -62,7 +138,11 @@ function controller(audit, extra = {}) {
   return { auth, memoryDatabase };
 }
 
-async function signIn(auth, body, headers = {}) {
+async function signIn(
+  auth: ControllerAuth,
+  body: { email: string; password: string },
+  headers: Record<string, string> = {},
+) {
   return send(auth.signInEmail, {
     id: "req_audit",
     ip: "127.0.0.1",
@@ -74,31 +154,46 @@ async function signIn(auth, body, headers = {}) {
 }
 
 // Calls one auth endpoint handler and records what it sends.
-async function send(handler, request) {
-  const sent = { status: 200, headers: {} };
-  const reply = {
-    header(name, value) {
-      sent.headers[name] = value;
-      return reply;
-    },
-    status(code) {
-      sent.status = code;
-      return reply;
-    },
-    send(payload) {
-      sent.payload = payload;
-      return reply;
-    },
-  };
-  await handler(request, reply);
-  return sent;
+async function send(
+  handler: ControllerAuth["signInEmail"],
+  request: {
+    id: string;
+    ip: string;
+    method: "POST";
+    url: string;
+    headers: Record<string, string>;
+    body: Record<string, string>;
+  },
+): Promise<Sent> {
+  const app = Fastify({ genReqId: () => request.id });
+  app.post(request.url, handler);
+  try {
+    const response = await app.inject({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      payload: request.body,
+      remoteAddress: request.ip,
+    });
+    return {
+      status: response.statusCode,
+      headers: response.headers,
+      payload: response.json<unknown>(),
+    };
+  } finally {
+    await app.close();
+  }
 }
 
 test("a password-only sign-in reports its outcome to the audit seam", async () => {
-  const outcomes = [];
+  const outcomes: Outcome[] = [];
   const { auth, memoryDatabase } = controller({
-    accepted: async (userId) => outcomes.push(["accepted", userId]),
-    refused: async () => outcomes.push(["refused"]),
+    accepted: async (userId) => {
+      outcomes.push(["accepted", userId]);
+    },
+    refused: async () => {
+      outcomes.push(["refused"]);
+    },
   });
   const account = await auth.createAccount({ email, password });
   assert.equal((await signIn(auth, { email, password })).status, 200);
@@ -106,17 +201,21 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
   for (const guess of [email, "nobody@example.test"]) {
     const refused = await signIn(auth, { email: guess, password: "wrong-password-guess" });
     assert.equal(refused.status, 401);
-    assert.deepEqual(refused.payload.error, { code: "UNAUTHENTICATED", message: REFUSED });
+    assert.deepEqual(errorOf(refused), { code: "UNAUTHENTICATED", message: REFUSED });
   }
   assert.deepEqual(outcomes, [["accepted", account.id], ["refused"], ["refused"]]);
   assert.equal(memoryDatabase.session.length, 1);
 });
 
 test("a sign-in that fails on its dependency is 503, not an audited or counted refusal", async () => {
-  const outcomes = [];
+  const outcomes: Outcome[] = [];
   const { auth, memoryDatabase } = controller({
-    accepted: async (userId) => outcomes.push(["accepted", userId]),
-    refused: async () => outcomes.push(["refused"]),
+    accepted: async (userId) => {
+      outcomes.push(["accepted", userId]);
+    },
+    refused: async () => {
+      outcomes.push(["refused"]);
+    },
   });
   await auth.createAccount({ email, password });
   // Every account read now fails, as it would with the database down.
@@ -149,10 +248,14 @@ test("a sign-in whose audit cannot be written is refused and its session revoked
 
 for (const status of [500, 503, 599]) {
   test(`a dependency APIError ${status} is unavailable without spending the password budget`, async () => {
-    const outcomes = [];
+    const outcomes: Outcome[] = [];
     const { auth, memoryDatabase } = controller({
-      accepted: async (userId) => outcomes.push(["accepted", userId]),
-      refused: async () => outcomes.push(["refused"]),
+      accepted: async (userId) => {
+        outcomes.push(["accepted", userId]);
+      },
+      refused: async () => {
+        outcomes.push(["refused"]);
+      },
     });
     const account = await auth.createAccount({ email, password });
     const users = memoryDatabase.user;
@@ -169,7 +272,7 @@ for (const status of [500, 503, 599]) {
     for (let attempt = 0; attempt < 11; attempt += 1) {
       const response = await signIn(auth, { email, password });
       assert.equal(response.status, 503);
-      assert.equal(response.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(errorOf(response).code, "DEPENDENCY_UNAVAILABLE");
       assert.equal(response.headers["set-cookie"], undefined);
     }
     assert.deepEqual(outcomes, []);
@@ -190,7 +293,7 @@ for (const [status, expectedStatus, expectedCode] of [
   [600, 401, "UNAUTHENTICATED"],
   [500.5, 401, "UNAUTHENTICATED"],
   ["500", 401, "UNAUTHENTICATED"],
-]) {
+] as const) {
   test(`dependency APIError ${JSON.stringify(status)} preserves its non-5xx classification`, async () => {
     let refusals = 0;
     const { auth, memoryDatabase } = controller({
@@ -207,7 +310,7 @@ for (const [status, expectedStatus, expectedCode] of [
     });
     const response = await signIn(auth, { email, password });
     assert.equal(response.status, expectedStatus);
-    assert.equal(response.payload.error.code, expectedCode);
+    assert.equal(errorOf(response).code, expectedCode);
     assert.equal(response.headers["set-cookie"], undefined);
     assert.equal(refusals, 1);
     assert.equal(memoryDatabase.session.length, 0);
@@ -216,7 +319,7 @@ for (const [status, expectedStatus, expectedCode] of [
 
 test("a wrong password whose denial audit fails is 503 and still spends the budget", async () => {
   let refusals = 0;
-  const events = [];
+  const events: OperationalEvent[] = [];
   const { auth } = controller(
     {
       accepted: async () => {},
@@ -245,7 +348,7 @@ test("a wrong password whose denial audit fails is 503 and still spends the budg
 test("guarded profile: a wrong password whose denial audit fails is 503 and still spends the budget", async () => {
   let denials = 0;
   const humanLogin = createHumanLogin(
-    {
+    humanState({
       createAttempt: async () => {
         throw new Error("not used");
       },
@@ -256,7 +359,7 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
         denials += 1;
         throw new Error("audit unavailable");
       },
-    },
+    }),
     {
       recoveryUserId: "guarded-recovery",
       google: {
@@ -267,7 +370,7 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     },
     baseURL,
   );
-  const events = [];
+  const events: OperationalEvent[] = [];
   const auth = createControllerAuth({
     mode: "development",
     installationId: "ins_sign_in_audit_guarded",
@@ -297,7 +400,7 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
 // this text's meaning from the status alone, so the API text is pinned here.
 test("guarded profile: a spent provider result budget says to wait a minute, with no Retry-After", async () => {
   const humanLogin = createHumanLogin(
-    {
+    humanState({
       createAttempt: async () => {
         throw new Error("not used");
       },
@@ -305,7 +408,7 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
       snapshotExternal: async () => undefined,
       snapshotPassword: async () => undefined,
       recordDenied: async () => {},
-    },
+    }),
     {
       recoveryUserId: "guarded-recovery",
       google: {
@@ -339,12 +442,12 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const refused = await result();
     assert.equal(refused.status, 401, JSON.stringify(refused.payload));
-    assert.equal(refused.payload.error.message, "Google sign-in could not be confirmed.");
+    assert.equal(errorOf(refused).message, "Google sign-in could not be confirmed.");
   }
   const limited = await result();
   assert.equal(limited.status, 429, JSON.stringify(limited.payload));
   assert.equal(limited.headers["retry-after"], undefined);
-  assert.deepEqual(limited.payload.error, {
+  assert.deepEqual(errorOf(limited), {
     code: "RATE_LIMITED",
     message: SIGN_IN_RATE_LIMITED_MINUTE,
   });
@@ -355,8 +458,8 @@ test("a password reset during a sign-in revokes the known-device entry that sign
   // before the entry is issued. The entry must be bound to the state the old password
   // was checked against, so the reset revokes it.
   let version = 1;
-  const reads = [];
-  const knownDeviceState = async (address) => {
+  const reads: string[] = [];
+  const knownDeviceState = async (address: string) => {
     reads.push(address);
     return `password\0user-1\0method-1\0${version}`;
   };
@@ -372,7 +475,9 @@ test("a password reset during a sign-in revokes the known-device entry that sign
   await auth.createAccount({ email, password });
   const response = await signIn(auth, { email, password });
   assert.equal(response.status, 200, JSON.stringify(response.payload));
-  const cookies = [response.headers["set-cookie"]].flat();
+  const cookies = [response.headers["set-cookie"]]
+    .flat()
+    .filter((value): value is string => typeof value === "string");
   const name = knownDeviceCookieName(true);
   const entry = cookies.find((value) => value.startsWith(`${name}=`));
   assert.ok(entry, "a successful sign-in marks the browser");
@@ -389,7 +494,7 @@ test("a password reset during a sign-in revokes the known-device entry that sign
 });
 
 // A Better Auth store that, like PostgreSQL text, cannot look up a NUL character.
-function nulRefusingDatabase(memoryDatabase) {
+function nulRefusingDatabase(memoryDatabase: Database): AdapterFactory {
   return (options) => {
     const adapter = memoryAdapter(memoryDatabase)(options);
     return {
@@ -404,22 +509,22 @@ function nulRefusingDatabase(memoryDatabase) {
   };
 }
 
-const unstorableEmails = [
+const unstorableEmails: [string, string][] = [
   ["nul\u0000@example.test", "a NUL character"],
   ["surrogate\ud800@example.test", "an unpaired UTF-16 surrogate"],
 ];
 
-function assertUnstorableEmail(response, problem) {
+function assertUnstorableEmail(response: Sent, problem: string) {
   assert.equal(response.status, 400, JSON.stringify(response.payload));
-  assert.deepEqual(response.payload.error, {
+  assert.deepEqual(errorOf(response), {
     code: "INVALID_REQUEST",
     message: `The request does not match the operation contract: body /email contains ${problem}.`,
   });
 }
 
 test("an email no account can hold is a 400 that spends the password budget", async () => {
-  const outcomes = [];
-  const reads = [];
+  const outcomes: Outcome[] = [];
+  const reads: string[] = [];
   const memoryDatabase = { user: [], session: [], account: [], verification: [], apikey: [] };
   const auth = createControllerAuth({
     mode: "development",
@@ -429,8 +534,12 @@ test("an email no account can hold is a 400 that spends the password budget", as
     secret,
     database: nulRefusingDatabase(memoryDatabase),
     passwordSignInAudit: {
-      accepted: async (userId) => outcomes.push(["accepted", userId]),
-      refused: async () => outcomes.push(["refused"]),
+      accepted: async (userId) => {
+        outcomes.push(["accepted", userId]);
+      },
+      refused: async () => {
+        outcomes.push(["refused"]);
+      },
     },
     knownDeviceState: async (address) => {
       reads.push(address);
@@ -468,10 +577,10 @@ test("an email no account can hold is a 400 that spends the password budget", as
 });
 
 test("guarded profile: an email no account can hold is a 400 that spends the password budget", async () => {
-  const snapshots = [];
-  const denials = [];
+  const snapshots: string[] = [];
+  const denials: string[] = [];
   const humanLogin = createHumanLogin(
-    {
+    humanState({
       createAttempt: async () => {
         throw new Error("not used");
       },
@@ -488,7 +597,7 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
       recordDenied: async (reason) => {
         denials.push(reason);
       },
-    },
+    }),
     {
       recoveryUserId: "guarded-recovery",
       google: {
@@ -529,8 +638,8 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
 // of the surrogate spelling. Invalid input must skip that proof read in both profiles.
 for (const profile of ["password-only", "guarded", "recovery-only"]) {
   test(`${profile}: malformed email skips known-device state and preserves denial auditing`, async () => {
-    const reads = [];
-    const denials = [];
+    const reads: string[] = [];
+    const denials: string[] = [];
     let failAudit = false;
     const recordDenied = async () => {
       denials.push("INVALID_CREDENTIALS");
@@ -538,7 +647,7 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
         throw new Error("audit unavailable");
       }
     };
-    const accountState = async (address) => {
+    const accountState = async (address: string) => {
       reads.push(address);
       return "test-password-state";
     };
@@ -546,7 +655,7 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
       profile === "password-only"
         ? undefined
         : createHumanLogin(
-            {
+            humanState({
               createAttempt: async () => {
                 throw new Error("not used");
               },
@@ -558,7 +667,7 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
               },
               knownDeviceState: accountState,
               recordDenied,
-            },
+            }),
             {
               recoveryUserId: "guarded-recovery",
               google: {
@@ -614,10 +723,14 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
 
 // Preserve the dependency's existing email contract; the password itself is supported.
 test("password-only distinguishes unsupported stored email from an unusual password", async () => {
-  const outcomes = [];
+  const outcomes: Outcome[] = [];
   const { auth, memoryDatabase } = controller({
-    accepted: async (id) => outcomes.push(["accepted", id]),
-    refused: async () => outcomes.push(["refused"]),
+    accepted: async (id) => {
+      outcomes.push(["accepted", id]);
+    },
+    refused: async () => {
+      outcomes.push(["refused"]);
+    },
   });
   const unusualPassword = "account-password-\u0000-\ud800-\ufffd";
   const ordinary = await auth.createAccount({
@@ -635,7 +748,7 @@ test("password-only distinguishes unsupported stored email from an unusual passw
     password: unusualPassword,
   });
   assert.equal(refused.status, 400);
-  assert.equal(refused.payload.error.code, "FORBIDDEN");
+  assert.equal(errorOf(refused).code, "FORBIDDEN");
   assert.equal(refused.headers["set-cookie"], undefined);
   assert.equal(
     memoryDatabase.session.length,
@@ -645,13 +758,13 @@ test("password-only distinguishes unsupported stored email from an unusual passw
   assert.deepEqual(outcomes, [["accepted", ordinary.id], ["refused"]]);
 });
 
-for (const passwordSignIn of ["all", "recovery-only"]) {
+for (const passwordSignIn of ["all", "recovery-only"] as const) {
   test(`guarded ${passwordSignIn}: literal replacement email reaches normal credential checks`, async () => {
-    const reads = [];
-    const denials = [];
+    const reads: string[] = [];
+    const denials: string[] = [];
     const literalEmail = "stored-\ufffd@example.test";
     const humanLogin = createHumanLogin(
-      {
+      humanState({
         createAttempt: async () => {
           throw new Error("not used");
         },
@@ -661,11 +774,13 @@ for (const passwordSignIn of ["all", "recovery-only"]) {
           reads.push(address);
           return undefined;
         },
-        recordDenied: async (reason) => denials.push(reason),
-      },
+        recordDenied: async (reason) => {
+          denials.push(reason);
+        },
+      }),
       {
         recoveryUserId: "guarded-recovery",
-        passwordSignIn,
+        ...(passwordSignIn === "recovery-only" ? { passwordSignIn } : {}),
         google: {
           clientId: "guarded-client",
           clientSecret: "guarded-client-secret",

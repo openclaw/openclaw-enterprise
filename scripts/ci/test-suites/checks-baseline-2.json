@@ -22,13 +22,13 @@
     "tests/integration/cli-release.test.mjs",
     "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
-    "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.mjs",
-    "tests/integration/password-sign-in-audit.test.mjs",
+    "tests/integration/password-sign-in-audit.test.ts",
     "tests/integration/ci-impact-gate.test.ts",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
@@ -38,16 +38,17 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
-    "tests/integration/password-sign-in-admission.test.mjs",
+    "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.mjs",
     "tests/conformance/slack-channel-directory.test.mjs",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
-    "tests/integration/known-device-cookie.test.mjs",
+    "tests/integration/known-device-cookie.test.ts",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
@@ -74,10 +75,10 @@
     "tests/integration/plugin-driver-startup.test.mjs",
     "tests/integration/repository-credentials-config.test.mjs",
     "tests/integration/kubernetes-peer-status.test.mjs",
-    "tests/conformance/repository-credentials-lifecycle.test.mjs",
+    "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
     "tests/integration/oidc-login-transport.test.mjs",
-    "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
+    "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
@@ -86,7 +87,7 @@
     "tests/integration/plugin-driver-real-preflight.test.mjs",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
-    "tests/integration/password-sign-in-policy.test.mjs",
+    "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
@@ -99,7 +100,7 @@
     "tests/conformance/repository-credentials-github-token.test.mjs",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
-    "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
@@ -227,6 +228,9 @@
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
+    },
+    {
+      "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
     },
     {
       "path": "tests/integration/ci-impact-gate.test.ts"
@@ -423,7 +427,7 @@
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+      "path": "tests/conformance/repository-credentials-sessions.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-admission.test.ts"
@@ -432,10 +436,10 @@
       "path": "tests/conformance/repository-credentials-custody.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
+      "path": "tests/conformance/repository-credentials-lifecycle.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.mjs"
+      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
@@ -480,7 +484,7 @@
       "path": "tests/integration/repository-credentials-server-timeout.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-control.test.mjs"
+      "path": "tests/integration/repository-credentials-control.test.ts"
     },
     {
       "path": "tests/integration/repository-credential-operator-recovery.test.ts"
@@ -600,19 +604,19 @@
       "path": "tests/integration/oidc-login-transport.test.mjs"
     },
     {
-      "path": "tests/integration/password-sign-in-policy.test.mjs"
+      "path": "tests/integration/password-sign-in-policy.test.ts"
     },
     {
       "path": "tests/integration/client-address.test.mjs"
     },
     {
-      "path": "tests/integration/password-sign-in-admission.test.mjs"
+      "path": "tests/integration/password-sign-in-admission.test.ts"
     },
     {
-      "path": "tests/integration/password-sign-in-audit.test.mjs"
+      "path": "tests/integration/password-sign-in-audit.test.ts"
     },
     {
-      "path": "tests/integration/known-device-cookie.test.mjs"
+      "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
       "path": "tests/conformance/postgres-auth-binding.test.mjs"

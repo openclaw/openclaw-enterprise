@@ -1,19 +1,20 @@
 # OpenShell SandboxDriver
 
-The OpenShell SandboxDriver pairs its Gateway, dedicated Codex/native OpenClaw
+The Driver pairs its Gateway, dedicated Codex/native OpenClaw
 Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
-Development supports native OpenClaw and dedicated Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
-OCE runtime declares native Dedicated support. The paired
+Development supports dedicated native OpenClaw and Codex with
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE runtime.
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
-each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
+Agent revision providers supply node enrollment and Codex files. These APIs are
 unqualified for production.
 
 Embedded OpenClaw is unsupported. See native OpenClaw
 [containment facets](#openshell-containment-facets) and
 [qualification](#qualification-contract).
+
+Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Gateway settings below describe operator-owned gateways.
 
 ## Ownership model
 
@@ -153,18 +154,21 @@ not satisfy the per-Agent production requirement below.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, list each approved
-`policy.networkPolicies` rule in `policy.codexArtifactRuleNames`. Omission grants
-no artifact access.
+For protected, dedicated Codex repository execution, select
+[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`, for example
+`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
+one existing `policy.networkPolicies` rule. Omission grants no artifact access.
 
-Rules require bundled Codex executable paths, exact DNS hosts, port 443,
-`protocol: rest`, `enforcement: enforce`, and `access: read_only`. Omit `tls`
-for verified inspection. Wildcards, numeric addresses, GitHub repository hosts,
-reserved names, and credential or provider fields are refused. For the
-registry-only Node exception, see [Enable protected npm reads](../../guides/deploy/local-sandbox-network-policy.md#enable-protected-npm-reads).
+Selected rules require the bundled Codex executable paths, exact DNS hosts,
+port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
+Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
+explicit skip and deprecated termination modes are refused. Wildcards, numeric
+addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
 
-Admission freezes only the selected rules with empty Agent additions. Prepare
-a new revision to change them. Protected Agents cannot apply changes live.
+Admission freezes only that qualified map with empty Agent additions. Preparation
+and replay use the revision, even if Installation defaults change. Select a new
+revision to change artifact authority. Live Agent policy apply remains unavailable.
 
 ### Gateway readiness and workspace
 
@@ -391,9 +395,9 @@ The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
 exposure sweep and retries.
 
 For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
-raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as
-permanent. For setup, the worker records the refusal code as the reason. Check
-the gateway identity and Workspace access before retrying. Worker diagnostics
+raises `SandboxNamespaceRefusedError`. The Namespace lifecycle adapter classifies
+the failure as permanent. The worker records the setup refusal code as its reason. Check
+gateway identity and Workspace access before retrying. Worker diagnostics
 report the method, gRPC status, and validation category without provider text or
 request values.
 

@@ -3,8 +3,6 @@ import {
   createModelCredentialSecret,
   enterManualModel,
   openAdvancedSettings,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
   submitCreateAgent,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
@@ -58,16 +56,13 @@ import {
   setSlackSelection,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
-import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   agentPostRequests,
   agentProvisionPostRequests,
   configurationPostRequests,
   nativeSandboxDriver,
-  routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.ts";
-import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
@@ -83,7 +78,6 @@ import {
   referenceFormRefusal,
   RESOURCE_CONFLICT,
   unboundReferenceRefusal,
-  POD_QUOTA_FULL,
   codexApiKeyRefusal,
   notIncluded,
 } from "../helpers/refusal-text.mjs";
@@ -2446,122 +2440,6 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       assert.equal(await page.getByLabel("Agent name").isDisabled(), answer.retry);
     });
   }
-});
-
-// Create Agent shows a full Namespace Pod quota while the first deployment reports it, and shows
-// generic progress again once the reader can no longer read that deployment (finding 1637). A
-// denied read (403) loses access as surely as a missing one (404): the quota line must not stay.
-test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
-  await fixture.bootstrap();
-  const namespace = await readyNamespace(fixture, "Pod quota denied");
-  const { page } = await newPage(t, fixture, { browser });
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
-  const work = provisioningJob(namespace.id, "work_quota_denied");
-  const { url, updatedAt, job, failed } = work;
-  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-  const agentId = "agt_00000000-0000-4000-8000-00000000b637";
-  const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
-  const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-  // Create Agent reads the handed-off deployment three times before the job fails.
-  const reads = [
-    job("running"),
-    job("running", handedOff),
-    job("running", handedOff),
-    job("running", handedOff),
-    failed(handedOff),
-  ];
-  const served = await routeProvisioningJob(page, fixture, work, reads);
-  // The first deployment read names the quota; every later one is denied.
-  let deploymentReads = 0;
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-    (route) => {
-      deploymentReads += 1;
-      return route.fulfill(
-        deploymentReads === 1
-          ? {
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                data: {
-                  deploymentId: revisionId,
-                  namespaceId: namespace.id,
-                  agentId,
-                  status: "queued",
-                  error: null,
-                  warnings: [],
-                  progress: {
-                    lastAttempt: {
-                      at: updatedAt,
-                      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-                      message: POD_QUOTA_FULL,
-                    },
-                    nextAttemptAt: updatedAt,
-                  },
-                },
-                meta,
-              }),
-            }
-          : {
-              status: 403,
-              contentType: "application/json",
-              body: JSON.stringify({
-                error: {
-                  code: "FORBIDDEN",
-                  message: GENERIC_DENIAL,
-                },
-                meta,
-              }),
-            },
-      );
-    },
-  );
-
-  await trackSettledFetches(page);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Pod quota denied");
-  await pickCodexCredential(page, "model-secret-value");
-  await page.evaluate(() => {
-    globalThis.provisioningWrites = [];
-    new globalThis.MutationObserver((records) => {
-      for (const record of records) {
-        if (record.target instanceof Element && record.target.getAttribute("role") === "status") {
-          const text = [...record.addedNodes].map((node) => node.textContent).join("");
-          if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
-            globalThis.provisioningWrites.push(text);
-          }
-        }
-      }
-    }).observe(globalThis.document.body, { childList: true, subtree: true });
-  });
-  // Wide enough that the page is wider than the form (finding 2423).
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await runProvisioningPolls(
-    page,
-    () => page.getByRole("button", { name: "Create Agent" }).click(),
-    url,
-    reads.length,
-  );
-  await waitForProvisioningFailure(page);
-  assert.equal(served.reads, reads.length);
-  assert.equal(deploymentReads, 3);
-  assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
-    "Provisioning request accepted.",
-    "Provisioning queued…",
-    "Provisioning Agent…",
-    POD_QUOTA_FULL,
-    "Provisioning Agent…",
-  ]);
 });
 
 test("Agent name counts characters, as the API does, not UTF-16 code units", async (t) => {

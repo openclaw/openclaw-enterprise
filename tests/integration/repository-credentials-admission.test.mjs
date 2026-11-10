@@ -1,3 +1,4 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { createOccApi, exportTenants, importTenants } from "../../scripts/split-layout-tenants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
@@ -1584,6 +1585,12 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
     },
   });
   const sandbox = repositorySandbox(f.registry);
+  Object.assign(sandbox, {
+    namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+      f.controller.selectedDriver("compute"),
+      sandbox,
+    ).hooks,
+  });
   f.controller.registerDriver(sandbox);
   f.controller.selectDriver("sandbox", sandbox.id);
   const message =
@@ -1842,7 +1849,13 @@ async function protectedOpenShellComposition(
   });
   const owner = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
-    { capabilities: { sandbox, credential_proxy: proxy } },
+    {
+      capabilities: { sandbox, credential_proxy: proxy },
+      namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+        f.controller.selectedDriver("compute"),
+        sandbox,
+      ).hooks,
+    },
   );
   f.controller.registerDriver(owner);
   f.controller.selectDriver("sandbox", sandbox.id);

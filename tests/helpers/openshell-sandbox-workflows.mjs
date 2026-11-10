@@ -266,7 +266,7 @@ const {
  * whose API server reaches a local Pod over the cni0 bridge, so the source is that bridge's
  * address, as `occ dev up` derives it. A configured lane value takes precedence.
  */
-async function apiServerPodProxySourceCidrs() {
+export async function apiServerPodProxySourceCidrs() {
   const configured = (process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS ?? "")
     .split(",")
     .map((cidr) => cidr.trim())
@@ -295,7 +295,7 @@ async function apiServerPodProxySourceCidrs() {
   return [`${source}/32`];
 }
 
-async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
+export async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
   const suffix = hash(identifier);
   const account = "openclaw-production-controller";
   const namespaceRole = `oce-openshell-namespaces-${suffix}`;
@@ -1969,7 +1969,8 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-function withRevisionFailureDiagnostics(computeDriver, secrets) {
+export function withRevisionFailureDiagnostics(computeDriver, extraSecrets) {
+  const secrets = failureSecrets([process.env, extraSecrets]);
   const reported = new Map();
   return new Proxy(computeDriver, {
     get(target, property) {
@@ -2346,13 +2347,10 @@ async function prepareProductionInstallation(
       diagnosticWorkerDrivers: {
         ...loaded,
         computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withRevisionFailureDiagnostics(
-            loaded.computeDriver,
-            failureSecrets([
-              process.env,
-              { GATEWAY_API_KEY: workspaceGateway.apiKey, PROBE_TOKEN: importedMcp?.token },
-            ]),
-          ),
+          withRevisionFailureDiagnostics(loaded.computeDriver, {
+            GATEWAY_API_KEY: workspaceGateway.apiKey,
+            PROBE_TOKEN: importedMcp?.token,
+          }),
           tokenSources,
         ),
       },

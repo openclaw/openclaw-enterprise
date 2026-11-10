@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -948,5 +951,287 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+// Scripted log replies exercise the real observer and terminal projection, not
+// supplier emission or delivery. A final read failure must retain prior evidence.
+test("custody failures retain bounded last observations without supplier payloads", async (t) => {
+  const marker = "PRIVATE-CUSTODY-DIAGNOSTIC-SENTINEL";
+  const sandboxId = "sandbox-observation";
+  const supervisor = {
+    metadata: {
+      uid: "supervisor-uid",
+      namespace: "workspace",
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: { containerStatuses: [{ containerID: "container-id", restartCount: 0 }] },
+  };
+  const line = {
+    sandboxId,
+    source: "sandbox",
+    level: "INFO",
+    target: "openshell_supervisor_network::l7::rest::credentials",
+    message: "Protected response custody transition",
+    fields: {
+      request_id: "aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
+      response_custody_event: "resolve_accepted",
+      private: marker,
+    },
+  };
+  await t.test("multiline failure messages cannot choose the reported source frame", async () => {
+    const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
+    for (const kind of ["operation", "assertion"]) {
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            const message = marker + "\n    at /untrusted/" + spoofed;
+            if (kind === "assertion") {
+              assert.fail(message);
+            }
+            throw new Error(message);
+          },
+        },
+      });
+      let failure;
+      try {
+        await custody.snapshot();
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      const safe = await safeConnectedFailure(failure, "turn-result");
+      assert.match(safe.message, /egress-supplier-custody-transitions\.mjs:\d+:\d+/);
+      assert.equal(safe.message.includes(spoofed), false);
+      assert.equal(safe.message.includes(marker), false);
+    }
+    // A stack with no usable frame keeps the fixed fallback.
+    assert.match(
+      (await safeConnectedFailure(new Error(marker), "turn-result")).message,
+      /\(external-operation\)/,
+    );
+  });
+
+  await t.test("non-Error rejection stays unchanged", async () => {
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw marker;
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(custody.snapshot(), (error) => error === marker);
+  });
+  await t.test("diagnostic write failure does not prevent cleanup recording", async () => {
+    const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+    t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+    // A failed atomic write must not replace the observer's original failure;
+    // the next cleanup checkpoint still persists that failure from memory.
+    await mkdir(evidence.directory + "/observations.pending.json");
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw new Error(marker);
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(
+      async () => {
+        try {
+          await custody.snapshot();
+        } catch (error) {
+          const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+          assert.equal(safe.message.includes(marker), false);
+          assert.equal(safe.cause, undefined);
+          throw safe;
+        }
+      },
+      {
+        message:
+          /Connected egress operation failed at turn-result \/ before-custody-supervisor-get/,
+      },
+    );
+    await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+    await evidence.checkpoint("cleanup");
+    const { failure } = JSON.parse(
+      await readFile(evidence.directory + "/observations.json", "utf8"),
+    );
+    assert.equal(failure.operation, "before-custody-supervisor-get");
+    assert.equal(failure.custody.readAttempts, 0);
+    assert.equal(failure.custody.lastRead, "unobserved");
+  });
+  await t.test(
+    "continuation retains the acknowledged prefix when its first read fails",
+    async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            reads++;
+            if (reads === 1) {
+              return { lines: [], bufferTotal: 0 };
+            }
+            if (reads === 2) {
+              return {
+                lines: [
+                  line,
+                  {
+                    ...line,
+                    fields: { ...line.fields, response_custody_event: "permit_accepted" },
+                  },
+                ],
+                bufferTotal: 2,
+              };
+            }
+            throw new Error(marker);
+          },
+        },
+      });
+      const before = await custody.snapshot();
+      await custody.expectAfter(before, ["resolve_accepted", "permit_accepted"]);
+      let recorded;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "turn-result", async (value) => {
+              recorded = value;
+            });
+          }
+        },
+        { message: /Connected egress operation failed at turn-result \/ after-custody-log-read/ },
+      );
+      assert.equal(recorded.custody.lastRead, "error");
+      assert.equal(recorded.custody.ring, "valid");
+      assert.equal(recorded.custody.freshCount, 2);
+      assert.deepEqual(recorded.custody.labels, ["resolve_accepted", "permit_accepted"]);
+      assert.equal(recorded.custody.sequence, "partial");
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+    },
+  );
+  for (const kind of ["empty", "partial", "ring", "malformed"]) {
+    await t.test(kind, async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions(
+        {
+          workspace: "workspace",
+          sandbox: "sandbox",
+          sandboxId,
+          supervisor,
+          readSupervisor: async () => supervisor,
+          gatewayClient: {
+            async getSandboxLogs(_request, signal) {
+              reads++;
+              if (reads === 1) {
+                return { lines: [], bufferTotal: 0 };
+              }
+              if (reads === 2) {
+                if (kind === "ring") {
+                  return { lines: [line], bufferTotal: 2001 };
+                }
+                if (kind === "malformed") {
+                  return {
+                    lines: [
+                      { ...line, fields: { ...line.fields, response_custody_event: marker } },
+                    ],
+                    bufferTotal: 1,
+                  };
+                }
+                return {
+                  lines: kind === "partial" ? [line] : [],
+                  bufferTotal: kind === "partial" ? 1 : 0,
+                };
+              }
+              try {
+                await delay(10000, undefined, { signal });
+              } catch {
+                throw signal.reason;
+              }
+              throw new Error("deadline did not abort the scripted read");
+            },
+          },
+        },
+        { deliveryTimeoutMs: 1000, pollIntervalMs: 1 },
+      );
+      const before = await custody.snapshot();
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+            assert.equal(safe.message.includes(marker), false);
+            assert.equal(safe.cause, undefined);
+            throw safe;
+          }
+        },
+        {
+          message:
+            /Connected egress (?:assertion|operation) failed at turn-result \/ after-custody-log-read/,
+        },
+      );
+      const { failure: recorded } = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      await evidence.checkpoint("cleanup");
+      assert.deepEqual(
+        JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8")).failure,
+        recorded,
+      );
+      assert.equal(recorded.custody.successfulReads, 2);
+      assert.equal(recorded.custody.readAttempts, kind === "empty" || kind === "partial" ? 3 : 2);
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+      assert.equal(JSON.stringify(recorded).includes(line.fields.request_id), false);
+      if (kind === "empty" || kind === "partial") {
+        assert.equal(recorded.custody.lastRead, "deadline");
+        assert.equal(recorded.custody.ring, "valid");
+        assert.equal(recorded.custody.lineCount, kind === "partial" ? 1 : 0);
+        assert.equal(recorded.custody.sequence, kind === "partial" ? "partial" : "none");
+        assert.deepEqual(recorded.custody.labels, kind === "partial" ? ["resolve_accepted"] : []);
+      } else {
+        assert.equal(recorded.custody.lastRead, "returned");
+        assert.equal(recorded.custody.ring, kind === "ring" ? "incomplete" : "invalid-transition");
+        assert.equal(recorded.custody.sequence, "unobserved");
+        assert.equal(recorded.custody.bufferTotal, kind === "ring" ? null : 1);
+      }
+    });
   }
 });
