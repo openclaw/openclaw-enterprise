@@ -153,9 +153,9 @@ The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up`
 installation. Before Kubernetes or OCC calls, it requires same-checkout v3
 Kubernetes development state and marker. Both Sandbox Drivers require the
 recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.
-API requests use the recorded loopback HTTP endpoint. `sandboxDriver: "none"`
-uses embedded OpenClaw; OpenShell requires `--harness codex`, and `--control-ui`
-requires OpenShell.
+API requests use the recorded loopback HTTP endpoint. With `sandboxDriver: "none"`,
+the helper defaults to embedded OpenClaw. Use `--harness codex` for dedicated Codex.
+OpenShell requires `--harness codex`, and `--control-ui` requires OpenShell.
 `scripts/first-agent.ts:loadLocalInstallation` selects the recorded Unix socket
 and removes inherited Docker TLS settings. Compose queries the recorded
 controller port and PostgreSQL service without another daemon's certificates.
