@@ -159,6 +159,19 @@ initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
 
+`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+classifies public placement errors and projects environment/tunnel states, node
+connection and capability counts, and exact workspace-node matches. The expected
+node comes from the selected revision's Gateway Pod. Failure reads of
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget. A matching session response is labeled `fresh`. If the refresh fails,
+placement is labeled `fallback` when an earlier observation exists, or `absent`
+otherwise.
+`scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+booleans and counters again. Raw errors and identifiers do not enter the record.
+Public RPCs do not expose workspace-binding readiness or restoration; a workspace
+reference does not prove either state.
+
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
