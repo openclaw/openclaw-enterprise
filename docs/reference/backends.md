@@ -171,8 +171,7 @@ Its closed `configuration` accepts:
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` to `https` only when `rootCertificatePath`
   is set. OAuth2 credential sources refuse `token_url` hosts in the gateway's
-  namespace only when OCE knows it: from a bare or `<service>.<namespace>`
-  `serviceName`, or a `serviceName` or `endpoint` host
+  namespace when OCE knows it from a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
 - `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`,
   `{ mode: mtls, certificatePath, privateKeyPath }`, or
@@ -181,11 +180,11 @@ Its closed `configuration` accepts:
   Service HTTP/WebSocket requests retain their separate scoped bearer identity.
   OIDC client-credentials takes `tokenUrl` (absolute `https`; `http` only to
   a numeric loopback), `clientId`, `clientSecretPath` (absolute), optional
-  `tokenAuth` and `audience`/`scope`. The client exchanges credentials at
-  `tokenUrl`, caches until a refresh margin before expiry, re-reads the
-  secret each refresh, and presents it as the gRPC `authorization` bearer;
+  `tokenAuth` and `audience`/`scope`. The client exchanges credentials,
+  caches until a refresh margin before expiry, re-reads the secret each
+  refresh, and presents it as the gRPC `authorization` bearer;
   `rootCertificatePath` verifies the token request too. `audience` names
-  the gateway's audience, not the client.
+  the gateway's audience.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the

@@ -81,6 +81,7 @@ test("prepared first-Agent Compose images replace builds and preserve service co
   const environment = {
     OCC_DEVELOPMENT_INSTALLATION_CONFIG: join(directory, "installation.yaml"),
     OCC_DEVELOPMENT_KUBECONFIG: join(directory, "kubeconfig"),
+    OCC_DEVELOPMENT_OPENSHELL_CLIENT_SECRET: join(directory, "openshell-client-secret"),
     OCC_DEVELOPMENT_NETWORK_NAME: "first-agent-compose-config",
     OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.example.test:8443",
     OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
