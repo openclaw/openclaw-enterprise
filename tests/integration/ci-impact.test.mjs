@@ -1427,11 +1427,11 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
       lane === "k3d-fixture-state"
         ? "blacksmith-8vcpu-ubuntu-2404"
         : [
-            "k3d-observability",
-            "k3d-fixture-network",
-            "k3d-fixture-plugins",
-            "k3d-fixture-configuration",
-          ].includes(lane)
+              "k3d-observability",
+              "k3d-fixture-network",
+              "k3d-fixture-plugins",
+              "k3d-fixture-configuration",
+            ].includes(lane)
           ? "blacksmith-4vcpu-ubuntu-2404"
           : ciRunners.get(lane),
       lane,
