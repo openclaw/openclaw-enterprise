@@ -50,3 +50,21 @@ inventory every resource cleanup.
 reported the result. It does not establish that cancellation initiated failure.
 Original errors and exit behavior are preserved. The record contains no raw
 errors, paths or subprocess output.
+
+`primary_stage=controller-image-import` identifies a failure while preparing or
+importing the development controller image. Inspect the original CLI build or
+import error first. For an explicitly selected image, check the selected engine
+or configured registry digest as applicable. Check a local registry's current
+published binding from the host. Node-side checks require the cluster and registry
+attachment to still exist; normal rollback removes them. The stage identifies
+the failed operation, not its underlying cause.
+
+For `primary_stage=routing`, optional `routing_operation` identifies the selected
+failed step: `manifest-download`, `gateway-api-readiness`, `manifest-filter`,
+`manifest-write`, `manifest-apply`, `controller-crd-readiness`,
+`controller-rollout`, `gateway-class-apply`, `gateway-class-readiness`, or
+`node-pod-cidr`. When known, `routing_controller` is `cert-manager` or
+`envoy-gateway`; it is absent for the node Pod CIDR lookup. These fields use fixed
+labels, not error text. A canceled sibling or failed cleanup does not replace
+the selected failure's routing details. Records from older CLI versions can
+omit both fields.

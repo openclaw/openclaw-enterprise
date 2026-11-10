@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -357,6 +360,217 @@ test("the authenticated connected request stays on the runner's exact loopback c
   assert.equal(foreignRequests, 0, "neither request reached the foreign listener");
 });
 
+test("connected response evidence survives cleanup without retaining untrusted fields", async (t) => {
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  const requestId = `req_${randomUUID()}`;
+  const serviceKey = `fixture-${randomUUID()}`;
+  const cases = [
+    {
+      code: "RESOURCE_CONFLICT",
+      metaId: requestId,
+      headerId: sentinel,
+      expectedCode: "RESOURCE_CONFLICT",
+      expectedId: requestId,
+    },
+    {
+      code: sentinel,
+      metaId: sentinel,
+      headerId: requestId,
+      expectedCode: "UNKNOWN",
+      expectedId: requestId,
+    },
+    {
+      code: { value: sentinel },
+      metaId: requestId + "\n",
+      headerId: sentinel,
+      expectedCode: "UNKNOWN",
+      expectedId: null,
+    },
+  ];
+  let selected;
+  let pending;
+  let evidence;
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      assert.equal(request.headers["x-api-key"], serviceKey);
+      const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+      pending = saved.lastApi;
+      assert.equal(pending.outcome, "unknown", "the attempt must be durable before dispatch");
+      if (request.method === "DELETE") {
+        response.writeHead(204).end();
+        return;
+      }
+      response.writeHead(409, { "x-request-id": selected.headerId, "x-private": sentinel });
+      response.end(
+        JSON.stringify({
+          error: { code: selected.code, message: sentinel, details: [{ value: sentinel }] },
+          meta: { requestId: selected.metaId, private: sentinel },
+          data: sentinel,
+        }),
+      );
+    }),
+  );
+  const progress = {};
+  evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  let firstFailure;
+  for (selected of cases) {
+    // A real HTTP rejection is recorded before the caller's expected-status assertion.
+    // Later cleanup must not erase its correlation ID or retain arbitrary response material.
+    progress.stage = "deploy-request";
+    await assert.rejects(evidence.api("POST", route + "/deploy", {}, 202), {
+      code: "ERR_ASSERTION",
+    });
+    const expected = {
+      ...pending,
+      outcome: "received-error-status",
+      status: 409,
+      code: selected.expectedCode,
+      requestId: selected.expectedId,
+    };
+    firstFailure ??= expected;
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.deepEqual(
+      saved.apiOperations?.at(-2),
+      expected,
+      "the initiating response must remain available after cleanup",
+    );
+    assert.equal(expected.phase, "deploy-request");
+    assert.equal(saved.lastApi.method, "DELETE");
+    assert.equal(saved.lastApi.phase, "cleanup");
+    assert.notEqual(saved.lastApi.operationId, expected.operationId);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(raw.includes(serviceKey), false);
+    assert.equal(raw.includes(route), false);
+  }
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.deepEqual(
+    saved.apiOperations.find(({ operationId }) => operationId === firstFailure.operationId),
+    firstFailure,
+    "the first failed POST must survive the entire cleanup sequence",
+  );
+});
+
+test("connected response evidence preserves uncertainty after decoding and transport failures", async (t) => {
+  const requestId = `req_${randomUUID()}`;
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  let fault;
+  const received = [];
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      received.push(request.method);
+      if (request.method === "DELETE") {
+        const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+        assert.equal(saved.lastApi.method, "DELETE");
+        assert.equal(saved.lastApi.outcome, "unknown", "cleanup must checkpoint before dispatch");
+        response.writeHead(204).end();
+      } else if (fault === "disconnected") {
+        request.socket.destroy();
+      } else {
+        if (fault === "malformed-with-ledger-failure") {
+          await mkdir(evidence.directory + "/observations.pending.json");
+        }
+        response.writeHead(202, { "x-request-id": requestId });
+        // This is a faulting HTTP peer, not a substitute for a valid product response.
+        response.end("{malformed:" + sentinel);
+      }
+    }),
+  );
+  const progress = { stage: "deploy-request" };
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey: `fixture-${randomUUID()}` },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  for (fault of ["malformed", "disconnected"]) {
+    await assert.rejects(
+      evidence.request("POST", route + "/deploy", {}),
+      fault === "malformed" ? SyntaxError : TypeError,
+    );
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    const operation = saved.apiOperations?.at(-2);
+    assert.ok(operation, "the uncertain initiating operation must survive cleanup");
+    assert.equal(operation.outcome, "unknown", "status alone must not settle write custody");
+    assert.equal(operation.status, fault === "malformed" ? 202 : null);
+    assert.equal(operation.requestId, fault === "malformed" ? requestId : null);
+    assert.equal(operation.code, null);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(saved.lastApi.outcome, "received-success-status");
+  }
+  // A second failure while saving diagnostics must not replace the original
+  // decoder error or imply that the already-dispatched write can be replayed.
+  fault = "malformed-with-ledger-failure";
+  await assert.rejects(evidence.request("POST", route + "/deploy", {}), SyntaxError);
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(saved.lastApi.outcome, "unknown");
+  assert.equal(saved.lastApi.status, null, "the durable pre-dispatch record must survive");
+  const failedPostId = saved.lastApi.operationId;
+  const beforeCleanup = [...received];
+  await assert.rejects(evidence.request("DELETE", route, undefined, true), { code: "EISDIR" });
+  assert.deepEqual(received, beforeCleanup, "a failed checkpoint must prevent dispatch");
+  // Repair only the fixture's filesystem obstruction. The next independent cleanup
+  // gets a new checkpoint; the failed POST must never be sent again.
+  await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+  await evidence.request("DELETE", route, undefined, true);
+  assert.deepEqual(received, [...beforeCleanup, "DELETE"]);
+  const recovered = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(
+    recovered.apiOperations.find(({ operationId }) => operationId === failedPostId).outcome,
+    "unknown",
+  );
+});
+
+test("connected response headers cannot retain known credentials as request IDs", async (t) => {
+  // A malformed but accepted runner key can fit inside the canonical ID shape.
+  // Generate both values locally; no real credential or controller is involved.
+  const serviceKey = randomUUID();
+  const protectedValue = randomUUID();
+  let reflected;
+  const port = await listen(
+    t,
+    createServer((_request, response) => {
+      response.writeHead(204, { "x-request-id": `req_${reflected}` }).end();
+    }),
+  );
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    { stage: "request" },
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  evidence.protect(protectedValue);
+  for (reflected of [serviceKey, protectedValue]) {
+    await assert.rejects(evidence.request("GET", "/installation"), { code: "ERR_ASSERTION" });
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.equal(raw.includes(reflected), false);
+    assert.equal(saved.lastApi.requestId, null);
+    assert.equal(saved.lastApi.outcome, "unknown");
+  }
+});
+
 test("connected database selection rejects missing, remote and redirected observers before effects", () => {
   const url = (overrides = {}) =>
     syntheticCredentialUrl({
@@ -489,7 +703,10 @@ test("connected request bytes pass the real Fastify parser and preserve missing-
     const response = await f.app.inject({
       method: wire.method,
       url: wire.path,
-      headers: authenticatedHeaders(session, wire.headers),
+      headers: {
+        host: new URL(session.origin).host,
+        ...authenticatedHeaders(session, wire.headers),
+      },
       payload: wire.body,
     });
     return assertConnectedResponse(
@@ -734,5 +951,287 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+// Scripted log replies exercise the real observer and terminal projection, not
+// supplier emission or delivery. A final read failure must retain prior evidence.
+test("custody failures retain bounded last observations without supplier payloads", async (t) => {
+  const marker = "PRIVATE-CUSTODY-DIAGNOSTIC-SENTINEL";
+  const sandboxId = "sandbox-observation";
+  const supervisor = {
+    metadata: {
+      uid: "supervisor-uid",
+      namespace: "workspace",
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: { containerStatuses: [{ containerID: "container-id", restartCount: 0 }] },
+  };
+  const line = {
+    sandboxId,
+    source: "sandbox",
+    level: "INFO",
+    target: "openshell_supervisor_network::l7::rest::credentials",
+    message: "Protected response custody transition",
+    fields: {
+      request_id: "aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
+      response_custody_event: "resolve_accepted",
+      private: marker,
+    },
+  };
+  await t.test("multiline failure messages cannot choose the reported source frame", async () => {
+    const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
+    for (const kind of ["operation", "assertion"]) {
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            const message = marker + "\n    at /untrusted/" + spoofed;
+            if (kind === "assertion") {
+              assert.fail(message);
+            }
+            throw new Error(message);
+          },
+        },
+      });
+      let failure;
+      try {
+        await custody.snapshot();
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      const safe = await safeConnectedFailure(failure, "turn-result");
+      assert.match(safe.message, /egress-supplier-custody-transitions\.mjs:\d+:\d+/);
+      assert.equal(safe.message.includes(spoofed), false);
+      assert.equal(safe.message.includes(marker), false);
+    }
+    // A stack with no usable frame keeps the fixed fallback.
+    assert.match(
+      (await safeConnectedFailure(new Error(marker), "turn-result")).message,
+      /\(external-operation\)/,
+    );
+  });
+
+  await t.test("non-Error rejection stays unchanged", async () => {
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw marker;
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(custody.snapshot(), (error) => error === marker);
+  });
+  await t.test("diagnostic write failure does not prevent cleanup recording", async () => {
+    const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+    t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+    // A failed atomic write must not replace the observer's original failure;
+    // the next cleanup checkpoint still persists that failure from memory.
+    await mkdir(evidence.directory + "/observations.pending.json");
+    const custody = createCustodyTransitions({
+      workspace: "workspace",
+      sandbox: "sandbox",
+      sandboxId,
+      supervisor,
+      readSupervisor: async () => {
+        throw new Error(marker);
+      },
+      gatewayClient: {
+        getSandboxLogs: async () => {
+          throw new Error("unexpected log read");
+        },
+      },
+    });
+    await assert.rejects(
+      async () => {
+        try {
+          await custody.snapshot();
+        } catch (error) {
+          const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+          assert.equal(safe.message.includes(marker), false);
+          assert.equal(safe.cause, undefined);
+          throw safe;
+        }
+      },
+      {
+        message:
+          /Connected egress operation failed at turn-result \/ before-custody-supervisor-get/,
+      },
+    );
+    await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+    await evidence.checkpoint("cleanup");
+    const { failure } = JSON.parse(
+      await readFile(evidence.directory + "/observations.json", "utf8"),
+    );
+    assert.equal(failure.operation, "before-custody-supervisor-get");
+    assert.equal(failure.custody.readAttempts, 0);
+    assert.equal(failure.custody.lastRead, "unobserved");
+  });
+  await t.test(
+    "continuation retains the acknowledged prefix when its first read fails",
+    async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            reads++;
+            if (reads === 1) {
+              return { lines: [], bufferTotal: 0 };
+            }
+            if (reads === 2) {
+              return {
+                lines: [
+                  line,
+                  {
+                    ...line,
+                    fields: { ...line.fields, response_custody_event: "permit_accepted" },
+                  },
+                ],
+                bufferTotal: 2,
+              };
+            }
+            throw new Error(marker);
+          },
+        },
+      });
+      const before = await custody.snapshot();
+      await custody.expectAfter(before, ["resolve_accepted", "permit_accepted"]);
+      let recorded;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "turn-result", async (value) => {
+              recorded = value;
+            });
+          }
+        },
+        { message: /Connected egress operation failed at turn-result \/ after-custody-log-read/ },
+      );
+      assert.equal(recorded.custody.lastRead, "error");
+      assert.equal(recorded.custody.ring, "valid");
+      assert.equal(recorded.custody.freshCount, 2);
+      assert.deepEqual(recorded.custody.labels, ["resolve_accepted", "permit_accepted"]);
+      assert.equal(recorded.custody.sequence, "partial");
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+    },
+  );
+  for (const kind of ["empty", "partial", "ring", "malformed"]) {
+    await t.test(kind, async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions(
+        {
+          workspace: "workspace",
+          sandbox: "sandbox",
+          sandboxId,
+          supervisor,
+          readSupervisor: async () => supervisor,
+          gatewayClient: {
+            async getSandboxLogs(_request, signal) {
+              reads++;
+              if (reads === 1) {
+                return { lines: [], bufferTotal: 0 };
+              }
+              if (reads === 2) {
+                if (kind === "ring") {
+                  return { lines: [line], bufferTotal: 2001 };
+                }
+                if (kind === "malformed") {
+                  return {
+                    lines: [
+                      { ...line, fields: { ...line.fields, response_custody_event: marker } },
+                    ],
+                    bufferTotal: 1,
+                  };
+                }
+                return {
+                  lines: kind === "partial" ? [line] : [],
+                  bufferTotal: kind === "partial" ? 1 : 0,
+                };
+              }
+              try {
+                await delay(10000, undefined, { signal });
+              } catch {
+                throw signal.reason;
+              }
+              throw new Error("deadline did not abort the scripted read");
+            },
+          },
+        },
+        { deliveryTimeoutMs: 1000, pollIntervalMs: 1 },
+      );
+      const before = await custody.snapshot();
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            const safe = await safeConnectedFailure(error, "turn-result", evidence.recordFailure);
+            assert.equal(safe.message.includes(marker), false);
+            assert.equal(safe.cause, undefined);
+            throw safe;
+          }
+        },
+        {
+          message:
+            /Connected egress (?:assertion|operation) failed at turn-result \/ after-custody-log-read/,
+        },
+      );
+      const { failure: recorded } = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      await evidence.checkpoint("cleanup");
+      assert.deepEqual(
+        JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8")).failure,
+        recorded,
+      );
+      assert.equal(recorded.custody.successfulReads, 2);
+      assert.equal(recorded.custody.readAttempts, kind === "empty" || kind === "partial" ? 3 : 2);
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+      assert.equal(JSON.stringify(recorded).includes(line.fields.request_id), false);
+      if (kind === "empty" || kind === "partial") {
+        assert.equal(recorded.custody.lastRead, "deadline");
+        assert.equal(recorded.custody.ring, "valid");
+        assert.equal(recorded.custody.lineCount, kind === "partial" ? 1 : 0);
+        assert.equal(recorded.custody.sequence, kind === "partial" ? "partial" : "none");
+        assert.deepEqual(recorded.custody.labels, kind === "partial" ? ["resolve_accepted"] : []);
+      } else {
+        assert.equal(recorded.custody.lastRead, "returned");
+        assert.equal(recorded.custody.ring, kind === "ring" ? "incomplete" : "invalid-transition");
+        assert.equal(recorded.custody.sequence, "unobserved");
+        assert.equal(recorded.custody.bufferTotal, kind === "ring" ? null : 1);
+      }
+    });
   }
 });

@@ -222,6 +222,7 @@ test(
           cluster: namespace,
         }),
         authBaseURL: "https://occ.example.invalid",
+        agentNativeAdminDomain: "agents.example.invalid",
         installationName: `Receipt ${capture}`,
         apiClients: [{ namespace, podLabels: { app: "operator" } }],
         run,

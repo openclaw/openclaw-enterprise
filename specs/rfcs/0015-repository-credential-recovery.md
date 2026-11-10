@@ -39,11 +39,11 @@ their existing owners.
 
 ## Evidence and limits
 
-The [GitHub Backend lifetime](../../apps/controller/src/drivers/repo/github/credentials/driver/lifetime.ts)
+The [GitHub Backend lifetime](../../apps/controller/src/drivers/repo/github/access/driver/lifetime.ts)
 sets a one-hour cleanup bound from response receipt. The
 [response observer evaluated for this proposal](https://github.com/openclaw/openclaw-enterprise/blob/8359f9fa580536321af64aa2c41445de9ae8ec55/apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts)
 captured a token before the response body was discarded. The
-[common lifecycle](../../apps/controller/src/drivers/repo/credentials/lifecycle.ts)
+[common lifecycle](../../apps/controller/src/drivers/repo/access/lifecycle.ts)
 measures the captured token's cleanup lifetime using monotonic time, separates
 `expired` from `revoked`, and retains uncertain issuance. GitHub documents that
 [installation access tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
@@ -109,7 +109,7 @@ A smaller candidate is to persist the original broker's exact `DISPOSED`
 observation while that broker still holds the custody and action evidence. This
 would recover a terminal result lost before the worker records it, without
 inventing a post-restart expiry outcome or persisting token bytes. The existing
-[service transition](../../apps/controller/src/drivers/repo/credentials/service.ts)
+[service transition](../../apps/controller/src/drivers/repo/access/service.ts)
 requires closure, drained exchanges and actions, finalized lifecycle and empty
 custody before it reports `DISPOSED`.
 

@@ -5,7 +5,7 @@ import {
   repositoryMaterialDeployment,
   repositoryMaterialSpec,
 } from "../../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 
 /**
  * Projects `count` new repository credential sessions into the existing `sourceRoot` the

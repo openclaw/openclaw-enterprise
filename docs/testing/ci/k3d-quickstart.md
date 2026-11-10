@@ -26,6 +26,13 @@ no scheduled trigger and is not part of `CI Required`.
 
 The stages use the same Agent throughout installation, integration changes,
 and redeployment. Setup executes the quickstart's published shell examples.
+The reusable CI runtime job builds this workflow's source before installation.
+Quickstart verifies the same-run artifact's source, checksum, OCI configuration,
+and platform before loading it. Image preparation builds the controller from
+the same checkout and records both immutable references through a run-owned
+loopback registry. Both selections are exported before operator credentials
+are staged; the launcher does not repeat either build. The registry is removed
+after the run, including failed preparation.
 
 | Setup and action                                                                         | Expected outcome                                                                                                                                          | Source                                                                                                                                     |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -68,6 +75,10 @@ also supply browser, Linear, Git, image-digest, and cleanup receipts.
 The receipt collection script checks that the completed workflow used one Agent and
 the same conversation before and after redeployment. Missing or skipped stages
 do not count as a completed workflow.
+
+Setup has a 104-minute subprocess deadline inside its 105-minute step limit.
+On expiry, the wrapper terminates the setup process group before reporting
+sanitized startup timings and entering teardown. Raw command output remains private.
 
 If Git cleanup fails, installation teardown is withheld so that credential
 retirement can be investigated. Private input files are removed by an

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-01
-updated: 2026-11-05
+updated: 2026-11-09
 last_updated_session: authoring-run/4f118861-18d8-403b-a287-90ac81564c99
 ---
 
@@ -32,7 +32,7 @@ graph TD
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
     B --> B1["Recheck session and Namespace access"]
     B1 -->|no session| C["Login"]
-    C -->|GitHub| C1["Start GitHub sign-in"]
+    C -->|OIDC/Google| C1["External sign-in"]
     B1 -->|authenticated recovery key| NR["Resolve authorized Agent key"]
     NR -->|allowed| D
     NR -->|unavailable| D

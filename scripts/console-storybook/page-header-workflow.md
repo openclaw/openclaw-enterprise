@@ -4,16 +4,17 @@ The page header (UX spec 3.2) has two shapes. Collections (Agents, Backends) sho
 the title and its scope line at the left. At the right are the compact Namespace
 control and Refresh: one 32 px box with "Namespace" as a muted prefix inside.
 An Agent's page and Create Agent lead with **← Agents**. Next comes the title,
-with the actions at its right. Under it is a meta row: the Agent ID, **Copy
-Agent ID** and the compact Namespace control. Settings and Namespaces show no
-Namespace control. Check each story at 1440, 1024 and 390.
+with the actions at its right above 1100 px. At 1100 px and below, the actions
+share the back-link row and the title has its own row. Under the title is a meta
+row: the Agent ID, **Copy Agent ID** and the compact Namespace control. Settings and Namespaces show no
+Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
 
 1. Open **Pages / Agents / Populated**. The Namespace control is 32 px tall, with
    its label inside the box, and shares a line with Refresh.
-2. Open **Pages / Agent detail / Page header with a long name**. At 1024 the
-   name wraps to two lines on the left. Refresh and Open draft stays at
-   its right, and nothing overlaps. Select **Copy Agent ID**: "Copied" shows
-   beside it. Enter on the focused button copies the same ID.
+2. Open **Pages / Agent detail / Page header with a long name**. At 1100 and 1024 px,
+   Refresh and Open draft share the back-link row above the name. At 1101 px,
+   they move beside the name. Nothing overlaps at either side of the breakpoint.
+   Select **Copy Agent ID**: "Copied" shows beside it. Enter on the focused button copies the same ID.
    In the Controller-backed Console, also hold the button on one Agent, go Back
    to a different Agent, and release over its copy button. No copy should occur
    until you press that Agent’s button yourself.

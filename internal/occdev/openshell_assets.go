@@ -89,29 +89,33 @@ func (r *runner) openShellCharts(ctx context.Context, root string) (string, stri
 	return charts[0], charts[1], nil
 }
 
-func (r *runner) agentSandboxManifest(ctx context.Context, root string) (string, error) {
+func (r *runner) agentSandboxManifest(ctx context.Context, root string) (string, manifestFailure, error) {
 	if selected := r.env["OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"]; selected != "" {
 		if !filepath.IsAbs(selected) || filepath.Clean(selected) != selected {
-			return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST must be an absolute canonical path")
+			return "", manifestSelectedInput, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST must be an absolute canonical path")
 		}
 		if _, err := os.Stat(selected); err != nil {
-			return "", fmt.Errorf("Agent Sandbox manifest is unavailable: %w", err)
+			return "", manifestSelectedInput, fmt.Errorf("Agent Sandbox manifest is unavailable: %w", err)
 		}
-		return selected, nil
+		return selected, "", nil
 	}
 	path := filepath.Join(root, "agent-sandbox-v0.5.2.yaml")
-	if err := downloadVerifiedManifest(ctx, r.opts.Err, agentSandboxManifestURL, path, agentSandboxManifestSHA256); err != nil {
-		return "", err
+	failure, err := downloadVerifiedManifest(ctx, r.opts.Err, agentSandboxManifestURL, path, agentSandboxManifestSHA256)
+	if err != nil {
+		return "", failure, err
 	}
-	return path, nil
+	return path, "", nil
 }
 
-func downloadVerifiedManifest(ctx context.Context, log io.Writer, url, destination, expected string) error {
-	data, err := downloadDevelopmentManifest(ctx, log, filepath.Base(destination), url, expected, developmentManifestRetry)
+func downloadVerifiedManifest(ctx context.Context, log io.Writer, url, destination, expected string) (manifestFailure, error) {
+	data, failure, err := downloadDevelopmentManifestOutcome(ctx, log, filepath.Base(destination), url, expected, developmentManifestRetry)
 	if err != nil {
-		return err
+		return failure, err
 	}
-	return exclusiveWrite(destination, data, 0600)
+	if err := exclusiveWrite(destination, data, 0600); err != nil {
+		return manifestLocalIO, err
+	}
+	return "", nil
 }
 
 func downloadVerified(ctx context.Context, url, destination, expected string) error {

@@ -13,7 +13,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -22,6 +22,11 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
+const authBaseURL = "https://console.oce.localhost";
+
+function injectJson(app, method, url, options = {}) {
+  return injectJsonRequest(app, method, url, { host: "console.oce.localhost", ...options });
+}
 
 function installationPrincipal(state) {
   const administratorRoles = new Set(
@@ -85,7 +90,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await assert.rejects(
@@ -220,7 +226,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -492,6 +499,43 @@ test(
     );
     const stillDenied = await injectJson(appB, "GET", "/installation", { session: noGrantSession });
     assert.equal(stillDenied.statusCode, 403, stillDenied.body);
+
+    await context.test(
+      "account creation throttles hashing without writing an account",
+      async () => {
+        // Controller B has a fresh per-administrator budget. Duplicate requests still hash
+        // passwords, so they must consume it even though their transactions cannot create users.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const duplicate = await injectJson(appB, "POST", "/api/auth/accounts", {
+            session,
+            body: { email, password },
+          });
+          assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
+        }
+        const limitedEmail = `limited-${randomUUID()}@example.test`;
+        const limited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(limited, 429, "RATE_LIMITED");
+        assert.ok(Number(limited.headers["retry-after"]) > 0);
+        assert.deepEqual(
+          (await observerPool.query('SELECT id FROM occ."user" WHERE email=$1', [limitedEmail]))
+            .rows,
+          [],
+        );
+        // A caller cannot reset the budget by signing in again under the same Principal.
+        const nextSession = await signInToControllerApp(appB, {
+          email: adminEmail,
+          password: adminPassword,
+        });
+        const stillLimited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session: nextSession,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(stillLimited, 429, "RATE_LIMITED");
+      },
+    );
   },
 );
 
@@ -513,7 +557,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -604,7 +649,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {
@@ -728,7 +774,8 @@ test(
       mode: "development",
       host: "127.0.0.1",
       databaseUrl,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
     };
     await ensureDevelopmentBootstrap(context, {

@@ -121,7 +121,7 @@ func TestConcurrentStepFailureStopsItsSibling(t *testing.T) {
 				steps[failing] = failingStep(pidFile, cause)
 				if cleanupFails {
 					steps[1-failing] = func(ctx context.Context, r *runner) error {
-						return joinStartupCleanup(waitingStep(pidFile)(ctx, r), errors.New("secondary cleanup refused"))
+						return joinStartupCleanup(waitingStep(pidFile)(ctx, r), routingError("manifest-apply", "envoy-gateway", errors.New("secondary cleanup refused")))
 					}
 				}
 				r := &runner{opts: Options{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}, env: map[string]string{"PATH": os.Getenv("PATH")}}
@@ -140,6 +140,9 @@ func TestConcurrentStepFailureStopsItsSibling(t *testing.T) {
 				stage, cleanupFailed := startupFailureDetails(err)
 				if stage != "unknown" || cleanupFailed != cleanupFails {
 					t.Fatalf("unknown primary must stay unknown while retaining sibling cleanup: %s %t", stage, cleanupFailed)
+				}
+				if routingFailureSuffix(err) != "" {
+					t.Fatal("selected import failure inherited routing details from sibling cleanup")
 				}
 				if ctx.Err() != nil {
 					t.Fatal("the sibling ran until the test deadline instead of being canceled")

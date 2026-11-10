@@ -1,12 +1,10 @@
 ---
 created: 2026-09-09
-updated: 2026-11-08
-last_updated_session: authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501
+updated: 2026-11-10
+last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
 ---
 
 # Compose development startup
-
-[Compose development flow](../docker-compose-development.md).
 
 ## Overview
 
@@ -276,24 +274,22 @@ owns both OpenShell control-plane sequences.
 `internal/occdev/openshell.go:prepareOpenShell`.
 
 With Docker and a selected runtime, Compose overlaps bootstrap and cluster setup
-after creating its PostgreSQL container/network. For OpenShell,
+after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
-kubeconfig setup, alongside runtime import and OpenShell installation. Both finish before routing resolves PostgreSQL’s address and starts OCC.
-Failure cancels and drains siblings before rollback. Cold builds and Podman
-install routing after runtime preparation.
+kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
+before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
+drains siblings before rollback. Cold builds and Podman install routing after runtime preparation.
 
-Both modes install cert-manager and Envoy concurrently, retaining
-manifest checksums, CRD establishment, and Deployment rollout checks. Both finish
-before GatewayClass acceptance or routing configuration. Envoy waits for k3s-owned
-Gateway API CRDs.
+Both concurrently install cert-manager and Envoy, verifying checksums, established CRDs and rollout before GatewayClass acceptance or routing
+configuration. Envoy waits for k3s-owned Gateway API CRDs.
 Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
-The cluster API binds host loopback; creation leaves the default kubeconfig and
-current context unchanged.
+Cluster creation binds the API to loopback and preserves the default kubeconfig
+and current context.
 
-The host kubeconfig stays private. Non-root API/worker containers receive
-read-only configuration and kubeconfig for the TLS-verified internal load balancer,
+Host kubeconfig stays private. Non-root API/worker containers receive read-only
+configuration and kubeconfig targeting the TLS-verified internal load balancer,
 without the engine socket.
 
 Before importing a source-built runtime, `importRuntime` passes the optional
@@ -310,7 +306,7 @@ staging tag at the registry's platform child so the importer can save a complete
 single-platform archive. Unlisted sources and a failed child pull keep
 the pinned reference and filter.
 `importDevelopmentImage` resolves
-cluster digests. Both startup paths call
+cluster digests. Both paths call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
 `writeInstallation`; node inventory retains caller context outside polling.
 
@@ -322,23 +318,21 @@ Pod CIDR and returns `/32`. Errors stop Installation writing and trigger cleanup
 `internal/occdev/kubernetes.go:writeInstallation` then selects Kubernetes Compute,
 Configuration, and Secret Drivers with native IAM; without OpenShell,
 it adds both bundled Presets and the Codex Plugin Driver after the shared Codex
-sandbox check. Its runtime section sets the transport Secret prefix, gateway
+sandbox check. Its runtime sets the transport Secret prefix, gateway
 storage class, and memory limits
 of 4 GiB per gateway and 6 GiB per Harness.
 
-With Compose and OpenShell, startup installs the pinned Agent Sandbox controller
-and OpenShell Gateway in k3d and selects operator workspace mode. The
-[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
-owns their placement and resources.
+Compose installs OpenShell in k3d operator workspace mode; see the
+[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` builds selected services
-before `--no-build` startup. Routing files belong to the API/worker identity; browser
-TLS files belong to the proxy identity. Both retain mode `0600`.
+`internal/occdev/compose_routing.go:prepareComposePrivateFiles` builds selected services
+before `--no-build` startup. Both Compose Kubernetes profiles assign browser TLS
+files to the proxy UID/GID; OpenShell routing files use the API/worker UID/GID.
+Ownership follows each reader's image and Compose user setting, preserving mode `0600`.
 
-The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
-and routing settings. A name-constrained CA signs only the console and wildcard Agent
-hosts. `browser-proxy` terminates HTTPS on loopback; Agent `ClusterIP` Services
-remain behind Envoy.
+The hybrid snapshot adds `compose.native-admin.yaml`. Its CA signs only the
+installation's console and wildcard Agent hosts. `browser-proxy` terminates loopback
+HTTPS; Agent `ClusterIP` Services remain behind Envoy.
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 passes `OCC_AUTH_BASE_URL` into development admission.
@@ -360,8 +354,8 @@ before exclusive key export; cancellation triggers owned cleanup. OpenShell also
 waits for its bootstrap Namespace and operator-mode Workspace. Namespace readiness
 and repository discovery use `occclient.Client.WithContext` for polling deadlines,
 preserving the original client.
-Hybrid OpenShell startup also requires the generated CA and exact console name
-to reach the controller session route through the HTTPS browser proxy.
+Both Compose Kubernetes profiles verify the HTTPS session route using the
+generated CA and console name.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
@@ -390,10 +384,13 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
-`upK3d` reports after cleanup; `concurrently` retains sibling cleanup failures
-preserving the selected error. First-Agent and refusal helpers validate one
-terminal stdout record from failed startup; ambiguity, success or cleanup yields none.
-Stdout does not authenticate writers. See [field meanings](../../reference/cli/local-development.md).
+`internal/occdev/openshell_k3d.go:upK3d` reports selected
+`controller-image-import` failures after cleanup.
+`internal/occdev/startup_failure.go` preserves routing details;
+`concurrently` retains sibling cleanup failures.
+Helpers and CI retain one allowlisted final failure record, including older formats.
+Ambiguity, success and cleanup yield none; stdout is unauthenticated.
+[Field meanings](../../reference/cli/local-development.md).
 
 - `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
@@ -422,6 +419,12 @@ Stdout does not authenticate writers. See [field meanings](../../reference/cli/l
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
+
+- 2026-11-10 14:26: Classify image-import failures. (authoring-run/b1516512-8ce3-4006-b41c-0989435694a2 - 68319de0899f5de7fe1ed5e9ef800e2dadb88571)
+
+- 2026-11-09 08:16: Identify routing failures. (authoring-run/fc7f0ea3-8581-478c-a11e-63c531a3cd5e - 1b07c3792424a033befb8c97b74fb399daf61af0)
 
 - 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
 

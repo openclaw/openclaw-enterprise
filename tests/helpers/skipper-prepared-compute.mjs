@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
+import { runSkipperOperation } from "../../scripts/ci/skipper-release.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
@@ -447,8 +448,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     assert.ok(t.threadId && t.turnId);
     return { ...command, threadId: t.threadId, turnId: t.turnId };
   };
-  const modelEvents = async () =>
-    (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024 })).stdout
+  const modelEvents = async (signal) =>
+    (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024, signal })).stdout
       .trim()
       .split("\n")
       .filter((l) => l.startsWith("{"))
@@ -456,19 +457,48 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   const controlFile = join(modelDirectory, "skipper-command.json");
   const sendScript = async (cmd, label) => {
     const marker = "skipper-" + randomUUID();
-    const text = JSON.stringify({ cmd, id: marker });
-    await writeFile(controlFile + ".next", text, { mode: 0o644 });
-    await chmod(controlFile + ".next", 0o644);
-    await rename(controlFile + ".next", controlFile);
+    const text = JSON.stringify({ cmd, id: marker, expiresAt: Date.now() + 170_000 });
+    await runSkipperOperation("command-input", async () => {
+      await writeFile(controlFile + ".next", text, { mode: 0o644 });
+      await chmod(controlFile + ".next", 0o644);
+      await rename(controlFile + ".next", controlFile);
+    });
     await checkpoint("native-command-started", { label });
-    assert.equal(
-      await chat("Perform the authorized disposable private Git task " + marker),
-      "SKIPPER_COMPUTE_DONE_" + marker,
+    const reply = await runSkipperOperation("gateway-chat", () =>
+      chat("Perform the authorized disposable private Git task " + marker),
     );
-    const completed = await native(marker);
-    const observations = (await modelEvents()).filter((e) => e.id === marker);
+    const expected = "SKIPPER_COMPUTE_DONE_" + marker;
+    if (reply !== expected) {
+      // Only counts and booleans leave the private journey log. Diagnostics must not
+      // replace the completion assertion if the model log or ledger is unavailable.
+      const observations = await modelEvents(AbortSignal.timeout(10_000))
+        .then((events) => events.filter((e) => e.id === marker))
+        .catch(() => undefined);
+      await checkpoint("native-command-completion-mismatch", {
+        modelDiagnosticsAvailable: observations !== undefined,
+        ...(observations === undefined
+          ? {}
+          : {
+              modelRequests: observations.filter((e) => e.event === "skipper-native-request")
+                .length,
+              modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
+              nativePolls: observations.filter((e) => e.event === "skipper-native-poll").length,
+              nativeStatus: observations.at(-1)?.status,
+              nativeExitCode: observations.at(-1)?.exitCode,
+              nativeSessionPresent: observations.at(-1)?.sessionPresent,
+              markerSeen: observations.some(
+                (e) => e.event === "skipper-native-result" && e.markerSeen === true,
+              ),
+            }),
+      }).catch(() => {});
+    }
+    assert.equal(reply, expected);
+    const completed = await runSkipperOperation("native-observation", () => native(marker));
+    const observations = (
+      await runSkipperOperation("model-observation", () => modelEvents())
+    ).filter((e) => e.id === marker);
     assert.deepEqual(
-      observations.map((e) => e.event),
+      observations.filter((e) => e.event !== "skipper-native-poll").map((e) => e.event),
       ["skipper-native-request", "skipper-native-result"],
     );
     assert.equal(observations.at(-1).markerSeen, true);
@@ -478,7 +508,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       threadId: completed.threadId,
       turnId: completed.turnId,
     });
-    await unlink(controlFile);
+    await runSkipperOperation("command-cleanup", () => unlink(controlFile));
     return completed;
   };
   async function ordinaryChat(label) {

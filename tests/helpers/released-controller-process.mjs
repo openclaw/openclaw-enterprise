@@ -46,7 +46,8 @@ controller.selectDriver("iam", iamDriver.id);
 const auth = await createPostgresControllerAuth({
   mode: "development",
   installationId: installation.id,
-  baseURL: "http://127.0.0.1",
+  baseURL: "https://console.oce.localhost",
+  agentDomain: "agents.oce.localhost",
   secret: "local-compatibility-session-secret-32-bytes",
   pool,
 });
@@ -123,8 +124,11 @@ try {
   });
   assert.equal(login.statusCode, 200, login.body);
   const raw = login.headers["set-cookie"];
-  const cookie = (Array.isArray(raw) ? raw : [raw]).map((x) => x.split(";")[0]).join("; ");
-  const headers = { host: "127.0.0.1", origin: "http://127.0.0.1", cookie };
+  const cookie = (Array.isArray(raw) ? raw : [raw])
+    .filter((x) => !/Max-Age=0(?:;|$)/i.test(x))
+    .map((x) => x.split(";")[0])
+    .join("; ");
+  const headers = { host: "127.0.0.1", origin: "https://console.oce.localhost", cookie };
   const session = await app.inject({ method: "GET", url: "/api/auth/session", headers });
   assert.equal(session.statusCode, 200, session.body);
   const accountId = session.json().data.user.id;
@@ -176,6 +180,7 @@ try {
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const rawMemberCookie = signedIn.headers["set-cookie"];
       const memberCookie = (Array.isArray(rawMemberCookie) ? rawMemberCookie : [rawMemberCookie])
+        .filter((x) => !/Max-Age=0(?:;|$)/i.test(x))
         .map((x) => x.split(";")[0])
         .join("; ");
       const results = [];

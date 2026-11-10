@@ -30,7 +30,7 @@ const ASK = "Ask an Installation administrator to grant it.";
 
 // A native admin request the caller may not make. The Agent comes from the host name, not from
 // the caller, so the text names no Agent, and an unknown host gets it too.
-export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's native admin UI needs Agent administer on it. ${ASK}`;
+export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's browser UI needs Agent operate or administer on it. ${ASK}`;
 
 /**
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the

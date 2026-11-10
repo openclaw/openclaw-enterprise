@@ -96,6 +96,8 @@ disposal or provider revocation. Evidence pruning and durable recovery of lost t
 a session are unimplemented. See [sessions and closure](#sessions-and-closure)
 for what the original broker can confirm.
 
+For prospective checks, see [repository access across worker replacement](repository-credentials/worker-replacement.md).
+
 ## Configuration
 
 ### Canonical platform registry
