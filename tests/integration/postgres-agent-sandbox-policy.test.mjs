@@ -21,7 +21,11 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
 
-async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+async function createPolicyApp(
+  t,
+  recordOperations = false,
+  { laxDriver = false, publicNetworkEgress = false } = {},
+) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -37,7 +41,10 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
   // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
   // while the OpenShell runtime lane proves enforcement and loaded-version application.
   const sandboxConfiguration = {
-    gateway: { workspaceMode: "operator" },
+    gateway: {
+      workspaceMode: "operator",
+      ...(publicNetworkEgress ? { publicNetworkEgress: "qualified" } : {}),
+    },
     kubernetes: {
       runtimeClassName: "openshell-sandbox",
       serviceAccount: { mode: "gatewayConfigured" },
@@ -115,7 +122,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
 }
 
 test("Agent deployment freezes the selected network egress mode", requiresPostgres, async (t) => {
-  const fixture = await createPolicyApp(t, true);
+  const fixture = await createPolicyApp(t, true, { publicNetworkEgress: true });
   const { controller, state, pool, inject, deployAgent, sandboxDriver } = fixture;
   const { namespace, agent, revision: initial } = await deployAgent("Network egress mode");
   assert.equal(initial.networkEgressMode, "restricted");
@@ -171,7 +178,7 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
 
   // Later Installation choices must leave earlier admitted snapshots unchanged.
   const stored = await pool.query(
-    `SELECT id, admitted_spec->>'network_egress_mode' AS mode
+    `SELECT id, network_egress_mode AS mode
        FROM occ.agent_revisions WHERE id = ANY($1::text[]) ORDER BY revision_number`,
     [revisions.map((revision) => revision.id)],
   );
@@ -198,23 +205,25 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
   );
   assert.equal(Object.hasOwn(reloaded, "networkEgressMode"), false);
   const omittedRow = await pool.query(
-    "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
+    "SELECT admitted_spec, network_egress_mode FROM occ.agent_revisions WHERE id = $1",
     [omittedRevision.id],
   );
+  assert.equal(omittedRow.rows[0].network_egress_mode, null);
   assert.equal(Object.hasOwn(omittedRow.rows[0].admitted_spec, "network_egress_mode"), false);
 
-  // Reject malformed persisted input at the SQL boundary, independently of the adapter.
-  for (const [offset, invalid] of [null, "", "PUBLIC", "private", true, 1, {}, []].entries()) {
+  // Reject invalid column values independently of the adapter.
+  for (const [offset, invalid] of ["", "PUBLIC", "private", "true", "1", "{}", "[]"].entries()) {
     await assert.rejects(
       pool.query(
         `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at)
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
+            gateway_managed_mode, admitted_at, network_egress_mode)
          SELECT $1, namespace_id, agent_id, $2, backend_id,
-                jsonb_set(admitted_spec, '{network_egress_mode}', $3::jsonb), gateway_managed_mode, admitted_at
+                admitted_spec, gateway_managed_mode, admitted_at, $3
            FROM occ.agent_revisions WHERE id = $4`,
-        [`rev_${randomUUID()}`, 1000 + offset, JSON.stringify(invalid), initial.id],
+        [`rev_${randomUUID()}`, 1000 + offset, invalid, initial.id],
       ),
-      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
+      { code: "23514", constraint: "agent_revisions_network_egress_mode" },
     );
   }
 });

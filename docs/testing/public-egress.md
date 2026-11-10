@@ -24,13 +24,21 @@ production Helm API/worker installation. Follow [Kubernetes setup](kubernetes.md
 and [repository enrollment](../guides/repository-credentials/openshell-enrollment.md).
 Use matching candidate OpenShell components that report the **actual applied**
 public-egress flag in the current supervisor configuration admission. The test
-binds its accepted state, policy hash/version and configuration/provider revisions
-to current Gateway observations. A requested policy document alone is insufficient.
+checks the admission state, policy hash and version, and configuration and
+Provider environment revisions against the current Gateway observations. It
+requires a dedicated supervisor Pod. The Gateway's `GetSandbox` response must
+report `internal.openshell.ai/compute-runtime-identity` with the Sandbox resource
+UID and the running supervisor Pod UID. The runner checks that the supervisor
+Pod UID, container ID, and runtime image ID stay the same across the admission
+reads and the workload probes.
 
 Keep model credentials, the App signing key and fresh custody key with their
 owning services. Configure a Gateway-owned `codex-pat` source and a real authorized
 public repository with `github-repository` standing access. Start the Installation
 with `networkEgressMode: restricted` and no credential-free artifact allowances.
+Configure the [qualified OpenShell pair](../reference/drivers/openshell-sandbox.md#configuration)
+with `drivers.sandbox.configuration.gateway.publicNetworkEgress: qualified` before the baseline.
+The rollout then changes only the Installation egress mode.
 The test checks explicit modes; default selection belongs to packaging tests.
 
 Use the existing local Gateway TLS profile with `openShellBackend.endpoint` set
@@ -76,8 +84,8 @@ not credential values.
 
 The controlled endpoint must be reachable by public DNS and a globally routable
 address, use valid TLS, and return the prepared fixed body. The scenario sends
-no credentials to it. Missing preparation fails before Agent creation; it does
-not substitute a local mock or count a skip as runtime proof.
+no credentials to it. Missing required inputs fail before Agent creation. The
+installed probe checks reachability, TLS, and the response body after deployment.
 
 ## Run and coordinate
 
@@ -92,7 +100,7 @@ OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_PRESET=Codex \
 The matrix invokes the same standalone workflow as:
 
 ```sh
-OCC_TEST_PUBLIC_EGRESS=1 node --test tests/integration/public-egress-connected.test.mjs
+OCC_TEST_PUBLIC_EGRESS=1 node --test tests/integration/public-egress-connected.test.ts
 ```
 
 Wait for `baseline-ready.json`. The restricted revision must support managed Git
@@ -100,7 +108,7 @@ and model access while denying unclaimed public hosts and cold Corepack bootstra
 Change only the Installation's egress mode to `public` through the normal
 API/worker configuration rollout. Do not deploy the test Agent manually. Write
 `successor-ready.json` with the baseline receipt's unchanged `runId`, `agentId`
-and `baselineRevisionId`.
+and `baselineRevisionId`. The runner waits up to 20 minutes for this receipt.
 
 The runner verifies that the retained revision remains restricted, then deploys
 its public successor. It requires public HTTPS reads at `registry.npmjs.org` and
@@ -111,10 +119,17 @@ model Provider profile and protected Git middleware. It records the workload
 process identity separately from the supervisor configuration identity; fresh
 credential-use records must match the current workload network instance.
 
-When `pauseForAcceptance` is true, `public-egress-ready.json` retains that successor
-for separately authorized repository checks. Finish within 30 minutes, then write
-`acceptance-complete.json` with its unchanged `runId`, `agentId`,
-`baselineRevisionId` and `revisionId`. The runner retires its Agent and waits for identity bindings to disappear before
+When `pauseForAcceptance` is true, use the successor in `public-egress-ready.json`
+for separately authorized repository checks. Write `acceptance-complete.json`
+with its unchanged `runId`, `agentId`, `baselineRevisionId` and `revisionId`.
+The runner waits up to 30 minutes for this receipt.
+
+The entire run has 60 minutes. Setup, deployment, probes, and both operator
+waits share the first 54 minutes. Check `workDeadline` in `run.json` before
+starting an operator step. When a wait reaches its own limit or that deadline,
+the scenario stops and cleanup proceeds with the remaining time.
+
+The runner retires its Agent and waits for identity bindings to disappear before
 deleting its Role and Configuration. An admission refusal does not trigger
 uncertain-create reconciliation. After confirmed Agent absence, a failed Role
 delete does not prevent Configuration deletion; cleanup records each unresolved
@@ -139,10 +154,20 @@ refresh/private-key material. They do not establish arbitrary filesystem secrecy
 or provider revocation. No real credential is sent to an untrusted receiver, and
 this scenario does not currently prove a synthetic-canary receiver boundary.
 
-`complete.json` records acceptance; `cleanup.json` separately records Agent retirement, closed repository sessions, and removal of the run-owned Role and Configuration. Retain the owned stack and custody until cleanup
-succeeds. Keep separate evidence for repository installation, formatting and tests;
-a successful package-manager bootstrap does not prove those operations.
+The `supplier-images-<revisionId>.json` receipt ties the paired supervisor's Pod
+UID and runtime image ID to the Sandbox ID and configuration admission instance
+for each revision. The receipt preserves the requested image digest and the
+container runtime's resolved image ID as distinct fields.
 
-This is an explicit, manually prepared QA selection. It is excluded from `all`
-and hosted advisory jobs. The matrix wrapper requires one passing test with no
-skips and retains a redacted runtime log.
+`complete.json` records acceptance. `cleanup.json` records Agent retirement,
+closed repository sessions, and removal of the run-owned Role and Configuration.
+Retain the owned stack and custody until cleanup succeeds.
+Keep separate evidence for repository installation, formatting and tests.
+A successful package-manager bootstrap does not prove those operations.
+
+Select this manually prepared scenario explicitly. The `all` selection and
+hosted advisory jobs exclude it. The matrix runs the connected workflow in
+process, records its result after cleanup, and retains a redacted runtime log.
+When invoking the standalone lane through the CI runner locally, set
+`CI_RUNNER_TEST_TIMEOUT_MS=3690000` to allow startup and reporting around the
+60-minute run.

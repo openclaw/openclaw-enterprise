@@ -42,15 +42,24 @@ const (
 )
 
 type openShellDevelopmentAssets struct {
-	gatewayChart       string
-	workspaceResources []any
-	gatewayImage       string
-	sandboxImage       string
-	supervisorImage    string
+	gatewayChart          string
+	workspaceResources    []any
+	gatewayImage          string
+	sandboxImage          string
+	supervisorImage       string
+	publicEgressQualified bool
 }
 
 type openShellImageSelection struct {
 	gateway, sandbox, supervisor, revision string
+}
+
+func (images openShellImageSelection) publicEgressCandidate() bool {
+	_, gateway, _ := strings.Cut(images.gateway, "@")
+	_, stockGateway, _ := strings.Cut(openShellGatewayImage, "@")
+	_, supervisor, _ := strings.Cut(images.supervisor, "@")
+	_, stockSupervisor, _ := strings.Cut(openShellSupervisorImage, "@")
+	return images.revision != "" && gateway != stockGateway && supervisor != stockSupervisor
 }
 
 // Accept named images (optionally tagged), never bare IDs or mutable tags.
@@ -216,7 +225,10 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		r.captureAgentSandboxRollout(state)
 		return nil, err
 	}
-	assets := &openShellDevelopmentAssets{gatewayChart: gatewayChart}
+	assets := &openShellDevelopmentAssets{
+		gatewayChart:          gatewayChart,
+		publicEgressQualified: state.NetworkEgressMode == "public" && images.publicEgressCandidate(),
+	}
 	gatewayNamespace := openShellGatewayNamespace
 	if state.PlatformNamespace != "" {
 		gatewayNamespace = state.PlatformNamespace

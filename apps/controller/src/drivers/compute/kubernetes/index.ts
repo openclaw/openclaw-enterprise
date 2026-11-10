@@ -175,6 +175,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxPolicyObservationPendingError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -6327,7 +6328,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Public network egress requires isolated credential-source delivery; use a paired CredentialGateway and Sandbox or restricted network egress.",
       );
     }
-    if (this.publicNetworkEgress !== true) {
+    if (this.publicNetworkEgress !== true || revision.sandboxDriverId !== this.sandboxDriver?.id) {
       throw new ConfigurationHarnessError(
         "Public network egress requires a selected Sandbox Driver that supports public access.",
       );
@@ -7460,13 +7461,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
             };
             return { ...result, runtimeFailure };
           }
-          if (
-            error instanceof TransientDependencyError &&
-            error.dependency === "sandbox_gateway" &&
-            error.reason === "unavailable"
-          ) {
-            // Creation may have succeeded before its policy became observable.
-            // Keep that Sandbox while the next preparation pass observes it.
+          if (error instanceof SandboxPolicyObservationPendingError) {
+            // The Sandbox exists. Keep it while the next pass observes its policy.
             return incomplete();
           }
           if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {

@@ -177,7 +177,9 @@ database prefix:
 OCC_MIGRATION_HISTORY_DATABASE_URL="postgresql://occ_migrator:occ-migrator-local@127.0.0.1:$TEST_POSTGRES_PORT/postgres" \
 OCC_MIGRATION_HISTORY_CONTAINER="$TEST_POSTGRES_CONTAINER" \
 OCC_MIGRATION_HISTORY_DATABASE_PREFIX=openclaw_migration_test_local \
-  node --test --test-name-pattern=Canonical tests/integration/postgres-migration-compatibility.test.mjs
+  node --test --test-name-pattern=Canonical \
+    tests/integration/postgres-migration-compatibility.test.mjs \
+    tests/integration/postgres-network-egress-migration.test.ts
 ```
 
 All three selectors are required. The prefix must start with `openclaw_`, use

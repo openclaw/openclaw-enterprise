@@ -93,3 +93,21 @@
     }
   }
 }
+| if $ARGS.named.qualifiedValues == null then .
+  elif ($ARGS.named.qualifiedValues | length) != 1 then
+    error("qualified OpenShell values must contain one JSON object")
+  else
+    . as $stock
+    | $ARGS.named.qualifiedValues[0] as $images
+    | reduce ("gateway", "supervisor", "sandboxRuntime") as $component (.;
+        .[$component].image *= ($images[$component].image // {}))
+    | . as $qualified
+    | if all("gateway", "supervisor";
+        . as $component
+        | $qualified[$component].image.digest as $digest
+        | ($digest // "" | test("^sha256:[0-9a-f]{64}$"))
+          and $digest != $stock[$component].image.digest)
+      then $qualified
+      else error("public egress requires qualified Gateway and supervisor image digests")
+      end
+  end

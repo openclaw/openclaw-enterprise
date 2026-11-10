@@ -1208,6 +1208,14 @@ export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUn
   }
 }
 
+/** The Sandbox exists and its requested network policy is still converging. */
+export class SandboxPolicyObservationPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPolicyObservationPendingError";
+  }
+}
+
 /**
  * A Sandbox Driver's private workspace setup refused the revision's workspace (the setup
  * runner's exit status 2): its files, setup record or runtime defaults disagree, so no retry

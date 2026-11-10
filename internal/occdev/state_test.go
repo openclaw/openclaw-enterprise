@@ -136,4 +136,19 @@ func TestPublicDevelopmentProfileRequiresAuthenticatedSupportedOpenShell(t *test
 			}
 		})
 	}
+	t.Run("explicit stock Gateway and supervisor digests", func(t *testing.T) {
+		t.Setenv("OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION", strings.Repeat("a", 40))
+		t.Setenv("OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE", openShellGatewayImage)
+		t.Setenv("OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE", openShellSandboxImage)
+		t.Setenv("OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE", openShellSupervisorImage)
+		directory := filepath.Join(t.TempDir(), "state")
+		t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", directory)
+		err := Up(context.Background(), Options{})
+		if err == nil || !strings.Contains(err.Error(), "bundled OpenShell 0.1.6 does not support public network egress") {
+			t.Fatalf("startup accepted the stock pair as a candidate: %v", err)
+		}
+		if _, err := os.Stat(directory); !os.IsNotExist(err) {
+			t.Fatalf("unsupported public startup created state: %v", err)
+		}
+	})
 }

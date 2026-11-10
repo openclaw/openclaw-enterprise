@@ -10,7 +10,10 @@ Exclude other install, upgrade and Job writers. Use a local chart and the matchi
 `$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
 After an interrupted install, reconcile that receipt before any further writes.
 
-Stock OpenShell 0.1.6 uses restricted egress by default. Set `NETWORK_EGRESS_MODE=public` only with a [qualified OpenShell Gateway and supervisor](/reference/drivers/openshell-sandbox/).
+For public egress, set `NETWORK_EGRESS_MODE=public` and select the matching
+OpenShell chart. Set `OPENSHELL_QUALIFIED_VALUES` to a JSON Helm values file
+with the [qualified Gateway and supervisor](/reference/drivers/openshell-sandbox/#configuration)
+image digests.
 
 Confirm `CLUSTER_DOMAIN` with CoreDNS below or ask your DNS administrator.
 
@@ -23,10 +26,17 @@ printf 'Cluster DNS domain: %s\n' "$CLUSTER_DOMAIN"
 
 ```bash
 assets="$RUN_DIR/kubernetes"
+qualified_values=()
+qualified_public_egress=false
+if [[ ${NETWORK_EGRESS_MODE:-restricted} == public ]]; then
+  qualified_values=(--slurpfile qualifiedValues "${OPENSHELL_QUALIFIED_VALUES:?}")
+  qualified_public_egress=true
+fi
 jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
   --arg storageClass "${STORAGE_CLASS:?}" \
   --arg clusterDomain "${CLUSTER_DOMAIN:?}" \
-  --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
+  --arg repository "${SANDBOX_REPOSITORY:?}" "${qualified_values[@]}" \
+  -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
   -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
@@ -38,6 +48,7 @@ route_host="occ-gateway-362888b35fce.envoy-gateway-system.svc.${CLUSTER_DOMAIN:?
 jq -n --arg cluster "$CLUSTER_NAME" --arg runtime "${RUNTIME_IMAGE:?}" --arg storageClass "${STORAGE_CLASS:?}" \
   --arg hostname "$route_host" --arg openshellIP "$os_ip" \
   --arg networkEgressMode "${NETWORK_EGRESS_MODE:-restricted}" \
+  --argjson qualifiedPublicEgress "$qualified_public_egress" \
   --argjson proxyCidrs '["127.0.0.1/32"]' -f "$assets/installation.jq" \
   > "$RUN_DIR/installation.json"
 jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --arg email "${ADMIN_EMAIL:?}" \

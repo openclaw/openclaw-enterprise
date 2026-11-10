@@ -1,18 +1,9 @@
 # OpenShell SandboxDriver
 
-The Driver pairs its Gateway, dedicated Codex/native OpenClaw
-Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
-Agent revisions, Namespaces, routing, credentials, and authorization.
-
-Development supports dedicated native OpenClaw and Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE runtime.
-The [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
-Agent revision providers supply node enrollment and Codex files. These APIs are
-unqualified for production.
-
-Embedded OpenClaw is unsupported. See
-[containment facets](#openshell-containment-facets),
-[qualification](#qualification-contract), and
+Use this Driver with [Kubernetes Compute](kubernetes-compute.md) for dedicated
+Codex or native OpenClaw. Development uses
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE
+runtime. See [production qualification](#qualification-contract) and
 [public egress](../configuration/network-egress.md).
 
 Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Gateway settings below describe operator-owned gateways.
@@ -48,9 +39,8 @@ routing, and the per-Agent Gateway. Sandbox owns:
   removes the Workspace and configured resources before Compute deletes the
   Kubernetes namespace.
 
-Compute trusts OpenShell to enforce its Pod, but requires workload readiness and
-routing matching the running Agent revision ID before serving traffic. Each Agent revision stores only
-`sandboxDriverId`; workers resolve it for provisioning and cleanup.
+Compute checks workload readiness and routing for the running revision before
+serving traffic. See the [applied-policy check](../../flows/agent-sandbox-policy.md#2-freeze-deployment-or-enqueue-live-application).
 
 ## OpenShell containment facets
 
@@ -77,6 +67,11 @@ must match this ID and the [Credential Gateway](openshell-credential-gateway.md#
 Backend `rootCertificatePath` supplies public CA trust for the Agent Gateway's WSS
 endpoint. Sandbox `gateway` rejects connection fields: `endpoint`, `scheme`,
 `serviceName`, `port`, `auth`, `requestTimeoutMs`, and `rootCertificatePath`.
+
+In operator workspace mode, set `gateway.publicNetworkEgress: qualified` after
+every Gateway and supervisor pair used by the Driver passes
+[public-egress qualification](../../testing/public-egress.md). Omit the field
+for stock OpenShell v0.1.6.
 
 ```yaml
 drivers:

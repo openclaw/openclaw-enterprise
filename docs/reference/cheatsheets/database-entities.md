@@ -77,8 +77,7 @@ See [per-Agent policies](../sandbox-policies.md).
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 `admitted_spec` includes the explicit v2
-[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff)
-and optional [network egress mode](../configuration/network-egress.md).
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
 - `namespace_id`
@@ -91,6 +90,8 @@ and optional [network egress mode](../configuration/network-egress.md).
   Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
   metadata, separate from `admitted_spec` and public revision responses.
 - `admitted_spec` (includes requested `harness.overrides` and resolved `harness.configuration`)
+- `network_egress_mode`: [mode frozen at admission](../configuration/network-egress.md).
+  A revision admitted without a mode stores null.
 - `admitted_at`
 
 ### `workspace_setups`

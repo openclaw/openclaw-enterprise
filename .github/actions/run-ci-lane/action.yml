@@ -406,7 +406,7 @@ runs:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
         # is left before the lane deadline.
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || inputs.lane == 'public-egress' && '3690000' || (inputs.lane == 'k3d-model' || (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration')) && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.

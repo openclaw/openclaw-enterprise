@@ -10,7 +10,7 @@
   "prepare": {},
   "files": [
     {
-      "path": "tests/integration/public-egress-connected.test.mjs",
+      "path": "tests/integration/public-egress-connected.test.ts",
       "expectedTests": ["a protected Agent admits public TCP only in its frozen public egress mode"]
     }
   ],

@@ -38,6 +38,7 @@ import {
 import {
   DependencyUnavailableError,
   InstalledDriver,
+  SandboxPolicyObservationPendingError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
@@ -732,11 +733,7 @@ test("pending Sandbox provisioning preserves its workload and converges on the n
     observed.push(resource);
     // Creation succeeded, but the provider cannot yet observe the required policy.
     if (pending) {
-      throw new TransientDependencyError(
-        "sandbox_gateway",
-        "unavailable",
-        "Policy observation pending.",
-      );
+      throw new SandboxPolicyObservationPendingError("Policy observation pending.");
     }
     return resource;
   };
@@ -755,6 +752,7 @@ test("pending Sandbox provisioning preserves its workload and converges on the n
 test("Sandbox provisioning keeps definite failures and other transient classes on the cleanup path", async (t) => {
   for (const error of [
     new Error("Policy observation rejected."),
+    new TransientDependencyError("sandbox_gateway", "unavailable", "Gateway unavailable."),
     new TransientDependencyError("sandbox_admission", "unavailable", "Admission unavailable."),
     new TransientDependencyError("sandbox_gateway", "timeout", "Provisioning timed out."),
   ]) {

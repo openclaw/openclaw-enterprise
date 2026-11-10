@@ -43,9 +43,9 @@ import {
 import {
   assertPublicNetworkReceipt,
   publicNetworkProgram,
-} from "../helpers/public-egress-workflow.mjs";
+} from "../helpers/public-egress-programs.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { publicEgressResources } from "../helpers/public-egress-resources.mjs";
+import { publicEgressResources } from "../helpers/public-egress-resources.ts";
 import { listen } from "../helpers/listen.mjs";
 
 import {

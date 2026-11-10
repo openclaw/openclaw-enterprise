@@ -8,6 +8,7 @@ import type {
   CredentialSourceState,
   CredentialSourceOwnerCapability,
   HarnessExecutionMode,
+  NetworkEgressMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   PluginDesiredState,
@@ -665,6 +666,7 @@ export const agentRevisions = occSchema.table(
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     firstDeploymentDigest: text("first_deployment_digest"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
+    networkEgressMode: text("network_egress_mode").$type<NetworkEgressMode>(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
@@ -700,6 +702,10 @@ export const agentRevisions = occSchema.table(
       sql`${table.backendId} IS NULL OR (char_length(${table.backendId}) BETWEEN 1 AND 200 AND ${table.backendId} = btrim(${table.backendId}) AND ${table.backendId} !~ '[[:cntrl:]]')`,
     ),
     check("agent_revisions_spec_object", sql`jsonb_typeof(${table.admittedSpec}) = 'object'`),
+    check(
+      "agent_revisions_network_egress_mode",
+      sql`${table.networkEgressMode} IS NULL OR ${table.networkEgressMode} IN ('public', 'restricted')`,
+    ),
     check(
       "agent_revisions_egress_scope",
       sql`NOT (${table.admittedSpec} ? 'egress_plan') OR COALESCE(
@@ -763,12 +769,7 @@ export const agentRevisions = occSchema.table(
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
-          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission'
-          - 'network_egress_mode') = '{}'::jsonb
-        AND (
-          NOT (${table.admittedSpec} ? 'network_egress_mode')
-          OR COALESCE(${table.admittedSpec}->>'network_egress_mode' IN ('public', 'restricted'), false)
-        )
+          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'

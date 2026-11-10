@@ -35,8 +35,9 @@ printf 'Private session directory: %s\n' "$RUN_DIR"
 
 Choose one OCE image path below. Stock OpenShell 0.1.6 uses restricted egress.
 To opt into public egress, select [qualified OpenShell images](local-openshell-images.md)
-and set `OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=public` before startup. The supervisor
-must confirm that public TCP is active before the Agent becomes ready.
+and set `OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=public` before startup. The launcher
+declares the selected pair in the Installation. The supervisor must confirm
+that public TCP is active before the Agent becomes ready.
 
 **Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 

@@ -87,7 +87,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	// TODO(public-egress-images): Allow bundled images after their applied-policy support is qualified.
-	if networkEgressMode == "public" && openShellImages.revision == "" {
+	if networkEgressMode == "public" && !openShellImages.publicEgressCandidate() {
 		return fmt.Errorf("bundled OpenShell 0.1.6 does not support public network egress: select reviewed OCC_DEVELOPMENT_OPENSHELL_{GATEWAY,SANDBOX,SUPERVISOR}_IMAGE values and OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION, or set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted; see docs/guides/deploy/local-openshell-images.md")
 	}
 	repositoryInputs, err := r.loadDevelopmentRepositoryInputs(sandboxDriver)

@@ -20,7 +20,6 @@
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
-        "Canonical network egress migration preserves admitted revisions",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",
@@ -29,6 +28,10 @@
         "Migration rejects legacy harness_account state without changing persisted rows",
         "Drizzle second migration preserves the applied journal and PostgreSQL schema"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-network-egress-migration.test.ts",
+      "expectedTests": ["Canonical network egress migration preserves admitted revisions"]
     },
     {
       "path": "tests/integration/postgres-migration-version.test.ts",

@@ -31,8 +31,9 @@ values an operator or Agent independently writes into a workspace.
 | Ordinary Kubernetes Harness | Unsupported; select a supporting Sandbox and Credential Gateway.                                                                  | Existing model egress on TCP/443 plus explicit platform routes. This is not a hostname allowlist. |
 | OpenShell Harness           | Mediated public TCP fallback for unclaimed DNS destinations. Managed hosts retain their policies across ports, including denials. | Declared Sandbox and managed provider routes; no public fallback.                                 |
 
-OpenShell requires a gateway and supervisor that support the mediated fallback
-and report the applied mode. Stock v0.1.6 does not support public mode. Do not use
-raw allow-all mode to bypass this requirement. See
+For OpenShell, the operator must declare a qualified Gateway and supervisor in
+the [Sandbox Driver configuration](../drivers/openshell-sandbox.md#configuration).
+Stock OpenShell v0.1.6 supports restricted mode only. Each public revision must
+also pass the Sandbox's applied-policy check before Compute releases it. See
 [Kubernetes network boundaries](../drivers/kubernetes-compute/networking-and-isolation.md)
-and [OpenShell configuration](../drivers/openshell-sandbox.md#configuration).
+for the network boundary.

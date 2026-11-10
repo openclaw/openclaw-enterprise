@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 
+import type { PublicTcp } from "./public-egress-inputs.ts";
+
 // These programs run through the Agent's ordinary shell tool. Their receipt files
 // are read only after the native thread confirms the exact command completed.
-export function publicBootstrapProgram({ packageManager, receipt, nonce }) {
+export function publicBootstrapProgram({
+  packageManager,
+  receipt,
+  nonce,
+}: {
+  packageManager: string;
+  receipt: string;
+  nonce: string;
+}) {
   return `
 const fs = require('node:fs');
 const cp = require('node:child_process');
@@ -88,7 +98,17 @@ const controllerRequire = createRequire('/app/apps/controller/package.json');
 
 // All requests originate in the Agent's ordinary shell process. The controlled
 // endpoint receives no credential header, ambient cookie, or provider token.
-export function publicNetworkProgram({ nonce, receipt, publicTcp, managedHosts }) {
+export function publicNetworkProgram({
+  nonce,
+  receipt,
+  publicTcp,
+  managedHosts,
+}: {
+  nonce: string;
+  receipt: string;
+  publicTcp: PublicTcp;
+  managedHosts: string[];
+}) {
   return `
 const fs = require('node:fs');
 const https = require('node:https');
@@ -122,7 +142,21 @@ const connect = host => new Promise(resolve => {
 `;
 }
 
-export function assertPublicNetworkReceipt(report, { nonce, allowed, hosts, publicTcp }) {
+export type NetworkReceipt = {
+  nonce: string;
+  publicReads: { status?: number; bodySha256?: string; code?: string }[];
+  managedPorts: { host: string; connected?: boolean; code?: string }[];
+};
+
+export function assertPublicNetworkReceipt(
+  report: NetworkReceipt,
+  {
+    nonce,
+    allowed,
+    hosts,
+    publicTcp,
+  }: { nonce: string; allowed: boolean; hosts: string[]; publicTcp: PublicTcp },
+) {
   assert.equal(report.nonce, nonce);
   assert.equal(report.publicReads.length, 3, "all three public destinations must report");
   for (const result of report.publicReads) {
@@ -133,7 +167,7 @@ export function assertPublicNetworkReceipt(report, { nonce, allowed, hosts, publ
     }
   }
   if (allowed) {
-    assert.equal(report.publicReads[2].bodySha256, publicTcp.expectedBodySha256);
+    assert.equal(report.publicReads[2]?.bodySha256, publicTcp.expectedBodySha256);
   }
   assert.deepEqual(
     report.managedPorts.map((result) => result.host),
@@ -144,7 +178,15 @@ export function assertPublicNetworkReceipt(report, { nonce, allowed, hosts, publ
   }
 }
 
-export function authenticatedRepositoryProgram({ repository, permissions, receipt }) {
+export function authenticatedRepositoryProgram({
+  repository,
+  permissions,
+  receipt,
+}: {
+  repository: string;
+  permissions: Readonly<Record<string, boolean>>;
+  receipt: string;
+}) {
   return `
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
