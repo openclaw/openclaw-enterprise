@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import pg from "pg";
-import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   clientAddressConfiguration,
@@ -14,7 +12,8 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
+import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
   privateBootstrapDirectory,
@@ -25,6 +24,7 @@ import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
+import { composeProduction } from "./password-hasher.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
@@ -59,22 +59,13 @@ export function memoryLogger() {
     events,
     logger: createOccLogger({
       component: "occ-api-sign-in-proof",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              events.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(events),
     }),
   };
 }
 
 export const consoleOrigin = "https://console.oce.example.internal";
-export const sessionCookieName = "__Host-openclaw_occ.session_token";
+export const sessionCookieName = "__Secure-openclaw_occ_shared.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
@@ -88,32 +79,10 @@ export const defaultInstallSettings = Object.freeze({
   OCC_AUTH_BASE_URL: consoleOrigin,
   OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
   OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
-  OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
   OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
 });
 
-/** The example values plus the GitHub upgrade from production-installation.md step 2. */
-export function githubUpgradeValues(recoveryUserId) {
-  return {
-    "auth.github.enabled": "true",
-    "auth.recoveryUserId": recoveryUserId,
-    "agentNativeAdmin.enabled": "false",
-  };
-}
-
-export function githubUpgradeSettings(recoveryUserId) {
-  return Object.freeze({
-    OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
-    OCC_AUTH_BASE_URL: consoleOrigin,
-    OCC_AUTH_GITHUB_CLIENT_ID: secretRef("occ-github-login", "client-id"),
-    OCC_AUTH_GITHUB_CLIENT_SECRET: secretRef("occ-github-login", "client-secret"),
-    OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
-    OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
-    OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
-  });
-}
-
-/** The example values plus Google sign-in, the Google counterpart of githubUpgradeValues. */
+/** Google sign-in settings for the production chart. */
 export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   return {
     "auth.google.enabled": "true",
@@ -127,7 +96,7 @@ export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   };
 }
 
-/** The API Pod's settings for googleUpgradeValues. The recovery name is shared with GitHub. */
+/** The API Pod's settings for googleUpgradeValues. The recovery setting is shared by every provider. */
 export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -137,8 +106,9 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
     ...(allowedDomains.length === 0
       ? {}
       : { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: allowedDomains.join(",") }),
-    OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
+    OCC_AUTH_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -168,7 +138,7 @@ export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, ex
   };
 }
 
-/** The API Pod's settings for oidcUpgradeValues. The recovery name is shared with GitHub. */
+/** The API Pod's settings for oidcUpgradeValues. The recovery setting is shared by every provider. */
 export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -181,8 +151,9 @@ export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, 
     OCC_AUTH_OIDC_CLIENT_SECRET: secretRef("occ-oidc-login", "client-secret"),
     ...(extra.tokenAuth === undefined ? {} : { OCC_AUTH_OIDC_TOKEN_AUTH: extra.tokenAuth }),
     ...(extra.displayName === undefined ? {} : { OCC_AUTH_OIDC_DISPLAY_NAME: extra.displayName }),
-    OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
+    OCC_AUTH_RECOVERY_USER_ID: recoveryUserId,
     OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
     OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
   });
 }
@@ -204,12 +175,12 @@ function resolveSettings(settings, secrets) {
 }
 
 /**
- * Composes the production API from rendered API Pod settings, parsing the sign-in and
- * native-admin names the way apps/controller/src/server.mjs does.
+ * The production composition's configuration for rendered API Pod settings, parsing the
+ * sign-in and native-admin names the way apps/controller/src/api-startup.mjs does.
  */
-export async function composeProductionSignIn(
+export async function productionSignInConfiguration(
   context,
-  { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors },
+  { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors, iamConfiguration },
 ) {
   const environment = resolveSettings(settings, secrets);
   // The chart mounts the gateway service key Secret at this path; use a private file.
@@ -218,7 +189,10 @@ export async function composeProductionSignIn(
   if (environment.OCC_GATEWAY_API_KEY_PATH === gatewayApiKeyPath) {
     await writeFile(keyFile, "occ_sign_in_proof_gateway_key", { mode: 0o600 });
   }
-  const configuration = createInstallationDriverConfiguration();
+  const configuration = {
+    ...createInstallationDriverConfiguration(),
+    ...(iamConfiguration === undefined ? {} : { iam: iamConfiguration }),
+  };
   configuration.drivers.compute.id = "compute-sign-in-proof";
   const runtime = await loadInstallationConfiguration({
     mode: "production",
@@ -229,7 +203,7 @@ export async function composeProductionSignIn(
   const humanLogin = humanLoginConfiguration(environment);
   const clientAddress = clientAddressConfiguration(environment);
   const nativeAdminEnabled = environment.OCC_AGENT_NATIVE_ADMIN_ENABLED === "true";
-  return composeProduction({
+  return {
     mode: "production",
     host: "127.0.0.1",
     databaseUrl,
@@ -238,15 +212,10 @@ export async function composeProductionSignIn(
     ...(environment.OCC_GATEWAY_API_KEY_PATH === undefined ? {} : { gatewayApiKeyPath: keyFile }),
     ...humanLogin,
     ...(clientAddress === undefined ? {} : { clientAddress }),
-    ...(nativeAdminEnabled
-      ? {
-          nativeAdmin: {
-            enabled: true,
-            domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
-            sharedCookieDomain: environment.OCC_AUTH_COOKIE_DOMAIN,
-          },
-        }
-      : {}),
+    nativeAdmin: {
+      enabled: nativeAdminEnabled,
+      domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+    },
     ...(logger === undefined ? {} : { logger }),
     ...(metrics === undefined ? {} : { metrics }),
     ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
@@ -265,7 +234,19 @@ export async function composeProductionSignIn(
           implementation: installation.drivers.iam.implementation,
         }),
     },
-  });
+  };
+}
+
+/**
+ * Composes the production API from rendered API Pod settings (see
+ * productionSignInConfiguration). It hashes with the fixtures' cheap hasher unless
+ * `passwordHasher` is given (see password-hasher.mjs).
+ */
+export async function composeProductionSignIn(context, { passwordHasher, ...options }) {
+  return composeProduction(
+    await productionSignInConfiguration(context, options),
+    passwordHasher === undefined ? {} : { passwordHasher },
+  );
 }
 
 /** Password sign-in through the public route, from one client address. */
@@ -274,7 +255,7 @@ export function passwordSignIn(app, origin, { email, password }, remoteAddress =
     method: "POST",
     url: "/api/auth/sign-in/email",
     remoteAddress,
-    headers: { origin },
+    headers: { host: new URL(origin).host, origin },
     payload: { email, password },
   });
 }
@@ -284,7 +265,11 @@ export async function signedInHeaders(app, origin, account, remoteAddress) {
   if (response.statusCode !== 200) {
     throw new Error(`Password sign-in failed with ${response.statusCode}: ${response.body}`);
   }
-  return { cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]), origin };
+  return {
+    host: new URL(origin).host,
+    cookie: cookieHeaderFromSetCookie(response.headers["set-cookie"]),
+    origin,
+  };
 }
 
 export async function currentSession(app, cookie) {
@@ -318,8 +303,9 @@ export async function loginDenialCount(state, reason, provider) {
 /**
  * Asserts that an external provider's callback was refused: a redirect to the Console with
  * `authError=<provider>`, no session cookie, no new user, method or session row, and one more
- * login denial with `reason`. `signIn()` resolves to `{ callback }`; `denials(reason)` resolves
- * to the number of matching denials so far (usually `loginDenialCount`).
+ * login denial with `reason`. `signIn()` resolves to `{ callback, attemptId }`; `denials(reason)`
+ * resolves to the number of matching denials so far (usually `loginDenialCount`).
+ * Returns that attempt ID so callers can check which sign-in the audit event describes.
  */
 export async function assertExternalSignInRefused(
   { pool, provider, denials, signIn },
@@ -329,7 +315,7 @@ export async function assertExternalSignInRefused(
 ) {
   const before = await authRowCounts(pool);
   const deniedBefore = await denials(reason);
-  const { callback } = await signIn();
+  const { callback, attemptId } = await signIn();
   assert.equal(callback.statusCode, 302, message);
   assert.equal(
     callback.headers.location,
@@ -345,6 +331,7 @@ export async function assertExternalSignInRefused(
   );
   assert.deepEqual(await authRowCounts(pool), before, `${message}: no user, method or session`);
   assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
+  return attemptId;
 }
 
 /**
@@ -398,126 +385,7 @@ export async function installationRoles(state, pool) {
   return { admin, reader };
 }
 
-/**
- * Listens `server` on loopback and, for the rest of test `t`, mocks fetch so the controller's
- * fixed github.com and api.github.com endpoints reach it; other origins pass through. The
- * caller owns closing `server`. Returns the server's origin.
- */
-export async function serveAsGitHub(t, server) {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const providerOrigin = `http://127.0.0.1:${server.address().port}`;
-  const originalFetch = globalThis.fetch;
-  t.mock.method(globalThis, "fetch", (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : input);
-    if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
-      return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
-    }
-    return originalFetch(input, init);
-  });
-  return providerOrigin;
-}
-
-/**
- * A local stand-in for github.com and api.github.com, served through `serveAsGitHub`.
- * The authorization code names the GitHub subject: `subject-<id>`; its login is
- * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
- * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
- * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
- */
-export async function startFakeGitHub(t) {
-  const server = createServer();
-  const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
-  server.on("request", async (request, response) => {
-    fixture.requests += 1;
-    fixture.paths.push(request.url);
-    if (fixture.mode === "hang") {
-      return;
-    }
-    let body = "";
-    for await (const chunk of request) {
-      body += chunk;
-    }
-    if (fixture.mode === "error") {
-      response.writeHead(503, { "content-type": "application/json" });
-      response.end("{}");
-      return;
-    }
-    response.setHeader("content-type", "application/json");
-    if (request.url === "/login/oauth/access_token") {
-      const subject = /^subject-([1-9][0-9]{0,15})$/.exec(
-        new URLSearchParams(body).get("code") ?? "",
-      )?.[1];
-      response.end(
-        JSON.stringify(
-          subject === undefined
-            ? { error: "bad_verification_code" }
-            : { access_token: `ghu_fixture_${subject}`, token_type: "bearer" },
-        ),
-      );
-    } else if (request.url === "/user") {
-      // Strict on purpose: suites rely on this 401 to catch a wrong Authorization header.
-      const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
-      if (subject === null) {
-        response.writeHead(401);
-        response.end("{}");
-        return;
-      }
-      response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
-    } else if (fixture.membership !== undefined) {
-      const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
-      const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));
-      if (typeof answer === "number") {
-        response.writeHead(answer);
-        response.end("{}");
-        return;
-      }
-      response.end(JSON.stringify({ state: answer, role: "member" }));
-    } else {
-      response.writeHead(404);
-      response.end("{}");
-    }
-  });
-  await serveAsGitHub(t, server);
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return fixture;
-}
-
-/** Starts GitHub sign-in and completes the callback as `subject`, from one client address. */
-export async function githubSignIn(app, origin, subject, remoteAddress = "192.0.2.50") {
-  const start = await app.inject({
-    method: "POST",
-    url: "/api/auth/providers/github/start",
-    remoteAddress,
-    headers: { origin },
-  });
-  if (start.statusCode !== 200) {
-    throw new Error(`GitHub start failed with ${start.statusCode}: ${start.body}`);
-  }
-  const { url, attemptId } = start.json().data;
-  const state = new URL(url).searchParams.get("state");
-  const callback = await app.inject({
-    url: `/api/auth/providers/github/callback?state=${state}&code=subject-${subject}`,
-    remoteAddress,
-    headers: { cookie: cookieHeaderFromSetCookie(start.headers["set-cookie"]) },
-  });
-  return { callback, attemptId };
-}
-
-/**
- * A local stand-in for Google's OpenID Connect token and key endpoints. Only fetches to
- * https://oauth2.googleapis.com and https://www.googleapis.com are answered here; the
- * controller uses fixed endpoints, and `discovery` records Google's published document
- * they come from. `authorize(url, options)` plays the browser's visit to Google: it
- * captures the authorization request (client, redirect URI, PKCE challenge, nonce) and
- * returns a one-use code for `subject`. /token checks the client credentials, code,
- * redirect URI and S256 code_verifier, then returns an RS256 ID token echoing the
- * captured nonce. Per-code `claims` override ID-token claims (undefined removes one);
- * `key: "foreign"` signs with a key that /oauth2/v3/certs does not publish. Modes: "up"
- * and "error" (503).
- */
+/** Signed Google token fixture. Only upstream HTTP is simulated. */
 export function fakeGoogle(t, { clientId, clientSecret, hd } = {}) {
   const published = rsaSigningKey("fixture-google-kid");
   const signToken = idTokenSigner(published);
@@ -527,7 +395,7 @@ export function fakeGoogle(t, { clientId, clientSecret, hd } = {}) {
   const fixture = {
     mode: "up",
     requests: 0,
-    authorizations: [],
+    authorizations: /** @type {Record<string, string>[]} */ ([]),
     tokens: [],
     discovery: Object.freeze({
       issuer: "https://accounts.google.com",
@@ -669,23 +537,28 @@ export async function googleSignIn(
  * echoing the nonce. Per-code `claims` override ID-token claims; `key: "foreign"` signs
  * with an unpublished key. `rotate()` replaces the published key. `issuer` may be
  * reassigned to model an issuer change, and `tokenAuth`
- * to switch the credential method. Modes: "up" and "error" (503). It proves OCE
+ * to switch the credential method. Modes: "up", "error" (503) and "hang" (until
+ * the request is aborted). It proves OCE
  * against its own reading of OIDC, not any IdP's behaviour.
+ */
+/** @param {import("node:test").TestContext} t
+ * @param {{ clientId: string, clientSecret: string, issuer?: typeof fixtureOidcIssuer, tokenAuth?: string }} options
  */
 export function fakeOidc(
   t,
-  { clientId, clientSecret, issuer = fixtureOidcIssuer, tokenAuth = "client_secret_post" } = {},
+  { clientId, clientSecret, issuer = fixtureOidcIssuer, tokenAuth = "client_secret_post" },
 ) {
   let generation = 0;
   let key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
   const foreign = rsaSigningKey("fixture-oidc-foreign");
   const codes = new Map();
+  const pendingRequests = new Set();
   const fixture = {
     mode: "up",
     requests: 0,
     issuer,
     tokenAuth,
-    authorizations: [],
+    authorizations: /** @type {Record<string, string>[]} */ ([]),
     tokens: [],
     get jwks() {
       return { keys: [key.jwk] };
@@ -723,6 +596,19 @@ export function fakeOidc(
     });
   async function answer(request) {
     fixture.requests += 1;
+    if (fixture.mode === "hang") {
+      const { signal } = request;
+      signal.throwIfAborted();
+      // Keep the Request and its dependent signal alive until cancellation reaches it.
+      pendingRequests.add(request);
+      try {
+        return await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      } finally {
+        pendingRequests.delete(request);
+      }
+    }
     if (fixture.mode === "error") {
       return json(503, {});
     }
@@ -757,7 +643,7 @@ export function fakeOidc(
       !credentials ||
       grant === undefined ||
       grant.request.client_id !== clientId ||
-      grant.request.scope !== "openid" ||
+      !grant.request.scope.split(" ").includes("openid") ||
       grant.request.code_challenge_method !== "S256" ||
       grant.request.code_challenge !== challenge ||
       form.get("redirect_uri") !== grant.request.redirect_uri
@@ -828,6 +714,7 @@ export async function createAccount(app, headers, { email, password, roleId }) {
  * (from `remoteAddress` when given) and creates one password account per `accounts` entry,
  * then closes that app. `accounts` maps a name to its email and its Installation Role from
  * installationRoles: "reader" (the default) or "admin". Every account uses `password`.
+ * `passwordHasher` replaces the fixtures' cheap hasher for the accounts it creates.
  * Returns `{ admin: { email, password, id }, roles, accounts: { [name]: { id, email, password } } }`.
  */
 export async function onboardPasswordAccounts(
@@ -843,6 +730,7 @@ export async function onboardPasswordAccounts(
     accounts = {},
     remoteAddress,
     passwordSlowLaneFloors,
+    passwordHasher,
   },
 ) {
   const admin = {
@@ -855,6 +743,7 @@ export async function onboardPasswordAccounts(
     settings: defaultInstallSettings,
     secrets,
     passwordSlowLaneFloors,
+    passwordHasher,
   });
   try {
     const headers = await signedInHeaders(app, consoleOrigin, admin, remoteAddress);
@@ -907,6 +796,16 @@ export async function authRowCounts(pool) {
   ).rows[0];
 }
 
+/** The IAM principal of a person's sign-in account, as audit records name the actor. */
+export async function accountPrincipalId(pool, userId) {
+  return (
+    await pool.query(
+      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
+      [userId],
+    )
+  ).rows[0].principal_id;
+}
+
 /** The guarded account read an administrator uses for expectedVersion. */
 export async function readAccount(app, headers, userId) {
   const response = await app.inject({ url: `/api/auth/accounts/${userId}`, headers });
@@ -957,4 +856,20 @@ export async function assertReservedLane(app, { origin, holder, former, label })
     former: formerResponse.statusCode,
     holder: holderResponse.statusCode,
   };
+}
+
+/**
+ * Posts an account operation (`disable`, `enable`, `revoke` or `methods/<methodId>/detach`) as
+ * an administrator, at `expectedVersion` or else the account's current version; returns the
+ * response.
+ */
+export async function changeAccount(app, headers, userId, operation, expectedVersion) {
+  return app.inject({
+    method: "POST",
+    url: `/api/auth/accounts/${userId}/${operation}`,
+    headers,
+    payload: {
+      expectedVersion: expectedVersion ?? (await readAccount(app, headers, userId)).version,
+    },
+  });
 }

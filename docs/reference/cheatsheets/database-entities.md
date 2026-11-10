@@ -36,7 +36,7 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 
 ### `agents`
 
-Stores Agent drafts, their desired runtime state, and the active revision reference.
+Stores Agent drafts, their desired runtime state, and the selected version reference.
 
 - `id`
 - `namespace_id`
@@ -44,7 +44,9 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `configuration_id`
 - `backend_id`
 - `execution_mode`
+- `gateway_managed_mode`
 - `plugins`
+- `plugin_driver` (registered ID and implementation that admitted the saved selections)
 - `plugin_approvers`
 - `repository_bindings`
 - `repository_access` (default and explicit per-repository overrides)
@@ -53,21 +55,41 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `harness_auth_secret_id`
 - `harness_auth_service_account_id`
 - `harness_auth_credential_source_id`
+- `credential_sources` (every bound credential source)
 - `active_revision_id`
 - `desired_runtime_state`
+- `sandbox_policy_editing`
 - `status`
 - `created_at`
+
+### `sandbox_policies`
+
+Stores one Agent-owned desired network policy with versioned application evidence.
+See [per-Agent policies](../sandbox-policies.md).
+
+- `id`
+- `namespace_id`
+- `agent_id`
+- `version`
+- `document` (additions, pending/latest application, last confirmed live version)
 
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
+`admitted_spec` includes the explicit v2
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
 - `namespace_id`
 - `agent_id`
 - `revision_number`
 - `backend_id`
-- `admitted_spec`
+- `gateway_managed_mode`
+- `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
+  binds the Installation, actor, Namespace, Agent, key, reviewed Configuration tuple, and normalized Harness overrides.
+  Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
+  metadata, separate from `admitted_spec` and public revision responses.
+- `admitted_spec` (includes requested `harness.overrides` and resolved `harness.configuration`)
 - `admitted_at`
 
 ### `workspace_setups`
@@ -118,18 +140,189 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `connection_templates`
+
+Stores the scope and current version of each OAuth connection template.
+
+- `id`
+- `namespace_id`
+- `display_name`
+- `current_version`
+- `created_at`
+
+### `oauth_connection_template_versions`
+
+Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+
+- `template_id`, `version`, `oauth_client_id`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`
+- `destinations` (exact host, port, and path for each approved HTTPS destination)
+- `created_at`
+
+### `oauth_clients`
+
+Identifies an independently managed OAuth client and its approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+
+- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `secret_driver_id`, `cleanup_after`, `created_at`
+
+### `saved_connections`
+
+Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
+
+- `namespace_id`
+- `credential_source_id`
+- `owner_principal_id`
+- `oauth_client_id`, `client_id`, `issuer`, `token_url`
+- `recipient`, `mcp_server_url`, `resource`
+- `requested_scopes`, `granted_scopes`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+Stores the private, single-use OAuth attempt for the initiating principal and browser session.
+
+- `state_hash`
+- `namespace_id`
+- `credential_source_id`
+- `pkce_verifier`
+- `selected_scopes`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `scheduled_version`
+- `next_refresh_at`
+
 ### `credential_sources`
 
-Stores credential sources registered with the selected Credential Gateway; the gateway holds the values.
+Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
 
 - `id`
 - `namespace_id`
 - `name`
 - `type`
 - `config`
-- `driver_id`
+- `egress` (optional admitted source and versioned resolver references)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `driver_id` (Gateway and Proxy sources)
 - `state`
 - `created_at`
+
+### `egress_installations`
+
+Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
+instance/configuration fingerprint to the exact admitted revision plan.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sandbox_id`
+- `namespace_id`, `agent_id`, `revision_id`
+- `installation`
+
+### `credential_deliveries`
+
+Tracks delivery custody for the exact Namespace, Agent and revision. See the
+[repository flow](../../flows/agent-repository-credentials.md).
+
+- `revision_id`, `live_revision_id`, `binding_id`, `namespace_id`, `agent_id`, `target`
+- `fence`, `operation_fence`, `settlement`, `worker_instance`, `adopted_at`, `updated_at`
+- `desired`, `observed`, `write_pending`, `blocked`, `retained_policy_hash`
+- `material_version`, `preparation_attempt_id`
+- `target_material_version`, `target_preparation_attempt_id`
+
+### `credential_delivery_reductions`
+
+Retains material-delivery and execution-policy reduction requests for static and
+repository bindings. An unobserved request cannot be sent again. See the
+[policy reduction flow](../../flows/credential-source-egress.md#6-reduce-the-live-credential-policy).
+
+- `revision_id`, `binding_id`, `fence`, `recipient`, `material_version`, `retained_policy_hash`
+- `request_id`, `expected_version`, `observed_generation`
+- `policy_request`, `policy_observed`, `delivery_binding_id`
+
+### `prepared_github_families`
+
+Owns prepared token issuance and renewal for an explicitly admitted source.
+
+- `source_id`, `source`, `issuer`, `admission`
+- `enabled`, `next_check_at`, `worker_claim`
+
+### `prepared_github_attempts`
+
+Retains issuance and disposal custody, including unknown outcomes. Authenticated
+expiry is distinct from confirmed revocation. A refusal with no token is `not_issued`.
+An unknown outcome settles after GitHub's maximum token lifetime from `started_at`.
+
+- `id`, `source_id`, `admission`, `state`, `custody`, `started_at`
+- `material_version`, `provider_expires_at`, `usable_until`, `sealed`
+
+### `prepared_repository_git_uses`
+
+Append-only records of possible disclosure, bound to the exact attempt and material version.
+
+- `exchange_id`, `admission_id`, `attempt_id`, `material_version`
+- `operation`, `recipient_fence`, `request_digest_sha256`
+- `send_start_by`, `authorization_reply_by` (exactly one deadline)
+
+### `prepared_repository_draft_pulls`
+
+Retains the single draft-creation allowance for a grant, independently of later PR updates.
+
+- `grant_id`, `operation_id`, `receipt_id`, `admission_id`, `attempt_id`, `material_version`
+- `request_digest_sha256`, `scope`, `admitted_at`, `send_start_by`, `authorization_reply_by`
+- `settled_at`, `outcome`, `projection`
+
+### `protected_repository_git_recipients`
+
+Records where the selected Driver observed the protected Git recipient and which token version it installed.
+If the installation result is unknown, `state` stays `installing`. The sender must still get permission for each Git request.
+
+- `revision_id`, `installation` (the exact installation OCC recorded for this Agent revision)
+- `fence` (advances before each attempt to install a token), `state` (`observed`, `installing`, or `installed`)
+- `attempt_id`, `material_version` (identify the prepared token without storing its value here)
+
+### `egress_send_receipts`
+
+Retains exact sender attempts and safe observations independently of final delivery proof.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sender_generation`, `instance_id`, `use_id`, `attempt_id`
+- `binding` (selected material evidence and original deadline)
+- `authorized_dispatch` (accepted execution, installation and custody, digests and send-start bound)
+- `outcome`, `observation`, `settled`, `feedback`
+
+### `egress_rejected_material`
+
+Fences a provider-rejected version independently of later authoritative rereads.
+
+- `namespace_id`, `secret_driver_id`
+- `material_id`, `material_version`
+
+### `agent_credential_sources`
+
+Mirrors each Agent draft's `credential_sources` through a trigger, so the database refuses to delete a source an Agent still binds.
+
+- `namespace_id`
+- `agent_id`
+- `credential_source_id`
 
 ### `credential_source_secrets`
 
@@ -189,7 +382,7 @@ Retains repository-session identity and cleanup context after AgentRevision dele
 - `admission_id`
 - `duration_seconds`
 - `deadline_wall_ms`
-- `broker_protocol`
+- `broker_protocol` (0/1: historical native; 2: protected; 3: prepared native)
 - `phase`
 - `session_id`
 - `created_at`
@@ -222,7 +415,9 @@ Stores human Principals and service identities, including those owned by an Agen
 
 ### `iam_groups`
 
-Defines native IAM groups at Installation or Namespace scope.
+Defines native IAM groups at Installation or Namespace scope, including the
+[configured Groups](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`group_config_` IDs), which OCC can delete.
 
 - `id`
 - `namespace_id`
@@ -230,7 +425,8 @@ Defines native IAM groups at Installation or Namespace scope.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups.
+Links human Principals to their native IAM groups. Rows cannot be updated;
+memberships of a configured Group can be deleted.
 
 - `namespace_id`
 - `group_id`
@@ -238,7 +434,10 @@ Links human Principals to their native IAM groups.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds.
+Defines native IAM roles as sets of actions and resource kinds. Only
+[configured Roles](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`role_config_` IDs) can change; a check constraint keeps them at Installation
+scope without `installation` permissions.
 
 - `id`
 - `namespace_id`
@@ -248,6 +447,9 @@ Defines native IAM roles as sets of actions and resource kinds.
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
+OCC also writes configured Group bindings and the
+[Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
+of creators here.
 
 - `id`
 - `namespace_id`
@@ -287,7 +489,7 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 
 ### `controller_work`
 
-Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and revision deployments.
+Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.
 
 - `work_kind`
 - `idempotency_key`
@@ -360,7 +562,7 @@ Stores expiring browser sessions for signed-in users.
 
 Links a user to their sign-in method. Password methods store a password hash;
 identity-only external methods reject password and provider-token storage.
-See [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+See [External sign-in](../authentication/external-sign-in.md#external-sign-in-profile).
 
 - `id`
 - `account_id`
@@ -400,6 +602,17 @@ Binds an ordinary browser session to its admitted account and method versions.
 - `version`
 - `method_version`
 
+### `human_authentication_results`
+
+Holds outstanding external sign-in results by Installation and attempt. Deleting the
+bound session removes its result. The application role can insert, read, and delete rows.
+
+- `installation_id`
+- `attempt_id`
+- `session_id`
+- `provider_id`
+- `expires_at`
+
 ### `human_authentication_recovery`
 
 Retains the fixed existing password recovery administrator for an Installation.
@@ -423,6 +636,24 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+
+### `native_browser_intents`
+
+Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Consumed atomically; deleted with the parent session or revision.
+
+- `id`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `challenge_hash`, `exchange_hash`
+- `created_at`, `expires_at`
+
+### `native_browser_handles`
+
+Hashed Agent access handles dependent on a live parent human session.
+
+- `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `created_at`, `expires_at`
 
 ### `verification`
 

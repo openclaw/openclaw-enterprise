@@ -6,26 +6,24 @@ import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
-  githubUpgradeSettings,
   googleUpgradeSettings,
   oidcUpgradeSettings,
   postgresSignInState,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "unmatched-recovery@example.test";
 const authSecret = "unmatched-callback-auth-test-secret-at-least-32-bytes";
 const secrets = {
   "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "unmatched-github-client-id",
-  "occ-github-login/client-secret": "unmatched-github-client-secret",
   "occ-google-login/client-id": "unmatched.apps.googleusercontent.com",
   "occ-google-login/client-secret": "unmatched-google-client-secret",
   "occ-oidc-login/client-id": "unmatched-oidc-client",
   "occ-oidc-login/client-secret": "unmatched-oidc-client-secret",
 };
-const providers = ["github", "google", "oidc"];
+const providers = ["google", "oidc"];
 // Values with the shape of a real attempt state and browser cookie, as a client can mint them.
 const minted = () => randomBytes(32).toString("base64url");
 
@@ -47,7 +45,6 @@ test(
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: {
-        ...githubUpgradeSettings(adminId),
         ...googleUpgradeSettings(adminId),
         ...oidcUpgradeSettings(adminId),
       },
@@ -63,25 +60,29 @@ test(
       return match === null ? undefined : Number(match[1]);
     };
     const callback = (provider, query, cookie) =>
-      app.inject({
-        url: `/api/auth/providers/${provider}/callback?${query}`,
+      injectLocalhost(app, "GET", `/api/auth/providers/${provider}/callback?${query}`, {
         remoteAddress: "192.0.2.80",
-        ...(cookie === undefined ? {} : { headers: { cookie } }),
+        headers: cookie === undefined ? {} : { cookie },
       });
-    const assertRefused = (response, provider) => {
+    const assertRefused = (response, provider, consoleReason) => {
       assert.equal(response.statusCode, 302, response.body);
-      assert.equal(response.headers.location, `/console/?authError=${provider}`);
+      assert.equal(
+        response.headers.location,
+        consoleReason === undefined
+          ? `/console/?authError=${provider}`
+          : `/console/?authError=${provider}&authReason=${consoleReason}`,
+      );
     };
     const start = async (provider) => {
-      const started = await app.inject({
-        method: "POST",
-        url: `/api/auth/providers/${provider}/start`,
+      const started = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
         remoteAddress: "192.0.2.80",
         headers: { origin },
       });
       assert.equal(started.statusCode, 200, started.body);
+      const { url, attemptId } = started.json().data;
       return {
-        state: new URL(started.json().data.url).searchParams.get("state"),
+        attemptId,
+        state: new URL(url).searchParams.get("state"),
         cookie: cookieHeaderFromSetCookie(started.headers["set-cookie"]),
       };
     };
@@ -115,9 +116,10 @@ test(
     // afterwards: the person refused consent, or the provider reported an outage. A replay
     // of that spent state matches nothing and is counted like junk.
     for (const provider of providers) {
-      for (const [error, reasonCode] of [
-        ["access_denied", "EXTERNAL_IDENTITY_REJECTED"],
-        ["temporarily_unavailable", "PROVIDER_UNAVAILABLE"],
+      // The outage says so in the Console; a refused consent stays generic.
+      for (const [error, reasonCode, consoleReason] of [
+        ["access_denied", "EXTERNAL_IDENTITY_REJECTED", undefined],
+        ["temporarily_unavailable", "PROVIDER_UNAVAILABLE", "provider-unavailable"],
       ]) {
         const countedBefore = await unmatched(provider);
         const auditsBefore = (await auditEvents()).length;
@@ -125,11 +127,13 @@ test(
         assertRefused(
           await callback(provider, `state=${attempt.state}&error=${error}`, attempt.cookie),
           provider,
+          consoleReason,
         );
         const added = (await auditEvents()).slice(auditsBefore);
+        const details = { provider, attemptId: attempt.attemptId };
         assert.deepEqual(
           added.map((event) => [event.kind, event.action, event.reasonCode, event.details]),
-          [["authorization_denial", "authentication.login", reasonCode, { provider }]],
+          [["authorization_denial", "authentication.login", reasonCode, details]],
           `${provider} ${error}`,
         );
         assert.equal(await unmatched(provider), countedBefore, `${provider} ${error}`);

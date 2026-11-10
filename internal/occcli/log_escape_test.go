@@ -2,11 +2,15 @@ package occcli
 
 import (
 	"context"
+	"encoding/json/jsontext"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 )
 
 // hiddenRunes are the bidirectional, zero-width and other format characters
@@ -32,7 +36,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	}
 
 	stub := newStub()
-	out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+	out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +46,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 		t.Errorf("text output = %q, want %q", out, want)
 	}
 	for _, want := range []string{
-		`agent agt_1 has no active revision; using latest revision rev_\u2069\u202a2`,
+		`agent agt_00000000-0000-4000-8000-000000000001 has no active revision; using rev_\u2069\u202a2, the latest revision you can read`,
 		`notice: - gap stream\u202ereplaced: Container \ufeffrestarted.`,
 		`notice: 2026-09-30T12:00:02Z 3 lines withheld (over\u200dlimit)`,
 	} {
@@ -55,8 +59,8 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	}
 
 	// A page without a running Pod names the revision and source in its notice.
-	stub = &runtimeLogStub{t: t, activeID: "rev_1", pages: []func(http.ResponseWriter, url.Values){podless}}
-	_, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "--revision", "rev_1")
+	stub = &runtimeLogStub{t: t, activeID: "rev_00000000-0000-4000-8000-000000000001", pages: []func(http.ResponseWriter, url.Values){podless}}
+	_, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--revision", "rev_00000000-0000-4000-8000-000000000001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +71,7 @@ func TestAgentLogsEscapeBidiAndZeroWidthCharactersInTextAndNotices(t *testing.T)
 	// NDJSON output is the exact record (JSON escaping keeps it valid); its
 	// notices on stderr are text and escaped.
 	stub = newStub()
-	out, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "-o", "json")
+	out, errOut, err = runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--source", "gateway", "-o", "json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,5 +94,67 @@ func TestVisibleTextEscapesOnlyInvisibleCharacters(t *testing.T) {
 		if got := visibleText(test.in); got != test.want {
 			t.Errorf("visibleText(%q) = %q, want %q", test.in, got, test.want)
 		}
+	}
+}
+
+func TestRuntimeLogPageReportsNoticeWriteFailure(t *testing.T) {
+	writeErr := errors.New("stderr unavailable")
+	for _, test := range []struct {
+		name   string
+		record jsontext.Value
+		notice string
+	}{
+		{
+			name:   "gap",
+			record: jsontext.Value(gapRecord),
+			notice: "notice: - gap stream_replaced: Container restarted; showing the new instance.\n",
+		},
+		{
+			name:   "withheld",
+			record: jsontext.Value(`{"type":"withheld","time":"2026-09-30T12:00:02Z","stream":{"source":"gateway"},"reason":"over_limit","count":3}`),
+			notice: "notice: 2026-09-30T12:00:02Z 3 lines withheld (over_limit)\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := &occclient.RuntimeLogPage{Records: []jsontext.Value{test.record}}
+			var stdout, stderr strings.Builder
+			app := &application{out: &stdout, output: "text"}
+			if err := app.printRuntimeLogPage(page, &stderr); err != nil {
+				t.Fatalf("writable stderr: %v", err)
+			}
+			if got := stderr.String(); got != test.notice {
+				t.Errorf("stderr = %q, want %q", got, test.notice)
+			}
+
+			failedStderr := logOutputFunc(func([]byte) (int, error) { return 0, writeErr })
+			if err := app.printRuntimeLogPage(page, failedStderr); !errors.Is(err, writeErr) {
+				t.Errorf("renderer returned %v, want %v", err, writeErr)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("notice-only page wrote to stdout: %q", stdout.String())
+			}
+
+			// NDJSON keeps the record on stdout even when its stderr copy fails.
+			stdout.Reset()
+			app.output = "json"
+			if err := app.printRuntimeLogPage(page, failedStderr); err != nil {
+				t.Errorf("NDJSON with failed stderr: %v", err)
+			}
+			if got, want := stdout.String(), string(test.record)+"\n"; got != want {
+				t.Errorf("NDJSON stdout = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A field value that would read as something else is quoted: an empty value would read as a
+// missing one, and a quote or "=" would read as another field.
+func TestRuntimeLogLineQuotesValuesThatCouldReadAsOtherFields(t *testing.T) {
+	record := runtimeLogRecord{Level: "info", Kind: "openclaw", Message: "m", Fields: map[string]any{
+		"empty": "", "eq": "a=b", "quote": `say"hi"`, "plain": "ok", "status": float64(503),
+	}}
+	want := `t INFO openclaw m empty="" eq="a=b" plain=ok quote="say\"hi\"" status=503`
+	if got := runtimeLogLineText("t", record); got != want {
+		t.Errorf("runtimeLogLineText = %q, want %q", got, want)
 	}
 }

@@ -1,4 +1,6 @@
-# Operate OpenClaw Enterprise
+# Deploy and operate OpenClaw Enterprise
+
+<a id="operate-openclaw-enterprise"></a>
 
 Use these guides to install and run OpenClaw Enterprise on Kubernetes. They are
 for operators responsible for the OpenClaw Control Plane (OCC), tenant
@@ -7,18 +9,29 @@ on your own machine, start with [Local Setup](../quickstart.md).
 
 ## Install the platform
 
-1. Choose [standard Kubernetes](../deploy/kubernetes.md) or
-   [Amazon EKS](../deploy/eks.md) to prepare the cluster, storage, and network.
+For EKS, follow the [complete quickstart](../deploy/eks-openshell-setup.md) from
+AWS prerequisites through browser access and Agent onboarding.
+
+For a custom Kubernetes installation:
+
+1. Prepare the [cluster, storage, and network](../deploy/kubernetes.md).
 2. [Install the control plane](../deploy/production-installation.md) and make an
    authenticated API request. Helm readiness alone does not verify API access.
 3. [Deploy a production Agent](../deploy/production-agents.md) and verify the
-   selected runtime. An active revision alone does not prove a model can answer;
+   selected runtime. A selected version alone does not prove a model can answer;
    use the [model response verification](model-verification.md) for trusted-proxy gateways.
 4. [Prepare the production handoff](../deploy/production-handoff.md) to record
    who responds to failures and who owns credentials and access.
 
 The [installation overview](../deploy.md) lists shared prerequisites and explains
 which resources Helm leaves behind when you uninstall it.
+
+## Upgrade and recover
+
+Start with the [upgrade checklist](../deploy/upgrade-checklist.md), then follow
+[production image upgrades](../deploy/production-upgrade.md) or
+[Installation configuration changes](../deploy/production-installation-changes.md).
+If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md).
 
 ## Run the platform
 

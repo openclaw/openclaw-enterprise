@@ -1,0 +1,98 @@
+name: Staging Release Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      installation:
+        description: Configured staging installation ID (container qualification only)
+        required: true
+        type: string
+      source_sha:
+        description: Full main source SHA of the published release
+        required: true
+        type: string
+      publication_run_id:
+        description: Successful Enterprise Containers publication run ID
+        required: true
+        type: string
+      publication_attempt:
+        description: Exact successful publication attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: staging-qualification-${{ inputs.installation }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: staging-qualification
+    env:
+      CI: "1"
+      STAGING_INSTALLATION: ${{ inputs.installation }}
+      CONFIGURED_STAGING_INSTALLATION: ${{ vars.STAGING_INSTALLATION }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+      PUBLICATION_ATTEMPT: ${{ inputs.publication_attempt }}
+      GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+      GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+      - name: Validate trusted publication producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/staging-qualification.ts validate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: container-publication-${{ inputs.publication_run_id }}-${{ inputs.publication_attempt }}
+          repository: openclaw/openclaw-enterprise
+          run-id: ${{ inputs.publication_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/publication
+          skip-decompress: true
+          digest-mismatch: error
+      - name: Verify release inputs and pull immutable images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/staging-qualification.ts pull "$RUNNER_TEMP/publication"
+      - name: Install trusted smoke test prerequisites
+        run: |
+          bash scripts/ci/setup-tools.sh k3d
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run trusted startup tests against the release images
+        id: smoke
+        run: node scripts/ci/staging-qualification.ts smoke
+      - name: Clean up interrupted smoke resources
+        if: always() && steps.smoke.outcome && steps.smoke.outcome != 'success' && steps.smoke.outcome != 'skipped'
+        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/staging-runtime-state.json"
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: staging-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/staging-pulled-images.json
+            ${{ runner.temp }}/staging-images-packaging.json
+            ${{ runner.temp }}/staging-images-runtime-startup.json
+            ${{ runner.temp }}/staging-qualification.json
+          if-no-files-found: error
+          retention-days: 7

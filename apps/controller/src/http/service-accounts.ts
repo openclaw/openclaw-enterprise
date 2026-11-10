@@ -90,13 +90,25 @@ export const serviceAccountHandlers = {
     });
     reply.send({ data: account, meta: { requestId: request.id } });
   },
-  async deleteServiceAccount({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
-      const removed = await controller.deleteServiceAccount(
+  async deleteServiceAccount({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const force = (request.query as { force?: string } | undefined)?.force === "true";
+    const deletion = await controller.transact(async (unit) => {
+      const deleted = await controller.deleteServiceAccount(
         context.actorId,
         namespaceId,
         params.serviceAccountId as string,
+        { force },
       );
+      const removed = removedAccessBindingDetails(deleted.removedAccessBindings);
+      const unrevoked = deleted.unrevokedCredential;
       await unit.audit.append(
         mutationEvent(
           {
@@ -104,10 +116,33 @@ export const serviceAccountHandlers = {
             id: params.serviceAccountId as string,
             namespaceId,
           },
-          removedAccessBindingDetails(removed),
+          // A requested force is recorded even when a Driver revoked as usual. Audit redaction
+          // blanks keys naming a token or credential unless they end in "Id", so the outcome is
+          // `revocation: "skipped"`, not a `tokenRevoked` flag.
+          !force
+            ? removed
+            : {
+                ...removed,
+                force: true,
+                ...(unrevoked === undefined ? {} : { revocation: "skipped", ...unrevoked }),
+              },
         ),
       );
+      return deleted;
     });
-    reply.status(204).send();
+    if (deletion.unrevokedCredential === undefined) {
+      reply.status(204).send();
+      return;
+    }
+    const { backendId } = deletion.unrevokedCredential;
+    reply.status(200).send({
+      data: {
+        id: params.serviceAccountId,
+        namespaceId,
+        revocation: "skipped",
+        ...(backendId === undefined ? {} : { backendId }),
+      },
+      meta: { requestId: request.id },
+    });
   },
 } satisfies ResourceHandlers;

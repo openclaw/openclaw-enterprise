@@ -1,10 +1,18 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import {
+  createConsoleFixtureTransport,
+  fetchLoopback,
+} from "../helpers/console-fixture-transport.ts";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
@@ -19,18 +27,23 @@ import {
   startBackendlessDevelopmentServer,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
+import {
+  EMBEDDED_API_KEY_REQUIRED,
+  SERVICE_ACCOUNT_BACKEND_MISMATCH,
+  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+} from "../helpers/refusal-text.mjs";
 
 async function request(origin, session, method, path, body) {
-  const response = await fetch(`${origin}${path}`, {
-    method,
-    headers: {
+  const response = await fetchLoopback(`${origin}${path}`, {
+    ...jsonRequestInit(method, body, {
+      host: new URL(session.origin).host,
       ...authenticatedHeaders(session),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   return { response, payload: await response.json() };
@@ -82,22 +95,31 @@ async function assertNoAgentNamed(pool, namespaceId, name, label) {
   assert.equal(result.rows[0].count, 0, label);
 }
 
-async function expectBackendConflict(operation, pattern) {
-  await assert.rejects(
-    operation,
-    (error) =>
-      // A Harness authentication refusal at deploy names itself after authorization.
-      (error?.name === "ResourceConflictError" || error?.name === "ResourceStateConflictError") &&
-      (pattern === undefined || pattern.test(error.message)),
-  );
+// `expected` is the exact message, or a pattern for messages this file does not own.
+async function expectBackendConflict(operation, expected, name = "ResourceConflictError") {
+  await assert.rejects(operation, (error) => {
+    assert.equal(error?.name, name, error?.message);
+    if (typeof expected === "string") {
+      assert.equal(error.message, expected);
+    } else if (expected !== undefined) {
+      assert.match(error.message, expected);
+    }
+    return true;
+  });
 }
 
 test(
   "development API starts with stale Backend references and permits repair through Agent update",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const port = await availablePort();
+    // Hold the private transport port until the child binds it, and again
+    // across the restart, so no other socket takes it in between.
+    let reservation = await reservePort();
+    context.after(() => reservation.release());
+    const { port } = reservation;
     const origin = `http://127.0.0.1:${port}`;
+    const authBaseURL = "https://console.oce.localhost";
+    const transport = createConsoleFixtureTransport(authBaseURL, origin);
     const email = "postgres-admin@openclaw.local";
     const password = "postgres-development-password";
     const authSecret = "openclaw-backend-repair-auth-secret-minimum-32-bytes";
@@ -105,16 +127,21 @@ test(
       email,
       password,
       authSecret,
-      origin,
+      authBaseURL,
       installationName: "PostgreSQL Backend repair integration",
     });
     let server = await startBackendlessDevelopmentServer(context, {
-      port,
-      origin,
+      reservation,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    let session = await signInWithEmailPassword({ fetch, origin, email, password });
+    let session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
 
     const namespace = await request(origin, session, "POST", "/namespaces", {
       name: `backend-repair-${randomUUID()}`,
@@ -148,6 +175,7 @@ test(
     );
     assert.equal(agent.response.status, 201);
 
+    reservation = await reservePort({ port });
     await stopProcess(server.child);
     await fixture.pool.query(
       "UPDATE occ.agents SET backend_id = $1 WHERE namespace_id = $2 AND id = $3",
@@ -155,12 +183,17 @@ test(
     );
 
     server = await startBackendlessDevelopmentServer(context, {
-      port,
-      origin,
+      reservation,
+      authBaseURL,
       authSecret,
       configurationRoot: fixture.configurationRoot,
     });
-    session = await signInWithEmailPassword({ fetch, origin, email, password });
+    session = await signInWithEmailPassword({
+      fetch: transport.fetchThroughLoopback,
+      origin: authBaseURL,
+      email,
+      password,
+    });
     const visible = await request(
       origin,
       session,
@@ -215,7 +248,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const fixture = await createBackendFixture(context);
-    const controller = createBackendController(fixture);
+    const controller = createBackendController(fixture, { nativeWorkerSupport: "custom-image" });
 
     const draftNamespace = await createReadyNamespace(fixture, "drafts");
     const draftConfiguration = await createConfiguration(fixture, controller, draftNamespace);
@@ -275,7 +308,10 @@ test(
       name: `dedicated-${randomUUID()}`,
       configurationId: dedicatedConfiguration.id,
       backendId,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       executionMode: "dedicated",
     });
     const admitted = await controller.deployAgent(
@@ -285,8 +321,8 @@ test(
     );
     assert.equal(admitted.backendId, backendId);
     assert.deepEqual(admitted.harnessAuth, {
-      method: "chatgpt_service_account",
-      serviceAccountId: account.id,
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
       credential: account.credential,
       backendBinding: binding,
     });
@@ -321,9 +357,13 @@ test(
       name: `embedded-${randomUUID()}`,
       configurationId: embeddedConfiguration.id,
       backendId,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       executionMode: "embedded",
     });
+    // The method is the Agent's own setting, so deployment names it (a 400 over HTTP).
     await expectBackendConflict(
       () =>
         controller.deployAgent(
@@ -331,7 +371,8 @@ test(
           { namespaceId: exactNamespace.id, agentId: embedded.id },
           resolveApprovedHarness,
         ),
-      /configured model and topology/,
+      EMBEDDED_API_KEY_REQUIRED,
+      "ConfigurationHarnessError",
     );
     await assertNoRevision(
       fixture.pool,
@@ -418,6 +459,59 @@ test(
       { action: "retire", revisionId: admitted.id, backendId },
     ]);
 
+    // A supported native-worker Sandbox lets both PAT sources reach the real
+    // Kubernetes topology validator; neither may become an OpenClaw deployment.
+    const sandbox = {
+      id: "sandbox-native-pat-admission",
+      implementation: "test/native-worker",
+      capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      facets: ["networking", "filesystem", "process"],
+      async provisionHarness() {
+        assert.fail("Refused admission must not provision a Sandbox.");
+      },
+      async cleanup() {},
+    };
+    const kubernetes = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+      { sandboxDriver: sandbox },
+    );
+    controller.selectedDriver("compute").validateHarnessAuth =
+      kubernetes.validateHarnessAuth.bind(kubernetes);
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
+    const admissionCounts = async () =>
+      (
+        await fixture.pool.query(
+          `SELECT
+             (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2) AS revisions,
+             (SELECT count(*)::integer FROM occ.controller_work WHERE namespace_id=$1) AS work`,
+          [exactNamespace.id, dedicated.id],
+        )
+      ).rows;
+    const beforeNativeAttempts = await admissionCounts();
+    for (const source of [dedicated.harnessAuth.source, replacementAuth.source]) {
+      await controller.updateAgent(fixture.actor.id, {
+        namespaceId: exactNamespace.id,
+        agentId: dedicated.id,
+        configurationId: embeddedConfiguration.id,
+        backendId: source.kind === "service_account" ? backendId : null,
+        harnessAuth: { method: "codex_pat", source },
+        executionMode: "dedicated",
+      });
+      await expectBackendConflict(
+        () =>
+          controller.deployAgent(
+            fixture.actor.id,
+            { namespaceId: exactNamespace.id, agentId: dedicated.id },
+            resolveApprovedHarness,
+          ),
+        /^Agent setting harnessAuth\.method must be api_key or credential_source for Dedicated OpenClaw on Kubernetes Compute/,
+        "ConfigurationHarnessError",
+      );
+      assert.deepEqual(await admissionCounts(), beforeNativeAttempts, source.kind);
+    }
+
     const deletedAccount = await fixture.state.transact((unit) =>
       unit.serviceAccounts.deleteServiceAccount(exactNamespace.id, account.id),
     );
@@ -441,31 +535,31 @@ test(
         label: "backendless",
         agentBackendId: null,
         binding: {},
-        message: /no Backend binding/,
+        message: SERVICE_ACCOUNT_NO_BACKEND_BINDING,
       },
       {
         label: "backend-mismatch",
         agentBackendId: backendId,
         binding: { backendId: "other-backend" },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "driver-mismatch",
         agentBackendId: backendId,
         binding: { driverId: "other-service-account-driver" },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "workspace-mismatch",
         agentBackendId: backendId,
         binding: { workspaceId: alternateWorkspaceId },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
       {
         label: "credential-not-issued",
         agentBackendId: backendId,
         binding: { credentialIssued: false },
-        message: /does not match its Backend/,
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
       },
     ]) {
       const namespace = await createReadyNamespace(fixture, scenario.label);
@@ -481,7 +575,14 @@ test(
         name: `${scenario.label}-${randomUUID()}`,
         configurationId: configuration.id,
         backendId: scenario.agentBackendId,
-        harnessAuth: { method: "chatgpt_service_account", serviceAccountId: brokenAccount.id },
+        harnessAuth: {
+          method: "codex_pat",
+          source: {
+            kind: "service_account",
+            namespaceId: brokenAccount.namespaceId,
+            id: brokenAccount.id,
+          },
+        },
         executionMode: "dedicated",
       });
       await expectBackendConflict(
@@ -492,6 +593,7 @@ test(
             resolveApprovedHarness,
           ),
         scenario.message,
+        "ServiceAccountBackendBindingError",
       );
       await assertNoRevision(
         fixture.pool,
@@ -524,7 +626,14 @@ test(
           name: crossNamespaceAgentName,
           configurationId: targetConfiguration.id,
           backendId,
-          harnessAuth: { method: "chatgpt_service_account", serviceAccountId: sourceAccount.id },
+          harnessAuth: {
+            method: "codex_pat",
+            source: {
+              kind: "service_account",
+              namespaceId: targetNamespace.id,
+              id: sourceAccount.id,
+            },
+          },
           executionMode: "dedicated",
         }),
       (error) =>
@@ -538,5 +647,167 @@ test(
       "cross-Namespace account ownership must be rejected before an Agent is persisted",
     );
     await fixture.cleanup(targetNamespace, sourceNamespace);
+  },
+);
+
+test(
+  "PostgreSQL Agent provisioning admits a managed PAT source only with an issued access token matching its Backend",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createBackendFixture(context);
+    // These stubs only pass the provisioning capability gates; Harness authentication admission
+    // (the code under test) stays real. No runtime or Configuration effect may run.
+    const stubbedController = (options = {}) => {
+      const controller = createBackendController(fixture, {
+        nativeWorkerSupport: "custom-image",
+        ...options,
+      });
+      Object.assign(controller.selectedDriver("compute"), {
+        agentProvisioning: { executionModes: ["dedicated"] },
+        requiresAgentRuntimeCredentials: true,
+        validateAgentProvisioning() {},
+        async provisionAgentRuntimeCredentials() {
+          assert.fail("Provisioning admission must not provision runtime credentials.");
+        },
+        async getAgentRuntimeCredentialStatus() {
+          return { transportConfigured: false };
+        },
+      });
+      Object.assign(controller.selectedDriver("configuration"), {
+        async createExact() {
+          assert.fail("Provisioning admission must not create a Configuration.");
+        },
+        async inspectExact() {
+          assert.fail("Provisioning admission must not inspect a Configuration.");
+        },
+      });
+      return controller;
+    };
+    const controller = stubbedController();
+    const provision = (namespace, account, label) =>
+      controller.provisionAgent(fixture.actor.id, {
+        namespaceId: namespace.id,
+        requestId: `req_${randomUUID()}`,
+        name: `${label}-${randomUUID().slice(0, 8)}`,
+        executionMode: "dedicated",
+        backendId,
+        configuration: { kind: "agent", values: createHarnessConfiguration("codex", "gpt-4.1") },
+        harnessAuth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+        },
+      });
+    const pendingWork = async (namespace) =>
+      (
+        await fixture.pool.query(
+          "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+          [namespace.id],
+        )
+      ).rows[0].count;
+
+    // The exact issued account with a matching Backend binding is admitted as a PAT snapshot.
+    const exactNamespace = await createReadyNamespace(fixture, "provisioning-exact");
+    const account = await createAccessTokenServiceAccount(
+      fixture.state,
+      exactNamespace.id,
+      "provisioning-exact",
+    );
+    await seedBackendBinding(fixture.pool, account);
+    const accepted = await provision(exactNamespace, account, "provisioning-exact");
+    assert.equal(accepted.provisioning.status, "queued", JSON.stringify(accepted));
+    assert.equal(await pendingWork(exactNamespace), 1);
+    // The job checks the binding again: after the Installation's ChatGPT Backend moves to another
+    // workspace, it fails with the same named text in its status, not the generic one.
+    const moved = stubbedController({
+      backends: [backendDefinition({ workspaceId: alternateWorkspaceId })],
+    });
+    const { workId } = accepted.provisioning;
+    const claim = await claimIsolatedWork(fixture.pool, { workId });
+    assert.equal(claim?.idempotencyKey, workId);
+    const outcome = await moved.processAgentProvisioning(claim, resolveApprovedHarness);
+    assert.equal(outcome.outcome, "permanent", JSON.stringify(outcome));
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [workId],
+    );
+    assert.deepEqual(job.rows, [
+      { error: { code: "PROVISIONING_REJECTED", message: SERVICE_ACCOUNT_BACKEND_MISMATCH } },
+    ]);
+    await fixture.cleanup(exactNamespace);
+
+    for (const scenario of [
+      {
+        label: "api-key-credential",
+        credential: { kind: "api_key", secretRef: { name: "provider-api-key", key: "api-key" } },
+        binding: {},
+        message: /requires an issued account access-token credential/,
+        expectedErrorName: "ResourceStateConflictError",
+      },
+      {
+        label: "workspace-mismatch",
+        binding: { workspaceId: alternateWorkspaceId },
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
+      },
+      {
+        label: "credential-not-issued",
+        binding: { credentialIssued: false },
+        message: SERVICE_ACCOUNT_BACKEND_MISMATCH,
+      },
+    ]) {
+      const namespace = await createReadyNamespace(fixture, scenario.label);
+      const brokenAccount = await createAccessTokenServiceAccount(
+        fixture.state,
+        namespace.id,
+        scenario.label,
+      );
+      if (scenario.credential !== undefined) {
+        await fixture.state.transact((unit) =>
+          unit.serviceAccounts.updateCredential(
+            namespace.id,
+            brokenAccount.id,
+            scenario.credential,
+          ),
+        );
+      }
+      await seedBackendBinding(fixture.pool, brokenAccount, scenario.binding);
+      await expectBackendConflict(
+        () => provision(namespace, brokenAccount, scenario.label),
+        scenario.message,
+        scenario.expectedErrorName ?? "ServiceAccountBackendBindingError",
+      );
+      assert.equal(
+        await pendingWork(namespace),
+        0,
+        `${scenario.label} must roll back its provisioning record`,
+      );
+      await fixture.cleanup(namespace);
+    }
+
+    // A Restriction denies ServiceAccount read in this Namespace. The read check runs before the
+    // account and its Backend binding are looked up, so the caller gets one denial for a
+    // mismatched account and for an ID that names none, never the 409 (finding 2624). OCC has no
+    // API that writes Restrictions, so insert it directly.
+    const restricted = await createReadyNamespace(fixture, "provisioning-restricted");
+    const hidden = await createAccessTokenServiceAccount(
+      fixture.state,
+      restricted.id,
+      "provisioning-restricted",
+    );
+    await seedBackendBinding(fixture.pool, hidden, { workspaceId: alternateWorkspaceId });
+    await fixture.pool.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
+       VALUES ($1, $2, 'read', 'service_account', NULL)`,
+      [`restriction_${randomUUID()}`, restricted.id],
+    );
+    await assertSameAnswer(
+      (id) =>
+        refusedAnswer(
+          () => provision(restricted, { namespaceId: restricted.id, id }, "restricted"),
+          { requested: (value) => value === id, actorId: fixture.actor.id },
+        ),
+      [hidden.id, `sa_${randomUUID()}`],
+    );
+    assert.equal(await pendingWork(restricted), 0);
+    await fixture.cleanup(restricted);
   },
 );

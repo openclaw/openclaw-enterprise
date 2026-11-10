@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
-import { promisify } from "node:util";
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper for a dedicated Codex Harness with a plugin selection. It
 // stands in for the Harness plugin status endpoint, replaces the Harness (a new
 // startup, pod and plugin result), and checks that the wrapper respawns only
-// the OpenClaw process: readiness, judged by the production readiness command,
+// the OpenClaw process: readiness, judged by the production HTTP endpoint,
 // drops and returns only when the new process serves with the new credential
 // and plugin result, and the new process re-acknowledges the workspace node.
-// The launcher passes the readiness command and the credential derivation domain.
-const execute = promisify(execFile);
-const readinessSource = process.env.OCC_TEST_GATEWAY_READINESS;
+// The launcher passes the credential derivation domain.
 const tokenDomain = process.env.OCC_TEST_TOKEN_DOMAIN;
 const revisionId = process.env.OPENCLAW_AGENT_REVISION_ID;
 const statusPort = Number(process.env.OPENCLAW_PLUGIN_STATUS_PORT);
@@ -25,8 +21,56 @@ const linear = "codex-plugin:linear@openai-curated-remote";
 const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
 const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
+const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
 let initialGateway;
 let replacementPeerReads = 0;
+let stalePhase = "initial";
+let peer2SwitchedAt;
+
+function breadcrumb(phase, value, extra) {
+  if (
+    ![
+      "initial-ready",
+      "peer2-switch",
+      "replacement-request",
+      "third-request-entry",
+      "identity-check",
+      "credential-check",
+      "native-ready",
+      "wrapper-ready",
+      "peer3-switch",
+      "peer3-response",
+      "deadline",
+    ].includes(phase)
+  ) {
+    return;
+  }
+  const record = { event: "stale-peer-diagnostic", phase };
+  if (phase === "peer2-switch") {
+    peer2SwitchedAt = performance.now();
+  }
+  if (peer2SwitchedAt !== undefined) {
+    record.elapsedMs = Math.max(0, performance.now() - peer2SwitchedAt);
+  }
+  if (phase === "replacement-request" || phase === "deadline") {
+    record.ordinal = value;
+  }
+  if (phase === "deadline") {
+    record.lastPhase = extra;
+  }
+  if (phase === "identity-check") {
+    record.singleProcess = value;
+    record.sameIdentity = extra;
+  }
+  if (phase === "credential-check") {
+    record.sameCredential = value;
+  }
+  if (phase === "native-ready" || phase === "wrapper-ready") {
+    record.ready = value;
+  }
+  stalePhase = phase;
+  console.log(JSON.stringify(record));
+}
 let trackSamePeerOutage = false;
 let trackSamePeerRecovery = false;
 let samePeerOutageResponses = 0;
@@ -56,19 +100,30 @@ const server = createServer(async (request, response) => {
   }
   if (staleReplacement && peer.startupId === "harness-startup-2") {
     replacementPeerReads++;
+    breadcrumb("replacement-request", replacementPeerReads);
     if (replacementPeerReads === 3) {
+      breadcrumb("third-request-entry");
       // The verification read follows the replacement's native readiness.
       const processes = await gatewayProcess();
+      breadcrumb(
+        "identity-check",
+        processes.length === 1,
+        processes.length === 1 &&
+          processes[0].startTicks + processes[0].pid ===
+            initialGateway.startTicks + initialGateway.pid,
+      );
       assert.equal(processes.length, 1);
       assert.notEqual(
         processes[0].startTicks + processes[0].pid,
         initialGateway.startTicks + initialGateway.pid,
       );
+      breadcrumb("credential-check", processes[0].token === appServerToken("harness-startup-2"));
       assert.equal(processes[0].token, appServerToken("harness-startup-2"));
       const native = await fetch(`http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT}/readyz`, {
         signal: AbortSignal.timeout(3_000),
         redirect: "error",
       });
+      breadcrumb("native-ready", native.status === 200);
       assert.equal(native.status, 200);
       const status = await (
         await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
@@ -77,8 +132,11 @@ const server = createServer(async (request, response) => {
         })
       ).json();
       assert.equal(status.phase, "starting");
-      assert.equal(await ready(), false);
+      const wrapperReady = await ready();
+      breadcrumb("wrapper-ready", wrapperReady);
+      assert.equal(wrapperReady, false);
       peer = { ...peer, startupId: "harness-startup-3", podUid: "harness-pod-3" };
+      breadcrumb("peer3-switch");
       await new Promise((resolve, reject) => {
         process.stdout.write(
           `${JSON.stringify({ phase: "stale-peer-verified", pid: processes[0].pid })}\n`,
@@ -89,7 +147,11 @@ const server = createServer(async (request, response) => {
   }
   response.writeHead(200, { "content-type": "application/json" });
   const countRecovery = trackSamePeerRecovery;
+  const thirdPeerResponse = staleReplacement && peer.startupId === "harness-startup-3";
   response.end(JSON.stringify(peer), () => {
+    if (thirdPeerResponse) {
+      breadcrumb("peer3-response");
+    }
     if (countRecovery) {
       samePeerRecoveryResponses++;
     }
@@ -109,8 +171,11 @@ function appServerToken(startupId) {
 
 async function ready() {
   try {
-    await execute(process.execPath, ["-e", readinessSource], { timeout: 5_000 });
-    return true;
+    const response = await fetch(`http://127.0.0.1:${statusPort}/readyz`, {
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    return response.status === 200;
   } catch {
     return false;
   }
@@ -190,10 +255,20 @@ function linearEnabled(config) {
 
 try {
   await waitFor("the first Gateway to become ready", 240_000, ready);
+  if (staleReplacement) {
+    breadcrumb("initial-ready");
+  }
   const [before] = await gatewayProcess();
   initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));
-  assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), false);
+  const initialConfig = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(linearEnabled(initialConfig), false);
+  assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("sessions"), true);
+  assert.equal(initialConfig.tools.gatewayPolicy.allow.includes("plugins"), false);
+  assert.deepEqual(initialConfig.tools.gatewayPolicy.automations, {
+    scope: "caller",
+    allowCommandJobs: false,
+  });
   if (outageExit) {
     // The wrapper must still notice its child exit while peer status is unavailable.
     peer = undefined;
@@ -222,7 +297,9 @@ try {
       successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
       failures: [],
     };
+    breadcrumb("peer2-switch");
     await setTimeout(60_000);
+    breadcrumb("deadline", replacementPeerReads, stalePhase);
     throw new Error("Gateway wrapper did not reject the stale replacement peer.");
   }
 
@@ -277,6 +354,18 @@ try {
   assert.equal(afterOutage[0].startTicks, before.startTicks);
   assert.equal(afterOutage[0].token, before.token);
 
+  if (writableInitialConfig) {
+    const edited = JSON.parse(await readFile(configPath, "utf8"));
+    edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
+    // A native admin can edit ordinary configuration. On respawn, only OCE's
+    // admitted revision can approve model tools; local edits cannot widen it.
+    edited.tools.gatewayPolicy.allow.push("plugins");
+    edited.tools.gatewayPolicy.actions.plugins = ["list"];
+    edited.agents.defaults.modelSelectionScope = "agent";
+    edited.cron.triggers.enabled = true;
+    await writeFile(configPath, JSON.stringify(edited));
+  }
+
   await waitFor("the first workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const assetsBefore = (await stat("/home/node/openclaw-runtime-assets/bundled-skills")).mtimeMs;
 
@@ -311,7 +400,17 @@ try {
     await setTimeout(200);
   }
   assert.equal(after.token, appServerToken("harness-startup-2"));
-  assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), true);
+  const recoveredConfig = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(linearEnabled(recoveredConfig), true);
+  assert.deepEqual(recoveredConfig.tools.gatewayPolicy, initialConfig.tools.gatewayPolicy);
+  assert.equal(recoveredConfig.agents.defaults.modelSelectionScope, "session");
+  assert.equal(recoveredConfig.cron.triggers.enabled, false);
+  if (writableInitialConfig) {
+    assert.equal(
+      JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,
+      "Native admin edit",
+    );
+  }
   // The new process loaded the node binding again and acknowledged it itself.
   await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const ackAt = Date.now() - changedAt;

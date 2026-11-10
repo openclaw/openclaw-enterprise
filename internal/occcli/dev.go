@@ -17,13 +17,16 @@ import (
 
 func developmentCommand() *cobra.Command {
 	command := commandGroup("dev", "Start or stop a local development stack from a source checkout")
-	// Development commands do not use the remote resource client's flags.
-	command.PersistentPreRunE = func(_ *cobra.Command, _ []string) error { return nil }
+	// Development commands do not use the remote resource client's flags, but
+	// an explicit empty --key-output must not fall back to the dev-owned path.
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error { return refuseEmptyFlags(cmd) }
 	for _, action := range []struct{ name, description string }{
 		{"up", "Start the selected development Compute Driver"},
 		{"down", "Stop the selected development stack"},
 	} {
 		var keyOutput string
+		var sandboxNetworkPolicyFile string
+		var sandboxNetworkPolicyCeilingFile string
 		var volumes bool
 		child := &cobra.Command{
 			Use:   action.name + " [-- COMPOSE_GLOBAL_OPTIONS...]",
@@ -39,14 +42,23 @@ func developmentCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				options := occdev.Options{Repository: repository, KeyOutput: keyOutput, ComposeArgs: args, Volumes: volumes, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
+				options := occdev.Options{Repository: repository, KeyOutput: keyOutput, SandboxNetworkPolicyFile: sandboxNetworkPolicyFile, SandboxNetworkPolicyCeilingFile: sandboxNetworkPolicyCeilingFile, ComposeArgs: args, Volumes: volumes, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
 				if action.name == "down" {
 					return occdev.Down(cmd.Context(), options)
+				}
+				if err := occdev.CheckDevelopmentProfile(); err != nil {
+					return err
 				}
 				switch os.Getenv("OCC_DEVELOPMENT_COMPUTE_DRIVER") {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
 				case "", "docker":
+					if sandboxNetworkPolicyFile != "" || sandboxNetworkPolicyCeilingFile != "" {
+						return fmt.Errorf("Sandbox policy input requires Kubernetes Compute and a Sandbox Driver")
+					}
+					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
+						return err
+					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}
@@ -79,11 +91,42 @@ func developmentCommand() *cobra.Command {
 		}
 		if action.name == "up" {
 			child.Flags().StringVar(&keyOutput, "key-output", "", "Absent absolute path in a private directory for the bootstrap service key")
+			child.Flags().StringVar(&sandboxNetworkPolicyCeilingFile, "sandbox-network-policy-ceiling-file", "", "YAML file bounding per-Agent network policy additions; grants no access")
+			child.Flags().StringVar(&sandboxNetworkPolicyFile, "sandbox-network-policy-file", "", "YAML file of additional OpenShell binary and endpoint network policies")
 		} else {
 			child.Flags().BoolVar(&volumes, "volumes", false, "Also delete Docker Compose volumes (Kubernetes cleanup always deletes its volumes)")
 		}
 		command.AddCommand(child)
 	}
+	command.AddCommand(&cobra.Command{
+		Use:    "check-profile",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return occdev.CheckDevelopmentProfile()
+		},
+	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",
@@ -118,17 +161,39 @@ func developmentRepository() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
 	for {
-		module, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-		if err == nil && strings.HasPrefix(string(module), "module github.com/openclaw/openclaw-enterprise\n") {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
-				return directory, nil
+		modulePath := filepath.Join(directory, "go.mod")
+		module, err := os.ReadFile(modulePath)
+		content := string(module)
+		line, _, hasNewline := strings.Cut(content, "\n")
+		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
+			composePath := filepath.Join(directory, "compose.yaml")
+			info, err := os.Lstat(composePath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect %q: %w", composePath, err)
+			}
+			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					info, err = os.Stat(composePath)
+					if err != nil {
+						return "", fmt.Errorf("inspect %q: %w", composePath, err)
+					}
+				}
+				if !info.Mode().IsRegular() {
+					return "", fmt.Errorf("%q must be a regular file", composePath)
+				}
+				if !strings.Contains(content, "\r\n") {
+					return directory, nil
+				}
+				return "", fmt.Errorf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
 			}
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
+			break
 		}
 		directory = parent
 	}
+	return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
 }

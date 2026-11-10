@@ -6,8 +6,8 @@ import type {
 import type {
   RepositoryCredentialBoundSessionInput,
   SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
-import { sameBinding } from "../../drivers/repo/credentials/sessions.ts";
+} from "../../drivers/repo/access/service-contracts.ts";
+import { sameBinding } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Only the worker owns State; the detached broker receives this narrow journal. */
 export class RepositoryReceiptStore {
@@ -22,28 +22,25 @@ export class RepositoryReceiptStore {
     this.owner = owner;
   }
 
-  private matches(
+  private acceptsInput(
     attempt: Readonly<RepositorySessionAttempt>,
     input: RepositoryCredentialBoundSessionInput,
   ): boolean {
-    const { binding, driver } = attempt.cleanupContext;
+    const { binding } = attempt.cleanupContext;
     return (
-      attempt.brokerProtocol === 1 &&
+      attempt.brokerProtocol === (input.preparedOnly === true ? 3 : 1) &&
       attempt.namespaceId === input.namespaceId &&
       attempt.repositoryRef === input.repositoryRef &&
       attempt.durationSeconds === input.durationSeconds &&
       attempt.deadlineWallMs === input.deadlineWallMs &&
       binding.profile === input.profile &&
-      binding.backendId === this.owner.backendId &&
-      driver.id === this.owner.driverId &&
-      driver.implementation === this.owner.implementation &&
+      this.ownsCurrentAttempt(attempt) &&
       sameBinding(binding.grant, input.expectedBinding)
     );
   }
 
-  private eligible(attempt: Readonly<RepositorySessionAttempt>): boolean {
+  private ownsCurrentAttempt(attempt: Readonly<RepositorySessionAttempt>): boolean {
     return (
-      attempt.brokerProtocol === 1 &&
       attempt.phase !== "invalidated" &&
       attempt.cleanupContext.binding.backendId === this.owner.backendId &&
       attempt.cleanupContext.driver.id === this.owner.driverId &&
@@ -56,7 +53,8 @@ export class RepositoryReceiptStore {
     receipt: Readonly<RepositoryBrokerReceipt>,
   ): SessionStatus {
     if (
-      !this.eligible(attempt) ||
+      ![1, 3].includes(attempt.brokerProtocol) ||
+      !this.ownsCurrentAttempt(attempt) ||
       receipt.state !== "disposed" ||
       receipt.sessionId === undefined ||
       receipt.deadlineWallMs === undefined ||
@@ -91,7 +89,7 @@ export class RepositoryReceiptStore {
   ) {
     return this.state.transact(async (unit) => {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || attempt.phase === "invalidated") {
+      if (!attempt || !this.acceptsInput(attempt, input)) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
@@ -111,7 +109,7 @@ export class RepositoryReceiptStore {
         await unit.repositorySessions.createBrokerReceipt({ admissionId, state: "fenced" });
         return { kind: "missing" as const };
       }
-      if (attempt.phase !== "opening") {
+      if (attempt.phase !== "opening" || input.preparedOnly !== true) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       await unit.repositorySessions.createBrokerReceipt({
@@ -119,7 +117,18 @@ export class RepositoryReceiptStore {
         state: "reserved",
         generation,
       });
-      return { kind: "reserved" as const };
+      const revision = await unit.revisions.findRevision(
+        attempt.namespaceId,
+        attempt.agentId,
+        attempt.revisionId,
+      );
+      if (!revision?.repositoryCredentials) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      // Distinct wire result: an old broker cannot silently treat a standing grant as finite.
+      return revision.repositoryCredentials.standingApprovalId === undefined
+        ? { kind: "reserved" as const }
+        : { kind: "standing-reserved" as const };
     });
   }
 
@@ -133,8 +142,7 @@ export class RepositoryReceiptStore {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
       if (
         !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
+        !this.acceptsInput(attempt, input) ||
         status.state !== "OPEN" ||
         !sameBinding(status.binding, input.expectedBinding) ||
         status.deadlineWallMs > input.deadlineWallMs
@@ -172,7 +180,7 @@ export class RepositoryReceiptStore {
   ) {
     await this.state.transact(async (unit) => {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
-      if (!attempt || !this.matches(attempt, input) || !this.eligible(attempt)) {
+      if (!attempt || !this.acceptsInput(attempt, input)) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
@@ -196,8 +204,7 @@ export class RepositoryReceiptStore {
       const attempt = await unit.repositorySessions.lockAttempt(admissionId);
       if (
         !attempt ||
-        !this.matches(attempt, input) ||
-        !this.eligible(attempt) ||
+        !this.acceptsInput(attempt, input) ||
         status.state !== "DISPOSED" ||
         status.activeUses !== 0 ||
         status.cleanup.active !== 0 ||

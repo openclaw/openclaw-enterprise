@@ -1,37 +1,34 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
   assertExternalSignInRefused,
   attachProvider,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  githubSignIn,
-  githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   oidcSignIn,
   oidcUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "oidc-recovery@example.test";
-const password = "oidc-member-password";
 const authSecret = "oidc-sign-in-auth-test-secret-at-least-32-bytes";
 const clientId = "fixture-oidc-client";
 const clientSecret = "fixture-oidc-client-secret";
@@ -42,11 +39,8 @@ const secrets = {
   "occ-oidc-login/client-secret": clientSecret,
   "occ-google-login/client-id": googleClientId,
   "occ-google-login/client-secret": "oidc-suite-google-client-secret",
-  "occ-github-login/client-id": "oidc-suite-github-client-id",
-  "occ-github-login/client-secret": "oidc-suite-github-client-secret",
 };
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const instance = (issuer) => `oidc:${digest(`${issuer.issuer}\0${clientId}`)}`;
+const instance = (issuer) => providerInstanceId("oidc", { issuer: issuer.issuer, clientId });
 const oidcProviderId = instance(fixtureOidcIssuer);
 // An issuer change on the same host: a new provider instance.
 const movedIssuer = Object.freeze({
@@ -58,7 +52,6 @@ const strangerSubject = "auth0|6500000000000000000000a2";
 const disabledSubject = "auth0|6500000000000000000000a3";
 const bothSubject = "auth0|6500000000000000000000a4";
 const bothGoogleSubject = "110000000000000000044";
-const bothGithubSubject = "9600004";
 
 const recoveryOnly = (settings) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
@@ -72,18 +65,20 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "oidc-recovery@example.test",
+        password: "oidc-member-password",
+        secrets,
+        // The side-by-side subtest starts GitHub; until then no GitHub stand-in runs.
+      },
+    );
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install, before OIDC is configured.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       remoteAddress: address(),
       accounts: Object.fromEntries(
         ["member", "disabled", "both", "stranded"].map((name) => [
@@ -115,19 +110,23 @@ test(
       const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
+    // A console browser at a fresh client address starts sign-in with `provider`.
+    const startSignIn = (provider = "oidc") =>
+      injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
+        remoteAddress: address(),
+        headers: { origin },
+      });
 
     await t.test(
       "recovery-only OIDC activates the guarded profile and reports uncovered accounts",
       async () => {
         const log = memoryLogger();
-        app = await composeProductionSignIn(t, {
-          databaseUrl,
-          settings: recoveryOnly(
+        app = await composeApp(
+          recoveryOnly(
             oidcUpgradeSettings(admin.id, fixtureOidcIssuer, { displayName: "Acme SSO" }),
           ),
-          secrets,
-          logger: log.logger,
-        });
+          { logger: log.logger },
+        );
         const [warning, ...rest] = coverageWarnings(log);
         assert.deepEqual(rest, []);
         assert.equal(warning.code, "EXTERNAL_IDENTITY_MISSING");
@@ -136,7 +135,6 @@ test(
           [member.id, disabled.id, both.id, stranded.id].sort(),
         );
         assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-          github: false,
           google: false,
           oidc: true,
           oidcSignIn: { label: "Acme SSO", authorizationUrl: fixtureOidcIssuer.authorizationUrl },
@@ -150,21 +148,11 @@ test(
         // Ordinary passwords are refused; the recovery account's still signs in.
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 401);
         adminHeaders = await signedInHeaders(app, origin, admin, address());
-        for (const provider of ["github", "google"]) {
-          const start = await app.inject({
-            method: "POST",
-            url: `/api/auth/providers/${provider}/start`,
-            remoteAddress: address(),
-            headers: { origin },
-          });
+        for (const provider of ["google"]) {
+          const start = await startSignIn(provider);
           assert.equal(start.statusCode, 403, `${provider} stays unconfigured`);
         }
-        const start = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/oidc/start",
-          remoteAddress: address(),
-          headers: { origin },
-        });
+        const start = await startSignIn();
         assert.equal(start.statusCode, 200, start.body);
         const authorize = new URL(start.json().data.url);
         assert.equal(
@@ -202,13 +190,30 @@ test(
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
-      assert.ok(setCookies.some((cookie) => cookie.startsWith("__Host-occ_login_receipt=")));
-      const exchanged = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/result",
+      const sessionCookie = setCookies.find(
+        (cookie) =>
+          cookie.startsWith("__Secure-openclaw_occ_shared.session_token=") &&
+          !/Max-Age=0(?:;|$)/i.test(cookie),
+      );
+      assert.ok(sessionCookie, "OIDC issues the shared OCE session cookie");
+      assert.match(sessionCookie, /; Domain=oce\.example\.internal(?:;|$)/i);
+      // Provider bindings and device hints stay on the Console origin, never Agent hosts.
+      const startCookies = [signIn.start.headers["set-cookie"]].flat();
+      for (const [cookies, name] of [
+        [startCookies, "__Host-occ_login_attempt"],
+        [setCookies, "__Host-occ_login_receipt"],
+        [setCookies, "__Host-occ_known_device"],
+      ]) {
+        const cookie = cookies.find(
+          (value) => value.startsWith(`${name}=`) && !/Max-Age=0(?:;|$)/i.test(value),
+        );
+        assert.ok(cookie, name);
+        assert.doesNotMatch(cookie, /; Domain=/i);
+      }
+      const exchanged = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/result", {
         remoteAddress: address(),
-        headers: { cookie: signIn.cookie, origin },
-        payload: { attemptId: signIn.attemptId },
+        session: { cookie: signIn.cookie, origin },
+        body: { attemptId: signIn.attemptId },
       });
       assert.equal(exchanged.statusCode, 200, exchanged.body);
       assert.equal(
@@ -216,12 +221,7 @@ test(
         exchanged.json().data.sessionKey,
       );
 
-      const principalId = (
-        await pool.query(
-          "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-          [member.id],
-        )
-      ).rows[0].principal_id;
+      const principalId = await accountPrincipalId(pool, member.id);
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(
           ({ action, outcome, details }) =>
@@ -271,12 +271,7 @@ test(
 
     await t.test("a rotated signing key verifies on the next callback", async () => {
       // An authorization issued under the old key fails once that key is withdrawn.
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
+      const start = await startSignIn();
       const { url } = start.json().data;
       const code = idp.authorize(url, { subject: memberSubject });
       idp.rotate();
@@ -293,7 +288,13 @@ test(
     await t.test("an IdP outage fails OIDC closed and leaves recovery working", async () => {
       idp.mode = "error";
       try {
-        await assertRefused({ subject: memberSubject }, "IdP outage", "PROVIDER_UNAVAILABLE");
+        // The Console says the IdP is unavailable, not to get attached (finding 1193).
+        await assertRefused(
+          { subject: memberSubject },
+          "IdP outage",
+          "PROVIDER_UNAVAILABLE",
+          "provider-unavailable",
+        );
         assert.equal((await passwordSignIn(app, origin, admin, address())).statusCode, 200);
       } finally {
         idp.mode = "up";
@@ -303,17 +304,12 @@ test(
     await t.test("disabling an account ends its session and refuses OIDC", async () => {
       assert.equal((await attach(disabled.id, disabledSubject)).statusCode, 200);
       const { cookie } = await assertSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       // The IdP proved this identity, and it is attached: the person is told the account is
       // disabled rather than to retry or ask for an attach. Only their own browser gets this.
-      await assertRefused(
+      const attemptId = await assertRefused(
         { subject: disabledSubject },
         "disabled account",
         "ACCOUNT_DISABLED",
@@ -323,17 +319,19 @@ test(
       const refusals = (await state.transact((unit) => unit.audit.list())).filter(
         ({ reasonCode }) => reasonCode === "ACCOUNT_DISABLED",
       );
-      assert.deepEqual(refusals.at(-1).details, { provider: "oidc", userId: disabled.id });
+      assert.deepEqual(refusals.at(-1).details, {
+        provider: "oidc",
+        userId: disabled.id,
+        subject: disabledSubject,
+        attemptId,
+      });
     });
 
     await t.test("the coverage report drops accounts once their identity is attached", async () => {
       await app.close();
       app = undefined;
       const log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(oidcUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
         logger: log.logger,
       });
       const [warning] = coverageWarnings(log);
@@ -347,11 +345,9 @@ test(
       app = undefined;
       idp.issuer = movedIssuer;
       idp.tokenAuth = "client_secret_basic";
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: oidcUpgradeSettings(admin.id, movedIssuer, { tokenAuth: "client_secret_basic" }),
-        secrets,
-      });
+      app = await composeApp(
+        oidcUpgradeSettings(admin.id, movedIssuer, { tokenAuth: "client_secret_basic" }),
+      );
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       // The old instance is no longer configured, so its session ends at once.
       assert.equal(await currentSession(app, before), null, "the issuer change ends it");
@@ -377,161 +373,130 @@ test(
       await assertSignIn(memberSubject, member.id);
     });
 
-    await t.test(
-      "GitHub, Google and OIDC sign in side by side with distinct instances",
-      async () => {
-        await app.close();
-        app = undefined;
-        idp.issuer = fixtureOidcIssuer;
-        idp.tokenAuth = "client_secret_post";
-        await startFakeGitHub(t);
-        const google = fakeGoogle(t, {
-          clientId: googleClientId,
-          clientSecret: "oidc-suite-google-client-secret",
-        });
-        app = await composeProductionSignIn(t, {
-          databaseUrl,
-          settings: {
-            ...githubUpgradeSettings(admin.id),
-            ...googleUpgradeSettings(admin.id),
-            ...oidcUpgradeSettings(admin.id),
-          },
-          secrets,
-        });
-        adminHeaders = await signedInHeaders(app, origin, admin, address());
-        const discovery = (await app.inject({ url: "/api/auth/providers" })).json().data;
-        assert.deepEqual(
-          [discovery.github, discovery.google, discovery.oidc, discovery.password],
-          [true, true, true, true],
-        );
-        for (const [subject, provider] of [
-          [bothSubject, "oidc"],
-          [bothGoogleSubject, "google"],
-          [bothGithubSubject, "github"],
-        ]) {
-          const attached = await attach(both.id, subject, provider);
-          assert.equal(attached.statusCode, 200, attached.body);
+    await t.test("Google and OIDC sign in side by side with distinct instances", async () => {
+      await app.close();
+      app = undefined;
+      idp.issuer = fixtureOidcIssuer;
+      idp.tokenAuth = "client_secret_post";
+      const google = fakeGoogle(t, {
+        clientId: googleClientId,
+        clientSecret: "oidc-suite-google-client-secret",
+      });
+      app = await composeApp({
+        ...googleUpgradeSettings(admin.id),
+        ...oidcUpgradeSettings(admin.id),
+      });
+      adminHeaders = await signedInHeaders(app, origin, admin, address());
+      const discovery = (await app.inject({ url: "/api/auth/providers" })).json().data;
+      assert.deepEqual([discovery.google, discovery.oidc, discovery.password], [true, true, true]);
+      for (const [subject, provider] of [
+        [bothSubject, "oidc"],
+        [bothGoogleSubject, "google"],
+      ]) {
+        const attached = await attach(both.id, subject, provider);
+        assert.equal(attached.statusCode, 200, attached.body);
+      }
+      const viaOidc = await assertSignIn(bothSubject, both.id);
+      const viaGoogle = await googleSignIn(
+        app,
+        origin,
+        google,
+        { subject: bothGoogleSubject },
+        address(),
+      );
+      assert.equal(viaGoogle.callback.headers.location, "/console/", viaGoogle.callback.body);
+      for (const [provider, signIn] of [
+        ["oidc", viaOidc],
+        ["google", viaGoogle],
+      ]) {
+        const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
+        const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
+          injectLocalhost(app, "POST", `/api/auth/providers/${name}/result`, {
+            remoteAddress: address(),
+            headers: { origin, cookie, ...headers },
+            body: payload,
+          });
+        // All providers are configured and the session/attempt are valid. Only
+        // the callback's provider may exchange this receipt, without consuming
+        // it on a refusal and denying the correct route its subsequent exchange.
+        for (const other of ["google", "oidc"].filter((name) => name !== provider)) {
+          const refused = await confirm(other);
+          assert.equal(refused.statusCode, 401, `${provider} receipt at ${other}: ${refused.body}`);
+          assert.equal(refused.headers["set-cookie"], undefined, "refusal preserves the receipt");
         }
-        const viaOidc = await assertSignIn(bothSubject, both.id);
-        const viaGoogle = await googleSignIn(
-          app,
-          origin,
-          google,
-          { subject: bothGoogleSubject },
-          address(),
+        assert.equal(
+          (await confirm(provider, { origin: "https://other.example.test" })).statusCode,
+          403,
         );
-        assert.equal(viaGoogle.callback.headers.location, "/console/", viaGoogle.callback.body);
-        const viaGithub = await githubSignIn(app, origin, bothGithubSubject, address());
-        assert.equal(viaGithub.callback.headers.location, "/console/", viaGithub.callback.body);
-        for (const [provider, signIn] of [
-          ["oidc", viaOidc],
-          ["google", viaGoogle],
-          ["github", viaGithub],
-        ]) {
-          const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-          const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
-            app.inject({
-              method: "POST",
-              url: `/api/auth/providers/${name}/result`,
-              remoteAddress: address(),
-              headers: { origin, cookie, ...headers },
-              payload,
-            });
-          // All providers are configured and the session/attempt are valid. Only
-          // the callback's provider may exchange this receipt, without consuming
-          // it on a refusal and denying the correct route its subsequent exchange.
-          for (const other of ["github", "google", "oidc"].filter((name) => name !== provider)) {
-            const refused = await confirm(other);
-            assert.equal(
-              refused.statusCode,
-              401,
-              `${provider} receipt at ${other}: ${refused.body}`,
-            );
-            assert.equal(refused.headers["set-cookie"], undefined, "refusal preserves the receipt");
-          }
-          assert.equal(
-            (await confirm(provider, { origin: "https://other.example.test" })).statusCode,
-            403,
-          );
-          assert.equal(
-            (await confirm(provider, {}, { attemptId: "x".repeat(43) })).statusCode,
-            401,
-          );
+        assert.equal((await confirm(provider, {}, { attemptId: "x".repeat(43) })).statusCode, 401);
 
-          const receipt = cookie
-            .split("; ")
-            .find((part) => part.startsWith("__Host-occ_login_receipt="))
-            .slice("__Host-occ_login_receipt=".length);
-          const [encoded] = receipt.split(".");
-          const fields = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-          const receiptCookie = (value) =>
-            cookie.replace(
-              `__Host-occ_login_receipt=${receipt}`,
-              `__Host-occ_login_receipt=${value}`,
-            );
-          // Correctly authenticated legacy or mismatched fields must still fail.
-          // These deliberately malformed inputs isolate validation from MAC failure.
-          const signed = (value) => {
-            const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
-            const signature = createHmac("sha256", authSecret)
-              .update(`occ-login-receipt\0${payload}`)
-              .digest("base64url");
-            return `${payload}.${signature}`;
-          };
-          for (const invalid of [
-            { s: fields.s, a: fields.a, e: fields.e },
-            { ...fields, v: 1 },
-            { ...fields, p: "" },
-            { ...fields, p: null },
-            { ...fields, p: `${provider}:${"0".repeat(64)}` },
-            { ...fields, e: Date.now() - 1 },
-          ]) {
-            assert.equal(
-              (await confirm(provider, { cookie: receiptCookie(signed(invalid)) })).statusCode,
-              401,
-            );
-          }
-          const tampered = `${encoded}.${"x".repeat(43)}`;
+        const receipt = cookie
+          .split("; ")
+          .find((part) => part.startsWith("__Host-occ_login_receipt="))
+          .slice("__Host-occ_login_receipt=".length);
+        const [encoded] = receipt.split(".");
+        const fields = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+        const receiptCookie = (value) =>
+          cookie.replace(
+            `__Host-occ_login_receipt=${receipt}`,
+            `__Host-occ_login_receipt=${value}`,
+          );
+        // Correctly authenticated legacy or mismatched fields must still fail.
+        // These deliberately malformed inputs isolate validation from MAC failure.
+        const signed = (value) => {
+          const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
+          const signature = createHmac("sha256", authSecret)
+            .update(`occ-login-receipt\0${payload}`)
+            .digest("base64url");
+          return `${payload}.${signature}`;
+        };
+        for (const invalid of [
+          { s: fields.s, a: fields.a, e: fields.e },
+          { ...fields, v: 1 },
+          { ...fields, p: "" },
+          { ...fields, p: null },
+          { ...fields, p: `${provider}:${"0".repeat(64)}` },
+          { ...fields, e: Date.now() - 1 },
+        ]) {
           assert.equal(
-            (await confirm(provider, { cookie: receiptCookie(tampered) })).statusCode,
+            (await confirm(provider, { cookie: receiptCookie(signed(invalid)) })).statusCode,
             401,
           );
-          // A valid receipt cannot use a different live cookie session either.
-          assert.equal(
-            (
-              await confirm(provider, {
-                cookie: `${adminHeaders.cookie}; __Host-occ_login_receipt=${receipt}`,
-              })
-            ).statusCode,
-            401,
-          );
-          const exchanged = await confirm(provider);
-          assert.equal(exchanged.statusCode, 200, exchanged.body);
-          assert.equal(
-            exchanged.json().data.sessionKey,
-            (await currentSession(app, cookie)).sessionKey,
-          );
-          assert.equal((await confirm(provider)).statusCode, 401, "a receipt exchanges only once");
         }
-        const methods = (
-          await pool.query(
-            `SELECT provider_id FROM occ.account
-             WHERE user_id = $1 AND identity_only ORDER BY provider_id`,
-            [both.id],
-          )
-        ).rows.map(({ provider_id: providerId }) => providerId.split(":")[0]);
-        assert.deepEqual(methods, ["github", "google", "oidc"]);
-        // An OIDC subject never signs in through Google, nor the reverse.
-        const crossed = await googleSignIn(
-          app,
-          origin,
-          google,
-          { subject: bothSubject },
-          address(),
+        const tampered = `${encoded}.${"x".repeat(43)}`;
+        assert.equal(
+          (await confirm(provider, { cookie: receiptCookie(tampered) })).statusCode,
+          401,
         );
-        assert.equal(crossed.callback.headers.location, "/console/?authError=google");
-        await assertRefused({ subject: bothGoogleSubject }, "Google subject at OIDC");
-      },
-    );
+        // A valid receipt cannot use a different live cookie session either.
+        assert.equal(
+          (
+            await confirm(provider, {
+              cookie: `${adminHeaders.cookie}; __Host-occ_login_receipt=${receipt}`,
+            })
+          ).statusCode,
+          401,
+        );
+        const exchanged = await confirm(provider);
+        assert.equal(exchanged.statusCode, 200, exchanged.body);
+        assert.equal(
+          exchanged.json().data.sessionKey,
+          (await currentSession(app, cookie)).sessionKey,
+        );
+        assert.equal((await confirm(provider)).statusCode, 401, "a receipt exchanges only once");
+      }
+      const methods = (
+        await pool.query(
+          `SELECT provider_id FROM occ.account
+             WHERE user_id = $1 AND identity_only ORDER BY provider_id`,
+          [both.id],
+        )
+      ).rows.map(({ provider_id: providerId }) => providerId.split(":")[0]);
+      assert.deepEqual(methods, ["google", "oidc"]);
+      // An OIDC subject never signs in through Google, nor the reverse.
+      const crossed = await googleSignIn(app, origin, google, { subject: bothSubject }, address());
+      assert.equal(crossed.callback.headers.location, "/console/?authError=google");
+      await assertRefused({ subject: bothGoogleSubject }, "Google subject at OIDC");
+    });
   },
 );

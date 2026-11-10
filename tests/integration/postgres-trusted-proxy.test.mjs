@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
-import {
-  clientAddressConfiguration,
-  createPostgresControllerAuth,
-} from "../../apps/controller/src/auth/index.ts";
+import { clientAddressConfiguration } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -32,7 +31,7 @@ test(
       email,
       password,
       authSecret: secret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
       installationName: "Trusted proxy proof",
     });
     const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email=$1', [email]))
@@ -48,13 +47,15 @@ test(
       installationId: installation.id,
       secret,
       baseURL: origin,
+      agentDomain: "agents.example.test",
       pool,
       state,
       iamDriver,
       clientAddress,
-      github: {
+      google: {
         clientId: "proxy-test-client",
         clientSecret: "proxy-test-secret",
+        allowedDomains: [],
         recoveryUserId,
       },
     });
@@ -72,12 +73,10 @@ test(
     const ingress = "10.0.0.9";
     const outsider = "192.0.2.7";
     const signIn = (peer, headers, account) =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: peer,
         headers: { origin, ...headers },
-        payload: account,
+        body: account,
       });
     const guess = (peer, headers, index) =>
       signIn(peer, headers, {
@@ -121,8 +120,7 @@ test(
         "x-forwarded-proto": "https",
       };
       const read = (peer, headers) =>
-        app.inject({
-          url: `/api/auth/accounts/${recoveryUserId}`,
+        injectLocalhost(app, "GET", `/api/auth/accounts/${recoveryUserId}`, {
           remoteAddress: peer,
           headers: { ...session, ...headers },
         });
@@ -134,6 +132,6 @@ test(
       assert.equal((await read(outsider, { forwarded: "for=1.2.3.4" })).statusCode, 403);
     });
 
-    // postgres-password-sign-in-limit.test.mjs proves the same keying with GitHub off.
+    // postgres-password-sign-in-limit.test.mjs proves the same keying with Google off.
   },
 );

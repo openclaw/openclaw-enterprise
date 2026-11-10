@@ -3,7 +3,7 @@
 The production Helm chart enables metrics on each OpenClaw Control Plane (OCC)
 API and worker by default; direct process and development defaults remain off.
 Each enabled process serves `GET /metrics` on a private listener. Use the
-[development walkthrough](../testing/metrics.md) for Prometheus and Grafana,
+[development walkthrough](../testing/local.md#metrics-and-observability-tests) for Prometheus and Grafana,
 or [production scraping](../guides/observability/metrics.md) for Kubernetes.
 
 ## Configuration and access
@@ -18,6 +18,10 @@ Supplying host or port while disabled fails startup. An invalid configuration or
 failed bind fails startup. Listener shutdown follows process shutdown. Metrics
 are independent of log level and the logging Collector's port 8888.
 
+When `repositoryCredentials.enabled` is `true`, the production chart also rejects
+`metrics.port=8443`: the repository service reserves that port in the worker Pod.
+The default metrics port 9464 remains available.
+
 The listener serves no sessions or resource operations and does not invoke IAM.
 Network isolation protects the aggregate operational data. Exposition uses
 Prometheus text, `Cache-Control: no-store`, and the client content type. Other
@@ -26,7 +30,7 @@ to 16, with five-second socket/request handling limits. No public ingress.
 
 ## Application families
 
-All families have `service="api|worker"`. No tenant, Agent, request, revision,
+All families have `service="api|worker"`. No tenant, Agent, request, Agent revision,
 actor, credential, Driver-instance, payload, raw URL, or user-defined labels.
 
 | Family                                        | Type      | Additional labels                 | Meaning                                                                                  |
@@ -47,12 +51,12 @@ routes stay templates. Methods are `GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER
 status classes are `1xx|2xx|3xx|4xx|5xx|other`. Status classes cannot distinguish
 401/403 from other 4xx failures. These are not model-turn or WebSocket durations.
 
-`provider` is `github|google|oidc`; all three start at zero. A callback counts
+`provider` is `google|oidc`; both start at zero. A callback counts
 when it is malformed or its state and browser cookie match no pending, unexpired
 attempt (unknown, replayed or expired). Its sender is unauthenticated and can mint
 both values, so these callbacks write no audit event; this counter is their only
 aggregate record. Callbacks that match an attempt are audited, not counted. See
-[external sign-in](authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+[external sign-in](authentication/external-sign-in.md#external-sign-in-profile).
 
 Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete|agent_credential_withdrawal`. Outcomes are
 `success|pending|retry|permanent|claim_lost|error`. Pending convergence, retries,
@@ -70,16 +74,16 @@ HTTP histogram boundaries in seconds: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
 Each worker scrape collects all gauges in one read-only PostgreSQL statement
 against the singleton Installation. Every lifecycle category exists even at zero;
 each Agent counts once. The projection uses desired runtime state, the latest
-admitted revision, and deployment/stop/delete work:
+saved version, and deployment/stop/delete work:
 
-| State       | Meaning                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `draft`     | No revision, stop, or deletion request has been admitted.                                                                              |
-| `deploying` | Running is desired and the latest deployment is pending or not selected. Includes redeployment while an older revision remains active. |
-| `running`   | The selected latest deployment has completed. This does not prove continuous runtime health.                                           |
-| `stopping`  | Deletion is pending, or stopped is desired with an active pointer or unfinished deployment/stop work.                                  |
-| `stopped`   | Stop has converged; revision history and Agent records remain.                                                                         |
-| `failed`    | The latest operation for the desired state failed permanently. Includes retained Agents whose deletion cleanup failed.                 |
+| State       | Meaning                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `draft`     | No version, stop, or deletion request has been admitted.                                                                                |
+| `deploying` | Running is desired and the latest deployment is pending or not selected. Includes redeployment while an older version remains selected. |
+| `running`   | The selected latest deployment has completed. This does not prove continuous runtime health.                                            |
+| `stopping`  | Deletion is pending, or stopped is desired with an active pointer or unfinished deployment/stop work.                                   |
+| `stopped`   | Stop has converged; version history and Agent records remain.                                                                           |
+| `failed`    | The latest operation for the desired state failed permanently. Includes retained Agents whose deletion cleanup failed.                  |
 
 Successful deletion removes the Agent from inventory.
 
@@ -94,7 +98,7 @@ one observation after successful queue finalization, including final activation
 and predecessor retirement for deployments. Retry and convergence delays count;
 maintenance, superseded operations, and permanent failures do not. Repeated stops
 that find the Agent already stopped still count as completed stop requests.
-Both bounded operation label sets start at zero so the first completion can
+Both operation label values, `deploy` and `stop`, start at zero so the first completion can
 contribute to rates. Buckets in seconds are `0.1, 0.5, 1, 2, 5, 10, 15, 20, 30,
 45, 60, 90, 120, 180, 240, 300, 450, 600, 900, 1800` plus `+Inf`, count, and
 sum, resolving deployments from one second to the 900-second convergence
@@ -121,8 +125,8 @@ The pinned `@prometheus-io/client@0.16.1` supplies defaults. OCC retains only:
   `occ_nodejs_external_memory_bytes`.
 - `occ_nodejs_eventloop_lag_seconds` and
   `occ_nodejs_eventloop_lag_{min,max,mean,stddev,p50,p90,p99}_seconds`.
-- `occ_nodejs_version_info` with bounded `version`, `major`, `minor`, `patch`
-  metadata; `occ_nodejs_gc_duration_seconds` with
+- `occ_nodejs_version_info` with version metadata in the fixed `version`, `major`, `minor`, `patch`
+  labels; `occ_nodejs_gc_duration_seconds` with
   `kind="major|minor|incremental|weakcb"` and boundaries
   `0.001, 0.01, 0.1, 1, 2, 5` seconds plus `+Inf`, count, and sum.
 
@@ -148,4 +152,4 @@ Memory can be summed for fleet use or maximized for the largest process.
 Inspect event-loop percentiles per process; do not average them.
 
 See [production queries and discovery](../guides/observability/metrics.md).
-The [metrics testing page](../testing/metrics.md) owns fixtures and proof limits.
+The [metrics testing page](../testing/local.md#metrics-and-observability-tests) owns fixtures and proof limits.

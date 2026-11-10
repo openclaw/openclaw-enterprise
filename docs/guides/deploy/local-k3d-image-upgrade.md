@@ -2,13 +2,11 @@
 
 Upgrade an existing Helm-installed OpenClaw Control Plane (OCC) and Kubernetes
 Compute fleet in the same k3d cluster. This procedure retains PostgreSQL,
-Namespaces, Agents, revision history, Secrets, and Agent workspace and gateway
+Namespaces, Agents, version history, Secrets, and Agent workspace and gateway
 PersistentVolumeClaims (PVCs). Take verified backups first: retaining a volume is
 not a backup, and migrations or runtime changes can make rollback unsafe.
-Complete the [upgrade migration checklist](upgrade-checklist.md) before using
-this procedure. Its [legacy RWX prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces)
-is an exception: explicitly discarded Agents lose their workspace and Gateway
-state and must be recreated if needed. Retention checks apply to the remaining Agents.
+Complete the [upgrade checklist](upgrade-checklist.md) before using
+this procedure.
 
 This path requires the production Helm chart, Kubernetes Compute, and a trusted
 HTTPS OCC endpoint. The [production image upgrade](production-upgrade.md) owns
@@ -41,12 +39,14 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
   [binding the Installation](production-upgrade.md#bind-the-installation-once)
   if its Secret lacks the required annotation.
 - Run the [split-layout check](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-  If it reports split-layout tenants, do not upgrade: keep the existing release.
+  If it reports split-layout tenants,
+  [adopt them](split-layout-upgrade.md)
+  first or keep the existing release.
   The script's startup preflight also refuses split-layout tenants and stops
   before it scales the API and worker to zero.
 - Meet the [upgrade permissions and concurrency requirements](production-upgrade.md#prepare-the-release).
   For runtime upgrades, review saved drafts and stop other deployments and edits:
-  new revisions use the current drafts. Schedule an interruption window and
+  new versions use the current drafts. Schedule an interruption window and
   capacity for old and new workloads to overlap.
 - For an installation with repository credentials enabled, run the upgrade from
   a native Linux operator environment that uses UID 1000 and the same architecture
@@ -59,7 +59,8 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
 - If the bundled Collector is enabled, including the [observability demo](../observability/demo.md)'s
   `occ-demo-collector-config`, [refresh the Secret named by `logging.collector.configSecretName`](../observability.md#refresh-the-collector-configuration-on-upgrade)
   from the `RELEASE_SOURCE_SHA` checkout and restart the Collector. Helm does not
-  update it, and the script stops while it differs from that checkout.
+  update it. Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
+  Use `--collector-config-reviewed` only for intentional, reviewed differences.
 
 From a secure operator shell, replace placeholders with the existing paths and
 names. The evidence parent must exist; the final directory must be new.
@@ -79,24 +80,64 @@ export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem' # omit if the system trust store i
 export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-If the retained YAML is unavailable, set `VALUES` and `INSTALLATION` to new,
-protected paths before recovering the live values and Secret below. Do not
-overwrite retained files. Compare the recovered files with the operator's
-records; do not substitute fresh example templates.
+For missing YAML, recover to unused, protected `VALUES`/`INSTALLATION` paths.
+Resolve errors before retrying. Validate Installation
+separately. Compare both files with operator records; never use example templates.
 
 ```bash
-helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$VALUES"
-export INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$VALUES")"
-export INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$VALUES")"
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json |
-  jq -er --arg key "$INSTALLATION_KEY" '.data[$key]' |
-  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$INSTALLATION"
-chmod 600 "$VALUES" "$INSTALLATION"
+(
+  set +x
+  set -o pipefail
+  umask 077
+  fail() { echo "$1" >&2; exit 1; }
+  mapping() {
+    [ -s "$1" ] && yq ea --header-preprocess=false -e '[.] | select(length == 1) | .[0] | tag == "!!map"' "$1" &>/dev/null
+  }
+  setting() {
+    yq -o=json "$1"' | select(tag == "!!str" or tag == "!!null")' "$values_stage" 2>/dev/null
+  }
+  [ ! -e "$VALUES" ] && [ ! -L "$VALUES" ] &&
+    [ ! -e "$INSTALLATION" ] && [ ! -L "$INSTALLATION" ] ||
+    fail "Choose unused output paths."
+  values_stage=$(mktemp "${VALUES}.XXXXXX") || fail "Values staging failed."
+  installation_stage=''
+  trap 'rm -f -- "$values_stage"; [ -z "$installation_stage" ] || rm -f -- "$installation_stage"' EXIT
+  installation_stage=$(mktemp "${INSTALLATION}.XXXXXX") || fail "Installation staging failed."
+
+  helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
+    --namespace "$NAMESPACE" get values "$RELEASE" --output yaml > "$values_stage" 2>/dev/null ||
+    fail "Helm read failed; check release, context, permissions."
+  mapping "$values_stage" || fail "Helm YAML: require one mapping."
+  INSTALLATION_SECRET=$(setting '.installation.secretName' |
+    jq -er 'if . == null then "occ-installation-startup" else . end |
+      select(length <= 253 and
+      test("\\A[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\\z"))' 2>/dev/null) &&
+    INSTALLATION_KEY=$(setting '.installation.key' |
+      jq -er 'if . == null then "installation.yaml" else . end |
+        select(. != "." and (startswith("..") | not)) |
+        select(length > 0 and length <= 253 and
+        test("\\A[-._a-zA-Z0-9]+\\z"))' 2>/dev/null) &&
+    test -n "$INSTALLATION_SECRET" && test -n "$INSTALLATION_KEY" ||
+    fail "Invalid Secret name/key; correct Helm values."
+
+  secret_json=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get secret "$INSTALLATION_SECRET" -o json 2>/dev/null) ||
+    fail "Secret read failed; check name, namespace, permissions."
+  installation_data=$(printf '%s' "$secret_json" |
+    jq -er --arg key "$INSTALLATION_KEY" '.data[$key] | select(type == "string" and length > 0)' 2>/dev/null) &&
+    [ -n "$installation_data" ] || fail "Missing/invalid Secret data; check configured key."
+  printf '%s' "$installation_data" |
+    python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read(), validate=True))' > "$installation_stage" 2>/dev/null ||
+    fail "Decode failed; correct Secret base64 data."
+  mapping "$installation_stage" || fail "Installation YAML: require one mapping."
+
+  ln -- "$values_stage" "$VALUES" || fail "Values publication failed."
+  ln -- "$installation_stage" "$INSTALLATION" ||
+    { rm -f -- "$VALUES"; fail "Installation publication failed."; }
+)
 ```
 
-Record the Installation ID, Agent inventory, PVC names and volume identities:
+Record the Installation ID, Agents, PVC UIDs and bound volumes:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
@@ -104,12 +145,14 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 occ --output json installation get > /secure/occ/installation-before.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-before.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-before.txt
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
-For a runtime upgrade, also save `occ --output json installation deployment-inventory`
-before and after the change; that operation requires the runtime upgrade permissions.
+For every upgrade, save `occ --output json installation deployment-inventory`
+before and after the change using the [required inventory permissions](production-upgrade.md#prepare-the-release).
 Keep inventories private. Check data and backups with the database and storage
 owners; object names alone do not prove retention.
 
@@ -166,8 +209,8 @@ images (`publish: true`), not a no-push preparation or a partially failed run.
 Download its `container-publication-<run-id>-<attempt>` receipt and compare
 both entries' `sourceSha`, `destination`, and `digest` with the run input,
 job summary, and successful exact-source CI. If the receipt has expired, stop until you can recover verifiable publication
-evidence. See [container publication](../../../.github/containers.md#prepare-and-publish)
-for the evidence and [partial publication recovery](../../../.github/containers.md#recover-a-partial-publication).
+evidence. See [container publication](../../release/containers.md#prepare-and-publish)
+for the evidence and [partial publication recovery](../../release/containers.md#recover-a-partial-publication).
 Use one verified source SHA and each full `destination@digest`; do not use
 `latest`, a source tag, or a digest copied from an older example.
 
@@ -239,12 +282,12 @@ registry index digests can differ.
 
 ## Run the upgrade
 
-Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart and upgrade
-script, and a compatible installed `occ` CLI. From that checkout confirm
-`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. If that source does not
-contain the upgrade script, stop; this procedure cannot be run from it. Do not
-overwrite a working checkout. Install `helm`, `kubectl`, `jq`, `yq` v4, and
-Python 3. Use a fresh
+Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart, upgrade
+script, and a compatible installed `occ` CLI. Confirm
+`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
+overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
+and Python 3. Follow `engines.node` in this checkout's `package.json` even without
+repository credentials. Use a fresh
 `UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
 interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that
@@ -286,7 +329,7 @@ before rolling out OCC. Runtime-only also restarts OCC on its existing controlle
 image to load the updated Installation. The script deploys all recorded running
 Agents concurrently; stopped and deleting Agents are left alone. See the
 [production contract](production-upgrade.md#upgrade-agent-runtimes) for
-revision, readiness, and Doctor checks.
+version, readiness, and Doctor checks.
 
 ## Verify and recover
 
@@ -295,8 +338,9 @@ Installation records, and, for runtime upgrades, `deployments.jsonl` and
 `status/`. Confirm the selected controller digest in both API and worker
 Deployment templates and their successful rollouts. For a runtime change,
 confirm both image slots in the live Installation Secret, each running Agent's
-new active revision, and its ready gateway/Agent Pods on the selected digest.
-For controller-only, confirm existing revisions and gateways remain ready.
+new selected version, and its ready gateway/Agent Pods on the selected digest.
+For controller-only, confirm existing versions and gateways are ready again;
+the new worker can restart their Pods once.
 Inspect the live images, rollouts, initialization Job, and OCC access:
 
 ```bash
@@ -304,16 +348,27 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" get jobs
+selected_controller=$(cat "$UPGRADE_EVIDENCE/selected-controller") || exit 1
 for component in api worker; do
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component"
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" \
-    -o "jsonpath={.spec.template.spec.containers[?(@.name=='$component')].image}{'\n'}"
+    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component" || exit 1
+  actual=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" -o json |
+    jq -er --arg component "$component" --arg repository "$REPOSITORY_ENABLED" '
+      .spec.template.spec |
+      (.containers[]?, (.initContainers[]? |
+        select($component == "worker" and $repository == "true" and .restartPolicy == "Always"))) |
+      select(.name == $component) | .image') ||
+    { echo "$component: missing or invalid controller image readback" >&2; exit 1; }
+  printf '%s: %s\n' "$component" "$actual"
+  [ "$actual" = "$selected_controller" ] ||
+    { echo "$component: controller image differs from upgrade evidence" >&2; exit 1; }
 done
 occ --output json installation get > /secure/occ/installation-after.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-after.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-after.txt
 ```
 
 Helm must be deployed, initialization successful, both rollouts complete, and
@@ -322,9 +377,11 @@ for runtime-only). To inspect the live runtime selection after a runtime change,
 recover the Installation Secret with the commands above into a separate private
 file and check `drivers.compute.configuration.images.gateway` and `.agent` with
 `yq`; both must equal `RUNTIME_IMAGE`. Compare the before and after Installation ID, Namespace and
-Agent inventory, PVC names and bound volumes; verify representative PostgreSQL records, Secrets,
-workspace and gateway data, and a fresh model response. Pod image IDs may show
-a platform-specific digest rather than the published multi-platform index.
+Agent inventory, and each PVC's UID and bound volume name. A different UID for
+the same namespace and claim name identifies a replacement claim. Verify
+representative PostgreSQL records, Secrets, workspace and gateway data, and a
+fresh model response. Pod image IDs may show a platform-specific digest rather
+than the published multi-platform index.
 Use [workload verification](production-agents.md#verify-production-workloads)
 and the [upgrade verification](production-upgrade.md#verify-the-release) for
 application checks. An empty fleet cannot prove a runtime starts.
@@ -333,8 +390,13 @@ If Helm or migration fails, inspect the initialization Job and rollouts, retain
 the evidence and backups, and prefer a forward fix. Helm rollback does not undo
 database migrations. If OCC succeeds but a runtime deployment fails, the fleet
 can be mixed: runtime rollout is **not transactional**. Inspect each dispatch,
-deployment status, and revision before retrying; an uncertain request may have
-already created a revision. Check compatibility before selecting an older image
+deployment status, and version before retrying; an uncertain request may have
+already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
-Do not delete the cluster, database volume, Namespaces, Agents, revisions,
+Do not delete the cluster, database volume, Namespaces, Agents, versions,
 Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
+
+## Rehearse a compatible controller return
+
+Use the [populated controller return rehearsal](../../testing/populated-controller-return.md)
+to check a compatible release pair with a disposable installation and database.

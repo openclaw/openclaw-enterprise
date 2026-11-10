@@ -1,3 +1,7 @@
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
+import { closeResources } from "./close-resources.ts";
+import { installEgressAuthority } from "./egress-authority.ts";
+import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type {
   AuditEvent,
@@ -19,7 +23,6 @@ import {
 import {
   betterAuthIssuer,
   createPostgresControllerAuth,
-  type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
   type PreparedAuthAccount,
@@ -27,6 +30,7 @@ import {
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
 import { createFastifyApp } from "../index.ts";
+import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -43,6 +47,7 @@ import {
   type OccLogger,
 } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
+import type { CompositionDependencies } from "./production.ts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "../gateway/native-admin.ts";
 import {
@@ -52,13 +57,13 @@ import {
 } from "./workspace-files.ts";
 
 export interface PostgresDevelopmentConfig {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("../metrics/index.ts").OccMetrics;
   readonly mode: "development";
   readonly host: "127.0.0.1" | "::1" | "0.0.0.0";
   readonly databaseUrl: string;
   readonly authSecret: string;
   readonly authBaseURL: string;
-  readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
@@ -94,6 +99,7 @@ export async function composePostgresDevelopment(
   config: PostgresDevelopmentConfig,
   options: PostgresDevelopmentRuntimeOptions = {},
   serviceAccountDriverFactory?: ServiceAccountDriverFactory,
+  dependencies: CompositionDependencies = {},
 ) {
   const drivers = "installation" in options ? options : undefined;
   const auditEventFactory = "auditEventFactory" in options ? options.auditEventFactory : undefined;
@@ -105,22 +111,21 @@ export async function composePostgresDevelopment(
     );
   }
 
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
-  }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
   }
 
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
+  const close = (database: { close(): Promise<void> }) =>
+    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
   try {
-    const state = new PostgresPlatformState(pool);
+    const state = new PostgresPlatformState(pool, {
+      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+    });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before development startup.");
@@ -142,6 +147,8 @@ export async function composePostgresDevelopment(
     }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
+    const protectedDriver = drivers?.protectedDriver;
+    const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
       ("installation" in options
@@ -154,36 +161,6 @@ export async function composePostgresDevelopment(
       drivers === undefined
         ? new NativeIAMDriver(state, { id: driverId, implementation: "native" })
         : drivers.createIAMDriver(state);
-    const auth = await createPostgresControllerAuth({
-      mode: config.mode,
-      installationId,
-      secret: config.authSecret,
-      baseURL: config.authBaseURL,
-      pool,
-      state,
-      iamDriver,
-      ...(config.github === undefined ? {} : { github: config.github }),
-      ...(config.google === undefined ? {} : { google: config.google }),
-      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
-      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
-      ...(config.logger === undefined
-        ? {}
-        : {
-            onWarning: (warning) => emitOccLogEvent(config.logger!, warning),
-            onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event),
-          }),
-      ...(config.metrics === undefined
-        ? {}
-        : {
-            onUnmatchedCallback: (provider) =>
-              config.metrics!.observeUnmatchedSignInCallback(provider),
-          }),
-      secureCookies: config.nativeAdmin?.enabled === true,
-      ...(config.nativeAdmin?.enabled === true
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
-    });
-
     const bootstrapPrincipal = iamState.identities.find(
       (identity) => identity.kind === "principal",
     );
@@ -196,22 +173,6 @@ export async function composePostgresDevelopment(
     });
     if (!principal || principal.kind !== "principal" || principal.id !== bootstrapPrincipal.id) {
       throw new Error("The configured development Principal is absent from persisted IAM policy.");
-    }
-    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
-      emitOccLogEvent(config.logger, {
-        event: "authentication.activation-warning",
-        reason: "Accounts without a Principal or exactly one password were not enrolled.",
-        ...skippedUserLogFields(auth.activationSkipped),
-      });
-    }
-    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
-      // Recovery-only password sign-in: these accounts cannot sign in until an
-      // administrator attaches a GitHub, Google or OIDC identity.
-      emitOccLogEvent(config.logger, {
-        event: "authentication.password-sign-in-warning",
-        code: "EXTERNAL_IDENTITY_MISSING",
-        ...skippedUserLogFields(auth.withoutExternalIdentity),
-      });
     }
     const humanAuthentication = new PostgresHumanAuthentication(
       state,
@@ -231,26 +192,35 @@ export async function composePostgresDevelopment(
     };
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
-    const controller = new OpenClawController(persistedInstallation, {
-      state,
-      recordOperations: true,
-      defaultPresets: drivers?.defaultPresets ?? [],
-      bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
-      ...(loggingLevel === undefined ? {} : { loggingLevel }),
-      ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
-      ...(drivers?.installation.runtime === undefined
-        ? {}
-        : { nativeWorkerSupport: drivers.installation.runtime.nativeWorkerSupport }),
-    });
+    const channelDriver = new SlackChannelDriver();
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(drivers?.installation),
+        namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
+        state,
+        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
+        recordOperations: true,
+        defaultPresets: drivers?.defaultPresets ?? [],
+        bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
+        ...(loggingLevel === undefined ? {} : { loggingLevel }),
+        ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
+      },
+      drivers?.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
-    const channelDriver = new SlackChannelDriver();
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (sandboxDriver !== undefined) {
+    if (protectedDriver !== undefined) {
+      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
+    } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
     }
@@ -258,25 +228,82 @@ export async function composePostgresDevelopment(
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
+    if (credentialRefreshDriver !== undefined) {
+      controller.registerDriver(credentialRefreshDriver);
+      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
+    }
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
+      drivers.tokenService?.registerIssuer(
+        new OAuthAccountTokens(
+          state,
+          drivers.secretDriver,
+          controller.resolveConnectionClient.bind(controller),
+        ),
+      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    if (drivers?.pluginDriver !== undefined) {
-      controller.registerDriver(drivers.pluginDriver);
-      controller.selectDriver("plugin", drivers.pluginDriver.id);
-    }
-    if (drivers?.repoDriver !== undefined) {
-      const driver = drivers.repoDriver;
+    controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
+    if (drivers?.repositoryPolicy !== undefined) {
+      const driver = drivers.repositoryPolicy;
       controller.registerDriver(driver);
       controller.selectDriver("repo", driver.id);
     }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
+    const auth = await createPostgresControllerAuth({
+      mode: config.mode,
+      installationId,
+      secret: config.authSecret,
+      baseURL: config.authBaseURL,
+      pool,
+      state,
+      iamDriver,
+      defaultUserGroupIds: controller.defaultUserGroupIds,
+      ...(config.google === undefined ? {} : { google: config.google }),
+      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
+      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
+      ...(config.logger === undefined
+        ? {}
+        : {
+            onWarning: (warning) => emitOccLogEvent(config.logger!, warning),
+            onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event),
+          }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
+
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
+    });
+
+    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
+      emitOccLogEvent(config.logger, {
+        event: "authentication.activation-warning",
+        reason: "Accounts without a Principal or exactly one password were not enrolled.",
+        ...skippedUserLogFields(auth.activationSkipped),
+      });
+    }
+    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
+      // Recovery-only password sign-in: these accounts cannot sign in until an
+      // administrator attaches a Google or OIDC identity.
+      emitOccLogEvent(config.logger, {
+        event: "authentication.password-sign-in-warning",
+        code: "EXTERNAL_IDENTITY_MISSING",
+        ...skippedUserLogFields(auth.withoutExternalIdentity),
+      });
+    }
     if (config.logger !== undefined) {
       for (const shadowed of drivers?.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
@@ -304,6 +331,7 @@ export async function composePostgresDevelopment(
 
     const observabilityUrl = config.observabilityUrl ?? drivers?.installation.observability?.url;
     const app = createFastifyApp({
+      ...(config.consoleTheme === undefined ? {} : { consoleTheme: config.consoleTheme }),
       ...(config.metrics === undefined ? {} : { metrics: config.metrics }),
       controller,
       iamDriver,
@@ -332,6 +360,7 @@ export async function composePostgresDevelopment(
       development: {
         enabled: true,
         installationId,
+        browserOrigin: config.authBaseURL,
         ...(config.trustedDevelopmentBridgeCidr === undefined
           ? {}
           : {
@@ -343,20 +372,21 @@ export async function composePostgresDevelopment(
               ],
             }),
       },
-      maxBodyBytes: 64 * 1024,
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    drivers?.repositoryTransport?.connectRestartObservation?.(pool);
+    await drivers?.preparedGitHub?.connect(pool);
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => {
-      await state.close();
-    });
+    app.addHook("onClose", () => close(state));
     return app;
   } catch (error) {
-    await pool.end();
+    // Preserve the startup failure after attempting each cleanup.
+    await close({ close: () => pool.end() }).catch(() => undefined);
     throw error;
   }
 }

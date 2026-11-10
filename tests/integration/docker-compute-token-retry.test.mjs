@@ -1,18 +1,19 @@
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_DOCKER_TOKEN_RETRY === "1";
@@ -98,20 +99,10 @@ async function networkIds(namespaceId) {
   ]);
 }
 
-async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const value = await operation();
-      if (value !== undefined && value !== false) {
-        return value;
-      }
-    } catch {
-      // Containers may disappear between listing and inspection during startup.
-    }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+// Containers may disappear between listing and inspection during startup, so a failed
+// read means "not yet".
+function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500, retryErrors: true });
 }
 
 function containerEnv(container, name) {
@@ -184,6 +175,13 @@ async function buildFixtureImage(tag) {
     const wsDirectory = dirname(kubernetesRequire.resolve("ws/package.json"));
     await cp(fixtureDirectory, context, { recursive: true });
     await cp(wsDirectory, join(context, "ws"), { recursive: true });
+    await writeFile(
+      join(context, "provenance.json"),
+      JSON.stringify({
+        source: "https://github.com/openclaw/openclaw",
+        commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      }),
+    );
     await docker(
       [
         "build",
@@ -282,6 +280,7 @@ function revision(driver, owner) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration("codex", "gpt-4.1"),
       "info",
@@ -431,3 +430,94 @@ test(
     }
   },
 );
+
+test(
+  "Docker Namespace deletion cleans up owned containers after its network is removed",
+  { ...requiresDockerTokenRetry, timeout: 60_000 },
+  async (context) => {
+    const image = process.env.NODE_BASE_IMAGE ?? "node:24-bookworm";
+    const driver = new DockerComputeDriver({ images: { gateway: image, agent: image } });
+    const owner = namespace("namespace-cleanup");
+    const sibling = namespace("namespace-cleanup-sibling");
+    const containers = [];
+    const networks = [];
+    const volume = `oce-namespace-cleanup-${randomUUID()}`;
+    let volumeCreated = false;
+    context.after(async () => {
+      // Cleanup must work even on the pre-fix Driver, which leaks the container.
+      for (const id of containers) {
+        await docker(["rm", "-f", id]);
+      }
+      for (const id of networks) {
+        const remaining = await dockerLines(["network", "ls", "-q", "--filter", `id=${id}`]);
+        if (remaining.length > 0) {
+          await docker(["network", "rm", id]);
+        }
+      }
+      if (volumeCreated) {
+        await docker(["volume", "rm", "-f", volume]);
+      }
+    });
+    await driver.preflight();
+    for (const candidate of [owner, sibling]) {
+      assert.equal((await driver.ensureNamespace(candidate)).namespaceReady, true);
+      const [network] = await networkIds(candidate.id);
+      assert.ok(network);
+      networks.push(network);
+      const { stdout } = await docker([
+        "create",
+        "--network",
+        network,
+        ...labelFiltersForCreate(candidate.id),
+        "--label",
+        `${LABEL_AGENT}=agt_${randomUUID()}`,
+        "--label",
+        `${LABEL_REVISION}=rev_${randomUUID()}`,
+        "--label",
+        `${LABEL_ROLE}=gateway`,
+        image,
+        "node",
+        "-e",
+        "setInterval(() => {}, 1000)",
+      ]);
+      containers.push(stdout.trim());
+    }
+    await docker([
+      "volume",
+      "create",
+      ...labelFiltersForCreate(owner.id),
+      "--label",
+      `${LABEL_ROLE}=workspace`,
+      volume,
+    ]);
+    volumeCreated = true;
+    // External network cleanup can leave an owned container disconnected. The
+    // worker must not settle deletion solely because the network is absent.
+    await docker(["network", "disconnect", "--force", networks[0], containers[0]]);
+    await docker(["network", "rm", networks[0]]);
+    assert.deepEqual(await driver.deleteNamespace(owner), {
+      namespaceId: owner.id,
+      namespaceDeleted: true,
+    });
+    assert.equal((await inspectContainers([[LABEL_NAMESPACE, owner.id]])).length, 0);
+    assert.equal(
+      (await dockerLines(["volume", "ls", "-q", "--filter", `name=${volume}`])).length,
+      0,
+    );
+    assert.equal((await inspectContainers([[LABEL_NAMESPACE, sibling.id]])).length, 1);
+    assert.equal((await networkIds(sibling.id)).length, 1);
+    // Normal deletion and repeated deletion retain the same cleanup contract.
+    assert.equal((await driver.deleteNamespace(sibling)).namespaceDeleted, true);
+    assert.equal((await inspectContainers([[LABEL_NAMESPACE, sibling.id]])).length, 0);
+    assert.equal((await networkIds(sibling.id)).length, 0);
+    assert.equal((await driver.deleteNamespace(owner)).namespaceDeleted, true);
+  },
+);
+
+function labelFiltersForCreate(namespaceId) {
+  return [
+    [LABEL_MANAGED, "true"],
+    [LABEL_DRIVER, "docker"],
+    [LABEL_NAMESPACE, namespaceId],
+  ].flatMap(([name, value]) => ["--label", `${name}=${value}`]);
+}

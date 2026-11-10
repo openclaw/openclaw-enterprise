@@ -28,6 +28,13 @@ You need:
 - Your Helm values (`helm get values`), which list the extra egress the chart
   grants the control plane.
 
+Production Helm checks label maps used in peer `matchLabels` before submission.
+Use Kubernetes label keys and values, and quote boolean-looking or numeric
+strings in values files. Empty strings remain valid. Existing null map/value
+semantics are preserved; the chart does not normalize accepted selectors or
+validate inactive maps. Raw sandbox peers keep native `matchExpressions` and
+`ipBlock` handling. These render checks do not prove traffic enforcement.
+
 The probe runs with `node`, which the OCC controller image, the OpenClaw gateway
 and the dedicated Codex Harness provide. Harness Pods that a SandboxDriver
 such as OpenShell provisions are outside this check: their provider fences
@@ -151,15 +158,15 @@ access, as the OCE Pods do; OCE renders no pull Secret. Don't add `imagePullSecr
 
 ## Run the checks
 
-| Source        | Command                                                                   | Expected                                                                                                                                                                                                                                                                                                                                                               |
-| ------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API           | `probe openclaw-system deploy/openclaw-enterprise-api api $TARGETS`       | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`. The API also reaches the destinations your values grant, including sign-in on TCP/443: an empty GitHub, Google or OIDC `egressCidrs` allows any address except link-local `169.254.0.0/16`, which holds cloud metadata. Without private routing, a gateway client can reach the gateway port. |
-| Worker        | `probe openclaw-system deploy/openclaw-enterprise-worker worker $TARGETS` | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`; no sign-in, model discovery or channel directory egress. With repository credentials, `repositoryCredentials.upstreamCidrs` is open on TCP/443.                                                                                                                                               |
-| Agent egress  | `probe $TENANT_NAMESPACE $HARNESS_POD $HARNESS_CONTAINER $TARGETS`        | DNS resolves and `1.1.1.1:443` is `OPEN`. Port 80, `PRIVATE_HTTPS`, the Kubernetes API, the database and the other Agent ports are denied. A dedicated Harness also reaches `ENVOY`; an embedded gateway does not.                                                                                                                                                     |
-| Gateway       | `probe $GATEWAY_RUNTIME_NAMESPACE $GATEWAY_POD gateway $TARGETS`          | DNS and its own Harness, `$HARNESS_IP:18790` and `:18791`, are `OPEN`. Everything else is denied: no internet, Kubernetes API or database. With channels enabled, the channel proxy is also open.                                                                                                                                                                      |
-| Other Agent   | Add the other Agent's ports to `TARGETS` and repeat both rows             | Denied, for Agents in the same OCC Namespace and across Namespaces. Repeat from the other Agent's Pods to check the reverse direction.                                                                                                                                                                                                                                 |
-| Profile label | See [Check profile labels](#check-profile-labels)                         | Everything denied.                                                                                                                                                                                                                                                                                                                                                     |
-| Plugin status | See [Check the status port](#check-the-status-port)                       | Reachable from the API server's proxy sources and the Agent's own gateway.                                                                                                                                                                                                                                                                                             |
+| Source        | Command                                                                   | Expected                                                                                                                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API           | `probe openclaw-system deploy/openclaw-enterprise-api api $TARGETS`       | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`. The API also reaches the destinations your values grant, including sign-in on TCP/443: an empty Google or OIDC `egressCidrs` allows any address except link-local `169.254.0.0/16`, which holds cloud metadata. Without private routing, a gateway client can reach the gateway port. |
+| Worker        | `probe openclaw-system deploy/openclaw-enterprise-worker worker $TARGETS` | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`; no sign-in, model discovery or channel directory egress. With repository credentials, `repositoryCredentials.upstreamCidrs` is open on TCP/443.                                                                                                                                       |
+| Agent egress  | `probe $TENANT_NAMESPACE $HARNESS_POD $HARNESS_CONTAINER $TARGETS`        | DNS resolves and `1.1.1.1:443` is `OPEN`. Port 80, `PRIVATE_HTTPS`, the Kubernetes API, the database and the other Agent ports are denied. A dedicated Harness also reaches `ENVOY`; an embedded gateway does not.                                                                                                                                             |
+| Gateway       | `probe $GATEWAY_RUNTIME_NAMESPACE $GATEWAY_POD gateway $TARGETS`          | DNS and its own Harness, `$HARNESS_IP:18790` and `:18791`, are `OPEN`. Everything else is denied: no internet, Kubernetes API or database. With channels enabled, the channel proxy is also open.                                                                                                                                                              |
+| Other Agent   | Add the other Agent's ports to `TARGETS` and repeat both rows             | Denied, for Agents in the same OCC Namespace and across Namespaces. Repeat from the other Agent's Pods to check the reverse direction.                                                                                                                                                                                                                         |
+| Profile label | See [Check profile labels](#check-profile-labels)                         | Everything denied.                                                                                                                                                                                                                                                                                                                                             |
+| Plugin status | See [Check the status port](#check-the-status-port)                       | Reachable from the API server's proxy sources and the Agent's own gateway.                                                                                                                                                                                                                                                                                     |
 
 For another Agent's ports, use `HARNESS_IP:18790` of a dedicated Agent, or
 `:8080` and `:18791` of an embedded Agent's gateway.
@@ -249,5 +256,13 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
 - An Agent cannot reach its model: check its
   [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   and the model egress exclusions.
+- The API or worker logs `KUBERNETES_MODEL_EGRESS_BLOCKED`: the Codex model
+  endpoint uses a port other than 443, an IPv6 address, or an excluded IPv4
+  range. Startup continues; Agents reach it only if your own policy admits it.
 - The status proxy fails for every Pod: set `network.pluginStatusProxySourceCidrs`
-  to the API server's source addresses on each node.
+  to the API server's source addresses on each node. It never reaches an
+  OpenShell Harness Pod, whose provider fence admits only its Gateway; Compute
+  does not try, and OpenShell reports that Harness's status.
+- The worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`: a status source wider
+  than one address, such as the Pod CIDR, lets every Pod in it reach each
+  Agent's status port. List only the API server's `/32` or `/128` sources.

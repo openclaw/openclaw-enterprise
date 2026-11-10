@@ -10,8 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
-	"io"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -40,7 +38,6 @@ type composeDevelopmentRouting struct {
 	podCIDR           string
 	trustedProxyCIDRs []string
 	reference         string
-	apiURL            string
 	postgresCIDR      string
 	nodeCIDR          string
 	nodeContainer     string
@@ -55,32 +52,6 @@ var developmentRoutingControllers = []struct {
 }{
 	{"cert-manager", "https://github.com/cert-manager/cert-manager/releases/download/v1.18.4/cert-manager.yaml", "aff085b4f0126f67372e3a02cb18feb70eed37dbd4de01973a159e6c13482f83"},
 	{"envoy-gateway", "https://github.com/envoyproxy/gateway/releases/download/v1.6.7/install.yaml", "9a250c698d78b92c670d9d2bd6bd54615f1dee41ddd520ece9704edf63088df8"},
-}
-
-func downloadDevelopmentRoutingManifest(ctx context.Context, url, expected string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 90 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("download routing controller manifest: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download routing controller manifest: HTTP %d", response.StatusCode)
-	}
-	const limit = 32 * 1024 * 1024
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil || len(data) > limit {
-		return nil, fmt.Errorf("routing controller manifest could not be read within its size limit")
-	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != expected {
-		return nil, fmt.Errorf("routing controller manifest checksum does not match the pinned version")
-	}
-	return data, nil
 }
 
 // Preserve k3s's Gateway API CRDs instead of replacing their storage versions.
@@ -193,72 +164,69 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 }
 
 func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state *developmentState, timeout time.Duration) (string, error) {
+	// These pinned controllers have no dependency on each other. Wait for both
+	// CRDs and rollouts before creating the GatewayClass or routing resources.
+	steps := make([]func(context.Context, *runner) error, 0, len(developmentRoutingControllers))
 	for _, controller := range developmentRoutingControllers {
-		data, err := downloadDevelopmentRoutingManifest(ctx, controller.url, controller.sha256)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", controller.name, err)
-		}
-		if controller.name == "envoy-gateway" {
-			if err := r.waitDevelopmentGatewayAPICRDs(ctx, timeout); err != nil {
-				return "", err
-			}
-			data, err = removeDevelopmentGatewayAPICRDs(data)
+		steps = append(steps, func(ctx context.Context, r *runner) error {
+			data, err := downloadDevelopmentManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentManifestRetry)
 			if err != nil {
-				return "", err
+				return routingError("manifest-download", controller.name, fmt.Errorf("%s: %w", controller.name, err))
 			}
-		}
-		path := filepath.Join(state.directory, controller.name+"-controller.yaml")
-		if err := exclusiveWrite(path, data, 0600); err != nil {
-			return "", err
-		}
-		args := []string{"apply", "-f", path}
-		if controller.name == "envoy-gateway" {
-			args = []string{"apply", "--server-side", "-f", path}
-		}
-		if err := r.run(ctx, "kubectl", args...); err != nil {
-			return "", err
-		}
-		crds := []string{"certificates.cert-manager.io", "issuers.cert-manager.io", "clusterissuers.cert-manager.io"}
-		namespace := "cert-manager"
-		deployments := []string{"cert-manager", "cert-manager-cainjector", "cert-manager-webhook"}
-		if controller.name == "envoy-gateway" {
-			crds = []string{"securitypolicies.gateway.envoyproxy.io"}
-			namespace = "envoy-gateway-system"
-			deployments = []string{"envoy-gateway"}
-		}
-		for _, crd := range crds {
-			if err := r.waitDevelopmentCRDEstablished(ctx, crd, timeout); err != nil {
-				return "", fmt.Errorf("wait for controller CRD %s to be established: %w", crd, err)
+			if controller.name == "envoy-gateway" {
+				if err := r.waitDevelopmentGatewayAPICRDs(ctx, timeout); err != nil {
+					return routingError("gateway-api-readiness", controller.name, err)
+				}
+				data, err = removeDevelopmentGatewayAPICRDs(data)
+				if err != nil {
+					return routingError("manifest-filter", controller.name, err)
+				}
 			}
-		}
-		for _, deployment := range deployments {
-			if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/"+deployment, "--timeout", timeout.String()); err != nil {
-				return "", err
+			path := filepath.Join(state.directory, controller.name+"-controller.yaml")
+			if err := exclusiveWrite(path, data, 0600); err != nil {
+				return routingError("manifest-write", controller.name, err)
 			}
-		}
+			args := []string{"apply", "-f", path}
+			if controller.name == "envoy-gateway" {
+				args = []string{"apply", "--server-side", "-f", path}
+			}
+			if err := r.run(ctx, "kubectl", args...); err != nil {
+				return routingError("manifest-apply", controller.name, err)
+			}
+			crds := []string{"certificates.cert-manager.io", "issuers.cert-manager.io", "clusterissuers.cert-manager.io"}
+			namespace := "cert-manager"
+			deployments := []string{"cert-manager", "cert-manager-cainjector", "cert-manager-webhook"}
+			if controller.name == "envoy-gateway" {
+				crds = []string{"securitypolicies.gateway.envoyproxy.io"}
+				namespace = "envoy-gateway-system"
+				deployments = []string{"envoy-gateway"}
+			}
+			for _, crd := range crds {
+				if err := r.waitDevelopmentCRDEstablished(ctx, crd, timeout); err != nil {
+					return routingError("controller-crd-readiness", controller.name, fmt.Errorf("wait for controller CRD %s to be established: %w", crd, err))
+				}
+			}
+			for _, deployment := range deployments {
+				if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/"+deployment, "--timeout", timeout.String()); err != nil {
+					return routingError("controller-rollout", controller.name, err)
+				}
+			}
+			return nil
+		})
+	}
+	if err := r.concurrently(ctx, steps...); err != nil {
+		return "", err
 	}
 	class := map[string]any{"apiVersion": "gateway.networking.k8s.io/v1", "kind": "GatewayClass", "metadata": map[string]any{"name": "eg", "labels": map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}}, "spec": map[string]string{"controllerName": "gateway.envoyproxy.io/gatewayclass-controller"}}
 	if err := r.writeAndApply(ctx, state, "development-gateway-class", class); err != nil {
-		return "", err
+		return "", routingError("gateway-class-apply", "envoy-gateway", err)
 	}
 	if err := r.run(ctx, "kubectl", "wait", "--for=condition=Accepted", "gatewayclass/eg", "--timeout", timeout.String()); err != nil {
-		return "", err
+		return "", routingError("gateway-class-readiness", "envoy-gateway", err)
 	}
-	nodeData, err := r.output(ctx, "kubectl", "get", "node", "k3d-"+state.Cluster+"-server-0", "-o", "json")
+	prefix, err := r.developmentNodePodCIDR(ctx, "k3d-"+state.Cluster+"-server-0", 32)
 	if err != nil {
-		return "", err
-	}
-	var node struct {
-		Spec struct {
-			PodCIDR string `json:"podCIDR"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(nodeData, &node); err != nil {
-		return "", fmt.Errorf("invalid k3d node information")
-	}
-	prefix, err := netip.ParsePrefix(node.Spec.PodCIDR)
-	if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix != prefix.Masked() {
-		return "", fmt.Errorf("k3d node must have a canonical bounded IPv4 Pod CIDR")
+		return "", routingError("node-pod-cidr", "", err)
 	}
 	return prefix.String(), nil
 }
@@ -424,12 +392,14 @@ func (r *runner) composeServiceAddress(
 }
 
 func composeDevelopmentRoutingValues(
+	state *developmentState,
 	routing *composeDevelopmentRouting,
 	remoteNodeCIDRs []string,
 ) map[string]any {
+	_, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 	return map[string]any{
 		"images": map[string]string{"controller": routing.reference},
-		"auth":   map[string]string{"baseUrl": routing.apiURL},
+		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
 		"bootstrap": map[string]any{
 			"adminEmail": "admin@development.openclaw.invalid",
 			"password":   map[string]string{"claimName": "bootstrap-password"},
@@ -438,9 +408,11 @@ func composeDevelopmentRoutingValues(
 			"namespace": developmentEnvoyNamespace,
 			"podLabels": map[string]string{"app.kubernetes.io/name": "envoy"},
 		}}},
-		"database":         map[string]any{"cidrs": []string{routing.postgresCIDR}},
-		"cluster":          map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
-		"agentNativeAdmin": map[string]any{"enabled": false},
+		"database": map[string]any{"cidrs": []string{routing.postgresCIDR}},
+		"cluster":  map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
+		"agentNativeAdmin": map[string]any{
+			"enabled": true, "domain": agentDomain,
+		},
 		"gatewayRouting": map[string]any{
 			"enabled":          true,
 			"gatewayClassName": "eg",
@@ -460,7 +432,7 @@ func (r *runner) applyComposeDevelopmentRouting(
 	remoteNodeCIDRs []string,
 	name string,
 ) error {
-	values, err := json.Marshal(composeDevelopmentRoutingValues(routing, remoteNodeCIDRs))
+	values, err := json.Marshal(composeDevelopmentRoutingValues(state, routing, remoteNodeCIDRs))
 	if err != nil {
 		return err
 	}
@@ -551,13 +523,9 @@ func (r *runner) copyComposeGatewayCA(ctx context.Context, state *developmentSta
 func (r *runner) prepareComposeDevelopmentRouting(
 	ctx context.Context,
 	state *developmentState,
-	reference, apiURL string,
+	reference, podCIDR string,
 	timeout time.Duration,
 ) (*composeDevelopmentRouting, error) {
-	podCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
-	if err != nil {
-		return nil, err
-	}
 	if err := r.ensureKubernetesNamespace(ctx, developmentGatewayNamespace); err != nil {
 		return nil, err
 	}
@@ -593,7 +561,6 @@ func (r *runner) prepareComposeDevelopmentRouting(
 		},
 		podCIDR:       podCIDR,
 		reference:     reference,
-		apiURL:        apiURL,
 		postgresCIDR:  postgresAddress + "/32",
 		nodeCIDR:      nodeAddress + "/32",
 		nodeContainer: nodeContainer,

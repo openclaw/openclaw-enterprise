@@ -4,7 +4,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const ghVersion = "2.100.0";
+const ghVersion = "2.103.2";
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
 
 export async function prepareRepositoryCredentials({
@@ -14,6 +14,7 @@ export async function prepareRepositoryCredentials({
   execFile,
   registerImage,
   markImageReady,
+  serviceOnly = false,
 }) {
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   await execFile(docker, ["version", "--format", "{{.Server.Version}}"]);
@@ -58,6 +59,10 @@ export async function prepareRepositoryCredentials({
     join(imageDefinitions, "Dockerfile"),
     join(artifactRoot, "service"),
   );
+  if (serviceOnly) {
+    // k3d imports this run-owned tag, then verifies the immutable reference on each node.
+    return service.tag;
+  }
   const client = await buildImage(
     "client",
     join(imageDefinitions, "Dockerfile.client"),
@@ -141,7 +146,7 @@ export async function prepareRepositoryCredentialsFile({ clientImage, execFile }
     }
     await chmod(binary, 0o755);
     const version = await execFile(binary, ["--version"], { timeoutMs: 10_000 });
-    assert.match(version.stdout, /^gh version 2\.100\.0\b/, `Expected gh ${ghVersion}`);
+    assert.match(version.stdout, /^gh version 2\.103\.2\b/, `Expected gh ${ghVersion}`);
     return { env: { REPOSITORY_CREDENTIALS_GH_BINARY: binary }, cleanup };
   } catch (error) {
     await cleanup();
