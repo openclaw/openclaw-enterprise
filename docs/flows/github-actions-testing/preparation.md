@@ -67,9 +67,9 @@ Model Runtime use REST lookup by repository, producer run ID and artifact ID.
 job's GitHub token to `actions/download-artifact`. Both workflows grant consumers
 `actions: read`.
 
-Docker Model Runtime requires an artifact ID when its producer succeeds.
-Producer failure or skip keeps the standalone build. Import stops three minutes
-before the lane deadline.
+Docker Model Runtime requires an artifact ID on producer success. A failed or
+skipped producer selects the standalone build. After download, local import
+cancellation starts three minutes before the lane deadline.
 
 `scripts/ci/runtime-artifact.mjs:loadRuntimeArtifact` verifies archive, source,
 run, attempt, platform and loaded image. OCI index, manifest and config digests
