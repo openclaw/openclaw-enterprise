@@ -136,7 +136,7 @@ SELinux restrictions. `Operation not permitted` alone does not identify the caus
 or justify a host-wide sysctl change. Correct the confirmed restriction, wait for
 startup and cleanup to finish, then retry. Keep the sandbox check enabled.
 
-The local launcher prepares the profile only inside its owned k3d nodes.
+When needed, the local launcher installs the profile only on its own k3d node.
 Production and shared-cluster profile installation belongs to node provisioning;
 use the [Codex sandbox profile](../deploy/codex-sandbox.md) procedure there.
 
