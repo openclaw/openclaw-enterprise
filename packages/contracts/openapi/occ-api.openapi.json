@@ -752,6 +752,63 @@
                     "type": "string"
                   },
                   "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                  "privatePeer": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "description": "One private IPv4 address for the approved HTTPS hostname.",
+                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "private_ipv4", "type": "string" }
+                        },
+                        "required": ["kind", "address"],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "description": "One private IPv4 address for the approved HTTPS hostname.",
+                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "kubernetes_service", "type": "string" },
+                          "name": {
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                            "type": "string"
+                          },
+                          "podSelector": {
+                            "additionalProperties": { "type": "string" },
+                            "minProperties": 1,
+                            "type": "object"
+                          },
+                          "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                          "uid": { "minLength": 1, "type": "string" }
+                        },
+                        "required": [
+                          "kind",
+                          "namespace",
+                          "name",
+                          "uid",
+                          "address",
+                          "targetPort",
+                          "podSelector"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
                   "protocol": {
                     "anyOf": [
                       { "const": "openai-responses", "type": "string" },
@@ -1017,6 +1074,63 @@
                     "type": "array"
                   },
                   "mode": { "const": "static_bearer", "type": "string" },
+                  "privatePeer": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "description": "One private IPv4 address for the approved HTTPS hostname.",
+                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "private_ipv4", "type": "string" }
+                        },
+                        "required": ["kind", "address"],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "address": {
+                            "description": "One private IPv4 address for the approved HTTPS hostname.",
+                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "kubernetes_service", "type": "string" },
+                          "name": {
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                            "type": "string"
+                          },
+                          "podSelector": {
+                            "additionalProperties": { "type": "string" },
+                            "minProperties": 1,
+                            "type": "object"
+                          },
+                          "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                          "uid": { "minLength": 1, "type": "string" }
+                        },
+                        "required": [
+                          "kind",
+                          "namespace",
+                          "name",
+                          "uid",
+                          "address",
+                          "targetPort",
+                          "podSelector"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
                   "protocol": {
                     "anyOf": [
                       { "const": "openai-responses", "type": "string" },
@@ -11370,6 +11484,43 @@
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
+                      "privatePeer": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "address": {
+                                "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                "type": "string"
+                              },
+                              "kind": { "const": "private_ipv4", "type": "string" }
+                            },
+                            "required": ["kind", "address"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": { "const": "kubernetes_service", "type": "string" },
+                              "name": {
+                                "maxLength": 63,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "maxLength": 63,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["kind", "namespace", "name"],
+                            "type": "object"
+                          }
+                        ]
+                      },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -12193,6 +12344,43 @@
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "mode": { "const": "static_bearer", "type": "string" },
+                      "privatePeer": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "address": {
+                                "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                "type": "string"
+                              },
+                              "kind": { "const": "private_ipv4", "type": "string" }
+                            },
+                            "required": ["kind", "address"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": { "const": "kubernetes_service", "type": "string" },
+                              "name": {
+                                "maxLength": 63,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "maxLength": 63,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["kind", "namespace", "name"],
+                            "type": "object"
+                          }
+                        ]
+                      },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -23051,6 +23239,67 @@
                               "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                               "type": "object"
                             },
+                            "privateInferencePeer": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "address": {
+                                      "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                      "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "private_ipv4", "type": "string" }
+                                  },
+                                  "required": ["kind", "address"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "address": {
+                                      "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                      "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "kubernetes_service", "type": "string" },
+                                    "name": {
+                                      "maxLength": 63,
+                                      "minLength": 1,
+                                      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                      "type": "string"
+                                    },
+                                    "namespace": {
+                                      "maxLength": 63,
+                                      "minLength": 1,
+                                      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                      "type": "string"
+                                    },
+                                    "podSelector": {
+                                      "additionalProperties": { "type": "string" },
+                                      "minProperties": 1,
+                                      "type": "object"
+                                    },
+                                    "targetPort": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "uid": { "minLength": 1, "type": "string" }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "namespace",
+                                    "name",
+                                    "uid",
+                                    "address",
+                                    "targetPort",
+                                    "podSelector"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            },
                             "version": { "minLength": 1, "type": "string" }
                           },
                           "required": ["id", "version", "mode", "overrides", "configuration"],
@@ -29943,6 +30192,67 @@
                                 "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                 "type": "object"
                               },
+                              "privateInferencePeer": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "address": {
+                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "private_ipv4", "type": "string" }
+                                    },
+                                    "required": ["kind", "address"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "address": {
+                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "kubernetes_service", "type": "string" },
+                                      "name": {
+                                        "maxLength": 63,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "namespace": {
+                                        "maxLength": 63,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "podSelector": {
+                                        "additionalProperties": { "type": "string" },
+                                        "minProperties": 1,
+                                        "type": "object"
+                                      },
+                                      "targetPort": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "uid": { "minLength": 1, "type": "string" }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "namespace",
+                                      "name",
+                                      "uid",
+                                      "address",
+                                      "targetPort",
+                                      "podSelector"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
                               "version": { "minLength": 1, "type": "string" }
                             },
                             "required": ["id", "version", "mode"],
@@ -30308,6 +30618,67 @@
                                   "additionalProperties": {},
                                   "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                   "type": "object"
+                                },
+                                "privateInferencePeer": {
+                                  "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "address": {
+                                          "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                          "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "private_ipv4", "type": "string" }
+                                      },
+                                      "required": ["kind", "address"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "address": {
+                                          "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                          "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "kubernetes_service", "type": "string" },
+                                        "name": {
+                                          "maxLength": 63,
+                                          "minLength": 1,
+                                          "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                          "type": "string"
+                                        },
+                                        "namespace": {
+                                          "maxLength": 63,
+                                          "minLength": 1,
+                                          "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                          "type": "string"
+                                        },
+                                        "podSelector": {
+                                          "additionalProperties": { "type": "string" },
+                                          "minProperties": 1,
+                                          "type": "object"
+                                        },
+                                        "targetPort": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "uid": { "minLength": 1, "type": "string" }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "namespace",
+                                        "name",
+                                        "uid",
+                                        "address",
+                                        "targetPort",
+                                        "podSelector"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  ]
                                 },
                                 "version": { "minLength": 1, "type": "string" }
                               },
@@ -36805,6 +37176,67 @@
                                 "type": "string"
                               },
                               "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                              "privatePeer": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "address": {
+                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "private_ipv4", "type": "string" }
+                                    },
+                                    "required": ["kind", "address"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "address": {
+                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
+                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "kubernetes_service", "type": "string" },
+                                      "name": {
+                                        "maxLength": 63,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "namespace": {
+                                        "maxLength": 63,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "podSelector": {
+                                        "additionalProperties": { "type": "string" },
+                                        "minProperties": 1,
+                                        "type": "object"
+                                      },
+                                      "targetPort": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "uid": { "minLength": 1, "type": "string" }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "namespace",
+                                      "name",
+                                      "uid",
+                                      "address",
+                                      "targetPort",
+                                      "podSelector"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
                               "protocol": {
                                 "anyOf": [
                                   { "const": "openai-responses", "type": "string" },

@@ -61,6 +61,7 @@ export interface ConnectionTemplateValues {
 
 export interface StaticKeyTemplateValues {
   readonly mode: "static_bearer";
+  readonly privatePeer?: import("./model-providers.ts").InferencePrivatePeer;
   readonly baseUrl: string;
   readonly protocol: InferenceProtocol;
   readonly destinations: readonly (ConnectionEndpoint & { readonly method: "POST" })[];
