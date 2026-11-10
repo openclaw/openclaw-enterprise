@@ -762,6 +762,25 @@ function normalizedPluginApprovers(approvers?: PluginApprovers): PluginApprovers
   return normalizePluginApprovers(approvers, invalidPluginState);
 }
 
+function validHarnessSourceOwner(
+  value: Extract<HarnessAuthSnapshot, { method: "credential_source" }>,
+): boolean {
+  if (isNonEmptyString(value.credentialGatewayId) && !Object.hasOwn(value, "credentialProxyId")) {
+    return (
+      isNonEmptyString(value.sourceType) &&
+      (value.loginMode === "api_key" ||
+        value.loginMode === "codex_pat" ||
+        value.loginMode === "chatgptAuthTokens")
+    );
+  }
+  return (
+    isNonEmptyString(value.credentialProxyId) &&
+    !Object.hasOwn(value, "credentialGatewayId") &&
+    value.sourceType === "openai" &&
+    value.loginMode === "api_key"
+  );
+}
+
 export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId: string): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -771,15 +790,13 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
-      return (
-        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
-        isNonEmptyString(value.credentialGatewayId) &&
-        isNonEmptyString(value.sourceType) &&
-        (value.loginMode === "api_key" ||
-          value.loginMode === "codex_pat" ||
-          value.loginMode === "chatgptAuthTokens")
-      );
+      if (
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) === null ||
+        Object.keys(value).length !== 5
+      ) {
+        return false;
+      }
+      return validHarnessSourceOwner(value);
     }
     const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
     if (isSecretHarnessAuth(binding)) {

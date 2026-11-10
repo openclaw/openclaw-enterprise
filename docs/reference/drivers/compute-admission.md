@@ -20,6 +20,19 @@ value, in at most 256 characters. Agent provisioning also calls
 `validateAgentProvisioning`; see
 [initial runtime credential provisioning](compute.md#optional-initial-runtime-credential-provisioning).
 
+After you update `@openclaw-enterprise/contracts`, checking
+`method: "credential_source"` in `validateHarnessAuth` no longer narrows
+`credentialGatewayId` to `string`. With `strictNullChecks`, callbacks that
+use it as a required string fail to compile.
+
+If your Driver supports only Gateway-owned sources, throw an error with a fixed
+message when `auth.credentialGatewayId === undefined`. Check the owner before
+calling the provider or starting workload setup. A type assertion or a fallback
+ID skips the owner check. The Proxy form supports only static
+`openai/api_key`. The public Agent binding still takes only the method and source
+ID. Apply migration `0081_proxy_harness_snapshot` and deploy readers that handle
+both owner shapes before enabling writers that save Proxy-owned snapshots.
+
 ## Agent save
 
 Agent create and update read the named Configuration and check the Agent as it

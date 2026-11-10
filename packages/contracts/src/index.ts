@@ -709,8 +709,17 @@ export type HarnessAuthSnapshot =
       readonly method: "credential_source";
       readonly sourceId: string;
       readonly credentialGatewayId: string;
+      readonly credentialProxyId?: never;
       readonly sourceType: string;
       readonly loginMode: CredentialSourceLoginMode;
+    }
+  | {
+      readonly method: "credential_source";
+      readonly sourceId: string;
+      readonly credentialProxyId: string;
+      readonly credentialGatewayId?: never;
+      readonly sourceType: "openai";
+      readonly loginMode: "api_key";
     };
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */

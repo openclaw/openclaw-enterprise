@@ -138,7 +138,10 @@ export interface ProxyPlan {
   /** v4/v7 are exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
   readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
   /** v4–v7: the Harness model attachment independently admitted by the Credential Gateway. */
-  readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
+  readonly harnessCredentialSource?: Extract<
+    HarnessAuthSnapshot,
+    { method: "credential_source"; credentialGatewayId: string }
+  >;
   readonly routes: readonly EgressRoute[];
 }
 

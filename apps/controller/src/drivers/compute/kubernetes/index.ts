@@ -1,4 +1,12 @@
-import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import {
+  harnessCredentialOwnerMatches,
+  resolveProxyHarnessBinding,
+  harnessCredentialTypeMatches,
+} from "../../harness-credential-reader.ts";
+import type {
+  CredentialPolicyWithdrawalOptions,
+  EgressRoute,
+} from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -655,6 +663,27 @@ class GatewaySettingFailure extends ConfigurationFailure {
 }
 
 class KubernetesRequestTimeout extends Error {}
+
+function requireRetainedHarnessDestinations(routes: readonly EgressRoute[], baseUrl: string): void {
+  const endpoint = new URL(baseUrl);
+  // Check only this Harness's retained inference destinations. Provider callbacks and
+  // per-send grant/policy authorization belong to admission and credential exchange.
+  for (const route of routes) {
+    const destination = URL.parse(route.path, endpoint.origin);
+    if (
+      route.origin !== endpoint.origin ||
+      destination === null ||
+      destination.origin !== endpoint.origin ||
+      destination.pathname !== route.path ||
+      (destination.pathname !== endpoint.pathname &&
+        !destination.pathname.startsWith(endpoint.pathname + "/"))
+    ) {
+      throw new ConfigurationFailure(
+        "The admitted Harness route destination does not match its saved model endpoint.",
+      );
+    }
+  }
+}
 
 type KubernetesPreparationStage =
   | "prepare_revision"
@@ -4655,15 +4684,47 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // runs the same rule (requireChannelSecretBindings), and deployment repeats it for a row
     // stored before that.
     const agentSave = secretBindings === null;
+    const topology = this.validateHarnessConfiguration(stage, harness, configuration, agentSave);
+    if (topology === undefined || !auth) {
+      throw new ConfigurationFailure(
+        "Harness authentication is incompatible with the selected topology.",
+      );
+    }
+    // The method against the Agent's topology is the caller's to fix, so it is named; whether
+    // the Installation supplies what a method needs (below) is not.
+    this.validateHarnessCredentialOwner(topology, auth, credentialSourceType);
+    const model = this.validateHarnessModel(
+      stage,
+      topology,
+      harness,
+      auth,
+      configuration,
+      agentSave,
+    );
+    this.validateHarnessTopologyConfiguration(
+      stage,
+      topology,
+      harness,
+      model.configuration,
+      model.authentication,
+      secretBindings,
+    );
+  }
+
+  private validateHarnessConfiguration(
+    stage: "admission" | "preparation",
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+    agentSave: boolean,
+  ): KubernetesHarnessTopology | undefined {
     if (!agentSave) {
       requireNativeWorkerSandbox(harness, this.sandboxDriver);
     }
-    const openclaw = harness.id === "openclaw";
-    const embedded = harness.mode === "embedded" && openclaw;
-    const dedicated = harness.mode === "dedicated";
-    const codex = dedicated && harness.id === "codex";
-    const native = dedicated && openclaw;
-    if (native && asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined) {
+    const topology = this.harnessTopology(harness);
+    if (
+      topology === "Dedicated OpenClaw" &&
+      asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined
+    ) {
       throw callerSettingError(
         "cloudWorkers.requiredProfile",
         `must be unset on Dedicated OpenClaw: Kubernetes Compute owns the ${NATIVE_WORKER_PROFILE} profile`,
@@ -4674,24 +4735,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
     this.validateConfigurationContent(configuration, undefined, stage === "admission");
-    if (native || codex) {
-      requireDedicatedMainAgentDefault(
-        configuration,
-        native ? "Dedicated OpenClaw" : "Dedicated Codex",
-      );
+    if (topology === "Dedicated OpenClaw" || topology === "Dedicated Codex") {
+      requireDedicatedMainAgentDefault(configuration, topology);
     }
-    if ((!embedded && !codex && !native) || !auth) {
-      throw new ConfigurationFailure(
-        "Harness authentication is incompatible with the selected topology.",
-      );
+    return topology;
+  }
+
+  private harnessTopology(
+    harness: RevisionHarnessDescriptor,
+  ): KubernetesHarnessTopology | undefined {
+    if (harness.mode === "embedded" && harness.id === "openclaw") {
+      return "embedded OpenClaw";
     }
-    // The method against the Agent's topology is the caller's to fix, so it is named; whether
-    // the Installation supplies what a method needs (below) is not.
-    const topology: KubernetesHarnessTopology = embedded
-      ? "embedded OpenClaw"
-      : native
-        ? "Dedicated OpenClaw"
-        : "Dedicated Codex";
+    if (harness.mode === "dedicated") {
+      if (harness.id === "openclaw") {
+        return "Dedicated OpenClaw";
+      }
+      if (harness.id === "codex") {
+        return "Dedicated Codex";
+      }
+    }
+    return undefined;
+  }
+
+  private validateHarnessCredentialOwner(
+    topology: KubernetesHarnessTopology,
+    auth: HarnessAuthSnapshot,
+    credentialSourceType: CredentialSourceType | undefined,
+  ): void {
+    const codex = topology === "Dedicated Codex";
     const protectedWithoutCredential =
       codex && auth.method === "runtime" && this.proxyDriver !== undefined;
     if (!protectedWithoutCredential) {
@@ -4709,54 +4781,58 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (auth.method === "credential_source") {
+      const supportedLoginModes = codex
+        ? ["api_key", "codex_pat", "chatgptAuthTokens"]
+        : ["api_key"];
       // The paired Sandbox injects the credential, so this path never projects a model Secret.
       if (
         this.sandboxDriver === undefined ||
-        this.credentialGatewayDriver === undefined ||
-        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
-        credentialSourceType?.type !== auth.sourceType ||
-        credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
-        credentialSourceType.harnessAuth.modelProvider !== "openai" ||
-        (auth.loginMode !== "api_key" &&
-          !(codex && (auth.loginMode === "codex_pat" || auth.loginMode === "chatgptAuthTokens")))
+        !harnessCredentialOwnerMatches(auth, this.credentialGatewayDriver, this.proxyDriver) ||
+        !harnessCredentialTypeMatches(auth, credentialSourceType) ||
+        !supportedLoginModes.includes(auth.loginMode)
       ) {
         throw new ConfigurationFailure(
           "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
         );
       }
     }
+  }
+
+  private validateHarnessModel(
+    stage: "admission" | "preparation",
+    topology: KubernetesHarnessTopology,
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    inputConfiguration: OpenClawConfigurationDocument,
+    agentSave: boolean,
+  ): {
+    configuration: OpenClawConfigurationDocument;
+    authentication: ReturnType<typeof harnessModelAuthentication>;
+  } {
+    const embedded = topology === "embedded OpenClaw";
+    const native = topology === "Dedicated OpenClaw";
+    const codex = topology === "Dedicated Codex";
     // Configuration save keeps a draft that selects no model yet, and no topology here runs
     // without one, so admission names the setting instead of refusing the binding (finding 3022).
     if (stage === "admission") {
-      harnessPrimaryModel(configuration, () =>
+      harnessPrimaryModel(inputConfiguration, () =>
         callerSettingError(
           "agents.defaults.model",
           "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
         ),
       );
     }
-    const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
-    const authentication = harnessModelAuthentication(configuration, embedded);
-    if (
-      stage === "preparation" &&
-      this.usesModelProvider(harness, auth, configuration) !==
-        (savedModelProvider(harness.configuration) !== undefined)
-    ) {
-      throw new ConfigurationFailure(
-        "Saved Harness settings do not match its authentication and model selection.",
-      );
-    }
-    if (!agentSave) {
-      configuration = modelProviderConfiguration(
-        configuration,
-        harness,
-        savedModelProvider(
-          stage === "admission" && harness.configuration === undefined
-            ? this.resolveHarnessConfiguration(harness, auth, configuration)
-            : harness.configuration,
-        ),
-      );
-    }
+    const models = nativeOpenAiModelSelections(inputConfiguration)?.map(
+      ({ reference }) => reference,
+    );
+    const authentication = harnessModelAuthentication(inputConfiguration, embedded);
+    const configuration = this.harnessModelConfiguration(
+      stage,
+      harness,
+      auth,
+      inputConfiguration,
+      agentSave,
+    );
 
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
@@ -4769,18 +4845,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
       codex,
       callerSettingError,
     );
-    const prefixes = embedded
-      ? [`${authentication.providerId}/`]
-      : native
-        ? ["openai/"]
-        : ["openai/", "codex/"];
+    const prefixesByTopology = {
+      "embedded OpenClaw": [`${authentication.providerId}/`],
+      "Dedicated OpenClaw": ["openai/"],
+      "Dedicated Codex": ["openai/", "codex/"],
+    } satisfies Record<KubernetesHarnessTopology, readonly string[]>;
     if (
       (embedded && authentication.providerId === "codex") ||
       models === undefined ||
       models.length === 0 ||
       models.some(
         (model) =>
-          !prefixes.some((prefix) => model.startsWith(prefix) && model.length > prefix.length),
+          !prefixesByTopology[topology].some(
+            (prefix) => model.startsWith(prefix) && model.length > prefix.length,
+          ),
       )
     ) {
       throw new ConfigurationFailure(
@@ -4788,7 +4866,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     // On Dedicated OpenClaw this renders the native catalog too (nativeRuntimeConfiguration).
-    if (openclaw) {
+    if (topology !== "Dedicated Codex") {
       harnessProbeConfiguration(
         configuration,
         embedded,
@@ -4802,6 +4880,44 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (native || codex) {
       managedGatewayConfiguration(configuration, configuration, codex, callerSettingError);
     }
+    return { configuration, authentication };
+  }
+
+  private harnessModelConfiguration(
+    stage: "admission" | "preparation",
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    agentSave: boolean,
+  ): OpenClawConfigurationDocument {
+    if (
+      stage === "preparation" &&
+      this.usesModelProvider(harness, auth, configuration) !==
+        (savedModelProvider(harness.configuration) !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "Saved Harness settings do not match its authentication and model selection.",
+      );
+    }
+    if (agentSave) {
+      return configuration;
+    }
+    const settings =
+      stage === "admission" && harness.configuration === undefined
+        ? this.resolveHarnessConfiguration(harness, auth, configuration)
+        : harness.configuration;
+    return modelProviderConfiguration(configuration, harness, savedModelProvider(settings));
+  }
+
+  private validateHarnessTopologyConfiguration(
+    stage: "admission" | "preparation",
+    topology: KubernetesHarnessTopology,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+    authentication: ReturnType<typeof harnessModelAuthentication>,
+    secretBindings: SecretBindings | null | undefined,
+  ): void {
+    const agentSave = secretBindings === null;
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
     if (this.hostsWorkspaceNode(harness)) {
@@ -4811,7 +4927,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // check before the save rules) name that plugin first. Configuration save and deploy run
     // validateConfiguration first, so there the codex message comes first. Preparation skips it,
     // as validateConfigurationContent does (finding 2694).
-    if (codex && stage === "admission") {
+    if (topology === "Dedicated Codex" && stage === "admission") {
       requireCodexPlugin(configuration, callerSettingError);
     }
     // Not a Configuration save rule: it depends on the Agent's execution mode and on the
@@ -4829,10 +4945,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // refuses a reference OpenClaw cannot read at all; the Agent's mode decides the APP_SERVER_
     // case, so Agent save refuses it too; the rest waits for the bindings.
     this.requirePluginSecretInputs(configuration, topology, secretBindings);
-    requireProviderApiKeys(configuration, openclaw, authentication);
+    requireProviderApiKeys(configuration, topology !== "Dedicated Codex", authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
     }
+  }
+
+  private async validatePreparedHarnessAuth(
+    revision: Readonly<AgentRevision>,
+    configuration: OpenClawConfigurationDocument,
+    context: ComputeRevisionContext | undefined,
+  ): Promise<void> {
+    this.validateAdmittedHarnessAuth(
+      "preparation",
+      revision.harness,
+      revision.harnessAuth,
+      configuration,
+      revision.secretBindings,
+      await this.admittedCredentialSourceType(revision, context),
+    );
   }
 
   // Installation storage is checked again during preparation. A provider-owned Harness
@@ -6567,14 +6698,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     await this.prepareRevisionStage("harness_auth", async () =>
-      this.validateAdmittedHarnessAuth(
-        "preparation",
-        revision.harness,
-        revision.harnessAuth,
-        admittedRevision.configuration,
-        revision.secretBindings,
-        await this.admittedCredentialSourceType(revision),
-      ),
+      this.validatePreparedHarnessAuth(revision, admittedRevision.configuration, context),
     );
     const channels = this.enabledChannels(admittedRevision);
     await this.prepareRevisionStage("gateway_routing", () =>
@@ -7863,14 +7987,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration(admittedRevision);
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
-    this.validateAdmittedHarnessAuth(
-      "preparation",
-      revision.harness,
-      revision.harnessAuth,
-      admittedRevision.configuration,
-      revision.secretBindings,
-      await this.admittedCredentialSourceType(revision),
-    );
+    await this.validatePreparedHarnessAuth(revision, admittedRevision.configuration, context);
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
     await this.revokeUnavailablePublicGithubRead(revision, namespace);
@@ -11439,22 +11556,58 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
-  /** Dispatch revalidates against the paired gateway's current catalog, not admission's copy. */
+  /** Dispatch revalidates against the recorded owner's current catalog. */
   private async admittedCredentialSourceType(
     revision: AgentRevision,
+    context?: ComputeRevisionContext,
   ): Promise<CredentialSourceType | undefined> {
-    if (revision.harnessAuth.method !== "credential_source") {
+    const auth = revision.harnessAuth;
+    if (auth.method !== "credential_source") {
       return undefined;
+    }
+    if (auth.credentialProxyId !== undefined) {
+      return this.admittedProxyCredentialSourceType(revision, auth, context);
     }
     const gateway = this.requireCredentialGateway();
-    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
+    if (gateway.id !== auth.credentialGatewayId) {
       return undefined;
     }
-    const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await gateway.listSourceTypes({
-      signal: this.operationSignal(),
-    });
+    const sourceType = auth.sourceType;
+    const catalog = await gateway.listSourceTypes({ signal: this.operationSignal() });
     return catalog.find((entry) => entry.type === sourceType);
+  }
+
+  private admittedProxyCredentialSourceType(
+    revision: AgentRevision,
+    auth: Extract<HarnessAuthSnapshot, { credentialProxyId: string }>,
+    context: ComputeRevisionContext | undefined,
+  ): CredentialSourceType | undefined {
+    if (!harnessCredentialOwnerMatches(auth, this.credentialGatewayDriver, this.proxyDriver)) {
+      return undefined;
+    }
+    const resolved = context?.harnessAuth;
+    if (resolved?.method !== "credential_source") {
+      return undefined;
+    }
+    const { source, ...snapshot } = resolved;
+    if (
+      !isDeepStrictEqual(snapshot, auth) ||
+      source.namespaceId !== revision.namespaceId ||
+      source.state !== "ready" ||
+      !credentialSourceMatchesSnapshot(source, auth)
+    ) {
+      return undefined;
+    }
+    const binding = resolveProxyHarnessBinding(auth, source, revision, this.proxyDriver);
+    if (binding === undefined) {
+      return undefined;
+    }
+    this.validateHarnessCredentialSources(revision.harness, [source]);
+    requireRetainedHarnessDestinations(
+      binding.inferenceRoutes,
+      modelProviderBaseUrl(savedModelProvider(revision.harness.configuration)),
+    );
+    return binding.provider.sourceType;
   }
 
   /** Admission selects the route; a changed or missing live source cannot change that route. */

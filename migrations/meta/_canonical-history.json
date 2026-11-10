@@ -641,6 +641,14 @@
       "tag": "0080_github_pull_api_custody",
       "breakpoints": true,
       "sha256": "984a7890ed02cc57e7b2f1ddbddba3cc35825b580dcc4386c83b0dec3ff83a37"
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0081_proxy_harness_snapshot",
+      "breakpoints": true,
+      "sha256": "a80a81c7c5980eeeff4d5129960ad09d9799aea3e08f7a3a4342264944206404"
     }
   ],
   "initialSchemaStates": {
@@ -673,6 +681,12 @@
     }
   },
   "logicalRestoreCatalogs": {
+    "a59c54bca9f9dc779e3c882842eca880751fa403790805c44f1b9a10eb9829e1": [
+      "c7e95ad5399f536180a10c003f71145c2c21a21c63be4b23fe5ec2ac7d632fd7",
+      "58cd87c7dfc4da34cc2a47ab3b0e33706fc40256d68609d0935606505fa3fdfb",
+      "b97c80e38bf1f61f71bc34736c28e239b03cc1cafe0c01bf6b9c1b8b8abb002d",
+      "f4a0462e767a24c7f9da5c08d377e235a0463688816dd7ce8d289021acdb7aad"
+    ],
     "6a58660c05841eff9fe32df0f4181bac98742a4c6a7957df98fc12c962922229": [
       "8bb69a037288ab2903c00369074f921f94f7e04354d89746ad10461f672e64a0",
       "74de6c44507052f2efe629e80998a82d0dcfe6bbfd27d86c786a1134a3f5b026",
@@ -760,7 +774,7 @@
     ]
   },
   "catalogs": {
-    "completed": "6a58660c05841eff9fe32df0f4181bac98742a4c6a7957df98fc12c962922229",
+    "completed": "a59c54bca9f9dc779e3c882842eca880751fa403790805c44f1b9a10eb9829e1",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -815,7 +829,8 @@
     "preRequestCredentialApprovals": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed",
     "preRequestCredentialAssertions": "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648",
     "preSharedGitHubIssuance": "4706c23fcadbeb81788201eecb0350142486da5f60749cceae0ec5f2b010712f",
-    "preGitHubPullApiCustody": "1b6f63d1f1a108a8e9900dfc20c6928e1bc1a87f9af3d161ef3915285b74f737"
+    "preGitHubPullApiCustody": "1b6f63d1f1a108a8e9900dfc20c6928e1bc1a87f9af3d161ef3915285b74f737",
+    "preProxyHarnessSnapshot": "6a58660c05841eff9fe32df0f4181bac98742a4c6a7957df98fc12c962922229"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

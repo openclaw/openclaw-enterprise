@@ -1,3 +1,8 @@
+import {
+  resolveEnvironmentProjections,
+  resolveModelHarnessAuth,
+  resolveAttachedCredentialSources,
+} from "./worker/revision-credentials.ts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -30,7 +35,6 @@ import type {
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
-  CredentialSourceSnapshot,
   AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -58,9 +62,7 @@ import type {
   CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
-  ResolvedHarnessAuth,
   RuntimeFailureEvidence,
-  SecretEnvironmentProjection,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -5672,31 +5674,6 @@ export class ControllerWorker {
     }
   }
 
-  private async resolveRevisionCredentialSource(
-    revision: Readonly<AgentRevision>,
-    snapshot: CredentialSourceSnapshot,
-  ) {
-    const { namespaceId, id: revisionId } = revision;
-    const { sourceId } = snapshot;
-    return this.state.read(async (view) => {
-      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      const withdrawal = await view.credentialSources.findCredentialWithdrawal(
-        namespaceId,
-        revisionId,
-        sourceId,
-      );
-      return {
-        source:
-          withdrawal === undefined &&
-          source?.state === "ready" &&
-          credentialSourceMatchesSnapshot(source, snapshot)
-            ? source
-            : undefined,
-        withdrawal,
-      };
-    });
-  }
-
   private async resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
   ): Promise<
@@ -5719,123 +5696,36 @@ export class ControllerWorker {
       return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
     }
 
-    const resolved = await this.state.read(async (view) => {
-      const projections: SecretEnvironmentProjection[] = [];
-      for (const [name, binding] of Object.entries(bindings.bindings)) {
-        const secret = await view.secrets.findSecret(binding.source.namespaceId, binding.source.id);
-        if (
-          secret === undefined ||
-          secret.namespaceId !== revision.namespaceId ||
-          secret.driverId !== secretDriverId ||
-          secret.backendRef.namespaceName.trim().length === 0 ||
-          secret.backendRef.name.trim().length === 0 ||
-          secret.backendRef.key.trim().length === 0 ||
-          secret.backendRef.uid.trim().length === 0
-        ) {
-          return undefined;
-        }
-        projections.push({
-          name,
-          secretId: secret.id,
-          namespaceId: secret.namespaceId,
-          agentId: revision.agentId,
-          backendRef: secret.backendRef,
-        });
-      }
-      return projections;
-    });
-
+    const resolved = await resolveEnvironmentProjections(
+      this.state,
+      revision,
+      bindings.bindings,
+      secretDriverId,
+    );
     if (resolved === undefined) {
       return { result: { outcome: "permanent", code: "SECRET_BINDING_UNAVAILABLE" } };
     }
-
-    let harnessAuth: ResolvedHarnessAuth;
-    if (isSecretHarnessAuth(revision.harnessAuth)) {
-      const auth = revision.harnessAuth;
-      if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
-        return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };
-      }
-      const secret = await this.state.read((view) =>
-        view.secrets.findSecret(auth.source.namespaceId, auth.source.id),
-      );
-      if (
-        secret === undefined ||
-        secret.namespaceId !== revision.namespaceId ||
-        secret.namespaceId !== auth.source.namespaceId ||
-        secret.id !== auth.source.id ||
-        secret.driverId !== secretDriverId ||
-        secret.backendRef.namespaceName.trim().length === 0 ||
-        secret.backendRef.name.trim().length === 0 ||
-        secret.backendRef.key.trim().length === 0 ||
-        secret.backendRef.uid.trim().length === 0
-      ) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      // Admission verifies the physical source. Workers project authoritative
-      // OCC metadata without requiring permission to read backend Secret values.
-      harnessAuth = { ...auth, backendRef: secret.backendRef };
-    } else if (revision.harnessAuth.method === "credential_source") {
-      const auth = revision.harnessAuth;
-      if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      if (source.egress !== undefined) {
-        const control = this.proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
-    } else {
-      harnessAuth = revision.harnessAuth;
+    const model = await resolveModelHarnessAuth(
+      this.state,
+      revision,
+      secretDriverId,
+      this.credentialGateway,
+      this.proxyDriver,
+    );
+    if ("result" in model) {
+      return model;
     }
-    const credentialSources: Readonly<CredentialSource>[] = [];
-    for (const snapshot of revision.credentialSources ?? []) {
-      // The Harness source is listed too; it resolves above through the Harness binding.
-      if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
-        continue;
-      }
-      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
-      if (
-        sourceOwner !==
-        (snapshot.credentialProxyId === undefined
-          ? this.credentialGateway?.id
-          : this.proxyDriver?.id)
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
-      // A withdrawn non-model source stays detached; the revision keeps running without it.
-      if (withdrawal !== undefined) {
-        continue;
-      }
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
-      }
-      credentialSources.push(source);
+    const attached = await resolveAttachedCredentialSources(
+      this.state,
+      revision,
+      this.credentialGateway,
+      this.proxyDriver,
+    );
+    if ("result" in attached) {
+      return attached;
     }
+    const { harnessAuth } = model;
+    const { credentialSources } = attached;
     const workspaceSetup = await this.state.read((view) =>
       view.workspaceSetups.find(revision.namespaceId, revision.agentId),
     );

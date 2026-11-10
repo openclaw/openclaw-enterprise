@@ -193,6 +193,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 79 && completedCount > 79) {
     return "preGitHubPullApiCustody";
   }
+  if (count === 80 && completedCount > 80) {
+    return "preProxyHarnessSnapshot";
+  }
   if (count === completedCount) {
     return "completed";
   }
