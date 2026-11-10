@@ -280,7 +280,7 @@ export function registerInstallationKeycloak() {
       const values = JSON.parse(await fixture.read("helm-values.json"));
       assert.equal(values.auth.oidc.enabled, true);
       assert.equal(values.auth.passwordSignIn, "recovery-only");
-      assert.equal(values.agentNativeAdmin.enabled, false);
+      assert.equal(values.agentNativeAdmin.enabled, true);
       // Probe the actual API after the OIDC upgrade, when the additive policy is active.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
