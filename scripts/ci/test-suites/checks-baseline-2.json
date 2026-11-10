@@ -20,7 +20,7 @@
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.mjs",
     "tests/integration/cli-release.test.mjs",
-    "tests/integration/container-resume.test.mjs",
+    "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
     "tests/integration/repository-credential-operator-recovery.test.ts",
@@ -120,7 +120,7 @@
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
-    "tests/integration/container-promote.test.mjs",
+    "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.mjs",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
@@ -308,10 +308,10 @@
       ]
     },
     {
-      "path": "tests/integration/container-resume.test.mjs"
+      "path": "tests/integration/container-resume.test.ts"
     },
     {
-      "path": "tests/integration/container-promote.test.mjs"
+      "path": "tests/integration/container-promote.test.ts"
     },
     {
       "path": "tests/conformance/ssh-compute.test.mjs"
