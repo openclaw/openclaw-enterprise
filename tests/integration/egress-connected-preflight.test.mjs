@@ -777,6 +777,7 @@ test("public egress cleanup retains independent Configuration cleanup after admi
     "agent-name-taken",
     "agent-repository-unconfigured",
     "cluster-identity-changed",
+    "cluster-receipt-write-fails",
     "role-refused",
     "role-delete-refused",
     "role-delete-response-lost",
@@ -784,6 +785,8 @@ test("public egress cleanup retains independent Configuration cleanup after admi
     "agent-conflict-unknown",
   ]) {
     await t.test(scenario, async (t) => {
+      const clusterFailure = scenario.startsWith("cluster-");
+      const receiptFailure = scenario === "cluster-receipt-write-fails";
       const f = await createConsoleAppFixture(t, {
         backends: [],
         computeDriver: createReadyComputeDriver("cleanup-proof"),
@@ -804,8 +807,7 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       const observed = [];
       const request = async (method, path, body) => {
         if (
-          (scenario === "agent-create-response-unknown" ||
-            scenario === "cluster-identity-changed") &&
+          (scenario === "agent-create-response-unknown" || clusterFailure) &&
           method === "POST" &&
           path.endsWith("/agents")
         ) {
@@ -861,18 +863,26 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       };
       const receipts = new Map();
       const clusterGuardError = new Error("cluster UID changed");
+      const receiptWriteError = new Error("cleanup receipt write failed");
+      let attemptedCleanup;
       let clusterGuardReached = false;
       const resources = publicEgressResources({
         request,
         namespacePath: prefix,
         checkCluster: async () => {
           clusterGuardReached = true;
-          if (scenario === "cluster-identity-changed") {
+          if (clusterFailure) {
             throw clusterGuardError;
           }
         },
         retireAgent: async () => assert.fail("these scenarios never admit an Agent"),
-        record: async (name, value) => receipts.set(name, value),
+        record: async (name, value) => {
+          if (name === "cleanup" && receiptFailure) {
+            attemptedCleanup = value;
+            throw receiptWriteError;
+          }
+          receipts.set(name, value);
+        },
       });
       const config = await resources.create(
         "configuration",
@@ -890,17 +900,14 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       const existingBefore = existing
         ? await f.request("GET", prefix + "/agents/" + existing.id)
         : undefined;
-      if (scenario.startsWith("agent-") || scenario === "cluster-identity-changed") {
+      if (scenario.startsWith("agent-") || clusterFailure) {
         let expectedError = {
           code: "ERR_ASSERTION",
           message: /HTTP 409; error code RESOURCE_CONFLICT/,
         };
         if (scenario === "agent-refused") {
           expectedError = { code: "ERR_ASSERTION", message: /HTTP 403; error code FORBIDDEN/ };
-        } else if (
-          scenario === "agent-create-response-unknown" ||
-          scenario === "cluster-identity-changed"
-        ) {
+        } else if (scenario === "agent-create-response-unknown" || clusterFailure) {
           expectedError = { message: "transport outcome unknown" };
         }
         await assert.rejects(
@@ -920,7 +927,7 @@ test("public egress cleanup retains independent Configuration cleanup after admi
         if (scenario === "agent-refused") {
           assert.equal(observed.at(-1).status, 403, "real IAM admission refused Agent creation");
         }
-      } else if (scenario !== "cluster-identity-changed") {
+      } else if (!clusterFailure) {
         const createRole = () =>
           resources.create("role", {
             name: scenario,
@@ -943,7 +950,7 @@ test("public egress cleanup retains independent Configuration cleanup after admi
         scenario.includes("delete-") ||
         scenario === "agent-create-response-unknown" ||
         scenario === "agent-conflict-unknown" ||
-        scenario === "cluster-identity-changed";
+        clusterFailure;
       const requestsBeforeCleanup = observed.length;
       let cleanupError;
       try {
@@ -951,9 +958,16 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       } catch (error) {
         cleanupError = error;
       }
-      if (scenario === "cluster-identity-changed") {
+      if (clusterFailure) {
         assert.equal(clusterGuardReached, true);
-        assert.equal(cleanupError, clusterGuardError);
+        if (receiptFailure) {
+          assert.ok(cleanupError instanceof AggregateError);
+          assert.equal(cleanupError.cause, clusterGuardError);
+          assert.deepEqual(cleanupError.errors, [clusterGuardError, receiptWriteError]);
+          assert.equal(receipts.has("cleanup"), false, "failed local write is not a saved receipt");
+        } else {
+          assert.equal(cleanupError, clusterGuardError);
+        }
         assert.equal(
           observed.length,
           requestsBeforeCleanup,
@@ -964,19 +978,19 @@ test("public egress cleanup retains independent Configuration cleanup after admi
       const unknown =
         scenario === "agent-create-response-unknown" ||
         scenario === "agent-conflict-unknown" ||
-        scenario === "cluster-identity-changed";
+        clusterFailure;
       assert.equal(
         remaining.status,
         unknown ? 200 : 404,
         "only unresolved Agent admission blocks Configuration deletion",
       );
-      if (unsettled && scenario !== "cluster-identity-changed") {
+      if (unsettled && !clusterFailure) {
         assert.match(cleanupError?.message ?? "", /cleanup is unsettled/);
       } else if (!unsettled) {
         assert.equal(cleanupError, undefined);
       }
-      const receipt = receipts.get("cleanup");
-      if (scenario === "cluster-identity-changed") {
+      const receipt = receipts.get("cleanup") ?? attemptedCleanup;
+      if (clusterFailure) {
         assert.equal(receipt.clusterVerified, false);
         assert.deepEqual(receipt.resources.configuration, {
           id: config.id,

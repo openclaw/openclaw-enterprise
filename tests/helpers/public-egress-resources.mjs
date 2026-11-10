@@ -64,7 +64,19 @@ export function publicEgressResources({
             outcome.state = "unsettled";
           }
         }
-        await record("cleanup", { resources: outcomes, settled: false, clusterVerified: false });
+        const failures = [error];
+        try {
+          await record("cleanup", { resources: outcomes, settled: false, clusterVerified: false });
+        } catch (receiptError) {
+          failures.push(receiptError);
+        }
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures,
+            "Cluster verification failed and its cleanup receipt could not be written",
+            { cause: error },
+          );
+        }
         throw error;
       }
       // Retirement is the prerequisite for deleting its Configuration and Role.
