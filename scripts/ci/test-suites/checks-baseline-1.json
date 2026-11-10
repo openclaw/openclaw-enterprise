@@ -229,6 +229,9 @@
       "path": "tests/conformance/kubernetes-client.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-network-policy.test.mjs"
+    },
+    {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
     },
     {
