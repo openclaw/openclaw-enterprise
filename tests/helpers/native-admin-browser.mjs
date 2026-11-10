@@ -1513,43 +1513,14 @@ async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
     return true;
   });
 
-  const origin = new URL(nativePage.url()).origin;
-  const assets = [];
-  const observeAsset = (response) => {
-    const url = new URL(response.url());
-    if (
-      url.origin === origin &&
-      ["script", "stylesheet"].includes(response.request().resourceType()) &&
-      assets.length < 24
-    ) {
-      assets.push({ path: url.pathname, status: response.status() });
-    }
-  };
-  nativePage.on("response", observeAsset);
-  try {
-    const reloaded = await nativePage.reload({ waitUntil: "domcontentloaded" });
-    assert.equal(reloaded?.status(), 200, "the restored native document must be served");
-    assert.match(reloaded.headers()["content-type"] ?? "", /^text\/html\b/i);
-    try {
-      await waitForStockUi(nativePage);
-    } catch (cause) {
-      // Never record body text, raw config, error text from the page, or cookies.
-      const boot = await nativePage.evaluate(() => ({
-        hasHook: Boolean(globalThis.openclawControlUi),
-        booted: globalThis.openclawControlUi?.snapshot().booted === true,
-        hasBootstrap: globalThis.document.documentElement.hasAttribute(
-          "data-openclaw-bootstrap-config",
-        ),
-        scriptCount: globalThis.document.scripts.length,
-      }));
-      throw new Error(
-        `Restored native document did not boot: ${JSON.stringify({ boot, assets })}`,
-        { cause },
-      );
-    }
-  } finally {
-    nativePage.off("response", observeAsset);
-  }
+  // The initial chat URL can name a session that has not been persisted yet.
+  // Reopen the supported Open Agent UI entry instead of its public chat document.
+  const reopened = await nativePage.goto(new URL("/", nativePage.url()).href, {
+    waitUntil: "domcontentloaded",
+  });
+  assert.equal(reopened?.status(), 200, "the restored native document must be served");
+  assert.match(reopened.headers()["content-type"] ?? "", /^text\/html\b/i);
+  await waitForStockUi(nativePage);
   assert.equal(
     (await nativeProfile(nativePage, "operator.admin")).id,
     profileId,
