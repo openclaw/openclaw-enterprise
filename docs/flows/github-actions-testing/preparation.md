@@ -43,12 +43,13 @@ They do not establish registry health or explain why an attempt stalled.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
-`scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` requires the optional
-Gateway and Agent image overrides together for lanes that declare both inputs.
-It rejects a partial pair before creating state, so
-`prepareK3dRuntimeImages` cannot replace an explicitly selected image with a local
-build. Omitting both keeps the source-build path; supplying both keeps their
-selected immutable references.
+`scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` requires optional
+Gateway and Agent image overrides together, rejecting partial pairs before creating
+state. `prepareK3dRuntimeImages` builds when both are absent; otherwise it preserves
+the selected immutable references.
+
+Slack Live and Production TUI restore read-only BuildKit caches through
+`scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
 
 For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
 selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
