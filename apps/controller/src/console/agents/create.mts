@@ -494,22 +494,7 @@ const NATIVE_WORKERS_UNAVAILABLE =
   "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an Installation administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.";
 const NO_SANDBOX_DRIVER_DEDICATED =
   "Dedicated OpenClaw is unavailable: this installation selects no Sandbox Driver. Choose the Codex harness or Embedded execution, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw.";
-// A job past handoff has created its Agent and admitted the first revision; what remains is that
-// revision's ordinary deployment.
-function handedOff(
-  job: ProvisioningJob,
-): job is ProvisioningJob & { agentId: string; revisionId: string } {
-  return (
-    typeof job.agentId === "string" &&
-    job.agentId !== "" &&
-    typeof job.revisionId === "string" &&
-    job.revisionId !== ""
-  );
-}
-
-// Whether the caller may read the job's first deployment: true when the read answers, false when
-// it is refused (403 or 404), and undefined when it is unavailable or cancelled at the next poll,
-// so that poll asks again. An expired session still ends the wait.
+// A refused read returns false. An unavailable read returns undefined so Create can try again.
 async function firstDeploymentReadable(
   request: CreateRequest,
   namespaceId: string,
@@ -570,40 +555,35 @@ async function waitForProvisioning({
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // Whether this caller may read the first deployment, once a read has said so.
-  let deploymentReadable: boolean | undefined;
+  let deploymentRefused = false;
   while (current?.status === "queued" || current?.status === "running") {
-    // Past handoff the job only waits for the first deployment, which the Agent page shows with
-    // its waits, Stop and recovery actions, as plan 35 specifies: open it there now instead of
-    // holding the form until the deployment ends. Retry no longer applies to a job with a
-    // revision. A caller the job answers but a revision read Restriction refuses would find
-    // nothing there, so the form keeps following the job for them.
-    // The check gets only the time until the next poll, even if its headers arrived and its body
-    // stalls: the job stays the source of truth and is read again on its one-second cadence.
+    // Give the optional deployment read one poll interval, including its response body.
     const probe = new AbortController();
     const nextPoll = wait(1_000).then(() => probe.abort());
-    if (handedOff(current) && deploymentReadable !== false) {
-      deploymentReadable = await firstDeploymentReadable(
+    const { agentId, revisionId } = current;
+    // After handoff, the Deployment tab owns progress and recovery. The job can still be
+    // readable when the deployment is refused.
+    if (agentId && revisionId && !deploymentRefused) {
+      const readable = await firstDeploymentReadable(
         request,
         namespaceId,
-        current,
+        { agentId, revisionId },
         probe.signal,
       );
       if (!isCurrent()) {
         throw new DOMException("View closed", "AbortError");
       }
-      if (deploymentReadable) {
+      if (readable) {
         status.textContent = "Agent created. Opening its first deployment…";
-        return { agentId: current.agentId, revisionId: current.revisionId, deploying: true };
+        return { agentId, revisionId, tab: "deployment" as const };
       }
+      deploymentRefused = readable === false;
     }
     started ||= current.status === "running";
-    // While the form still waits, it shows the wait the job names, so the operator can act on a
-    // full quota even when the deployment read is briefly unavailable. A refused read clears it:
-    // the details belong to a deployment this caller may not read.
+    // A refusal also clears detail from the earlier job read, which may predate an access change.
     setText(
       status,
-      (deploymentReadable === false ? null : jobDeploymentWait(current)) ??
+      (deploymentRefused ? null : jobDeploymentWait(current)) ??
         provisioningStatusText(started ? "running" : current.status),
     );
     await nextPoll;
@@ -643,7 +623,11 @@ async function waitForProvisioning({
   if (typeof current.revisionId !== "string" || !current.revisionId) {
     throw new Error("Provisioning status did not include an AgentRevision.");
   }
-  return { agentId: current.agentId, revisionId: current.revisionId, deploying: false };
+  return {
+    agentId: current.agentId,
+    revisionId: current.revisionId,
+    tab: "configuration" as const,
+  };
 }
 
 class ProvisioningFailure extends Error {
@@ -3589,16 +3573,13 @@ function renderAgentForm(
         isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
-      const { agentId, revisionId, deploying } = await finishing;
+      const { agentId, revisionId, tab } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
-      // A deployment still in progress opens where its activity shows; a finished one, its settings.
-      context.navigate(
-        `agents/${agentId}?revision=${revisionId}&tab=${deploying ? "deployment" : "configuration"}`,
-      );
+      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=${tab}`);
     } catch (cause) {
       const error = {
         ...requestFailure(cause),

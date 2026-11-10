@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-04
-last_updated_session: authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028
+updated: 2026-11-10
+last_updated_session: authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b
 ---
 
 # Agent provisioning flow
@@ -135,19 +135,20 @@ defers work without consuming retries until that version activates or fails. The
 success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
 before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
 
-Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) reads the job
-once a second. Once the job names its Agent and first revision, Create reads that deployment: if
-it answers, Create opens the version's Deployment tab, which shows its waits, Stop and recovery,
-and stops polling. A revision read Restriction can refuse the deployment (403 or 404) to a caller
-the job still answers; Create then keeps following the job. An unavailable read is asked again
-at the next poll. Whenever Create sees the job succeed before it has opened Deployment, including
-at its first read or after an unavailable read, it opens the Agent's Configuration tab. Admission, status and retry report the
-stored client `requestId`.
+Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
+When a pending job names its Agent and first revision, Create gives the deployment read one
+second to finish. If it succeeds, Create stops polling and opens that revision's Deployment tab
+for progress, Stop, and recovery. A 403 or 404 keeps Create on the job with generic status and
+ends deployment checks for this attempt. If the read is unavailable or times out, Create shows
+any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
+caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
+
+Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
-For the other terminal outcomes Create has seen first: if a newer deployment takes over, it explains what happened without a retry or a link:
-the job identifies only the deployment that ended. For a failure, follow the linked version's
-recovery guidance. After a Stop, deploy when ready.
+If Create sees that a newer deployment took over, it explains what happened without a retry
+or a link. The job identifies only the deployment that ended. For a failure, follow the linked
+version's recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.
 
 Console parses each reply in
@@ -217,7 +218,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
-- 2026-11-09: Create Agent opens the first deployment at handoff when the caller can read it, and otherwise follows the job to its end.
+- 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
 
 - 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
