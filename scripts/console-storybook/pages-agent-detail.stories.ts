@@ -185,6 +185,14 @@ export const ConfigurationReadDeniedReloadRefocus = {
   ...story("configurationReadDeniedReloadRefocus"),
   name: "Configuration read denied across reload and refocus",
 };
+export const ConfigurationReadInterruptedOnRefocus = {
+  ...story("configurationReadInterruptedOnRefocus", { openInNewTab: true }),
+  name: "Recover a Configuration read on tab return",
+};
+export const ConfigurationReadUnavailableOnRefocus = {
+  ...story("configurationReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an unavailable Configuration on tab return",
+};
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };

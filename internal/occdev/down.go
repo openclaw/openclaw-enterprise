@@ -12,17 +12,14 @@ import (
 // Down stops the selected Docker stack or the recorded Kubernetes stack.
 func Down(ctx context.Context, opts Options) error {
 	r := newRunner(opts)
-	sandbox := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	if sandbox != "none" && sandbox != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	profile := resolveProfile(r.env)
+	if err := profile.CheckSandboxDriver(); err != nil {
+		return err
 	}
-	switch driver := r.setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker"); driver {
+	switch profile.ComputeDriver {
 	case "docker":
-		if r.env["OCC_DEVELOPMENT_CONTROL_PLANE"] == "kubernetes" {
-			return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute")
-		}
-		if sandbox != "none" {
-			return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
+		if err := profile.CheckDockerCompute(); err != nil {
+			return err
 		}
 		// Docker Compute stacks are started by scripts/dev-up with standalone
 		// podman-compose; stop them with the same provider or compose down
@@ -126,7 +123,7 @@ func Down(ctx context.Context, opts Options) error {
 		fmt.Fprintf(r.opts.Out, "Stopped Kubernetes development stack %s.\n", state.Cluster)
 		return nil
 	default:
-		return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
+		return profile.CheckComputeDriver()
 	}
 }
 func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {

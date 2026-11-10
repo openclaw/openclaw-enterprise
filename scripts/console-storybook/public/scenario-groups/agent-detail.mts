@@ -3086,6 +3086,44 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
       },
+      configurationReadInterruptedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Recover a Configuration read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            status: 503,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "The Console retries one temporary Configuration read failure on tab return.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+        ],
+      },
+      configurationReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an unavailable Configuration on tab return",
+        path: draft,
+        rules: Array.from({ length: 2 }, () => ({
+          method: "GET",
+          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          status: 503,
+          skip: 1,
+          once: true,
+        })),
+        description:
+          "Both Configuration reads fail. The Agent page shows a warning and hides the draft.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The Agent name remains above the warning. The draft and its controls are hidden.",
+          "Select Retry. The Configuration returns with the unsaved edit.",
+        ],
+      },
       unreadableAgentConfiguration: {
         group: "Pages/Agent detail",
         name: "Unreadable Agent draft",

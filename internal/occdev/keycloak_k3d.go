@@ -68,11 +68,8 @@ func developmentSignIn(env map[string]string) (string, error) {
 	default:
 		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN must be keycloak or unset")
 	}
-	if env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" || env["OCC_DEVELOPMENT_CONTROL_PLANE"] != "kubernetes" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes: only the Kubernetes-only profile installs the gateway routing and HTTPS Console that OIDC sign-in needs")
-	}
-	if sandbox := env["OCC_DEVELOPMENT_SANDBOX_DRIVER"]; sandbox != "" && sandbox != "none" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_SANDBOX_DRIVER=none: the %s sandbox profile installs no gateway routing or HTTPS Console", sandbox)
+	if err := resolveProfile(env).checkKeycloakSignIn(); err != nil {
+		return "", err
 	}
 	return value, nil
 }

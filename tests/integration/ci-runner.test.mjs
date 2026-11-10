@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, watch } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -1023,6 +1023,177 @@ test(
     assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
     const result = JSON.parse(await readFile(join(root, "results/sample.json"), "utf8"));
     assert.equal(result.counts.failed, 2);
+  },
+);
+
+test(
+  "CI streams safe OpenShell failures before cleanup and retains the original error",
+  { timeout: 25_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const file = "tests/integration/stage-failure.test.mjs";
+    const resultsPath = join(root, "results/failure.json");
+    const moduleUrl = pathToFileURL(join(repositoryRoot, "tests/helpers/openshell-stage.mjs")).href;
+    const teardownUrl = pathToFileURL(
+      join(repositoryRoot, "tests/helpers/bounded-teardown.ts"),
+    ).href;
+    const progressUrl = pathToFileURL(
+      join(repositoryRoot, "scripts/ci/openshell-progress.mjs"),
+    ).href;
+    const canary = "generated-credential-must-stay-private";
+    await writeSingleLaneManifest(root, "failure", [{ path: file }], {});
+    await writeFile(
+      join(root, file),
+      `
+import assert from "node:assert/strict";
+import { watch, writeFileSync } from "node:fs";
+import test from "node:test";
+import { runOpenShellStage } from ${JSON.stringify(moduleUrl)};
+import { boundedTeardown } from ${JSON.stringify(teardownUrl)};
+import { openShellProgressPrefix } from ${JSON.stringify(progressUrl)};
+test("original failure", async (t) => {
+  const { context } = boundedTeardown(t);
+  context.after(() => new Promise((resolve) => {
+    const watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "release") { watcher.close(); resolve(); }
+    });
+    writeFileSync(${JSON.stringify(join(root, "cleanup-ready"))}, "ready");
+  }));
+  const canary = ${JSON.stringify(canary)};
+  const record = { kind: "openshell-stage-failure", stage: "installation", category: "Error", code: null,
+    location: "tests/helpers/openshell-sandbox-workflows.mjs" };
+  for (const change of [{ category: canary }, { code: canary }, { location: canary }, { stage: canary }, { detail: canary }]) {
+    process.stdout.write(openShellProgressPrefix + JSON.stringify({ ...record, ...change }) + "\\n");
+  }
+  assert.equal(await runOpenShellStage(t, "installation", async () => 42, "installation"), 42);
+  // A real source path embedded in a message or custom stack is not provenance.
+  const spoof = new Error(canary + "\\n    at ${pathToFileURL(join(repositoryRoot, "scripts/ci/reporter.mjs")).href}:999999:123456");
+  spoof.stack = spoof.message;
+  spoof.code = "ETIMEDOUT";
+  let accessed = 0;
+  const getter = () => { accessed++; throw new Error(canary); };
+  const unreadableName = new Error(canary);
+  Object.defineProperties(unreadableName, { name: { get: getter }, stack: { get: getter }, code: { value: "ENOENT" } });
+  const unreadableCode = new Error(canary);
+  Object.defineProperties(unreadableCode, { name: { value: "RangeError" }, stack: { get: getter }, code: { get: getter } });
+  const opaque = new Proxy(new Error(canary), { get: getter, getOwnPropertyDescriptor: getter });
+  const opaquePrototype = Object.setPrototypeOf(new Error(canary), new Proxy({}, { get: getter, getPrototypeOf: getter }));
+  for (const error of [spoof, unreadableName, unreadableCode, opaque, new TypeError(canary), new RangeError(canary), opaquePrototype]) {
+    let caught;
+    try { await runOpenShellStage(t, "installation", async () => { throw error; }); }
+    catch (actual) { caught = actual; }
+    assert.equal(caught, error);
+  }
+  assert.equal(accessed, 0, "diagnostics must not invoke error accessors or proxy traps");
+  let original;
+  await assert.rejects(runOpenShellStage(t, "installation", async () => {
+    try { assert.fail("original-stage-failure"); }
+    catch (error) { original = error; throw error; }
+  }, "installation"), (error) => error === original);
+  writeFileSync(${JSON.stringify(join(root, "identity-verified"))}, "original-error-identity-verified");
+  throw original;
+});
+`,
+    );
+    let markReady;
+    const ready = new Promise((resolve) => {
+      markReady = resolve;
+    });
+    const watcher = watch(root, (_event, name) => {
+      if (name === "cleanup-ready") {
+        watcher.close();
+        markReady(true);
+      }
+    });
+    t.after(() => watcher.close());
+    const child = spawn(
+      process.execPath,
+      [runnerPath, ...laneArgs(root, "failure", "state/failure.jsonl", resultsPath)],
+      {
+        cwd: repositoryRoot,
+        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "10000" }),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    const failures = [];
+    let markLive;
+    const live = new Promise((resolve) => {
+      markLive = resolve;
+    });
+    const lines = createInterface({ input: child.stderr });
+    const label = `[run:failure] ${file}: openshell-stage-failure installation `;
+    lines.on("line", (line) => {
+      if (line.startsWith(label)) {
+        failures.push(line.slice(label.length));
+        if (failures.length === 8) {
+          markLive(true);
+        }
+      }
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        markReady(false);
+        markLive(false);
+        resolve({ code, signal });
+      });
+    });
+    t.after(async () => {
+      lines.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+      await closed;
+    });
+    // Neither final accounting nor a buffered transcript can release this handshake.
+    assert.deepEqual(await Promise.all([ready, live]), [true, true], stderr);
+    assert.equal(child.exitCode, null);
+    assert.equal(
+      await readFile(join(root, "identity-verified"), "utf8"),
+      "original-error-identity-verified",
+    );
+    assert.equal((stdout + stderr).includes(canary), false);
+    assert.equal((stdout + stderr).includes("999999:123456"), false);
+    const location = " workflow=tests/helpers/openshell-sandbox-workflows.mjs";
+    assert.deepEqual(
+      failures,
+      [
+        "Error code=ETIMEDOUT",
+        "Error code=ENOENT",
+        "RangeError code=unknown",
+        "unknown code=unknown",
+        "TypeError code=unknown",
+        "RangeError code=unknown",
+        "unknown code=unknown",
+        "AssertionError code=ERR_ASSERTION",
+      ].map((value) => value + location),
+    );
+    await writeFile(join(root, "release"), "release cleanup");
+    assert.deepEqual(await closed, { code: 1, signal: null });
+    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+    assert.equal(summary.counts.failed, 1);
+    const failure = summary.files[0].tests.find(({ name }) => name === "original failure");
+    assert.equal(failure.error.message, "original-stage-failure");
+    assert.equal(failure.error.code, "ERR_TEST_FAILURE");
+    assert.deepEqual(failure.error.cause, { code: "ERR_ASSERTION", name: "AssertionError" });
+    assert.ok(
+      summary.files[0].measurements.some(
+        ({ kind, outcome }) => kind === "openshell-sandbox-phase" && outcome === "passed",
+      ),
+    );
+    assert.ok(
+      summary.files[0].measurements.some(
+        ({ kind, outcome }) => kind === "openshell-sandbox-phase" && outcome === "failed",
+      ),
+    );
   },
 );
 
