@@ -37,6 +37,12 @@
       ]
     },
     {
+      "path": "tests/integration/kubernetes-private-inference-service.test.ts",
+      "expectedTests": [
+        "connection templates pin a named Kubernetes Service and version target port changes"
+      ]
+    },
+    {
       "path": "tests/integration/production-install-retained-job-k3d.test.mjs",
       "expectedTests": [
         "Helm install preserves the initialization Job when release history is absent"
