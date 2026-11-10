@@ -318,13 +318,59 @@ export async function serviceWebSocketHandshake(
   )) as boolean;
 }
 
-/** A fresh serving process must have hydrated its admitted PAT, not merely opened its port. */
-export async function serviceCodexPatStatus(
+export type OpenShellCodexReadiness = "unavailable" | "starting" | "serving" | "permission-refused";
+
+function codexPermissionReadiness(
+  requirements: unknown,
+): "starting" | "serving" | "permission-refused" {
+  if (requirements === null) {
+    return "serving";
+  }
+  const policy = asRecord(requirements);
+  if (policy === undefined) {
+    return "starting";
+  }
+  const modes = policy.allowedSandboxModes;
+  const profiles = asRecord(policy.allowedPermissionProfiles);
+  const reviewers = policy.allowedApprovalsReviewers;
+  if (
+    (modes != null &&
+      (!Array.isArray(modes) ||
+        modes.some(
+          (mode) =>
+            mode !== "read-only" && mode !== "workspace-write" && mode !== "danger-full-access",
+        ))) ||
+    (policy.allowedPermissionProfiles != null &&
+      (profiles === undefined ||
+        Object.values(profiles).some((value) => typeof value !== "boolean"))) ||
+    (reviewers != null &&
+      (!Array.isArray(reviewers) ||
+        reviewers.some(
+          (reviewer) =>
+            reviewer !== "user" && reviewer !== "auto_review" && reviewer !== "guardian_subagent",
+        )))
+  ) {
+    return "starting";
+  }
+  // The named profile and the effective sandbox mode have separate requirements.
+  if (
+    (Array.isArray(modes) && !modes.includes("danger-full-access")) ||
+    (profiles !== undefined && profiles[":danger-full-access"] !== true) ||
+    (Array.isArray(reviewers) && !reviewers.includes("user"))
+  ) {
+    return "permission-refused";
+  }
+  return "serving";
+}
+
+/** Check the serving process's policy and, for provider-managed PATs, its current authentication. */
+export async function serviceCodexReadinessStatus(
   options: ServiceTransportOptions,
   serviceUrl: string,
   bearer: string,
+  requirePat: boolean,
   signal: AbortSignal,
-): Promise<"unavailable" | "starting" | "serving"> {
+): Promise<OpenShellCodexReadiness> {
   const target = serviceTarget(options, serviceUrl);
   const authorization = bearerHeader(bearer);
   signal.throwIfAborted();
@@ -373,7 +419,7 @@ export async function serviceCodexPatStatus(
   url.port = "";
   return new Promise((resolve, reject) => {
     let settled = false;
-    let initialized = false;
+    let expectedId = 1;
     let opened = false;
     let bytes = 0;
     const socket = new WebSocket(url, {
@@ -387,7 +433,7 @@ export async function serviceCodexPatStatus(
       transportSocket?.destroy();
       void dispatcher.destroy().catch(() => {});
     };
-    const finish = (status: "unavailable" | "starting" | "serving", error?: unknown) => {
+    const finish = (status: OpenShellCodexReadiness, error?: unknown) => {
       if (settled) {
         return;
       }
@@ -431,7 +477,10 @@ export async function serviceCodexPatStatus(
         JSON.stringify({
           id: 1,
           method: "initialize",
-          params: { clientInfo: { name: "occ-harness-readiness", version: "1" } },
+          params: {
+            clientInfo: { name: "codex_app_server_daemon", version: "1" },
+            capabilities: { experimentalApi: true },
+          },
         }),
       );
     });
@@ -458,19 +507,23 @@ export async function serviceCodexPatStatus(
         return;
       }
       const result = asRecord(message?.result);
-      if (message?.error !== undefined || result === undefined) {
+      if (message?.id !== expectedId || message.error !== undefined || result === undefined) {
         finish("starting");
-      } else if (!initialized && message?.id === 1 && typeof result.userAgent === "string") {
-        initialized = true;
+        return;
+      }
+      if (expectedId === 1) {
+        if (typeof result.userAgent !== "string" || !result.userAgent.trim()) {
+          finish("starting");
+          return;
+        }
         socket.send(JSON.stringify({ method: "initialized" }));
-        socket.send(
-          JSON.stringify({
-            id: 2,
-            method: "getAuthStatus",
-            params: { includeToken: false, refreshToken: false },
-          }),
-        );
-      } else if (initialized && message?.id === 2) {
+      } else if (expectedId === 2) {
+        const readiness = codexPermissionReadiness(result.requirements);
+        if (readiness !== "serving" || !requirePat) {
+          finish(readiness);
+          return;
+        }
+      } else {
         finish(
           result.authMethod === "personalAccessToken" &&
             result.authToken === null &&
@@ -478,9 +531,20 @@ export async function serviceCodexPatStatus(
             ? "serving"
             : "starting",
         );
-      } else {
-        finish("starting");
+        return;
       }
+      expectedId++;
+      socket.send(
+        JSON.stringify(
+          expectedId === 2
+            ? { id: 2, method: "configRequirements/read", params: {} }
+            : {
+                id: 3,
+                method: "getAuthStatus",
+                params: { includeToken: false, refreshToken: false },
+              },
+        ),
+      );
     });
     socket.addEventListener("error", () => finish(opened ? "starting" : "unavailable"));
     socket.addEventListener("close", () => finish(opened ? "starting" : "unavailable"));

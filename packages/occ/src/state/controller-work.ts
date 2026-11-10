@@ -731,6 +731,8 @@ function deploymentErrorMessage(code: string): string {
       return "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.";
     case "RUNTIME_LOGIN_FAILED":
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
+    case "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE":
+      return "This Codex runtime’s managed permission policy does not allow the profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
     case "EXECUTION_ADMISSION_WITHDRAWN":

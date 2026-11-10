@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-08
-last_updated_session: authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a
+updated: 2026-11-10
+last_updated_session: authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -46,8 +46,10 @@ graph TD
   H --> I["<b>Initialize workspace</b><br/>Private ExecSandbox stdin"]
   I --> V{"<b>Harness</b>"}
   V -- "Codex" --> J["<b>Resolve exposure</b><br/>Advertised WebSocket origin"]
-  J --> K["<b>Replace Gateway</b><br/>Provider route and bearer token"]
-  K --> M["<b>Wait for Harness</b><br/>Compute readiness"]
+  J --> K["<b>Prepare Gateway route</b><br/>When no predecessor owns it"]
+  K --> C1{"<b>Read Codex requirements</b><br/>Harness readiness"}
+  C1 -- "refused" --> R
+  C1 -- "compatible" --> M["<b>Wait for Harness</b><br/>Compute readiness"]
   V -- "OpenClaw" --> T["<b>Sandbox ready</b><br/>No inbound exposure"]
   T --> M
   M --> Y{"<b>Workspace node</b><br/>Connected?"}
@@ -55,8 +57,10 @@ graph TD
   R1 --> Y
   Y -- "yes" --> S{"<b>Attachment status</b><br/>All ready?"}
   S -- "failed, withheld, revoked" --> R
-  S -- "ready" --> Z{"<b>Active Harness</b>"}
-  Z -- "Codex" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
+  S -- "ready" --> Z{"<b>Activate Harness</b>"}
+  Z -- "Codex" --> C2{"<b>Recheck Codex readiness</b><br/>Before replacing Gateway"}
+  C2 -- "refused" --> R
+  C2 -- "serving" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
   Z -- "OpenClaw" --> U["<b>Run native turn</b>"]
   L -- "Git withdrawn" --> D1["<b>Fence delivery</b><br/>OCC commits intent"]
   D1 --> D2{"<b>Verify reduction</b><br/>Exact execution"}
@@ -74,7 +78,7 @@ graph TD
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F,D1 state
   class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,R1,T,U operation
-  class C,G,S,V,Y,Y0,Z,W0,D2 gate
+  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2 gate
   class X,R,R0,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -301,15 +305,22 @@ After dispatch it stops local gRPC, but remote mutations may require recovery.
 WebSocket origin and `sandboxDataMount.mountPath` (default `/sandbox/enterprise`).
 Native hooks use `harnessHome` (`0700`). Invalid/changed exposure fails closed.
 
-`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` uses
-`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexPatStatus`
-for dedicated `credential_source`/`codex_pat` revisions. After bearer-authenticated
-initialization, it requests `getAuthStatus` with `includeToken:false`
-and `refreshToken:false`. Only `personalAccessToken`, null `authToken` and
-`requiresOpenaiAuth:true` report `serving`; absent, mismatched or malformed
-authentication stays `starting`. This neither repairs login nor proves inference.
-Other modes retain `serviceWebSocketHandshake`. TLS and cancellation persist;
-unavailable WebSockets permit held-failure reads. Timeouts yield transient
+`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` checks the exact
+Codex Harness exposure with
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexReadinessStatus`.
+After bearer-authenticated initialization, the Driver reads `configRequirements/read`.
+A policy that excludes the required sandbox mode, named profile or human reviewer
+fails preparation or activation with `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`. Missing
+or malformed replies stay `starting`. An explicit null requirements result means
+the server reports no managed requirements.
+
+For `credential_source`/`codex_pat`, the same connection then requests
+`getAuthStatus` with `includeToken:false` and `refreshToken:false`. Only
+`personalAccessToken`, null `authToken` and `requiresOpenaiAuth:true` report
+`serving`; other results stay `starting`. These checks do not start a thread,
+change managed policy, or prove inference. The Gateway still checks the grant
+on real threads. Native OpenClaw retains the authenticated WebSocket handshake.
+Unavailable WebSockets permit held-failure reads; timeouts yield transient
 `SANDBOX_GATEWAY_UNAVAILABLE`.
 
 Provider files use reported absolute paths. Gateway failure blocks readiness.
@@ -413,6 +424,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
+
 - 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
 
 - 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
@@ -436,27 +449,5 @@ model execution.
 - 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
 
 - 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
-
-- 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
-
-- 2026-11-04 03:20: Record all applied quickstart service policies for removal. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - d64367ecb30d4b56e944b4bfd385496e7e1f3b0f)
-
-- 2026-11-04 03:10: Bind persistent tenant ingress to namespace ownership. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 7446e87d35b0fdaa7a80d01dead82fec488b66d5)
-
-- 2026-11-04 03:07: Refuse malformed repository probes before binding lookup. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 05d56a9176b8e2785a4968fdd7d381a7d5c5e263)
-
-- 2026-11-04 01:57: Preserve quickstart management callers across tenant policy updates. (authoring-run/142bbf24-9a49-48de-816c-9898b58c311b - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-11-04 01:57: Keep the held Git denial probe within its provider endpoint in the accompanying Driver fix. (authoring-run/8e4a06a2-463e-437c-9f6b-11ea7548f898 - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-11-03 18:15: Correct provider ownership. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
-
-- 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
-
-- 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-29 23:56: Merge both capabilities. (authoring-run/0f5c25dc-b648-4d4a-9ef2-24db4179b122 - fbb3b8065fc907305e4f607208fb419df2ffe17a)
-
-- 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

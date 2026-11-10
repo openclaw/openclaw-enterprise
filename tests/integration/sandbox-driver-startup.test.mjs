@@ -5961,6 +5961,11 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     observed.push(["serviceWebSocketHandshake", url, bearer]);
     return handshake;
   };
+  gatewayClient.serviceCodexReadinessStatus = async (url, bearer, requirePat) => {
+    assert.equal(requirePat, false);
+    observed.push(["serviceCodexReadinessStatus", url, bearer]);
+    return handshake ? "serving" : "unavailable";
+  };
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
@@ -5974,7 +5979,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   const sandboxName = observed[0][1];
   assert.deepEqual(observed, [
     ["getService", sandboxName, ""],
-    ["serviceWebSocketHandshake", "http://codex.example.test:9443/", "transport-token"],
+    ["serviceCodexReadinessStatus", "http://codex.example.test:9443/", "transport-token"],
     [
       "getServiceDocument",
       "http://codex.example.test:9443/",
@@ -5989,7 +5994,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
   assert.deepEqual(
     observed.map(([operation]) => operation),
-    ["getService", "serviceWebSocketHandshake"],
+    ["getService", "serviceCodexReadinessStatus"],
   );
   handshake = false;
 
@@ -6065,8 +6070,13 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   for (const [fail, reason] of [
     [
       () =>
-        (gatewayClient.serviceWebSocketHandshake = async () => {
-          throw new OpenShellServiceTransportError("timeout");
+        Object.assign(gatewayClient, {
+          serviceCodexReadinessStatus: async () => {
+            throw new OpenShellServiceTransportError("timeout");
+          },
+          serviceWebSocketHandshake: async () => {
+            throw new OpenShellServiceTransportError("timeout");
+          },
         }),
       "timeout",
     ],
@@ -6087,6 +6097,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   ]) {
     const restore = {
       serviceWebSocketHandshake: gatewayClient.serviceWebSocketHandshake,
+      serviceCodexReadinessStatus: gatewayClient.serviceCodexReadinessStatus,
       getServiceDocument: gatewayClient.getServiceDocument,
       getService: gatewayClient.getService,
     };
@@ -6146,10 +6157,10 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   // reaches the Driver. Do not accept that result or begin another read.
   for (const [operation, serving, reject] of [
     ["getService", false, false],
-    ["serviceWebSocketHandshake", true, false],
-    ["serviceWebSocketHandshake", false, false],
+    ["serviceCodexReadinessStatus", true, false],
+    ["serviceCodexReadinessStatus", false, false],
     ["getServiceDocument", false, false],
-    ["serviceWebSocketHandshake", false, true],
+    ["serviceCodexReadinessStatus", false, true],
   ]) {
     handshake = serving;
     observed.length = 0;
