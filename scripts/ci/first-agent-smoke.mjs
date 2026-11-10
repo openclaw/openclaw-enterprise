@@ -913,7 +913,7 @@ async function bakeAndPushImages({
         // Single-platform image manifests without attestation indexes, so the
         // recorded digest is the image manifest's.
         env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
-        timeout: 40 * minute,
+        timeout: (runtimeArtifact ? 40 : 180) * minute,
         label: "image-bake",
       },
     ),
@@ -1015,7 +1015,7 @@ async function buildAndPushImages({
                 runtimeTag,
                 ".",
               ],
-              { timeout: 40 * minute, label: "runtime-build" },
+              { timeout: 180 * minute, label: "runtime-build" },
             ),
           ]),
     ]),

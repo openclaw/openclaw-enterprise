@@ -139,7 +139,16 @@ not include tenant workloads or complete Pod specifications.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. A successful image build alone establishes none of those live outcomes.
 
-Image lanes first ask BuildKit whether the restored cache resolves to an image the engine already holds, and build the image otherwise (`scripts/ci/prepare.mjs:reuseEngineImage`). In a CI lane, preparation receives the lane deadline (`CI_RUNNER_DEADLINE_MS`). The reuse probe, which builds on a cache miss, and the build after it may use the time before that deadline less a three-minute reserve for the rest of preparation and the tests. When that budget runs out, preparation fails with an `Image build out of lane time` error and starts no further build. The job's cleanup step then removes the owned image tags. Local runs and main's cache warm job have no lane deadline and keep their own limits.
+`scripts/ci/prepare.mjs:reuseEngineImage` asks BuildKit whether the restored cache
+resolves to an image already in the engine; a cache miss builds it. In CI, the
+probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
+reserving three minutes for preparation and tests. Exhaustion reports `Image
+build out of lane time`, starts no further build, and leaves owned-tag removal to
+job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
+gives the OpenClaw build and final runtime assembly one shared 180-minute budget;
+controller builds retain 20 minutes. Each export has a separate 20-minute limit
+within the 210-minute job. These are cancellation limits, not expected durations;
+cold Node compilation exceeded the former 20-minute build limit.
 
 For dedicated Codex preparation (and installed repository-credential preparation, once that lane is available again), each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.
 

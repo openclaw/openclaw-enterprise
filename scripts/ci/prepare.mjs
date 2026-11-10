@@ -1301,13 +1301,16 @@ async function buildRuntimeImages(
     }
     const exportArgs = imageCacheExportArgs(role, args);
     // A failed or overrunning build fails the job and keeps nothing. The first
-    // stage and the image build share one 20-minute limit.
-    const deadline = performance.now() + 20 * 60_000;
+    // stage and the image build share one limit. Cold runtime builds compile
+    // Node; give them the native runtime assembly budget, retaining 20 min
+    // for controller builds.
+    const buildTimeoutMs = (role === "runtime" ? 180 : 20) * 60_000;
+    const deadline = performance.now() + buildTimeoutMs;
     if (role === "runtime") {
       await warmCommand(
         `runtime ${warmRuntimeFirstStage} build`,
         imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
-        20 * 60_000,
+        buildTimeoutMs,
       );
     }
     await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
