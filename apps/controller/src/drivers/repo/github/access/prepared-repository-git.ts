@@ -25,7 +25,6 @@ import {
   type PostgresPool,
 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
-import { asRecord } from "@openclaw-enterprise/utils";
 import type { OperationReceipt } from "../../access/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -109,6 +108,20 @@ type Recipient = Exclude<RepositoryGitCustody, { kind: "native-broker" }> | unde
 
 function installationRecipient(proxy: Recipient) {
   return proxy?.kind === "selected";
+}
+
+function hasPullApiObservation(value: unknown): boolean {
+  if (!value || typeof value !== "object" || !("pullApi" in value)) {
+    return false;
+  }
+  const { pullApi } = value;
+  return (
+    !!pullApi &&
+    typeof pullApi === "object" &&
+    "providerId" in pullApi &&
+    typeof pullApi.providerId === "string" &&
+    pullApi.providerId.length > 0
+  );
 }
 
 const families = "occ.prepared_github_families";
@@ -1303,8 +1316,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         !installed?.route ||
         !contents ||
         (api
-          ? q.operation !== "github-graphql" ||
-            !asRecord(asRecord(installed.route.observed)?.pullApi)?.providerId
+          ? q.operation !== "github-graphql" || !hasPullApiObservation(installed.route.observed)
           : !gitGrantOperationAllowed(q.operation, contents === "write"))
       ) {
         return fail();

@@ -66,6 +66,14 @@ const reviewedImports = {
   "drivers/repo/github/access/provider-transport/request.ts": {
     "node:https": ["request"],
   },
+  // Worker-only fixed GitHub target reads use the selected repository's API credential.
+  "drivers/repo/github/access/provider-transport/pull-request-target.ts": {
+    "node:https": ["request"],
+  },
+  // Fingerprint the entire pinned CLI query before validating its exact variables.
+  "drivers/repo/github/access/routes/stock-gh-pull-request.ts": {
+    "node:crypto": ["createHash"],
+  },
   // Separate tokenless listener and fixed-origin anonymous GET; this owner and
   // the credential owners cannot import one another, in either direction.
   "drivers/repo/github/public-read/server.ts": {
@@ -318,6 +326,9 @@ const capabilityConsumers = {
   },
   "drivers/repo/github/access/provider-transport/request.ts": {
     "drivers/repo/github/access/provider-transport.ts": ["sendProviderRequest"],
+  },
+  "drivers/repo/github/access/provider-transport/pull-request-target.ts": {
+    "backends/repository-credentials/prepared-git-owner.ts": ["createGitHubPullTargetReader"],
   },
   "drivers/repo/access/transport/upstream.ts": {
     "drivers/repo/access/transport/agent.ts": ["createUpstreamSender"],
