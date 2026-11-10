@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4
+last_updated_session: authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2
 ---
 
 # GitHub Actions testing flow
@@ -68,9 +68,10 @@ Pull requests compare the verified merge with its first parent using that parent
 policy; the second parent must match the event head. Canonical main pushes compare
 the complete `before` to verified `after` range using `before` policy. Missing history,
 forced pushes, and older policies retain full CI.
-Git path decoding preserves a leading UTF-8 BOM. Only a nonempty set of allowlisted
-regular Markdown changes selects docs mode; generated API references, including Markdown
-under `docs/reference/api/`, require full CI for `openapi:check`.
+Decoding preserves leading UTF-8 BOMs.
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
+to docs mode. Generated API references,
+executables and symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
@@ -245,7 +246,7 @@ awaits an approved resource ledger.
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
 - Reproduce the sanitized result's failing file, name and location with approved prerequisites. The named aggregate bounds coverage.
-- On local Docker Desktop or equivalent VM-backed Docker hosts, run one Kubernetes lane at a time when disk or network pressure has caused measured instability. GitHub Actions still runs the configured matrix; this local guidance is for reproducible operator runs.
+- After measured disk or network instability on local VM-backed Docker hosts, run Kubernetes lanes sequentially. GitHub Actions retains its configured matrix.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
 
@@ -261,6 +262,12 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 16:02: Document installation receipt retention. (authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2 - 242eed4481d16c13227383acd8b58c4d8757ae1f)
+
+- 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
+
+- 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
 
 - 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
 
