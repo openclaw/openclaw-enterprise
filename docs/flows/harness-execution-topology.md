@@ -72,14 +72,7 @@ native configuration, Harness identity/version/mode, Compute selection, and Agen
 ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
 Custom images must declare native-worker support. An associated `access_token` requires dedicated Codex;
 its snapshot contains the OCC identity, credential kind, and opaque Secret reference.
-`KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
-admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
-`validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
-the provider. For an Agent with a saved Model Provider, OCC reads its catalog during
-admission. Kubernetes Compute projects the selected models and their admin-supplied
-metadata into the revision. OCC checks the source's approved template and route
-before queuing work. The worker uses the saved Harness settings and Configuration
-for each attempt.
+Compute resolves [provider settings](../reference/drivers/kubernetes-compute/model-provider.md). OCC checks credential consent and pins the settings and selected models for retries.
 
 ### 2. Claim work and realize the approved topology
 

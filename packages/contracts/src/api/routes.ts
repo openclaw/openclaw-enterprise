@@ -15,6 +15,7 @@ import {
 } from "./sandbox-policy.ts";
 import {
   ModelProviderBody,
+  UpdateModelProviderBody,
   ModelProviderParams,
   ModelProviderResponse,
   ModelProviderListResponse,
@@ -486,12 +487,12 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Replace model provider settings",
+    summary: "Replace model provider settings if the saved fingerprint matches",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
-      body: ModelProviderBody,
+      body: UpdateModelProviderBody,
       response: { 200: ModelProviderResponse, ...createErrors },
     },
   },

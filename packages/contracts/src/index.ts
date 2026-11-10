@@ -421,6 +421,7 @@ export interface ResourceRef extends Scope {
 export type {
   ModelProvider,
   ModelProviderSettings,
+  ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
   StaticKeyGrant,

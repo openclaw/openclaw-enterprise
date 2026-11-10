@@ -13801,7 +13801,8 @@
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                           "models": [{ "id": "research-model" }],
-                          "protocol": "openai-responses"
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         }
                       ],
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -13872,7 +13873,8 @@
                               { "const": "openai-responses", "type": "string" },
                               { "const": "openai-completions", "type": "string" }
                             ]
-                          }
+                          },
+                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                         },
                         "required": [
                           "id",
@@ -13880,7 +13882,8 @@
                           "baseUrl",
                           "protocol",
                           "models",
-                          "connectionTemplateId"
+                          "connectionTemplateId",
+                          "settingsFingerprint"
                         ],
                         "type": "object"
                       },
@@ -14069,7 +14072,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -14134,7 +14138,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14142,7 +14147,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14294,7 +14300,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -14359,7 +14366,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14367,7 +14375,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14484,6 +14493,7 @@
                     "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                     "defaultModelId": "research-model",
                     "displayName": "Research inference",
+                    "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "models": [{ "id": "research-model" }],
                     "protocol": "openai-responses"
                   }
@@ -14504,6 +14514,7 @@
                     "type": "string"
                   },
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "expectedSettingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
                   "models": {
                     "items": {
                       "additionalProperties": false,
@@ -14548,7 +14559,8 @@
                   "baseUrl",
                   "protocol",
                   "models",
-                  "connectionTemplateId"
+                  "connectionTemplateId",
+                  "expectedSettingsFingerprint"
                 ],
                 "type": "object"
               }
@@ -14571,7 +14583,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -14636,7 +14649,8 @@
                             { "const": "openai-responses", "type": "string" },
                             { "const": "openai-completions", "type": "string" }
                           ]
-                        }
+                        },
+                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                       },
                       "required": [
                         "id",
@@ -14644,7 +14658,8 @@
                         "baseUrl",
                         "protocol",
                         "models",
-                        "connectionTemplateId"
+                        "connectionTemplateId",
+                        "settingsFingerprint"
                       ],
                       "type": "object"
                     },
@@ -14753,7 +14768,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Replace model provider settings",
+        "summary": "Replace model provider settings if the saved fingerprint matches",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -39942,7 +39957,8 @@
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                           "models": [{ "id": "research-model" }],
-                          "protocol": "openai-responses"
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         }
                       ],
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -40013,7 +40029,8 @@
                               { "const": "openai-responses", "type": "string" },
                               { "const": "openai-completions", "type": "string" }
                             ]
-                          }
+                          },
+                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                         },
                         "required": [
                           "id",
@@ -40021,7 +40038,8 @@
                           "baseUrl",
                           "protocol",
                           "models",
-                          "connectionTemplateId"
+                          "connectionTemplateId",
+                          "settingsFingerprint"
                         ],
                         "type": "object"
                       },

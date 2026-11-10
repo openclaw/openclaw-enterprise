@@ -28,6 +28,11 @@ export interface ModelProvider extends ModelProviderSettings {
   readonly id: string;
 }
 
+/** The API includes a fingerprint of the saved settings for conditional replacement. */
+export interface ModelProviderView extends ModelProvider {
+  readonly settingsFingerprint: string;
+}
+
 /** The version pins where the credential owner approved sending the key. */
 export interface StaticKeyGrant {
   readonly connectionTemplateId: string;

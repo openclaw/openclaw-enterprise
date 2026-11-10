@@ -75,7 +75,7 @@
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
 - [`bootstrapInstallation`](../api.md#post-installationbootstrap): Bootstrap the singleton Installation.
 - [`createModelProvider`](../api.md#post-modelproviders): Create an Installation model provider.
-- [`updateModelProvider`](../api.md#put-modelprovidersmodelproviderid): Replace model provider settings.
+- [`updateModelProvider`](../api.md#put-modelprovidersmodelproviderid): Replace model provider settings if the saved fingerprint matches.
 
 ### Namespaces
 

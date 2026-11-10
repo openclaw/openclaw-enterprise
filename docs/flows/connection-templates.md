@@ -63,7 +63,7 @@ Rotation replaces the confidential client's secret at the same private reference
 
 `packages/occ/src/index.ts:saveModelProvider` and `packages/occ/src/index.ts:createCredentialSource`
 
-OCC checks Installation administration permission and locks the selected template before it saves a provider. The template must be Installation-wide and approve the provider’s URL and protocol. A Namespace user with Agent creation permission can list the saved providers.
+OCC checks Installation administration permission and locks the selected template before it saves a provider. To replace a provider, OCC also locks its row and compares the saved settings with the fingerprint the administrator reviewed. A stale edit returns `409` and preserves the other administrator’s changes. The template must be Installation-wide and approve the provider’s URL and protocol. A Namespace user with Agent creation permission can list the saved providers.
 
 When the credential owner approves a static template version, OCC locks the template and checks the Namespace and current version before reading the Secret. The stored static-key grant references the approved version. PostgreSQL checks that its base URL and protocol match the immutable version. OAuth accounts follow the browser flow below.
 

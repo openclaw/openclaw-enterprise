@@ -4017,6 +4017,7 @@ export async function renderAgentDetail(
             return;
           }
           if (
+            freshAgent.modelProviderId !== agent.modelProviderId ||
             freshAgent.executionMode !== agent.executionMode ||
             freshAgent.gatewayManagedMode !== agent.gatewayManagedMode ||
             freshAgent.backendId !== agent.backendId ||

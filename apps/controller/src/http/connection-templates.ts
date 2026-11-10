@@ -64,10 +64,13 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     reply,
   }) {
     const { modelProviderId } = request.params as { modelProviderId: string };
+    const { expectedSettingsFingerprint, ...settings } = request.body as ModelProviderSettings & {
+      expectedSettingsFingerprint: string;
+    };
     const data = await controller.saveModelProvider(
       actorId,
-      modelProviderId,
-      request.body as ModelProviderSettings,
+      { id: modelProviderId, expectedSettingsFingerprint },
+      settings,
       (modelProviderId) => mutationEvent({ modelProviderId }),
       holdSession,
     );

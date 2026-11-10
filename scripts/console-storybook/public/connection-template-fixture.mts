@@ -102,11 +102,14 @@ export function createConnectionTemplateFixture(
   const baseUrl = "https://inference.example.com/v1";
   const protocol = "openai-responses";
   const models = [{ id: "qwen3-8b" }, { id: "qwen3-32b" }];
+  let providerVersion = 0;
+  const nextFingerprint = () => (++providerVersion).toString(16).padStart(64, "0");
   const providers: Record<string, unknown>[] =
     mode === "inference" || mode === "inference-empty-keys"
       ? [
           {
             id: providerId,
+            settingsFingerprint: nextFingerprint(),
             displayName: "Internal vLLM",
             baseUrl,
             protocol,
@@ -173,7 +176,7 @@ export function createConnectionTemplateFixture(
       );
     }
     if (isRecord(body) && path === "/model-providers" && method === "POST") {
-      const saved = { ...body, id: nextId("mpr") };
+      const saved = { ...body, id: nextId("mpr"), settingsFingerprint: nextFingerprint() };
       providers.push(saved);
       return response(saved, 201);
     }
@@ -182,8 +185,20 @@ export function createConnectionTemplateFixture(
       if (!existing) {
         return error(404, "NOT_FOUND", "Provider missing.");
       }
-      Object.assign(existing, body);
-      return response(existing);
+      const { expectedSettingsFingerprint, ...settings } = body;
+      if (expectedSettingsFingerprint !== existing.settingsFingerprint) {
+        return response(
+          null,
+          409,
+          "RESOURCE_CONFLICT",
+          {},
+          "Another administrator changed this model provider. Reload the current settings before saving.",
+          [{ path: "/expectedSettingsFingerprint", code: "INVALID_VALUE" }],
+        );
+      }
+      const replacement = { ...settings, id: existing.id, settingsFingerprint: nextFingerprint() };
+      providers[providers.indexOf(existing)] = replacement;
+      return response(replacement);
     }
     if (path === "/connection-templates" && method === "GET") {
       return response(oauthTemplates);

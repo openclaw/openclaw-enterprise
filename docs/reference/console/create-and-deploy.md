@@ -12,10 +12,6 @@ Agent and version](../../guides/deploy/production-agents.md#verify-production-wo
 
 ## Create an Agent
 
-To reuse an inference endpoint, an Installation administrator selects **Settings → Model providers → Add model provider**, enters the HTTPS base URL, chooses an API format, and adds the offered model IDs. The administrator can set a default model and select or create a matching static-key Connection Template. In **Credentials → Register an inference credential**, the key owner selects a Namespace Secret and approves the displayed POST destination and template version.
-
-In **Create Agent**, select the saved provider and a compatible Dedicated Harness. Select the registered inference credential, then choose from **Models offered by this provider**. Another Agent in the same Namespace can reuse these choices. Each Namespace needs its own authorized credential. To use a different endpoint, select a different provider. For private endpoints, arrange network access for the trusted sender before deployment.
-
 Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
@@ -56,7 +52,7 @@ as the reason Dedicated OpenClaw is disabled.
    For a Preset that sets models only on individual roster entries, edit each entry's model policy
    under **Advanced settings** or set a shared `agents.defaults.model` to use the picker.
    Choosing a checked model as the default retains the previous one.
-4. Confirm the credential can use each model. Primary, fallback and session models
+4. Confirm the [provider credential](../../guides/console/secrets.md#reuse-an-inference-provider) can use each model. Primary, fallback and session models
    must share a provider and Harness. Model edits preserve unrelated JSON.
    **Advanced settings** → **Reset template** replaces edited settings. If a model
    edit focuses **Configuration JSON**, correct the indicated field and retry.
