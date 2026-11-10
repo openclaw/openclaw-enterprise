@@ -6,11 +6,11 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
-} from "../../repo/credentials/client-contracts.ts";
+} from "../../repo/access/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {

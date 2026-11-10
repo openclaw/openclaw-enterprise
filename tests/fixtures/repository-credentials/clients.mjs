@@ -13,13 +13,13 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
   root ??= await temporaryDirectory(t, "repository-native-material-");
   await mkdir(join(root, "sessions"), { mode: 0o700 });
   const { readClientConfiguration, writeClientConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/config",
+    "drivers/repo/github/access/client/config",
   );
   const { readRuntimeRepositoryManifest } = await appModule(
-    "drivers/repo/github/credentials/client/manifest",
+    "drivers/repo/github/access/client/manifest",
   );
   const { renderNativeGitConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/native-git",
+    "drivers/repo/github/access/client/native-git",
   );
   const bindings = [];
   for (const { opened, clientDirectory, repositoryRef, publicCa = ca } of entries) {
@@ -55,7 +55,7 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
     bindings,
   };
   await writeFile(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
-  const helper = join(appRoot, `drivers/repo/github/credentials/client/git-helper.${appExtension}`);
+  const helper = join(appRoot, `drivers/repo/github/access/client/git-helper.${appExtension}`);
   const requiresHooks = bindings.some(({ client }) => client.pushRefAllowlist !== undefined);
   let hooks;
   if (requiresHooks && appExtension === "js") {
@@ -100,7 +100,7 @@ export async function createNativeClientMaterial(t, entries, { ca, root } = {}) 
 /** Execute stock Git with a real native include; gh retains its private session configuration. */
 export async function runPinnedClients(t, fixture, { signal = t.signal } = {}) {
   const directory = await temporaryDirectory(t, "repository-credentials-client-work-");
-  const launcher = join(appRoot, `drivers/repo/github/credentials/client/launch.${appExtension}`);
+  const launcher = join(appRoot, `drivers/repo/github/access/client/launch.${appExtension}`);
   const material = await createNativeClientMaterial(t, [
     { clientDirectory: fixture.clientDirectory, repositoryRef: "fixture" },
   ]);

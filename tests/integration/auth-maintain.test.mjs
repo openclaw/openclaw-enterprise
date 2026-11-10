@@ -229,7 +229,7 @@ test(
     const recoveryEmail = `recovery-${suffix}@example.test`;
     const password = "auth-maintenance-test-password";
     const secret = "auth-maintenance-integration-secret-32-characters";
-    const baseURL = "http://127.0.0.1";
+    const baseURL = "https://console.oce.localhost";
     const directory = await privateBootstrapDirectory(context, "openclaw-auth-maintain-");
     await settled(() =>
       ensureDevelopmentBootstrap(context, {
@@ -249,6 +249,7 @@ test(
         mode: "development",
         installationId,
         baseURL,
+        agentDomain: "agents.oce.localhost",
         secret,
         pool,
       });
@@ -354,6 +355,7 @@ test(
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state: new PostgresPlatformState(pool),
@@ -368,6 +370,7 @@ test(
           mode: "development",
           installationId,
           baseURL,
+          agentDomain: "agents.oce.localhost",
           secret,
           pool,
           state,
@@ -612,6 +615,7 @@ test(
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state,

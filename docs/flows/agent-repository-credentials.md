@@ -115,7 +115,7 @@ Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLI
 OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
 `git-write` without GitHub or control-socket calls.
 
-`apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
+`apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
 installation, repository, duration, full Namespace profile policy, exact permissions
 and optional normalized push-ref allowlist. One grant per binding; installations
@@ -167,10 +167,10 @@ State stores identifiers and phases, never bearers or files.
 
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
 sends the bound request over the private socket.
-`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
+`apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
 resolves and compares its grant. Client status validation permits historical
 revoked/expired counts for `DISPOSED`, but no outstanding obligations. Only created responses contain bearers.
-`apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`
+`apps/controller/src/drivers/repo/github/access/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
 Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or
@@ -183,20 +183,20 @@ bounded by the configured interval and ten minutes.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
-`apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
+`apps/controller/src/drivers/repo/access/control.ts:createControlAdmission`
 reserves before release.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
 retains fences and original-broker disposal evidence after pruning.
 Transport failure cannot establish absence. `preparedOnly` requires protocol 3;
 unmarked v1 requests can recover and close original IDs but cannot reserve.
 `RepositoryCredentialLifecycle.verifyRelease` and
-`apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery`
+`apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts:sessionQuery`
 require protocol 3 for native release and material selection.
 Protected sessions use protocol 2. Selection checks policy-reduction version 2
 against execution admission v7, the exact installed plan, recipient, standing
 approval and session lifetime.
 
-`apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts:selectedRepositoryGrantSql`
+`apps/controller/src/drivers/repo/access/protected-repository-git-installation.ts:selectedRepositoryGrantSql`
 shares per-member selection, Driver and expiry checks between production and
 withdrawal. Frozen identities reject session replacement. Transaction locks remain.
 
@@ -220,7 +220,7 @@ session replacement still rolls.
 validates the complete projection, then writes in-memory mode-0700 directories and
 mode-0600 files. `REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT` mounts the
 private subPath at `/run/oce/repository-credentials`, avoiding the fsGroup-writable root. It calls
-`apps/controller/src/drivers/repo/github/credentials/client/native-git.ts:prepareNativeGitConfiguration`
+`apps/controller/src/drivers/repo/github/access/client/native-git.ts:prepareNativeGitConfiguration`
 with private-file checks. Retry removes only a validated private `gitconfig`.
 Both gate startup; the consumer mount is read-only. Metadata and gateway
 bearers remain separate.
@@ -263,12 +263,12 @@ See the [routing limits](../reference/repository-credentials.md#client-routing-a
 `pushRefAllowlist` selects image-owned hooks.
 `scripts/build-repository-credentials.ts:stage` emits Node launchers that resolve the
 dispatcher from their module URL, supporting symlink chains and package relocation.
-`apps/controller/src/drivers/repo/github/credentials/client/hook-dispatch.ts:checkPush`
+`apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
 rejects disallowed destination refs before updates; discovery may contact the service. It delegates arguments and input to common-directory hooks.
 Custom hook paths and API writes remain outside this
 [guardrail](../reference/repository-credentials/push-ref-guardrail.md).
 
-`apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
+`apps/controller/src/drivers/repo/github/access/client/router.ts:routeRepositoryClient`
 routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
 reference and session, selects private configuration and preserves HOME and shared selection.
 
@@ -299,13 +299,13 @@ Close aborts and joins; readback cannot restore authority.
 [Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
 
 Maintenance uses 30 seconds, the sender interval or shorter Compute interval. Restart invalidates missing sessions without reminting.
-[Prepared custody](../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts)
+[Prepared custody](../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts)
 erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
 
 [Standing admission](../../packages/occ/src/index.ts) requires permission and current scope.
 [Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) retains the bound Installation policy or unbound Repo Driver; conflicts prevent startup.
 Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) rejects withdrawal or scope changes with `REPOSITORY_STANDING_POLICY_CHANGED` before release.
-[GitHub](../../apps/controller/src/drivers/repo/github/credentials/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
+[GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
 After hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 rechecks renewal policy and recipient. It refuses expiry, unacknowledged launches and observed-only previews.
 [Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and

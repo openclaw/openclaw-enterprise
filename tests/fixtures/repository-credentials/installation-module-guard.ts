@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 
 const [path, mode] = process.argv.slice(2);
 const lifecycleUrl = new URL(
-  "../../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts",
+  "../../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts",
   import.meta.url,
 ).href;
 const sentinel = new Error("prepared GitHub lifecycle blocked");

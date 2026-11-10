@@ -1,15 +1,15 @@
-import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
-import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/access/json-members.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
+import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/access/provider-transport.ts";
 import {
   requestHead,
   serviceConfigurationData,

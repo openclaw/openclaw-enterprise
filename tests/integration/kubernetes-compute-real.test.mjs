@@ -183,7 +183,7 @@ test(
     });
 
     const authSecret = "kubernetes-integration-auth-secret-32-bytes";
-    const authBaseURL = "http://127.0.0.1";
+    const authBaseURL = "https://console.oce.localhost";
     if (previous === undefined) {
       await ensureDevelopmentBootstrap(context, {
         databaseUrl,
@@ -191,6 +191,7 @@ test(
         password: adminCredentials.password,
         authSecret,
         authBaseURL,
+        agentDomain: "agents.oce.localhost",
         installationName: "OpenClaw Kubernetes integration",
       });
     }
@@ -201,6 +202,7 @@ test(
       databaseUrl,
       authSecret,
       authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
     // Both supported startup callers must reject old storage before admitting
     // API writes or claiming work, even when running the development profile.
@@ -259,7 +261,7 @@ test(
           ...(options.session === false ? {} : authenticatedHeaders(options.session ?? session)),
           ...(mutation ? { origin: authBaseURL } : {}),
           ...options.headers,
-          host: "127.0.0.1",
+          host: new URL(authBaseURL).host,
         },
         ...(payload === undefined ? {} : { payload }),
       });

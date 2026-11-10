@@ -6,7 +6,7 @@ import { parsers } from "prettier/plugins/typescript";
 const sourceRoot = fileURLToPath(new URL("../apps/controller/src/", import.meta.url));
 const credentialDirectories = [
   "composition/repository-credentials",
-  "drivers/repo/credentials",
+  "drivers/repo/access",
   "drivers/repo/github",
   "backends/repository-credentials",
   "backends/token-service",
@@ -21,16 +21,16 @@ const requiredEntrypoints = [
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
   "composition/repository-credentials/probe.ts",
-  "drivers/repo/github/credentials/client/launch.ts",
-  "drivers/repo/github/credentials/client/operator.ts",
-  "drivers/repo/github/credentials/client/git-helper.ts",
-  "drivers/repo/github/credentials/client/native-git.ts",
-  "drivers/repo/github/credentials/client/hook-dispatch.ts",
-  "drivers/repo/github/credentials/client/router.ts",
-  "drivers/repo/github/credentials/client/draft-pr.ts",
+  "drivers/repo/github/access/client/launch.ts",
+  "drivers/repo/github/access/client/operator.ts",
+  "drivers/repo/github/access/client/git-helper.ts",
+  "drivers/repo/github/access/client/native-git.ts",
+  "drivers/repo/github/access/client/hook-dispatch.ts",
+  "drivers/repo/github/access/client/router.ts",
+  "drivers/repo/github/access/client/draft-pr.ts",
 ];
-const clientDirectory = "drivers/repo/github/credentials/client/";
-const clientContracts = "drivers/repo/credentials/client-contracts.ts";
+const clientDirectory = "drivers/repo/github/access/client/";
+const clientContracts = "drivers/repo/access/client-contracts.ts";
 const publicReadDirectory = "drivers/repo/github/public-read/";
 const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx", ".jsx"]);
 
@@ -39,7 +39,7 @@ const reviewedImports = {
   // Pure recipient SQL only: no adapter, loader, material or I/O authority.
   [openShellEvidence]: {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
-    "../repo/credentials/protected-repository-git-installation.ts": [
+    "../repo/access/protected-repository-git-installation.ts": [
       "admittedAuthorization",
       "recipientAuthorization",
       "peerKey",
@@ -54,16 +54,16 @@ const reviewedImports = {
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
     "node:path": ["isAbsolute"],
   },
-  "drivers/repo/github/credentials/prepared-configuration.ts": {
+  "drivers/repo/github/access/prepared-configuration.ts": {
     "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/installation.ts": {
     "../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
-  "drivers/repo/github/credentials/material.ts": {
+  "drivers/repo/github/access/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
   },
-  "drivers/repo/github/credentials/provider-transport/request.ts": {
+  "drivers/repo/github/access/provider-transport/request.ts": {
     "node:https": ["request"],
   },
   // Separate tokenless listener and fixed-origin anonymous GET; this owner and
@@ -73,43 +73,43 @@ const reviewedImports = {
     "node:https": ["Agent", "get"],
   },
   // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
-  "drivers/repo/github/credentials/client/draft-pr.ts": {
+  "drivers/repo/github/access/client/draft-pr.ts": {
     "node:crypto": ["randomUUID"],
     "node:https": ["Agent", "request"],
     "node:util": ["parseArgs"],
   },
-  "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
+  "drivers/repo/github/access/client/commands.ts": { "node:child_process": ["spawnSync"] },
   // chmod restores 0700/0600 after umask. It does not read credential material.
-  "drivers/repo/github/credentials/client/config.ts": {
+  "drivers/repo/github/access/client/config.ts": {
     "node:fs/promises": ["chmod", "lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
   },
-  "drivers/repo/github/credentials/client/launch.ts": {
+  "drivers/repo/github/access/client/launch.ts": {
     "node:child_process": ["spawn"],
   },
   // The image dispatcher inspects native Git configuration and executes the
   // repository's existing executable hook. It never opens credential material.
-  "drivers/repo/github/credentials/client/hook-dispatch.ts": {
+  "drivers/repo/github/access/client/hook-dispatch.ts": {
     "node:child_process": ["spawnSync"],
     "node:fs": ["constants"],
     "node:fs/promises": ["access"],
   },
-  "drivers/repo/github/credentials/client/manifest.ts": {
+  "drivers/repo/github/access/client/manifest.ts": {
     "node:crypto": ["createHash"],
     "node:fs/promises": ["lstat"],
   },
-  "drivers/repo/github/credentials/client/native-git.ts": {
+  "drivers/repo/github/access/client/native-git.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open"],
   },
-  "drivers/repo/github/credentials/client/targets.ts": {
+  "drivers/repo/github/access/client/targets.ts": {
     "node:child_process": ["spawnSync"],
   },
-  "drivers/repo/github/credentials/client/operator.ts": {
+  "drivers/repo/github/access/client/operator.ts": {
     "node:crypto": ["randomUUID"],
     "node:fs/promises": ["readFile"],
     "node:http": ["request"],
   },
-  "drivers/repo/github/credentials/client/private-files.ts": {
+  "drivers/repo/github/access/client/private-files.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "open"],
   },
@@ -144,7 +144,7 @@ const reviewedImports = {
     "node:fs": ["constants"],
     "node:fs/promises": ["open"],
   },
-  "drivers/repo/github/credentials/registry.ts": {
+  "drivers/repo/github/access/registry.ts": {
     "node:crypto": ["createHash"],
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
@@ -170,7 +170,7 @@ const reviewedImports = {
   },
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
-  "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+  "drivers/repo/github/access/prepared-lifecycle.ts": {
     // Wait for an existing issuance claim within this request’s deadline.
     "node:timers/promises": ["setTimeout"],
     "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
@@ -186,17 +186,17 @@ const reviewedImports = {
     "@openclaw-enterprise/occ": ["CredentialTokenUnsettledError", "postgresPreparedGitHubProof"],
   },
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
-  "drivers/repo/github/credentials/prepared-postgres.ts": {
+  "drivers/repo/github/access/prepared-postgres.ts": {
     // Reuse the platform transaction's metadata predicates; no new material or I/O authority.
     "@openclaw-enterprise/occ": ["preparedGitHubLive", "readPreparedGitHubMetadata"],
     "node:crypto": ["createCipheriv", "createDecipheriv", "randomBytes", "randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
   // The prepared Git owner and route observation must compare the same recipient fields. No I/O.
-  "drivers/repo/credentials/protected-repository-git-installation.ts": {
+  "drivers/repo/access/protected-repository-git-installation.ts": {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
   },
-  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+  "drivers/repo/github/access/prepared-repository-git.ts": {
     // Existing stateful helper on the caller's transaction, not general OCC access.
     "@openclaw-enterprise/occ": ["CredentialDeliveries"],
     // Process-local identity for the existing recipient-delivery worker.
@@ -214,14 +214,14 @@ const reviewedImports = {
     "node:util": ["isDeepStrictEqual"],
   },
   // One use of committed material via the private Unix socket; no preparation operation.
-  "drivers/repo/github/credentials/warm-use.ts": {
+  "drivers/repo/github/access/warm-use.ts": {
     "node:crypto": ["randomUUID"],
     "node:http": ["request"],
   },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
-  "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/access/grants.ts": { "node:crypto": ["createHash"] },
   // Hash the canonical public CA bundle for issuer trust identity.
-  "drivers/repo/github/credentials/origin.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/access/origin.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/policy.ts": {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },
@@ -230,12 +230,12 @@ const reviewedImports = {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.
-  "drivers/repo/github/credentials/admission-probe.ts": {
+  "drivers/repo/github/access/admission-probe.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError"],
   },
   // The broker journal client writes only nonsecret receipts over a local Unix socket.
-  "drivers/repo/credentials/control.ts": { "node:crypto": ["randomUUID"] },
-  "drivers/repo/credentials/receipt-client.ts": { "node:http": ["request"] },
+  "drivers/repo/access/control.ts": { "node:crypto": ["randomUUID"] },
+  "drivers/repo/access/receipt-client.ts": { "node:http": ["request"] },
   // Worker-private receipt and prepared-use sockets; parent and socket identity are checked.
   "backends/repository-credentials/private-request-server.ts": {
     "node:http": ["createServer"],
@@ -245,24 +245,24 @@ const reviewedImports = {
     "node:net": ["connect"],
     "node:fs/promises": ["lstat", "unlink"],
   },
-  "drivers/repo/credentials/lifecycle.ts": { "node:crypto": ["randomUUID"] },
-  "drivers/repo/credentials/server.ts": {
+  "drivers/repo/access/lifecycle.ts": { "node:crypto": ["randomUUID"] },
+  "drivers/repo/access/server.ts": {
     "node:fs/promises": ["chmod", "lstat", "realpath", "unlink"],
     "node:http": ["createServer"],
     "node:https": ["createServer"],
   },
-  "drivers/repo/credentials/sessions.ts": {
+  "drivers/repo/access/sessions.ts": {
     "node:crypto": ["createHash", "randomBytes", "randomUUID"],
   },
   // Hash the selected Git request, including the bounded body after decompression.
-  "drivers/repo/credentials/transport/agent.ts": {
+  "drivers/repo/access/transport/agent.ts": {
     "node:crypto": ["createHash"],
     "node:util": ["promisify"],
   },
-  "drivers/repo/credentials/transport/request-headers.ts": {
+  "drivers/repo/access/transport/request-headers.ts": {
     "node:http": ["validateHeaderName", "validateHeaderValue"],
   },
-  "drivers/repo/credentials/transport/upstream.ts": { "node:https": ["request"] },
+  "drivers/repo/access/transport/upstream.ts": { "node:https": ["request"] },
 };
 const ordinaryBuiltins = new Set([
   "node:os",
@@ -284,7 +284,7 @@ const capabilityConsumers = {
   },
   "backends/repository-credentials/control-socket.ts": {
     "backends/repository-credentials/private-request-server.ts": ["prepareControlSocket"],
-    "drivers/repo/credentials/server.ts": ["prepareControlSocket"],
+    "drivers/repo/access/server.ts": ["prepareControlSocket"],
   },
   "composition/repository-credentials/public-ca.ts": {
     "composition/repository-credentials/config.ts": ["loadPublicCa"],
@@ -300,28 +300,28 @@ const capabilityConsumers = {
   },
   // Selected directly by worker.mjs; no runtime import from credential source is authorized.
   "backends/repository-credentials/prepared-git-owner.ts": {},
-  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+  "drivers/repo/github/access/prepared-repository-git.ts": {
     "backends/repository-credentials/prepared-git-owner.ts": ["PreparedRepositoryGitStore"],
   },
-  "drivers/repo/github/credentials/warm-use.ts": {
-    "drivers/repo/github/credentials/warm-registry-factory.ts": ["authorizePreparedGitSend"],
+  "drivers/repo/github/access/warm-use.ts": {
+    "drivers/repo/github/access/warm-registry-factory.ts": ["authorizePreparedGitSend"],
   },
-  "drivers/repo/credentials/transport/agent.ts": {
-    "drivers/repo/credentials/server.ts": ["createAgentHandler"],
+  "drivers/repo/access/transport/agent.ts": {
+    "drivers/repo/access/server.ts": ["createAgentHandler"],
   },
-  "drivers/repo/github/credentials/provider-transport/request.ts": {
-    "drivers/repo/github/credentials/provider-transport.ts": ["sendProviderRequest"],
+  "drivers/repo/github/access/provider-transport/request.ts": {
+    "drivers/repo/github/access/provider-transport.ts": ["sendProviderRequest"],
   },
-  "drivers/repo/credentials/transport/upstream.ts": {
-    "drivers/repo/credentials/transport/agent.ts": ["createUpstreamSender"],
+  "drivers/repo/access/transport/upstream.ts": {
+    "drivers/repo/access/transport/agent.ts": ["createUpstreamSender"],
   },
-  "drivers/repo/credentials/receipt-client.ts": {
-    "drivers/repo/credentials/control.ts": ["RepositoryReceiptClient"],
+  "drivers/repo/access/receipt-client.ts": {
+    "drivers/repo/access/control.ts": ["RepositoryReceiptClient"],
   },
   "backends/repository-credentials/control-client.ts": {
     "composition/repository-credentials/platform.ts": ["UnixRepositoryCredentialControlClient"],
     "drivers/repo/github/driver.ts": ["RepositoryCredentialControlError"],
-    "drivers/repo/github/credentials/admission-probe.ts": ["UnixRepositoryCredentialControlClient"],
+    "drivers/repo/github/access/admission-probe.ts": ["UnixRepositoryCredentialControlClient"],
   },
 };
 const rawGlobals = new Set([
@@ -339,8 +339,8 @@ const rawGlobals = new Set([
 ]);
 const reviewedProcessMembers = {
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "drivers/repo/github/credentials/client/environment.ts": ["env"],
-  "drivers/repo/github/credentials/client/git-helper.ts": [
+  "drivers/repo/github/access/client/environment.ts": ["env"],
+  "drivers/repo/github/access/client/git-helper.ts": [
     "argv",
     "env",
     "exit",
@@ -349,39 +349,21 @@ const reviewedProcessMembers = {
     "stdin",
     "stdout",
   ],
-  "drivers/repo/github/credentials/client/launch.ts": [
-    "argv",
-    "env",
-    "exitCode",
-    "off",
-    "on",
-    "stderr",
-  ],
-  "drivers/repo/github/credentials/client/manifest.ts": ["getuid"],
-  "drivers/repo/github/credentials/client/hook-dispatch.ts": [
+  "drivers/repo/github/access/client/launch.ts": ["argv", "env", "exitCode", "off", "on", "stderr"],
+  "drivers/repo/github/access/client/manifest.ts": ["getuid"],
+  "drivers/repo/github/access/client/hook-dispatch.ts": [
     "argv",
     "env",
     "exitCode",
     "stderr",
     "stdin",
   ],
-  "drivers/repo/github/credentials/client/native-git.ts": [
-    "argv",
-    "execPath",
-    "exitCode",
-    "stderr",
-  ],
-  "drivers/repo/github/credentials/client/draft-pr.ts": [
-    "argv",
-    "env",
-    "exitCode",
-    "stderr",
-    "stdout",
-  ],
-  "drivers/repo/github/credentials/client/router.ts": ["argv", "env", "exitCode", "stderr"],
-  "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "drivers/repo/github/credentials/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "drivers/repo/github/credentials/client/private-files.ts": ["getuid"],
+  "drivers/repo/github/access/client/native-git.ts": ["argv", "execPath", "exitCode", "stderr"],
+  "drivers/repo/github/access/client/draft-pr.ts": ["argv", "env", "exitCode", "stderr", "stdout"],
+  "drivers/repo/github/access/client/router.ts": ["argv", "env", "exitCode", "stderr"],
+  "drivers/repo/github/access/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
+  "drivers/repo/github/access/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
+  "drivers/repo/github/access/client/private-files.ts": ["getuid"],
   "composition/repository-credentials/protected-file.ts": ["getuid"],
   "composition/repository-credentials/service.ts": ["exit", "once", "stderr", "stdout"],
   "composition/repository-credentials/projected-inputs.ts": [
@@ -394,7 +376,7 @@ const reviewedProcessMembers = {
   "composition/repository-credentials/probe.ts": ["exitCode"],
   "repository-credentials.ts": ["argv", "exitCode", "stderr", "stdout"],
   "repository-credentials.mjs": ["exitCode", "stderr"],
-  "drivers/repo/credentials/server.ts": ["getuid"],
+  "drivers/repo/access/server.ts": ["getuid"],
   "backends/repository-credentials/control-socket.ts": ["getuid"],
   "backends/repository-credentials/private-request-server.ts": ["getuid"],
 };

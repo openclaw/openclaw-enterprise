@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -461,7 +462,7 @@ func firstPassValues(t *testing.T) []byte {
 	data, err := json.Marshal(map[string]any{
 		"images":                map[string]string{"controller": "controller:dev"},
 		"auth":                  map[string]string{"baseUrl": "https://console.occ-dev-test.oce.localhost:8443"},
-		"agentNativeAdmin":      map[string]any{"enabled": true, "domain": "agents.occ-dev-test.oce.localhost", "sharedCookieDomain": "occ-dev-test.oce.localhost"},
+		"agentNativeAdmin":      map[string]any{"enabled": true, "domain": "agents.occ-dev-test.oce.localhost"},
 		"gatewayRouting":        map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"},
 		"repositoryCredentials": map[string]any{"enabled": true},
 	})
@@ -501,10 +502,9 @@ func TestKeycloakSignInValuesEnableOIDCForTheRecoveryAdministrator(t *testing.T)
 	if got := mustJSON(t, values["auth"]); string(got) != string(mustJSON(t, want)) {
 		t.Fatalf("auth = %s\nwant %s", got, mustJSON(t, want))
 	}
-	// The chart refuses OIDC beside native administration; a leftover shared
-	// cookie domain would not render either.
-	if got, _ := json.Marshal(values["agentNativeAdmin"]); string(got) != `{"enabled":false}` {
-		t.Fatalf("agentNativeAdmin = %s", got)
+	// OIDC preserves the existing native browser routing and shared session hosts.
+	if got := values["agentNativeAdmin"]; !reflect.DeepEqual(got, map[string]any{"domain": "agents.occ-dev-test.oce.localhost", "enabled": true}) {
+		t.Fatalf("agentNativeAdmin = %#v", got)
 	}
 	for _, key := range []string{"images", "gatewayRouting", "repositoryCredentials"} {
 		if values[key] == nil {

@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 // Closed provider-owned schemas. Local tool schemas describe data for the Harness;
 // provider-executed tools and remote references require a different admitted grant.
