@@ -880,7 +880,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits for its runtime. Create Agent opens the Agent at handoff, where Deployment activity names that wait.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result reads “Waiting for the runtime to become ready.”",
+      "Click Create Agent. In the Deployment tab, find the runtime wait under Latest visible deployment. Fold Deployment details and confirm the summary still shows the wait.",
     ],
   },
   createDeploymentPodQuotaFull: {
@@ -897,7 +897,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits on a full Namespace Pod quota. Create Agent opens the Agent at handoff, where Deployment activity explains the quota and what to do.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result explains the full Pod quota.",
+      "Click Create Agent. Read the quota wait and remedy under Latest visible deployment. At phone width, check that they are visible on arrival without scrolling.",
     ],
   },
   createDeploymentImagePullFailed: {
@@ -915,7 +915,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent opens the Agent at handoff, where Deployment activity shows that sentence.",
     steps: [
-      "Click Create Agent. It opens the Agent's Deployment tab, whose last recorded result asks an administrator to check the runtime image reference and registry access.",
+      "Click Create Agent. In Latest visible deployment, read the image-pull wait and the advice to check the runtime image reference and registry access.",
     ],
   },
   createDeploymentSuperseded: {

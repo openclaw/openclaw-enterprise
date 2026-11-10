@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-10
-last_updated_session: authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b
+last_updated_session: authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e
 ---
 
 # Agent provisioning flow
@@ -143,6 +143,10 @@ ends deployment checks for this attempt. If the read is unavailable or times out
 any wait reported by the job and checks the deployment again on the next poll. A 401 sends the
 caller to sign in again. If Create sees job success before opening Deployment, it opens Configuration.
 
+The **Latest visible deployment** summary shows the version's recorded wait, even with Deployment
+details folded. A temporary read failure labels a retained wait as last recorded. A refused read
+clears it.
+
 Admission, status, and retry report the stored client `requestId`.
 If absent or different, Create keeps the original request and any confirmed job.
 `meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
@@ -217,6 +221,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
 
 - 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
 
