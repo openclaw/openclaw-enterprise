@@ -66,7 +66,9 @@ admissions. Existing revisions keep their saved values.
 The OpenShell Gateway installs a provider profile for the approved POST operation.
 The protected request sender admits one route for that operation. The sender needs
 an existing route to the endpoint. A catalog entry does not change Installation
-network policy.
+network policy. OpenShell's default policy checks the resolved IP address. The
+generated profile supplies no private-IP allowance. A private DNS target can
+therefore remain unreachable even when the network routes to it.
 
 ## Deployment overrides
 
@@ -97,7 +99,7 @@ An ordinary deployment without overrides uses current defaults. Console and CLI
 submit overrides directly to admission; retaining previous requested overrides
 submits them explicitly. Console labels the requested URL or inherited default;
 the admitted revision records the resolved destination. Automated image upgrades submit the selected baseline revision's
-requested overrides. First-deployment identity includes normalized overrides;
+requested overrides. A new revision of an Agent with a named provider reads the current provider and credential grant. Retrying an existing revision uses its snapshot. First-deployment identity includes normalized overrides;
 receipt recovery must include the same values. See [Agent revisions](../../../guides/topics/agent-revisions.md).
 
 ## Credential destination authorization
