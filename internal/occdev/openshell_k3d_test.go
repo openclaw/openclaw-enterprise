@@ -303,6 +303,8 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				primary = "routing"
 			case "routing and rollback failure", "routing and probe cleanup failure":
 				primary, cleanupFailed = "routing", true
+			case "controller import failure":
+				primary = "controller-image-import"
 			case "network check failure":
 				primary = "network-verification"
 			case "cleanup failure":

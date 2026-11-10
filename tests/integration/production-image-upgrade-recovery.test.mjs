@@ -143,11 +143,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   };
 
   // Unless a case selects the real chart, a stand-in renders only what the startup
-  // preflight reads: each controller container's image and Installation mount.
+  // preflight reads: controller images, Installation mounts, and initializer identity.
   async function standInChart(
     file,
     policy,
-    recoveryHooks = false,
     initializationResources,
     ordinary = [],
     installationCheck = false,
@@ -206,102 +205,107 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       deployment("api", "containers"),
       deployment("worker", repositoryEnabled ? "initContainers" : "containers"),
       ...ordinary,
-      ...(recoveryHooks
-        ? [
-            {
-              apiVersion: "batch/v1",
-              kind: "Job",
-              metadata: {
-                name: "oce-initialization",
-                annotations: {
-                  "helm.sh/hook": "pre-install,pre-upgrade",
-                  "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
-                },
+      {
+        apiVersion: "batch/v1",
+        kind: "Job",
+        metadata: {
+          name: "oce-initialization",
+          labels: {
+            "app.kubernetes.io/instance": "oce",
+            "app.kubernetes.io/component": "initialization",
+          },
+          annotations: {
+            "helm.sh/hook": "pre-install,pre-upgrade",
+            "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
+          },
+        },
+        spec: {
+          backoffLimit: 0,
+          template: {
+            metadata: {
+              labels: {
+                "app.kubernetes.io/instance": "oce",
+                "app.kubernetes.io/component": "initialization",
               },
-              spec: {
-                backoffLimit: 0,
-                template: {
-                  metadata: {
-                    annotations: {
-                      "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
-                    },
-                  },
-                  spec: {
-                    restartPolicy: "Never",
-                    ...(installationCheck
-                      ? {
-                          volumes: [
-                            {
-                              name: "installation-startup",
-                              secret: { secretName, items: [{ key, path: "installation.yaml" }] },
-                            },
-                          ],
-                        }
-                      : {}),
-                    securityContext: {
-                      runAsUser: 1000,
-                      runAsGroup: 1000,
-                      runAsNonRoot: true,
-                      seccompProfile: { type: "RuntimeDefault" },
-                    },
-                    containers: [
-                      {
-                        name: "bootstrap",
-                        image,
-                        args: ["scripts/bootstrap-installation.mjs"],
-                        ...(initializationResources ? { resources: initializationResources } : {}),
-                        securityContext: { capabilities: { drop: ["ALL"] } },
-                      },
-                    ],
-                    initContainers: [
-                      ...(installationCheck
-                        ? [
-                            {
-                              name: "installation-check",
-                              image,
-                              env: [
-                                {
-                                  name: "OCC_CONFIG_PATH",
-                                  value: "/etc/openclaw/installation/installation.yaml",
-                                },
-                              ],
-                              volumeMounts: [
-                                {
-                                  name: "installation-startup",
-                                  mountPath: "/etc/openclaw/installation",
-                                  readOnly: true,
-                                },
-                              ],
-                              command: ["node"],
-                              args: [
-                                "--input-type=module",
-                                "-e",
-                                readFileSync(
-                                  join(
-                                    repository,
-                                    "deploy/helm/openclaw-enterprise/files/check-installation.mjs",
-                                  ),
-                                  "utf8",
-                                ),
-                              ],
-                              securityContext: { capabilities: { drop: ["ALL"] } },
-                            },
-                          ]
-                        : []),
-                      {
-                        name: "migration",
-                        image,
-                        args: ["scripts/migrate-production.mjs"],
-                        ...(initializationResources ? { resources: initializationResources } : {}),
-                        securityContext: { capabilities: { drop: ["ALL"] } },
-                      },
-                    ],
-                  },
-                },
+              annotations: {
+                "openclaw.dev/upgrade-attempt": values.installation.upgradeAttemptId,
               },
             },
-          ]
-        : []),
+            spec: {
+              restartPolicy: "Never",
+              serviceAccountName: "openclaw-enterprise-initialization",
+              ...(installationCheck
+                ? {
+                    volumes: [
+                      {
+                        name: "installation-startup",
+                        secret: { secretName, items: [{ key, path: "installation.yaml" }] },
+                      },
+                    ],
+                  }
+                : {}),
+              securityContext: {
+                runAsUser: 1000,
+                runAsGroup: 1000,
+                runAsNonRoot: true,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "bootstrap",
+                  image,
+                  args: ["scripts/bootstrap-installation.mjs"],
+                  ...(initializationResources ? { resources: initializationResources } : {}),
+                  securityContext: { capabilities: { drop: ["ALL"] } },
+                },
+              ],
+              initContainers: [
+                ...(installationCheck
+                  ? [
+                      {
+                        name: "installation-check",
+                        image,
+                        env: [
+                          {
+                            name: "OCC_CONFIG_PATH",
+                            value: "/etc/openclaw/installation/installation.yaml",
+                          },
+                        ],
+                        volumeMounts: [
+                          {
+                            name: "installation-startup",
+                            mountPath: "/etc/openclaw/installation",
+                            readOnly: true,
+                          },
+                        ],
+                        command: ["node"],
+                        args: [
+                          "--input-type=module",
+                          "-e",
+                          readFileSync(
+                            join(
+                              repository,
+                              "deploy/helm/openclaw-enterprise/files/check-installation.mjs",
+                            ),
+                            "utf8",
+                          ),
+                        ],
+                        securityContext: { capabilities: { drop: ["ALL"] } },
+                      },
+                    ]
+                  : []),
+                {
+                  name: "migration",
+                  image,
+                  args: ["scripts/migrate-production.mjs"],
+                  ...(initializationResources ? { resources: initializationResources } : {}),
+                  securityContext: { capabilities: { drop: ["ALL"] } },
+                },
+              ],
+            },
+          },
+        },
+      },
       ...(policy
         ? [
             {
@@ -327,6 +331,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const scripted = state.preflightResults?.[pod.spec.containers[0].name];
     if (scripted) {
       return scripted;
+    }
+    // This command fixture has no migrator database. Only the API and worker
+    // execute source; the installed migration test owns real database proof.
+    // providerCompleted is a supported earlier receipt lineage with migrations pending.
+    if (pod.spec.containers[0].name === "migration") {
+      return {
+        phase: "Succeeded",
+        log: '{"event":"migration.checked","history":"providerCompleted"}\n',
+      };
     }
     if (!state.startupCheck) {
       const drafts = pod.spec.containers[0].env?.some(
@@ -540,7 +553,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                 ...(state.recoveryHooks && !state.recoveryRelease
                   ? {
                       manifest:
-                        (await standInChart(join(root, "live-values"), false)) +
+                        yamlDocuments(await standInChart(join(root, "live-values"), false))
+                          .map(loadYaml)
+                          .filter((object) => !object.metadata?.annotations?.["helm.sh/hook"])
+                          .map((object) => "---\n" + JSON.stringify(object) + "\n")
+                          .join("") +
                         (state.recoveryBaselineResources ?? [])
                           .map((item) => "---\n" + JSON.stringify(item) + "\n")
                           .join(""),
@@ -568,7 +585,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           await standInChart(
             fileArg("--values"),
             state.preflightPolicy,
-            state.recoveryHooks,
             state.initializationResources,
             state.recoveryCandidateResources,
             Boolean(state.installationSuccessor),
@@ -621,7 +637,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           const rendered = await standInChart(
             fileArg("--values"),
             state.preflightPolicy,
-            true,
             state.initializationResources,
             state.recoveryCandidateResources,
             true,
@@ -1083,6 +1098,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           const escaped = Buffer.from(object.log).toString("hex").replace(/../g, "\\x$&");
           return io.script(`printf '%b' ${bashString(escaped)}; exit 0`);
         }
+        if (args.includes("logs") && object.logWarning) {
+          io.stderr(object.logWarning);
+        }
         out(
           args.includes("logs")
             ? object.log
@@ -1091,6 +1109,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                 ...(kind === "pod" ? { status: object.status ?? { phase: object.phase } } : {}),
               },
         );
+        if (args.includes("logs") && object.logExitCode) {
+          return io.exit(object.logExitCode);
+        }
       } else if (
         args.includes("get") &&
         args.includes("pods") &&
@@ -2764,6 +2785,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         assert.equal((await f.state()).worker, 0);
         assert.equal(existsSync(join(f.evidence, "helm-started")), false);
         await f.run("--resume");
+        const [retry] = (await readdir(f.evidence)).filter((name) =>
+          name.startsWith("migration-preflight-resume."),
+        );
+        assert.ok(existsSync(join(f.evidence, retry, "migration-preflight-passed")));
         assert.equal((await f.state()).inventoryReadCount, count);
         assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
         assert.equal((await f.state()).dispatches, 0);
@@ -3443,8 +3468,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const secret = prepared.preflight.requested.find((object) => object.kind === "Secret");
     assert.equal(Buffer.from(secret.data["installation.yaml"], "base64").toString(), f.staged);
     const jobs = prepared.preflight.requested.filter((object) => object.kind === "Job");
-    assert.equal(jobs.length, 2);
-    for (const job of jobs) {
+    assert.equal(jobs.length, 3);
+    for (const job of jobs.filter(
+      (job) => job.spec.template.spec.containers[0].name !== "migration",
+    )) {
       assert.ok(
         job.spec.template.spec.volumes.some(
           (volume) => volume.secret?.secretName === secret.metadata.name,
@@ -3527,7 +3554,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         await assertStoppedBeforeWriters(f);
         const after = await f.state();
         assert.equal(after[key].metadata.uid, state[key].metadata.uid + "-replacement");
-        assert.equal(after.preflight.logRequests.length, 2);
+        assert.equal(after.preflight.logRequests.length, 3);
         for (const kind of ["jobs", "pods", "secrets", "networkpolicies"]) {
           assert.deepEqual(
             after.preflight[kind],
@@ -4252,6 +4279,34 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal((await f.state()).worker, 1);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
     assert.deepEqual(await f.events(), ["scale-api"]);
+    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"), "utf8");
+    // Compatibility can change after preparation. A fresh refusal on resume must
+    // leave the remaining writer running and preserve the original check's evidence.
+    const state = await f.state();
+    state.preflightResults = {
+      migration: { phase: "Failed", log: "migration history changed\n" },
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run("--resume"), /could not confirm database migration compatibility/);
+    assert.equal((await f.state()).worker, 1);
+    assert.equal((await f.state()).version, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal(await readFile(path, "utf8"), receipt);
+    assert.equal(
+      await readFile(join(f.evidence, "preflight-migration.log"), "utf8"),
+      originalCheck,
+    );
+    const [retry] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight-resume."),
+    );
+    assert.ok(retry);
+    assert.equal(
+      await readFile(join(f.evidence, retry, "preflight-migration.log"), "utf8"),
+      "migration history changed\n",
+    );
+    const retryState = await f.state();
+    delete retryState.preflightResults.migration;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(retryState));
     // A later failed attempt appends its observation instead of erasing the first.
     await f.failNext("fail-scale-worker");
     await assert.rejects(f.run("--resume"), injectedFault);
@@ -4259,6 +4314,91 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await f.run("--resume");
     assert.equal(await readFile(path, "utf8"), receipt + receipt);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+    assert.equal(
+      (await readdir(f.evidence)).filter((name) => name.startsWith("migration-preflight-resume."))
+        .length,
+      3,
+    );
+    assert.deepEqual((await f.state()).preflight.jobs, {});
+  });
+
+  test("a helper PID signal during resumed migration preserves its acknowledged resources", async (t) => {
+    // Arm the real signal only after a partial stop. Signalling the process group
+    // would hide a resume subshell that continues running after its parent is signalled.
+    const fault = { mode: null };
+    const f = await fixture(t, { preflightFault: fault });
+    await f.failNext("fail-scale-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const before = await f.state();
+    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
+    fault.mode = "interrupt";
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal(failure.code, 143);
+    assert.match(failure.stderr, /upgrade interrupted/);
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    const [retry] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight-resume."),
+    );
+    assert.ok(retry);
+    const state = await f.state();
+    assert.deepEqual(
+      state.preflight.deleted,
+      before.preflight.deleted,
+      "interruption must not delete the resumed migration Job or Pod",
+    );
+    const records = await preflightIdentities({ evidence: join(f.evidence, retry) });
+    assert.equal(records.length, 1, "the migration Job was acknowledged before observation");
+    assert.deepEqual(records, state.preflight.created.slice(before.preflight.created.length));
+    assert.equal(Object.keys(state.preflight.jobs).length, 1);
+    assert.equal(Object.keys(state.preflight.pods).length, 1);
+    assert.equal(state.api, 0);
+    assert.equal(state.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
+    const f = await fixture(t);
+    await f.failNext("fail-scale-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const before = await f.state();
+    const originalParameters = await readFile(join(f.evidence, "parameters.json"));
+    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
+    const originalFailures = await readFile(join(f.evidence, "native-command-failures.tsv"));
+    before.preflightFault = { target: "migration", mode: "lost" };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(before));
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal(failure.code, 1);
+    assert.match(failure.stderr, /ownership unconfirmed/);
+    assert.doesNotMatch(failure.stderr, /fresh evidence directory|This run stopped no OCC writer/);
+    assert.match(failure.stderr, /reconcil[ei].*--resume.*original evidence directory/i);
+    const [retry] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight-resume."),
+    );
+    assert.ok(retry);
+    assert.ok(failure.stderr.includes(join(f.evidence, retry)));
+    assert.ok(failure.stderr.includes(f.evidence));
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    assert.deepEqual(await readFile(join(f.evidence, "parameters.json")), originalParameters);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.deepEqual(
+      await readFile(join(f.evidence, "native-command-failures.tsv")),
+      originalFailures,
+    );
+    const state = await f.state();
+    assert.equal(
+      Object.keys(state.preflight.jobs).length,
+      1,
+      "unknown Job must not be deleted by name",
+    );
+    assert.equal(Object.keys(state.preflight.pods).length, 1);
+    assert.deepEqual(await preflightIdentities({ evidence: join(f.evidence, retry) }), []);
+    assert.deepEqual(state.preflight.deleted, before.preflight.deleted);
+    assert.equal(state.api, 0);
+    assert.equal(state.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
   test("quiescence refuses a worker changed after observation and preserves partial recovery", async (t) => {
@@ -6050,7 +6190,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
               const state = await assertStoppedBeforeWriters(f);
               assert.deepEqual(
                 state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(),
-                ["job.batch", "job.batch", "networkpolicy.networking.k8s.io", "secret"],
+                [
+                  "job.batch",
+                  "job.batch",
+                  "job.batch",
+                  "networkpolicy.networking.k8s.io",
+                  "secret",
+                ],
               );
               assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), failure);
               assert.match(
@@ -6091,7 +6237,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         error.stderr,
       ),
     );
-    // The temporary NetworkPolicy, Secret and both Pods are removed after the refusal.
+    // All three preflight Jobs and their dependencies are removed after the refusal.
     const state = await assertStoppedBeforeWriters(f);
     // Both components fail the same way, and both logs are saved (finding 447).
     for (const component of ["api", "worker"]) {
@@ -6101,6 +6247,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       );
     }
     assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
+      "job.batch",
       "job.batch",
       "job.batch",
       "networkpolicy.networking.k8s.io",
@@ -6494,6 +6641,29 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     );
   });
 
+  test("preprovisioned Namespace canaries refuse image upgrades before cluster access", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    const path = join(f.directory, "values.json");
+    const values = await yamlFile(path);
+    values.preprovisionedNamespace = {
+      namespaceId: continuityNamespace,
+      uid: "0f4c2a9e-6b1d-4c3e-9a7f-2d5e8b1c4a60",
+    };
+    await writeFile(path, JSON.stringify(values));
+    await writeFile(join(f.directory, "live-values"), JSON.stringify(values));
+    // This closed canary omits the chart-owned initializer and migrator identity;
+    // the upgrade must refuse before it creates any preflight workload.
+    await assert.rejects(
+      f.run("--preflight-only"),
+      /production image upgrades require the chart initialization Job; preprovisioned Namespace canaries manage database upgrades separately/,
+    );
+    assert.ok(!f.commands.includes("kubectl"));
+    assert.ok(!f.commands.includes("occ"));
+    assert.deepEqual(await f.events(), []);
+    const state = await f.state();
+    assert.deepEqual([state.api, state.worker, state.version], [1, 1, 1]);
+  });
+
   // The helper waits for every preflight Pod and saves its status and log before it
   // reports, so a refusal names each failing component, not only the first.
   test("a failed startup preflight reports and saves every component before cleanup", async (t) => {
@@ -6509,6 +6679,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           },
         },
         worker: { phase: "Failed", log: "loading drivers\nworker cannot load the Installation\n" },
+        migration: { phase: "Failed", log: "migration history is inconsistent\n" },
       },
     });
     await assert.rejects(f.run(), (error) => {
@@ -6520,13 +6691,18 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         error.stderr,
         /cannot start the worker with the candidate Installation: loading drivers worker cannot load the Installation No OCC writer was stopped/,
       );
+      assert.match(error.stderr, /could not confirm database migration compatibility/);
       return true;
     });
     const status = JSON.parse(
       await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"),
     );
     assert.equal(status.status.containerStatuses[0].state.waiting.reason, "ImagePullBackOff");
-    assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), /waiting to start/);
+    assert.match(
+      await readFile(join(f.evidence, "preflight-api-logs.err"), "utf8"),
+      /waiting to start/,
+    );
+    assert.equal((await readFile(join(f.evidence, "preflight-api.log"), "utf8")).trim(), "");
     assert.equal(
       JSON.parse(await readFile(join(f.evidence, "preflight-worker-status.json"), "utf8")).status
         .phase,
@@ -6535,6 +6711,15 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(
       await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
       "loading drivers\nworker cannot load the Installation\n",
+    );
+    assert.equal(
+      await readFile(join(f.evidence, "preflight-migration.log"), "utf8"),
+      "migration history is inconsistent\n",
+    );
+    assert.equal(
+      JSON.parse(await readFile(join(f.evidence, "preflight-migration-status.json"), "utf8")).status
+        .phase,
+      "Failed",
     );
     const state = await f.state();
     assert.equal(state.api, 1);
@@ -6545,6 +6730,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual(state.preflight.pods, {});
     assert.deepEqual(state.preflight.jobs, {});
     assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
+      "job.batch",
       "job.batch",
       "job.batch",
       "secret",
@@ -6562,6 +6748,70 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run("--preflight-only"), /cannot read the api startup preflight logs/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
+  });
+
+  test("kubectl log warnings do not reject a valid migration check", async (t) => {
+    const log = 'Starting migration check\n{"event":"migration.checked","history":"completed"}\n';
+    const warning = "Warning: API server warning accompanying successful logs\n";
+    const f = await fixture(t, {
+      preflightResults: { migration: { phase: "Succeeded", log, logWarning: warning } },
+    });
+    // Container output and successful kubectl diagnostics are independent streams.
+    // The real helper must find the check record without accepting a wrong marker.
+    await f.run("--preflight-only");
+    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
+    assert.equal(await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"), warning);
+    assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+    assert.equal((await f.state()).api, 1);
+    assert.equal((await f.state()).worker, 1);
+    assert.deepEqual((await f.state()).preflight.jobs, {});
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("a failed kubectl log read cannot authorize migration from partial stdout", async (t) => {
+    const log = '{"event":"migration.checked","history":"completed"}\n';
+    const f = await fixture(t, {
+      preflightResults: {
+        migration: {
+          phase: "Succeeded",
+          log,
+          logWarning: "log stream interrupted\n",
+          logExitCode: 1,
+        },
+      },
+    });
+    // A check marker received before a failed log request is not a successful observation.
+    await assert.rejects(
+      f.run("--preflight-only"),
+      /cannot read the migration startup preflight logs/,
+    );
+    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
+    assert.match(
+      await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"),
+      /log stream interrupted/,
+    );
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    await assertStoppedBeforeWriters(f);
+    assert.deepEqual((await f.state()).preflight.jobs, {});
+  });
+
+  test("a completed migration preflight without a valid check result leaves writers running", async (t) => {
+    for (const log of [
+      '{"event":"migration.completed","history":"providerCompleted"}\n',
+      '{"event":"migration.checked","history":null}\n',
+    ]) {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        preflightResults: { migration: { phase: "Succeeded", log } },
+      });
+      await assert.rejects(
+        f.run("--preflight-only"),
+        /migration preflight succeeded without migration.checked/,
+      );
+      assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+      await assertStoppedBeforeWriters(f);
+      assert.deepEqual((await f.state()).preflight.jobs, {});
+    }
   });
 
   test("a preflight Pod that outlives the timeout does not hide another component's failure", async (t) => {
@@ -6608,9 +6858,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       t.skip("helm is unavailable to render the real chart");
       return;
     }
-    // Truncating this valid release at 29 characters leaves a dot; derived Job
+    // Truncating this valid release at 26 characters leaves a dot; derived Job
     // names must still meet Kubernetes admission rules after their suffix is added.
-    const release = `${"a".repeat(28)}.b`;
+    const release = `${"a".repeat(25)}.b`;
     const f = await fixture(t, {
       controllerOnly: true,
       release,
@@ -6627,7 +6877,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual(state.preflight.pods, {});
     assert.deepEqual(state.preflight.jobs, {});
     const jobs = state.preflight.created.filter((resource) => resource.kind === "job.batch");
-    assert.equal(jobs.length, 2);
+    assert.equal(jobs.length, 3);
     for (const { name } of jobs) {
       assert.ok(name.length <= 63, "Kubernetes Job names cannot exceed 63 characters");
       assert.match(name, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/);
@@ -6682,6 +6932,49 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       ),
       "the upgrade initialization Job includes the installation-check init container",
     );
+    const migrationJob = JSON.parse(
+      await readFile(join(f.evidence, "preflight-migration-job.json"), "utf8"),
+    );
+    const migrationPod = migrationJob.spec.template;
+    const initializer = initialization.spec.template.spec;
+    const migration = initializer.initContainers.find(
+      (container) => container.name === "migration",
+    );
+    // The read-only check uses the actual chart's migrator Secret, CA and Pod identity,
+    // without replaying bootstrap or the initializer's schema-changing command.
+    assert.equal(migrationPod.spec.containers.length, 1);
+    assert.equal(migrationPod.spec.initContainers, undefined);
+    assert.deepEqual(migrationPod.spec.containers[0], {
+      ...migration,
+      command: ["node"],
+      args: ["scripts/migrate-production.mjs", "--check"],
+    });
+    assert.ok(
+      migration.env.some(
+        (variable) =>
+          variable.name === "OCC_MIGRATION_DATABASE_URL" && variable.valueFrom?.secretKeyRef,
+      ),
+    );
+    assert.equal(migrationPod.spec.serviceAccountName, initializer.serviceAccountName);
+    assert.equal(
+      migrationPod.spec.automountServiceAccountToken,
+      initializer.automountServiceAccountToken,
+    );
+    assert.deepEqual(migrationPod.spec.securityContext, initializer.securityContext);
+    assert.deepEqual(migrationPod.metadata.labels, initialization.spec.template.metadata.labels);
+    assert.deepEqual(
+      migrationPod.spec.volumes,
+      initializer.volumes.filter((volume) =>
+        migration.volumeMounts.some((mount) => mount.name === volume.name),
+      ),
+    );
+    assert.ok(
+      migrationPod.spec.volumes.some((volume) => volume.name === "database-ca" && volume.secret),
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "preflight-migration.log"), "utf8")),
+      { event: "migration.checked", history: "providerCompleted" },
+    );
     assert.deepEqual(
       policy.spec.egress,
       rendered.find(
@@ -6716,6 +7009,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.match(
       await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
       /^agent-drafts-accepted$/m,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "preflight-migration.log"), "utf8")),
+      { event: "migration.checked", history: "providerCompleted" },
     );
     assert.equal(existsSync(join(f.evidence, "prepared")), false);
     await assert.rejects(f.run("--resume"), /not a prepared deployment/);
@@ -7041,7 +7338,16 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   // Read only the fixed identity records, never manifests or create stdout.
   async function preflightIdentities(f) {
     const records = [];
-    for (const slot of ["networkpolicy", "secret", "api", "worker", "api-pod", "worker-pod"]) {
+    for (const slot of [
+      "networkpolicy",
+      "secret",
+      "api",
+      "worker",
+      "migration",
+      "api-pod",
+      "worker-pod",
+      "migration-pod",
+    ]) {
       const filename = join(f.evidence, `preflight-${slot}-identity.json`);
       let handle;
       try {
@@ -7092,12 +7398,12 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
     const state = await f.state();
     const records = await preflightIdentities(f);
-    assert.equal(records.length, 4);
+    assert.equal(records.length, 5);
     assert.equal(statSync(f.evidence).mode & 0o777, 0o700);
     assert.ok(!(await readdir(f.evidence)).some((name) => name.endsWith("-identity.json.tmp")));
     assert.deepEqual(records, state.preflight.created);
     assert.equal(records.find((record) => record.kind === "secret").uid, uid);
-    assert.equal(new Set(records.map((record) => record.uid)).size, 4);
+    assert.equal(new Set(records.map((record) => record.uid)).size, 5);
     assert.deepEqual(state.preflight.deleted, []);
     const secret = Object.values(state.preflight.secrets)[0];
     for (const value of Object.values(secret.data)) {
@@ -7295,7 +7601,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       records.find((record) => record.name === replacement.metadata.name).uid,
       replacement.metadata.uid,
     );
-    assert.equal(state.preflight.deleted.length, 1, "the other acknowledged Job is cleaned");
+    assert.equal(state.preflight.deleted.length, 2, "the other acknowledged Jobs are cleaned");
     assert.equal(Object.keys(state.preflight.pods).length, 1, "the original Job child remains");
     assert.equal(Object.keys(state.preflight.secrets).length, 1);
     assert.equal(Object.keys(state.preflight.networkpolicies).length, 1);
@@ -7329,7 +7635,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /primary startup failure/);
     assert.equal(Object.values(state.preflight.secrets).length, 1);
-    assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
+    assert.equal(state.preflight.deleted.length, 4, "cleanup continues for other owned objects");
     assert.match(
       failure.stderr,
       /could not confirm cleanup of secret\/[^:]+: the delete request failed; see preflight-cleanup\.err in the evidence directory\./,
@@ -7358,14 +7664,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     const failure = await f.run().catch((error) => error);
     const state = await f.state();
     assert.equal(failure.code, 1);
-    assert.equal(Object.values(state.preflight.pods).length, 2);
-    assert.equal(Object.keys(state.preflight.jobs).length, 2);
+    assert.equal(Object.values(state.preflight.pods).length, 3);
+    assert.equal(Object.keys(state.preflight.jobs).length, 3);
     assert.equal(Object.keys(state.preflight.secrets).length, 1);
     assert.equal(Object.keys(state.preflight.networkpolicies).length, 1);
     assert.deepEqual(state.preflight.deleted, []);
     assert.match(failure.stderr, /retained the candidate Secret and NetworkPolicy/);
     const errors = await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8");
-    for (const component of ["api", "worker"]) {
+    for (const component of ["api", "worker", "migration"]) {
       assert.match(
         failure.stderr,
         new RegExp(
@@ -7423,7 +7729,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.equal(Object.keys(state.preflight.networkpolicies).length, 1);
     assert.deepEqual(
       state.preflight.deleted.map((resource) => resource.split("/")[0]),
-      ["job.batch", "job.batch"],
+      ["job.batch", "job.batch", "job.batch"],
     );
     assert.match(
       await readFile(join(f.evidence, "preflight-cleanup.err"), "utf8"),

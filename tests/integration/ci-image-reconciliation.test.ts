@@ -14,7 +14,54 @@ const prepare = join(root, "scripts/ci/prepare.mjs");
 const cleanup = join(root, "scripts/ci/cleanup.mjs");
 const exporter = join(root, "scripts/ci/export-image-reconciliation.mjs");
 
-function run(script, args, env) {
+type ImageResource = { id: string; name: string; status: string };
+type ImageState = {
+  prefix: string;
+  ciRun?: unknown;
+  resources: ImageResource[];
+  env?: Record<string, string>;
+};
+
+function isImageResource(resource: unknown): resource is ImageResource {
+  return (
+    typeof resource === "object" &&
+    resource !== null &&
+    "id" in resource &&
+    typeof resource.id === "string" &&
+    "name" in resource &&
+    typeof resource.name === "string" &&
+    "status" in resource &&
+    typeof resource.status === "string"
+  );
+}
+
+function assertImageState(state: unknown): asserts state is ImageState {
+  assert.ok(typeof state === "object" && state !== null);
+  assert.ok("prefix" in state && typeof state.prefix === "string");
+  assert.ok(
+    "resources" in state &&
+      Array.isArray(state.resources) &&
+      state.resources.every(isImageResource),
+  );
+}
+
+function parseImageState(text: string): ImageState {
+  const state: unknown = JSON.parse(text);
+  assertImageState(state);
+  return state;
+}
+
+function assertImageRecord(record: unknown): asserts record is Record<string, unknown> {
+  assert.ok(typeof record === "object" && record !== null && !Array.isArray(record));
+}
+
+function parseImageRecord(text: string): Record<string, unknown> {
+  const record: unknown = JSON.parse(text);
+  assertImageRecord(record);
+  return record;
+}
+
+function run(script: string, args: string[], env: NodeJS.ProcessEnv) {
   return spawnSync(process.execPath, [script, ...args], {
     cwd: root,
     encoding: "utf8",
@@ -45,7 +92,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     ["images-runtime-startup", ["runtime"]],
     ["images-runtime-startup-2", ["runtime"]],
     ["images-runtime-startup-3", ["runtime"]],
-  ]) {
+  ] satisfies [string, string[]][]) {
     const statePath = join(directory, `${lane}.json`);
     await rm(commandsPath, { force: true });
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
@@ -68,7 +115,13 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);
-    const calls = await readJsonLines(commandsPath);
+    const calls: unknown[] = await readJsonLines(commandsPath);
+    assert.ok(
+      calls.every(
+        (args): args is string[] =>
+          Array.isArray(args) && args.every((arg: unknown) => typeof arg === "string"),
+      ),
+    );
     // Each lane first probes for an image the engine already holds; the
     // failed probe falls back to the loading build.
     const builds = calls.filter((args) => args.includes("--load"));
@@ -87,8 +140,9 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       assert.equal(args.includes("--cache-to"), false);
     }
     const state = await readFile(statePath, "utf8");
-    assert.equal(JSON.parse(state).resources.length, roles.length);
-    assert.ok(JSON.parse(state).resources.every(({ status }) => status === "planned"));
+    const parsedState = parseImageState(state);
+    assert.equal(parsedState.resources.length, roles.length);
+    assert.ok(parsedState.resources.every(({ status }) => status === "planned"));
     assert.doesNotMatch(
       JSON.stringify(builds) + state + result.stdout + result.stderr,
       /synthetic-cache-credential/,
@@ -116,7 +170,7 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
   const preparation = run(prepare, ["--lane", "images-packaging", "--state", statePath], env);
   assert.notEqual(preparation.status, 0);
   assert.equal(preparation.error, undefined);
-  const state = JSON.parse(await readFile(statePath, "utf8"));
+  const state = parseImageState(await readFile(statePath, "utf8"));
   assert.deepEqual(state.ciRun, { id: "12345", attempt: "2" });
   // Both tags are recorded before the builds start together, so each stays planned.
   assert.equal(state.resources.length, 2, preparation.stderr);
@@ -125,6 +179,8 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
     .digest("hex")
     .slice(0, 17);
   const [image, runtimeImage] = state.resources;
+  assert.ok(image);
+  assert.ok(runtimeImage);
   assert.match(
     image.name,
     new RegExp(`^localhost/openclaw-ci-image-${label}-[a-f0-9]{12}/controller:local$`),
@@ -139,7 +195,7 @@ test("failed image preparation and cleanup retain a sanitized attempt-bound tag"
   assert.equal(cleaned.error, undefined);
   const exported = run(exporter, [statePath, directory], env);
   assert.equal(exported.status, 0, exported.stderr);
-  const record = JSON.parse(await readFile(join(directory, "images-12345-2.json"), "utf8"));
+  const record = parseImageRecord(await readFile(join(directory, "images-12345-2.json"), "utf8"));
   assert.deepEqual(
     record.images,
     [image, runtimeImage].map(({ id, name }) => ({ id, name, status: "planned" })),
@@ -215,7 +271,7 @@ test("missing state remains unavailable and each attempt is retained separately"
     const env = { GITHUB_RUN_ID: "12345", GITHUB_RUN_ATTEMPT: attempt };
     const result = run(exporter, [statePath, directory], env);
     assert.equal(result.status, 0, result.stderr);
-    const record = JSON.parse(
+    const record = parseImageRecord(
       await readFile(join(directory, `images-12345-${attempt}.json`), "utf8"),
     );
     assert.equal(record.state, "unavailable");
@@ -307,7 +363,7 @@ test("prepared image records require string IDs, unique roles and one tag base",
   );
   const result = run(exporter, [statePath, directory], env);
   assert.equal(result.status, 0, result.stderr);
-  const record = JSON.parse(await readFile(join(directory, "images-12345-2.json"), "utf8"));
+  const record = parseImageRecord(await readFile(join(directory, "images-12345-2.json"), "utf8"));
   assert.deepEqual(
     record.images,
     [controller, runtime].map(({ id, name, status }) => ({ id, name, status })),

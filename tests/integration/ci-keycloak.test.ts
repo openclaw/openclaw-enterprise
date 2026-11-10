@@ -3,22 +3,96 @@ import { execFile, spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.mjs";
+import {
+  keycloakRealmFile,
+  prepareKeycloak as prepareKeycloakJs,
+} from "../../scripts/ci/keycloak.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
 
-function fixture(t) {
+type Realm = {
+  clients: { secret: string; redirectUris: string[]; attributes: Record<string, unknown> }[];
+  users: { username: string; credentials: { value: string }[] }[];
+};
+
+function assertRealm(realm: unknown): asserts realm is Realm {
+  assert.ok(typeof realm === "object" && realm !== null);
+  assert.ok("clients" in realm && Array.isArray(realm.clients));
+  const clients: unknown[] = realm.clients;
+  for (const client of clients) {
+    assert.ok(typeof client === "object" && client !== null);
+    assert.ok("secret" in client && typeof client.secret === "string");
+    assert.ok(
+      "redirectUris" in client &&
+        Array.isArray(client.redirectUris) &&
+        client.redirectUris.every((uri: unknown) => typeof uri === "string"),
+    );
+    assert.ok(
+      "attributes" in client &&
+        typeof client.attributes === "object" &&
+        client.attributes !== null &&
+        !Array.isArray(client.attributes),
+    );
+  }
+  assert.ok("users" in realm && Array.isArray(realm.users));
+  const users: unknown[] = realm.users;
+  for (const user of users) {
+    assert.ok(
+      typeof user === "object" &&
+        user !== null &&
+        "username" in user &&
+        typeof user.username === "string",
+    );
+    assert.ok(
+      "credentials" in user &&
+        Array.isArray(user.credentials) &&
+        user.credentials.every(
+          (credential: unknown) =>
+            typeof credential === "object" &&
+            credential !== null &&
+            "value" in credential &&
+            typeof credential.value === "string",
+        ),
+    );
+  }
+}
+
+function parseRealm(text: string): Realm {
+  const realm: unknown = JSON.parse(text);
+  assertRealm(realm);
+  return realm;
+}
+
+type KeycloakResource = { name: string; directory: string };
+type PrepareKeycloakOptions = {
+  stateDirectory: string;
+  name: string;
+  realmFile?: string;
+  execFile: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  ensureImage: () => Promise<void>;
+  portAccepts: () => Promise<boolean>;
+  reservePort: () => Promise<number>;
+  registerResource: (resource: KeycloakResource) => Promise<KeycloakResource>;
+  saveState: () => Promise<void>;
+  lookupAll?: () => Promise<{ address: string }[]>;
+  log?: () => void;
+};
+const prepareKeycloak = prepareKeycloakJs as typeof prepareKeycloakJs &
+  ((options: PrepareKeycloakOptions) => ReturnType<typeof prepareKeycloakJs>);
+
+function fixture(t: TestContext) {
   return temporaryDirectory(t, "ci-keycloak-test-");
 }
 
 test("the Keycloak realm fixture holds no secret", async () => {
-  const realm = JSON.parse(await readFile(keycloakRealmFile, "utf8"));
+  const realm = parseRealm(await readFile(keycloakRealmFile, "utf8"));
   const [client] = realm.clients;
+  assert.ok(client);
   // Every credential is a placeholder that preparation fills from per-run values.
   assert.match(client.secret, /^\$\{[A-Z_]+\}$/);
   assert.deepEqual(
@@ -36,26 +110,28 @@ test("the Keycloak realm fixture holds no secret", async () => {
 
 test("Keycloak preparation refuses an unset realm placeholder before starting a container", async (t) => {
   const root = await fixture(t);
-  const realm = JSON.parse(await readFile(keycloakRealmFile, "utf8"));
-  realm.clients[0].attributes["post.logout.redirect.uris"] = "${OCE_KEYCLOAK_UNSET_FOR_TEST}";
+  const realm = parseRealm(await readFile(keycloakRealmFile, "utf8"));
+  const [client] = realm.clients;
+  assert.ok(client);
+  client.attributes["post.logout.redirect.uris"] = "${OCE_KEYCLOAK_UNSET_FOR_TEST}";
   const realmFile = join(root, "realm.json");
   await writeFile(realmFile, JSON.stringify(realm));
-  const commands = [];
-  const resources = [];
+  const commands: string[][] = [];
+  const resources: KeycloakResource[] = [];
   // Keycloak would import the unset placeholder as literal text, so the lane must stop.
   await assert.rejects(
     prepareKeycloak({
       stateDirectory: root,
       name: "openclaw-ci-kc-test-0123456789ab",
       realmFile,
-      execFile: async (command, args) => {
+      execFile: async (command: string, args: string[]) => {
         commands.push([command, ...args]);
         return { stdout: "", stderr: "" };
       },
       ensureImage: async () => {},
       portAccepts: async () => false,
       reservePort: async () => 40443,
-      registerResource: async (details) => {
+      registerResource: async (details: KeycloakResource) => {
         resources.push(details);
         return details;
       },
@@ -113,10 +189,10 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
     [["127.0.0.1", "::1"], true],
     [["127.0.0.1", "192.0.2.1"], false],
     [["::1"], false],
-  ]) {
+  ] satisfies [string[], boolean][]) {
     await t.test(addresses.join(","), async (t) => {
       const root = await fixture(t);
-      const commands = [];
+      const commands: string[] = [];
       // Exercise real certificate preparation and host gating, stopping at the
       // container boundary; the live lane separately proves HTTPS readiness.
       await assert.rejects(
@@ -126,11 +202,11 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
           ensureImage: async () => {},
           portAccepts: async () => false,
           reservePort: async () => 40443,
-          registerResource: async (details) => details,
+          registerResource: async (details: KeycloakResource) => details,
           saveState: async () => {},
           lookupAll: async () => addresses.map((address) => ({ address })),
           log: () => {},
-          execFile: async (command, args) => {
+          execFile: async (command: string, args: string[]) => {
             commands.push(command);
             if (command === "openssl") {
               return promisify(execFile)(command, args);

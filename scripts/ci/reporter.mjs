@@ -311,6 +311,7 @@ function safeMeasurement(value) {
         "unknown",
         "canceled",
         "deadline",
+        "controller-image-import",
         "routing",
         "network-verification",
         "network-cleanup",

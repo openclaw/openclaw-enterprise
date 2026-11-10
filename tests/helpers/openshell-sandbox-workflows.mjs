@@ -50,12 +50,14 @@ import {
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
   OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
+  OpenShellDeploymentFailedError,
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
   failedRecoveryDiagnostic,
   outageAttemptRead,
   registerOpenShellInstallationCleanups,
+  waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   boundedTeardown,
@@ -1768,7 +1770,7 @@ function createIntegrationSandboxDriverFactory(
         } catch (error) {
           if (!provisioningFailures.has(context.revision.id)) {
             process.stderr.write(
-              `OpenShell first provisioning failure for ${context.revision.id}: ${error.message}\n`,
+              `OpenShell first provisioning failure for ${context.revision.id}: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}\n`,
             );
             provisioningFailures.set(context.revision.id, error);
           }
@@ -1972,7 +1974,7 @@ function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
                 error.message ===
                 "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
                   ? "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry."
-                  : `OpenShell integration: initial Compute prepareRevision retry: ${error.message}`;
+                  : `OpenShell integration: initial Compute prepareRevision failed: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}`;
               process.stderr.write(`${message}\n`);
             }
             throw error;
@@ -2652,12 +2654,20 @@ async function prepareProductionInstallation(
 
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   try {
-    await waitFor(`OpenShell revision ${deployed.data.id} activation`, async () => {
-      const observed = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
+    await waitForOpenShellRevisionActivation(waitFor, {
+      request,
+      agentPath: `/namespaces/${namespaceId}/agents/${agent.data.id}`,
+      revisionId: deployed.data.id,
     });
   } catch (error) {
+    // These refusals already identify the failing readiness check. No Pod log read is needed.
+    if (
+      error instanceof OpenShellDeploymentFailedError &&
+      (error.code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" ||
+        error.code === "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE")
+    ) {
+      throw error;
+    }
     // Preserve the provider's startup error before the fixture deletes its Pods. A revision
     // timeout alone hides failures in Landlock, credential delivery, and the model probe.
     const secrets = failureSecrets([
@@ -2713,8 +2723,8 @@ async function prepareProductionInstallation(
     }
     const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
     if (provisioningFailure !== undefined) {
-      assert.fail(
-        `${error.message}\nFirst OpenShell provisioning failure: ${provisioningFailure.message}`,
+      process.stderr.write(
+        `First OpenShell provisioning failure: ${redactLogLine(provisioningFailure.message, secrets, 800)}\n`,
       );
     }
     throw error;

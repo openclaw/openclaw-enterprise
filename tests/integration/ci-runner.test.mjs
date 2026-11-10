@@ -6465,6 +6465,7 @@ if (process.argv[3] === "down") {
   process.exit(1);
 }
 if (scenario === "legacy") process.stdout.write(legacyRecord);
+else if (scenario === "controller-import") process.stdout.write(legacyRecord.replace("primary_stage=routing", "primary_stage=controller-image-import"));
 else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
 else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
 else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
@@ -6515,6 +6516,7 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
     ["operation-only", { routingOperation: "node-pod-cidr" }],
     ["legacy", {}],
+    ["controller-import", { primaryStage: "controller-image-import" }],
     // Check intake directly so reporter rejection cannot hide an invalid pair.
     ["node-cidr-controller", null],
   ]) {
@@ -6532,6 +6534,10 @@ test("reject ambiguous or non-failure startup records", async (t) => {
       return true;
     });
   }
+  // The startup stage must survive its Kubernetes streaming caller and CI projection.
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
+  process.env.OCC_FIXTURE_STARTUP_CASE = "controller-import";
+  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
 });
 `,
   );
@@ -6544,7 +6550,14 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     artifact.files[0].measurements.filter(
       ({ kind }) => kind === "local-first-agent-startup-failure",
     ),
-    [],
+    [
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "controller-image-import",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+    ],
   );
 });
 

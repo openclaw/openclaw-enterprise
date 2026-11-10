@@ -2,7 +2,7 @@
 // Builds and reads the one-shot Jobs that scripts/upgrade-production-images runs
 // before it stops OCC: the selected controller image loads the candidate
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
-// API and worker do at startup, without a database.
+// API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
@@ -270,6 +270,59 @@ const containerFields = [
   "resources",
 ];
 
+// Reuse the initialization Job's database identity and mounted CA, but run only
+// the candidate's read-only compatibility check. Never copy bootstrap or other
+// init containers into a preflight that runs while the incumbent is serving.
+function migrationJob(renderedPath, name, namespace, release, image, timeoutSeconds) {
+  const jobs = documents(renderedPath).filter(
+    (document) =>
+      document.kind === "Job" &&
+      document.metadata?.labels?.["app.kubernetes.io/instance"] === release &&
+      document.metadata?.labels?.["app.kubernetes.io/component"] === "initialization",
+  );
+  if (jobs.length !== 1) {
+    fail("the rendered chart must contain exactly one initialization Job.");
+  }
+  const template = jobs[0].spec?.template;
+  const spec = template?.spec ?? {};
+  const matches = (spec.initContainers ?? []).filter((container) => container.name === "migration");
+  if (matches.length !== 1 || matches[0].image !== image) {
+    fail("the initialization Job must contain one migration container using the selected image.");
+  }
+  const container = Object.fromEntries(
+    containerFields
+      .filter((field) => field in matches[0])
+      .map((field) => [field, matches[0][field]]),
+  );
+  container.command = ["node"];
+  container.args = ["scripts/migrate-production.mjs", "--check"];
+  const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
+  return {
+    apiVersion: "batch/v1",
+    kind: "Job",
+    metadata: { name, namespace, labels: jobs[0].metadata.labels },
+    spec: {
+      backoffLimit: 0,
+      completions: 1,
+      parallelism: 1,
+      activeDeadlineSeconds: Number(timeoutSeconds),
+      template: {
+        metadata: { labels: template.metadata.labels },
+        spec: {
+          ...Object.fromEntries(
+            podFields.filter((field) => field in spec).map((field) => [field, spec[field]]),
+          ),
+          restartPolicy: "Never",
+          activeDeadlineSeconds: Number(timeoutSeconds),
+          enableServiceLinks: false,
+          containers: [container],
+          volumes: (spec.volumes ?? []).filter((volume) => mounted.has(volume.name)),
+        },
+      },
+    },
+  };
+}
+
 // One Job per component uses the rendered Deployment's image, environment, mounts,
 // service account and placement, with the Installation
 // volume pointed at the temporary candidate Secret. Probes, ports and the chart's
@@ -288,6 +341,9 @@ function job([
   storedInstallationPath,
   withDrafts,
 ]) {
+  if (component === "migration") {
+    return migrationJob(renderedPath, name, namespace, release, image, timeoutSeconds);
+  }
   const storedName = JSON.parse(readFileSync(storedInstallationPath, "utf8")).name;
   if (typeof storedName !== "string") {
     fail("OCC did not return the stored Installation name.");

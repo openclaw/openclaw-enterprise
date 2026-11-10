@@ -790,20 +790,24 @@ test("all changes are inspected beyond API file-list limits", async (t) => {
 });
 
 test("symlinks and executable documentation select full", async (t) => {
-  await expectAll(t, "full", [
-    [
-      ({ repo }) => {
-        mkdirSync(join(repo, "docs"));
-        symlinkSync("../base.txt", join(repo, "docs/link.md"));
-      },
-    ],
-    [
-      ({ put, repo }) => {
-        put("docs/run.md");
-        chmodSync(join(repo, "docs/run.md"), 0o755);
-      },
-    ],
-  ]);
+  await expectAll(
+    t,
+    "full",
+    ["docs/guide.md", "docs/docs.json"].flatMap((path) => [
+      [
+        ({ repo }) => {
+          mkdirSync(join(repo, "docs"));
+          symlinkSync("../base.txt", join(repo, path));
+        },
+      ],
+      [
+        ({ put, repo }) => {
+          put(path);
+          chmodSync(join(repo, path), 0o755);
+        },
+      ],
+    ]),
+  );
 });
 
 test("submodule changes remain visible even when Git configuration ignores them", async (t) => {
@@ -1044,6 +1048,15 @@ function mainPushEvent(f, overrides = {}) {
 }
 
 test("main push uses the before-tree policy to select and verify documentation", async (t) => {
+  const navigation = await fixture(
+    t,
+    ({ put }) => put("docs/docs.json", '{"navigation":{"tabs":[]}}\n'),
+    { "scripts/ci/impact.mjs": policy, "docs/docs.json": '{"navigation":{}}\n' },
+  );
+  mainPushEvent(navigation);
+  await navigation.expect("docs", mainPushEnvironment, "docs_only");
+  await (await shallowBootstrap(navigation)).expect("docs", mainPushEnvironment, "docs_only");
+
   const [f, shallow] = await policyFixture(t, docsChange);
   mainPushEvent(f);
   await f.expect("docs", mainPushEnvironment, "docs_only");
@@ -2058,6 +2071,7 @@ test("impact summary reports real selector categories from shallow merge checkou
   await all(
     [
       ["docs/change.md", "docs", "docs_only"],
+      ["docs/docs.json", "docs", "docs_only"],
       ["src/change.ts", "full", "ineligible_change"],
     ],
     async ([path, mode, reason]) => {
