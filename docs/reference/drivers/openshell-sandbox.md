@@ -124,14 +124,17 @@ required mounts, runtime root, and `/tmp`.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
-The Agent container always requests `256Mi` and limits `1Gi` of ephemeral storage.
+The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
+Provider template resource keys take precedence. Verify CPU, memory, and
+ephemeral storage on the rendered Agent container.
 
-In `kubernetes.agentResourceOverrides`, each entry binds an exact
-`namespaceId` and `agentId`. Supply `requests` and `limits` maps with optional
-`cpu` and `memory` quantities. Omitted keys inherit `agentResources`. An optional
-`runtimeClassName` selects the class for preparation and the Agent Pod. Startup
-rejects malformed IDs, duplicates, and requests above limits. Deploy a new revision after
-changes. Existing Sandboxes with different settings fail adoption.
+`kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
+pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
+`agentResources`. Optional `runtimeClassName` applies to the Agent Pod and
+native OpenClaw's workspace preparation Pod. Startup rejects malformed IDs,
+duplicates, and requests above limits. Check admission and scheduling before
+replacement. Deploy a new revision after changes. A mismatched Sandbox fails
+adoption.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
 Sandbox processes as the workload identity, normally `10001:10001`.
@@ -304,11 +307,11 @@ their process-owned state root to `0700`, clearing inherited setgid bits. Shared
 workspace directories keep their permissions. OpenClaw prepares its private
 children, including a `control` directory retained after a failed setup.
 
-The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
-`tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
-subpaths, keeping retained entries, in a restricted per-revision Deployment;
-ownership/mode checks, foreground deletion and writer termination
+The supervisor probes the image's `/tmp`. Native OpenClaw uses its runtime-home
+`tmp` child without changing supervisor directory permissions. Native
+provisioning privatizes writable PVC subpaths in a restricted per-revision
+Deployment and preserves retained entries.
+Ownership and mode checks, foreground deletion, and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
 at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
 Gateway's default identity, without UID/GID overrides; Agent save refuses

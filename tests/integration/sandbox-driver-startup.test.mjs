@@ -2442,7 +2442,6 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
         value.stringValue,
       ]),
     );
-  // Check the actual Sandbox request content and the identity of the selected Agent.
   const saved = sandboxes.get(name);
   assert.deepEqual(resources(saved, "requests"), {
     cpu: "88",

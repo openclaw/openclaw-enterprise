@@ -23,13 +23,13 @@ import {
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
-import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   AgentId,
-  NamespaceId,
-  requireConfiguration,
-  SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
+  NamespaceId,
+  SandboxNetworkPolicyConfiguration,
+  requireConfiguration,
+  type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import {
   assertPluginNetworkInspection,
@@ -2283,10 +2283,9 @@ function sandboxSpec(
   const volumeMounts = workspace.mounts;
   const override = agentResourceOverride(options, revision);
   const runtimeClassName = override?.runtimeClassName ?? options.kubernetes.runtimeClassName;
-  const podConfig: Record<string, unknown> = { runtime_class_name: runtimeClassName };
   const resources = agentResourceMaps(options, override);
   const driverConfig = {
-    pod: podConfig,
+    pod: { runtime_class_name: runtimeClassName },
     containers: {
       agent: {
         resources: {

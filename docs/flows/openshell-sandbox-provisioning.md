@@ -291,7 +291,8 @@ after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved records,
 `RESOURCE_EXHAUSTED` becomes `SANDBOX_ADMISSION_LIMIT_REACHED`: preparation waits
 without spending attempts until its deadline; Namespace work retries.
 
-Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
+Provisioning reads [Agent sizing and RuntimeClass](../reference/drivers/openshell-sandbox.md#configuration)
+from the current Installation. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure
