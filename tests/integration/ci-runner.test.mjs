@@ -18,7 +18,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
-import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
+import { exercisedLaneStatus } from "../../scripts/ci/full-integration-coverage.ts";
+import {
+  projectSkipperRunnerReceipt,
+  skipperFailureSummary,
+} from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -37,6 +41,82 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
 // that checkout's HEAD as the fixture's source SHA.
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
+test("installed Skipper publishes only verified coverage evidence from the runner", () => {
+  const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
+  const name =
+    "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats";
+  const counts = { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 };
+  const canary = "raw-diagnostic-must-stay-private";
+  const summary = {
+    version: 1,
+    command: "run",
+    sourceSha: "a".repeat(40),
+    status: "passed",
+    counts,
+    exitCode: 0,
+    scope: "full",
+    issues: [],
+    privateDiagnostic: canary,
+    files: [
+      {
+        path,
+        status: "passed",
+        counts,
+        cleanup: { status: "passed" },
+        tests: [{ name, status: "passed", durationMs: 1, output: canary }],
+        exercised: true,
+        signal: null,
+        nodeExitCode: 0,
+        issues: [],
+        privateDiagnostic: canary,
+      },
+    ],
+  };
+  const expected = [{ path, expectedTests: [name] }];
+  // Owned job cleanup follows projection; supply its positive outcome in this fixture.
+  const cleanedReceipt = (value) => ({
+    ...projectSkipperRunnerReceipt(value),
+    cleanup: { status: "passed" },
+  });
+  const projected = cleanedReceipt(summary);
+  assert.equal(exercisedLaneStatus(projected, expected), "passed");
+  assert.ok(!JSON.stringify(projected).includes(canary));
+
+  for (const file of [
+    { ...summary.files[0], exercised: undefined },
+    { ...summary.files[0], signal: "SIGTERM" },
+    { ...summary.files[0], nodeExitCode: undefined },
+    { ...summary.files[0], issues: [{ message: canary }] },
+    { ...summary.files[0], fileFailure: { message: canary } },
+  ]) {
+    const incomplete = cleanedReceipt({ ...summary, files: [file] });
+    assert.equal(exercisedLaneStatus(incomplete, expected), undefined);
+    assert.ok(!JSON.stringify(incomplete).includes(canary));
+  }
+  assert.equal(
+    exercisedLaneStatus(cleanedReceipt({ ...summary, scope: "focused" }), expected),
+    undefined,
+  );
+
+  const malformed = structuredClone(summary);
+  malformed.files[0].tests[0].name = canary;
+  const projection = new URL("../../scripts/ci/skipper-release.ts", import.meta.url);
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { readFileSync } from "node:fs";
+import { projectSkipperRunnerReceipt } from ${JSON.stringify(projection.href)};
+projectSkipperRunnerReceipt(JSON.parse(readFileSync(0, "utf8")));`,
+    ],
+    { encoding: "utf8", input: JSON.stringify(malformed) },
+  );
+  assert.equal(result.status, 1);
+  assert.ok(!result.stderr.includes(canary), "stderr echoed rejected private input");
+  assert.match(result.stderr, /Invalid installed Skipper test result/);
+});
 
 async function fixture(t) {
   const root = await temporaryDirectory(t, "ci-runner-");
@@ -6465,6 +6545,7 @@ if (process.argv[3] === "down") {
   process.exit(1);
 }
 if (scenario === "legacy") process.stdout.write(legacyRecord);
+else if (scenario === "controller-import") process.stdout.write(legacyRecord.replace("primary_stage=routing", "primary_stage=controller-image-import"));
 else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
 else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
 else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
@@ -6515,6 +6596,7 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
     ["operation-only", { routingOperation: "node-pod-cidr" }],
     ["legacy", {}],
+    ["controller-import", { primaryStage: "controller-image-import" }],
     // Check intake directly so reporter rejection cannot hide an invalid pair.
     ["node-cidr-controller", null],
   ]) {
@@ -6532,6 +6614,10 @@ test("reject ambiguous or non-failure startup records", async (t) => {
       return true;
     });
   }
+  // The startup stage must survive its Kubernetes streaming caller and CI projection.
+  process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
+  process.env.OCC_FIXTURE_STARTUP_CASE = "controller-import";
+  await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
 });
 `,
   );
@@ -6544,7 +6630,14 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     artifact.files[0].measurements.filter(
       ({ kind }) => kind === "local-first-agent-startup-failure",
     ),
-    [],
+    [
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "controller-image-import",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+    ],
   );
 });
 

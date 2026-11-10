@@ -15,7 +15,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -29,8 +29,14 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
-import { qualifySkipperRelease } from "./skipper-release.ts";
+import {
+  exercisedLaneStatus,
+  exercisedAssertionFailures,
+  recordsCoverage,
+} from "./full-integration-coverage.ts";
+import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -1446,9 +1452,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let tests = [];
   let skippedSuites = [];
   let fileFailure;
+  let testRunExercised = false;
   let details;
   let nodeElapsedMs;
   let agentActivity;
+  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationPhases = collectInstallationPhases();
   let measurements = [];
   let timeout;
   let case2Directory;
@@ -1478,13 +1487,23 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           env[case2PhaseEnv] = JSON.stringify({ path: case2Directory.path, dev, ino });
         }
       }
+      if (installationProgress) {
+        env.OCC_TEST_OPENSHELL_INSTALLATION_PROGRESS = "1";
+      }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
-        onProgress: ({ kind, stage, outcome }) => {
+        onProgress: (progress) => {
+          const { kind, stage, outcome } = progress;
+          if (kind === "openshell-installation") {
+            if (installationProgress) {
+              installationPhases.accept(progress);
+            }
+            return;
+          }
           process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
         },
       });
@@ -1516,19 +1535,40 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      tests = events
-        .filter((event) => isRealTestEvent(event, absolutePath))
-        .map((event) => ({
-          name: event.data.name,
-          status: testStatus(event),
-          file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
-          line: event.data.line,
-          column: event.data.column,
-          skip: event.data.skip,
-          todo: event.data.todo,
-          error: failureError(event.data.error),
-          durationMs: event.data.durationMs,
-        }));
+      const terminalEvents = events.filter(
+        (event) =>
+          isRealTestEvent(event, absolutePath) ||
+          ((event.type === "test:pass" || event.type === "test:fail") &&
+            event.data?.testType === "suite"),
+      );
+      const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      let coverageAssertions;
+      if (
+        recordsCoverage(process.env.GITHUB_WORKFLOW) &&
+        !nodeResult.error &&
+        !nodeResult.signal &&
+        !rootFailure &&
+        !events.some((event) => event.type === "test:interrupted")
+      ) {
+        coverageAssertions = exercisedAssertionFailures(
+          events.filter((event) => event.type === "test:summary").map((event) => event.data),
+          terminalEvents,
+          nodeResult.status,
+        );
+        testRunExercised = coverageAssertions !== undefined;
+      }
+      tests = caseEvents.map((event) => ({
+        name: event.data.name,
+        status: testStatus(event),
+        ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
+        file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
+        line: event.data.line,
+        column: event.data.column,
+        skip: event.data.skip,
+        todo: event.data.todo,
+        error: failureError(event.data.error),
+        durationMs: event.data.durationMs,
+      }));
       // A skipped describe() never registers its tests, so only its suite event shows the skip.
       skippedSuites = events
         .filter(
@@ -1663,17 +1703,22 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     });
   }
 
+  const exercised =
+    testRunExercised &&
+    issues.every(({ code, status }) => code === "expected-test-not-passed" && status === "failed");
   return {
     path: relativePath,
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(exercised ? { exercised: true } : {}),
     ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
     ...(case2Phase ? { case2Phase } : {}),
+    ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),
@@ -2016,6 +2061,16 @@ async function aggregateGroup(
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
+  const exercised = new Map();
+  const recordFullCoverage =
+    process.env.GITHUB_WORKFLOW === "Full Integration" &&
+    process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
+    groupName === "full" &&
+    selection === undefined &&
+    Boolean(needsPath) &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    source.sha === process.env.GITHUB_SHA;
   const currentSha = source.sha;
 
   if (!laneNames) {
@@ -2139,6 +2194,21 @@ async function aggregateGroup(
           }),
         );
       }
+      if (recordFullCoverage && lane) {
+        let outcome = exercisedLaneStatus(summary, lane.files);
+        if (outcome && laneName === "skipper-prepared-git-installed") {
+          try {
+            const projected = projectSkipperRunnerReceipt(summary);
+            outcome = exercisedLaneStatus({ ...projected, cleanup: summary.cleanup }, lane.files);
+          } catch {
+            // Its owning contract requires file cleanup even when other lanes do not.
+            outcome = undefined;
+          }
+        }
+        if (outcome) {
+          exercised.set(laneName, outcome);
+        }
+      }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
         if (releaseSelection && laneName === "skipper-prepared-git-installed") {
@@ -2169,11 +2239,31 @@ async function aggregateGroup(
     }
   }
 
+  const fullCoverageExercised =
+    recordFullCoverage &&
+    laneNames?.length > 0 &&
+    exercised.size === laneNames.length &&
+    issues.every((entry) => {
+      if (entry.code === "lane-failed") {
+        return exercised.get(entry.lane) === "failed";
+      }
+      if (entry.code !== "need-not-success" || entry.result !== "failure") {
+        return false;
+      }
+      const ownedLanes = needs?.[entry.need]?.lanes ?? [entry.need];
+      return (
+        Array.isArray(ownedLanes) &&
+        ownedLanes.length > 0 &&
+        ownedLanes.every((lane) => exercised.has(lane))
+      );
+    });
+
   return {
     version: 1,
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(fullCoverageExercised ? { fullCoverageExercised: true } : {}),
     ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
@@ -2238,6 +2328,21 @@ async function main() {
     options.lanes,
     options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
+  if (
+    options["full-coverage-marker"] &&
+    summary.fullCoverageExercised &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    summary.sourceSha === process.env.GITHUB_SHA &&
+    process.env.GITHUB_OUTPUT
+  ) {
+    try {
+      await writeFile(options["full-coverage-marker"], "1\n", { flag: "wx" });
+      await appendFile(process.env.GITHUB_OUTPUT, "full_coverage_exercised=true\n");
+    } catch {
+      process.stderr.write("run-tests: full coverage marker could not be written.\n");
+    }
+  }
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
 }

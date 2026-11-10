@@ -169,7 +169,12 @@ export async function validateResults({ directory, producer, sha, get }) {
     try {
       const path = join(directory, "download", `${lane}.json`);
       const summary = JSON.parse(await readFile(path, "utf8"));
-      if (summary.scope !== "full" || summary.sourceSha !== sha || summary.lane !== lane) {
+      if (
+        summary.scope !== "full" ||
+        summary.sourceSha !== sha ||
+        summary.lane !== lane ||
+        summary.cleanup?.status !== "passed"
+      ) {
         continue;
       }
       const validation = spawnSync(

@@ -107,6 +107,8 @@ Preparation also selects the verified Gateway image in the host container engine
 for `OCC_DOCKER_RUNTIME_IMAGE`, used by the loopback Gateway relay. Kubernetes
 selectors use the separately verified references imported into the cluster.
 
+Before a cold local source build, [check for an exact-source retained CI runtime](run-lanes.md#find-a-retained-runtime-before-building-locally). This discovers candidate artifacts; it does not import or qualify them.
+
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).
 

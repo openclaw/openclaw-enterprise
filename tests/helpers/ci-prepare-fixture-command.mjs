@@ -266,6 +266,25 @@ async function fakeCommand({
         return finish();
       }
     }
+    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+      // Repeated RUN headers model BuildKit switching between active vertices.
+      // Probe and load deliberately differ: a load can reuse work from the probe.
+      // Include private-looking text to prove the summary never forwards raw output.
+      const probe = args.includes("--metadata-file");
+      stderr(
+        (probe
+          ? "#1 importing cache manifest from https://cache.example.test/private-step\n"
+          : "") +
+          "#2 [openclaw-build 1/2] RUN synthetic-cache-credential\n" +
+          "#2 [openclaw-build 1/2] RUN synthetic-cache-credential\n" +
+          "#2 CACHED\n#2 CACHED\n" +
+          "#3 [openclaw-build 2/2] RUN synthetic-build-command\n" +
+          "#3 [openclaw-build 2/2] RUN synthetic-build-command\n" +
+          (probe ? "#3 DONE 1.0s\n" : "#3 CACHED\n") +
+          "#4 [openclaw-bridge-tests 1/1] RUN synthetic-sibling-command\n#4 CACHED\n" +
+          "synthetic-build-output\n",
+      );
+    }
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
     // holds both; the others fail one step of the probe.
@@ -403,6 +422,11 @@ async function fakeCommand({
       state.runtime = args[args.indexOf("-t") + 1];
       return finish();
     }
+    if (args[0] === "build" && args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1")) {
+      state.runtime = args[args.indexOf("-t") + 1];
+      stderr("#1 [native-build 1/1] RUN synthetic-native-command\n#1 CACHED\n");
+      return finish();
+    }
     // The main image cache warm job keeps its runtime image under a tag naming its ID.
     if (state.runtime && equals(args, ["image", "inspect", "--format", "{{.Id}}", state.runtime])) {
       return finish(configId + "\n");
@@ -501,6 +525,8 @@ async function fakeCommand({
         "images",
         "import",
         "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
         "-",
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
@@ -606,13 +632,22 @@ async function fakeCommand({
         return finish(
           "REF TYPE DIGEST SIZE PLATFORMS LABELS\n" +
             references
-              .map(
-                (ref) =>
-                  ref +
-                  " application/vnd.oci.image.manifest.v1+json " +
-                  manifestDigest +
-                  " 1 linux/amd64 -\n",
-              )
+              .map((ref) => {
+                const mediaType =
+                  {
+                    "oci-index": "application/vnd.oci.image.index.v1+json",
+                    "docker-manifest-list":
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                    "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
+                  }[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
+                const digest =
+                  scenario === "wrong-worker-containerd-digest" &&
+                  node === "agent-0" &&
+                  ref === alias
+                    ? "sha256:" + "d".repeat(64)
+                    : manifestDigest;
+                return `${ref} ${mediaType} ${digest} 1 linux/amd64 -\n`;
+              })
               .join(""),
         );
       }
@@ -624,6 +659,18 @@ async function fakeCommand({
           state.aliases ??= {};
           state.aliases[node] = args[8];
         }
+        return finish();
+      }
+      if (scenario === "missing-alias" && equals(args.slice(2, 7), [...ctr, "label"])) {
+        stderr("ctr: canonical image not found\n");
+        return exit(1);
+      }
+      if (
+        equals(args.slice(2), [...ctr, "label", alias, "io.cri-containerd.pinned=pinned"]) &&
+        alias
+      ) {
+        state.pinned ??= {};
+        state.pinned[node] = true;
         return finish();
       }
       if (
@@ -663,7 +710,39 @@ async function fakeCommand({
           );
           return exit(1);
         }
-        return finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
+        const status = {
+          id: configId,
+          repoDigests: [alias],
+          pinned:
+            state.pinned?.[node] === true &&
+            !(
+              node === "agent-0" &&
+              (scenario === "unpinned-worker-cri" ||
+                (scenario === "lagging-worker-pin" && state.criLookups[node] <= 2))
+            ),
+        };
+        if (node === "agent-0") {
+          switch (scenario) {
+            case "wrong-worker-cri-digest":
+              status.repoDigests = [alias.replace(manifestDigest, "sha256:" + "d".repeat(64))];
+              break;
+            case "string-worker-cri-digests":
+              status.repoDigests = `${alias}0`;
+              break;
+            case "mixed-worker-cri-digests":
+              status.repoDigests = [alias, 42];
+              break;
+            case "malformed-worker-cri-pin":
+              status.pinned = "true";
+              break;
+            case "lagging-worker-missing-pin":
+              if (state.criLookups[node] <= 2) {
+                delete status.pinned;
+              }
+              break;
+          }
+        }
+        return finish(JSON.stringify({ status }));
       }
     }
   }
