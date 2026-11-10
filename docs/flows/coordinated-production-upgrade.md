@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-09"
-last_updated_session: "authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f"
+updated: "2026-11-10"
+last_updated_session: "authoring-run/385b41d3-8e61-4539-b226-412dd1b2615d"
 ---
 
 # Production image upgrade flow
@@ -81,24 +81,24 @@ Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.
 `HEAD` must match `--source-revision`; chart changes, symlinks and internal
 evidence/baseline aliases are rejected. Other edits and image provenance remain unchecked.
 
-Resume locks evidence by path, device and inode, including aliases. Runtime upgrades also lock their sibling dispatch journal.
+Resume locks evidence paths, devices and inodes, including aliases; runtime upgrades lock dispatch journals.
 
 `matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-and live mappings, then validates candidates. Invalid input or unwritable
-evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
+and live mappings, then validates candidates. Invalid input or unwritable evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
 protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
 and wrapping one registration in an array. Removing empty
-`agentNativeAdmin.sharedCookieDomain` changes only the baseline projection;
-the live comparison remains exact. Immutable reference switches require
-string keys. Startup validates the controller; broker checks references,
+`agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
+live comparison stays exact. Immutable reference switches require
+string keys. Startup validates controllers; broker checks references,
 not contents.
 
-Controller-only preparation reads active revisions with
-`occ agent revision AGENT_ID REVISION_ID`. Inventory and snapshots must each be
-one JSON document. Wrong ownership or missing object-valued Harness settings
-refuses before quiescence. Drafts cannot substitute. Runtime upgrades validate
-drafts and record replacements. Quiescence is not atomic. Repository session
-continuity remains unverified.
+Before temporary writes, require one inventory document with valid ownership,
+collections, IDs and selection states. Controller-only
+`occ agent revision AGENT_ID REVISION_ID` must return one owned revision with
+object-valued Harness settings. Retain IDs and validation outcome; drafts cannot
+substitute. Runtime upgrades record replacements; draft validation requires image
+support and size compliance. Quiescence is not atomic; repository session
+continuity is unverified.
 
 Refuse nonterminal deployments. Runtime upgrades require baseline versions and
 ready Namespaces. Exclude stopped/deleting Agents; allow pending repository cleanup.
@@ -151,8 +151,8 @@ Bundled Kubernetes Compute Driver `preflight` uses Pod credentials (`inCluster`
 service account), matching startup. It refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 on single-cluster upgrades.
-The image's `isName` validates the stored name from `occ installation get`
-(`INSTALLATION_NAME_INVALID`); images without this rule skip it.
+The image's `isName` validates `occ installation get` names
+(`INSTALLATION_NAME_INVALID`); older images skip this.
 
 For runtime upgrades, the API Pod calls `resolveConfiguredHarnessId` before
 `refuseUndeployableConfigurationValues` on recorded drafts; deploy checks live
@@ -336,16 +336,15 @@ Agents or Secrets.
 - Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
   preparation failures; `server-dry-run.txt` retains successful output. Inspect
   `preflight-<api|worker>.log` and `-status.json` for rejected candidates.
-- For native scale, Helm upgrade, or rollout status failures, inspect
+- For scale, Helm upgrade, or rollout failures, inspect
   `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-- Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
+- For runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
-- Compare `before-workloads.json` and `after-workloads.json` for unexpected
-  changes. After a controller-only release, expect one same-image Pod template
+- Compare `before-workloads.json` and `after-workloads.json`. After a controller-only release, expect one same-image Pod template
   rollout per affected Agent. Separately check
   repository-bound versions affected by broker restart.
 - End-to-end proof requires credentialed production Kubernetes integration with
-  distinct images. Mocked commands prove script control flow.
+  distinct images; command fixtures prove script control flow.
 
 ## Related docs
 
@@ -362,6 +361,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 05:12: Validate inventory; minimize evidence. (authoring-run/385b41d3-8e61-4539-b226-412dd1b2615d - 7230b1a2a177aa8b413cdd2d3847cd4be0ac644e)
 
 - 2026-11-09 23:49: Separate database deployment from service replacement under writer quiescence. (authoring-run/7af6f256-ebf7-4a66-8e78-6a769781d94f - ef18e491453481577c607a4c78574cbbce594263)
 

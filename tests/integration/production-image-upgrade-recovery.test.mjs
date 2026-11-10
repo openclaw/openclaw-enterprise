@@ -1658,6 +1658,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
           },
         },
       );
+      if (take("revision-read-failure")) {
+        return fail(1, "revision read failed after output");
+      }
     } else if (args.includes("configuration") && args.includes("get")) {
       // The Agent's saved Configuration (its draft), as OCC returns it.
       const id = args.at(-1);
@@ -2334,9 +2337,10 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     id: "rev_old",
     namespaceId: "ns_test",
     agentId: "agt_test",
+    configuration: { privateSetting: "tenant-native-value" },
     harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
   };
-  for (const [name, response] of [
+  for (const [name, response, readFailure = false] of [
     [
       "missing settings",
       { ...snapshot, harness: { id: "codex", version: "1", mode: "dedicated" } },
@@ -2355,6 +2359,8 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     ],
     ["denied read", "denied"],
     ["empty snapshot output", ""],
+    ["malformed snapshot output", "{"],
+    ["failed read after valid output", snapshot, true],
     ["duplicate snapshots", `${JSON.stringify(snapshot)}\n${JSON.stringify(snapshot)}`],
     [
       "invalid snapshot followed by valid snapshot",
@@ -2367,13 +2373,28 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
         controllerOnly: true,
         activeRevisionResponse: response,
       });
-      await assert.rejects(f.run(), /active revision rev_old|active Harness/u);
+      if (readFailure) {
+        await f.failNext("revision-read-failure");
+      }
+      await assert.rejects(
+        f.run(),
+        readFailure || response === "denied"
+          ? /cannot read active revision/u
+          : /missing or unreadable saved Harness settings/u,
+      );
       assert.deepEqual(await f.events(), ["revision-read rev_old"]);
       const state = await f.state();
       assert.equal(state.version, 1);
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
       assert.equal(state.dispatches, 0);
+      assert.deepEqual(state.preflight?.created ?? [], []);
+      for (const file of await readdir(join(f.evidence, "inventory"))) {
+        assert.doesNotMatch(
+          await readFile(join(f.evidence, "inventory", file), "utf8"),
+          /tenant-native-value/u,
+        );
+      }
     });
   }
   // A stream must not let a valid final document hide a missing or unrelated inventory.
@@ -2391,6 +2412,66 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       await assert.rejects(f.run(), /deployment inventory/u);
       assert.deepEqual(await f.events(), []);
       const state = await f.state();
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+      assert.deepEqual(state.preflight?.created ?? [], []);
+    });
+  }
+  const agent = {
+    id: "agt_valid",
+    status: "active",
+    desiredRuntimeState: "stopped",
+    executionMode: "dedicated",
+    activeRevisionId: "rev_old",
+    deploymentInProgress: false,
+  };
+  const namespace = { id: "ns_test", status: "ready", agents: [agent] };
+  // One valid row must not hide another row whose state cannot be classified.
+  for (const [name, field, value] of [
+    ["missing deployment state", "deploymentInProgress", undefined],
+    ["null deployment state", "deploymentInProgress", null],
+    ["nonboolean deployment state", "deploymentInProgress", "false"],
+    ["missing desired runtime state", "desiredRuntimeState", undefined],
+    ["unknown desired runtime state", "desiredRuntimeState", "unknown"],
+    ["missing Agent status", "status", undefined],
+    ["missing Agent ID", "id", undefined],
+    ["unknown execution mode", "executionMode", "unknown"],
+    ["null active revision", "activeRevisionId", null],
+  ]) {
+    await t.test(name, async (t) => {
+      const invalid = { ...agent, id: "agt_test", desiredRuntimeState: "running", [field]: value };
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryNamespaces: [{ ...namespace, agents: [invalid, agent] }],
+      });
+      await assert.rejects(f.run(), /deployment inventory/u);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.deepEqual(state.preflight?.created ?? [], []);
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+    });
+  }
+  for (const [name, namespaces] of [
+    ["missing Namespaces", undefined],
+    ["nonarray Namespaces", {}],
+    ["missing Agents", [{ ...namespace, agents: undefined }]],
+    ["missing Namespace ID", [{ ...namespace, id: undefined }]],
+    ["unknown Namespace status", [{ ...namespace, status: "unknown" }]],
+  ]) {
+    await t.test(name, async (t) => {
+      // The same common inventory gate protects runtime upgrades as well.
+      const f = await fixture(t, {
+        inventoryResponse: { installationId: "ins_test", namespaces },
+      });
+      await assert.rejects(f.run(), /deployment inventory/u);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.deepEqual(state.preflight?.created ?? [], []);
       assert.equal(state.version, 1);
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
@@ -2426,8 +2507,22 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
       assert.equal(state.dispatches, 0);
+      assert.deepEqual(state.preflight?.created ?? [], []);
     },
   );
+  await t.test("a stopped Agent may omit its active revision", async (t) => {
+    const { activeRevisionId, ...stopped } = agent;
+    const f = await fixture(t, {
+      controllerOnly: true,
+      inventoryNamespaces: [{ ...namespace, agents: [stopped] }],
+    });
+    await f.run();
+    assert.ok(existsSync(join(f.evidence, "completed")));
+    assert.equal(
+      (await f.events()).some((event) => event.startsWith("revision-read")),
+      false,
+    );
+  });
   await t.test("valid snapshot preserves controller-only behavior", async (t) => {
     const f = await fixture(t, {
       agent: true,
@@ -2438,6 +2533,20 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     assert.equal((await f.state()).dispatches, 0);
     assert.ok(existsSync(join(f.evidence, "completed")));
     assert.equal((await f.events())[0], "revision-read rev_old");
+    const files = await readdir(join(f.evidence, "inventory"));
+    const summaries = files.filter(
+      (file) => file.endsWith(".json") && file !== "deployment-inventory.json",
+    );
+    assert.equal(summaries.length, 1);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "inventory", summaries[0]), "utf8")),
+      {
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_old",
+        savedHarnessSettings: "readable",
+      },
+    );
   });
 });
 
