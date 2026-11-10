@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
@@ -722,6 +723,125 @@ test(
     assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
     const result = JSON.parse(await readFile(join(root, "results/sample.json"), "utf8"));
     assert.equal(result.counts.failed, 2);
+  },
+);
+
+test(
+  "run reports bounded OpenShell progress before the test file finishes",
+  { timeout: 30_000 },
+  async (t) => {
+    const root = await fixture(t);
+    const file = "tests/integration/progress.test.mjs";
+    const resultsPath = join(root, "results/progress.json");
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { progress: { files: [{ path: file }] } },
+      groups: {},
+    });
+    await writeFile(
+      join(root, file),
+      `import { watch } from "node:fs";
+import test from "node:test";
+test("live progress", async (context) => {
+  const stage = { kind: "openshell-stage", stage: "installation", outcome: "started" };
+  for (const invalid of [
+    { ...stage, kind: "private-kind-canary" },
+    { ...stage, stage: "private-stage-canary" },
+    { ...stage, outcome: "private-outcome-canary" },
+    { ...stage, detail: "private-detail-canary" },
+    { ...stage, elapsedMs: 1 },
+    { ...stage, file: "private-file-canary" },
+    null,
+    [stage],
+  ]) context.log("openclaw-ci-progress", invalid);
+  context.log("private-message-canary", stage);
+  context.log("openclaw-ci-progress", { ...stage, stage: "private-oversized-canary".repeat(100) });
+  // Subscribe before logging: only the parent observing live progress can release this test.
+  let watcher;
+  const released = new Promise((resolve) => {
+    watcher = watch(${JSON.stringify(root)}, (_event, name) => {
+      if (name === "release") { watcher.close(); resolve(); }
+    });
+  });
+  context.after(() => watcher.close());
+  context.log("openclaw-ci-progress", stage);
+  await released;
+  context.log("openclaw-ci-progress", { ...stage, outcome: "passed" });
+  context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
+});
+test("failed stage", (context) => {
+  context.log("openclaw-ci-progress", { kind: "openshell-stage", stage: "initial-model", outcome: "started" });
+  try { throw new Error("expected stage failure"); }
+  finally { context.log("openclaw-ci-progress", { kind: "openshell-stage", stage: "initial-model", outcome: "failed" }); }
+});
+`,
+    );
+    const child = spawn(
+      process.execPath,
+      [runnerPath, ...laneArgs(root, "progress", "state/progress.jsonl", resultsPath)],
+      {
+        cwd: repositoryRoot,
+        env: runnerEnv({ CI_RUNNER_TEST_TIMEOUT_MS: "10000" }),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    const progress = [];
+    const label = `[run:progress] ${file}: `;
+    const lines = createInterface({ input: child.stderr });
+    const closed = new Promise((resolve, reject) =>
+      child.once("error", reject).once("close", resolve),
+    );
+    const live = new Promise((resolve) => {
+      lines.on("line", (line) => {
+        if (line === `${label}openshell-stage installation started`) {
+          resolve(true);
+        }
+      });
+      child.once("close", () => resolve(false));
+    });
+    t.after(() => {
+      lines.close();
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+      }
+    });
+    lines.on("line", (line) => {
+      if (!line.startsWith(label)) {
+        return;
+      }
+      progress.push(line.slice(label.length));
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    // A final buffered transcript cannot satisfy this handshake.
+    assert.ok(await live, "progress must arrive while the child waits for its release file");
+    assert.equal(child.exitCode, null);
+    await writeFile(join(root, "release"), "");
+    const code = await closed;
+    assert.equal(code, 1);
+    assert.deepEqual(progress, [
+      "openshell-stage installation started",
+      "openshell-stage installation passed",
+      "openshell-stage initial-model started",
+      "openshell-stage initial-model failed",
+    ]);
+    const artifact = await readFile(resultsPath, "utf8");
+    const summary = JSON.parse(artifact);
+    assert.equal(summary.counts.passed, 1);
+    assert.equal(summary.counts.failed, 1);
+    assert.deepEqual(summary.files[0].measurements, [
+      { kind: "openshell-stage", stage: "installation", outcome: "passed", elapsedMs: 123 },
+    ]);
+    const diagnostics = await readFile(join(root, "state/progress.jsonl.diagnostics.json"), "utf8");
+    for (const output of [stdout, stderr, artifact, diagnostics]) {
+      assert.doesNotMatch(output, /private-\w+-canary/);
+    }
   },
 );
 

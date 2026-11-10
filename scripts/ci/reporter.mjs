@@ -157,6 +157,40 @@ const openShellSandboxStages = new Set([
   "native-policy-scopes",
 ]);
 
+const openShellStages = new Set([
+  "installation",
+  "initial-model",
+  "filesystem-network",
+  "network-policy",
+  "credential-route",
+  "replacement",
+  "untrusted-upstream",
+  "tool-outage",
+  "model-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-absence",
+  "credential-withdrawal",
+  "embedded-refusal",
+  "native-policy",
+]);
+
+// A live log carries only fixed categories. Reject extra fields rather than
+// accidentally turning this channel into an arbitrary diagnostic transport.
+export function openShellProgress(value) {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 3 ||
+    value.kind !== "openshell-stage" ||
+    (!openShellStages.has(value.stage) && value.stage !== "exposure-auth") ||
+    !["started", "passed", "failed"].includes(value.outcome)
+  ) {
+    return undefined;
+  }
+  return { kind: value.kind, stage: value.stage, outcome: value.outcome };
+}
+
 function parseMeasurement(message) {
   if (!message.startsWith(measurementPrefix)) {
     return undefined;
@@ -195,24 +229,7 @@ function safeMeasurement(value) {
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
+      !openShellStages.has(value.stage) ||
       !["passed", "failed"].includes(value.outcome) ||
       !Number.isInteger(value.elapsedMs) ||
       value.elapsedMs < 0 ||
@@ -1782,6 +1799,16 @@ export default async function* jsonLinesReporter(source) {
   const running = new Map();
   const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (event.type === "test:log") {
+      const progress =
+        event.data?.message === "openclaw-ci-progress"
+          ? openShellProgress(event.data.data)
+          : undefined;
+      if (progress) {
+        yield `${JSON.stringify({ type: "test:progress", data: progress })}\n`;
+      }
+      continue;
+    }
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
       running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });

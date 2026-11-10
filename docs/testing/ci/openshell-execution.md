@@ -73,6 +73,13 @@ these jobs do not install an unused Playwright browser alongside it.
 
 ## Interpret timing and proof
 
+OpenShell lifecycle tests print live stage progress with their lane and file:
+`openshell-stage installation started`, followed by `passed` or `failed` when the
+operation settles. Later stages identify model, policy and credential checks.
+A lone `started` message identifies the operation still running or interrupted;
+it does not establish failure or completion. Progress contains fixed categories
+only. Final timing receipts and test results remain the completion evidence.
+
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.

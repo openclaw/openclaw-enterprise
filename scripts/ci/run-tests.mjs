@@ -18,6 +18,7 @@ import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
 import { stopCleanupCommands } from "./cleanup.mjs";
@@ -31,6 +32,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { openShellProgress } from "./reporter.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -858,7 +860,7 @@ function addLiveGroup(pgid) {
 // gets SIGKILL once the grace period is over, and whenever the runner exits:
 // anything still in its group then has outlived its file. ENOBUFS discards the
 // rest of the output, so it kills the group at once.
-function runNode(args, { cwd, env, timeout }) {
+function runNode(args, { cwd, env, timeout, onProgress }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
@@ -902,6 +904,24 @@ function runNode(args, { cwd, env, timeout }) {
     }
     child.stdin.end();
     child.stderr.resume();
+    const lines = createInterface({ input: child.stdout });
+    lines.on("line", (line) => {
+      // Only this small closed record reaches the live log. Ordinary reporter
+      // output still waits for final accounting and failure redaction below.
+      if (line.length > 256) {
+        return;
+      }
+      try {
+        const event = JSON.parse(line);
+        const progress =
+          event?.type === "test:progress" ? openShellProgress(event.data) : undefined;
+        if (progress) {
+          onProgress(progress);
+        }
+      } catch {
+        // Final parsing owns malformed reporter output and its failure result.
+      }
+    });
     child.stdout.on("data", (chunk) => {
       if (error?.code === "ENOBUFS") {
         return;
@@ -922,6 +942,7 @@ function runNode(args, { cwd, env, timeout }) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      lines.close();
       resolvePromise({
         status,
         signal,
@@ -1466,6 +1487,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
+        onProgress: ({ kind, stage, outcome }) => {
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
