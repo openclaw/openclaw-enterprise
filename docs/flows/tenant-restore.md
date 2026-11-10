@@ -72,8 +72,9 @@ name without quoting its contents.
 The importer rejects duplicate source Namespace IDs across the whole bundle,
 including skipped tenants, before any request or map save. Its flat ID map also
 refuses defining source IDs shared across resource kinds or selected Namespaces;
-ordinary references to one identity may repeat. Export and discard still preserve
-and address those opaque identities independently. It checks required
+ordinary references to one identity may repeat. Discard applies the same check
+before any request, preserving resources the importer cannot restore. Export
+still preserves those opaque identities for recovery. It checks required
 Secret values and refuses selected sources that share a destination name or
 saved destination ID. Saved destinations remain
 reserved even when their sources are skipped. Every saved ID must be a nonempty
@@ -159,3 +160,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 - 2026-11-10 17:43: Preserve exact IAM identifiers, preflight destructive URLs and stop credentialed redirects. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 03e992cea59ddd82b0f0bf1ecbb3a70c5a45f596)
 
 - 2026-11-10 17:52: Refuse ambiguous source identities before creating an import ID map. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - f2a43c7c0195b23eb8e21bf2252caa3d5c4fd795)
+
+- 2026-11-10 17:58: Check restorable identity mappings before discarding source resources. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - c73c87cc8f0bb04e7233337d7f51c26a84ed8990)

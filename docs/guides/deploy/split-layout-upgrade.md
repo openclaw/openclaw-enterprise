@@ -150,8 +150,9 @@ Configurations, workspace files, transcripts and Secret values.
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses if a Namespace
-   gained an Agent or Secret after the export, or if the export could not read an
+4. Delete the tenants on the old release. The command refuses ambiguous source
+   IDs that the import map cannot represent, preserving those resources for manual
+   restoration. It also refuses if a Namespace gained an Agent or Secret after the export, or if the export could not read an
    Agent's workspace files; once step 2 has the copy, add
    `--allow-unread-workspace-files`:
 

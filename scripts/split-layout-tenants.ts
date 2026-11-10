@@ -743,6 +743,42 @@ export async function exportTenants(
   return bundle;
 }
 
+function mappedResourceKinds(namespaces: Resource[], allNamespaces = namespaces) {
+  const mappedKinds = new Map<unknown, { kind: string; namespaceId: unknown }>();
+  const registerIdentity = (id: unknown, kind: string, namespaceId: unknown) => {
+    const previous = mappedKinds.get(id);
+    if (previous && (previous.kind !== kind || previous.namespaceId !== namespaceId)) {
+      throw new InvalidMigrationDataError(
+        `Bundle source IDs overlap across resource kinds or Namespaces; the ID map cannot represent both identities. ${recoverInput}`,
+      );
+    }
+    mappedKinds.set(id, { kind, namespaceId });
+  };
+  for (const namespace of allNamespaces) {
+    registerIdentity(namespace.id, "namespaces", namespace.id);
+  }
+  for (const namespace of namespaces) {
+    for (const field of [
+      "agents",
+      "configurations",
+      "presets",
+      "secrets",
+      "credentialSources",
+      "serviceAccounts",
+      "roles",
+      "accessBindings",
+    ]) {
+      for (const resource of bundleRecords(namespace, field)) {
+        registerIdentity(resource.id, field, namespace.id);
+        if (field === "agents" && resource.servicePrincipalId !== undefined) {
+          registerIdentity(resource.servicePrincipalId, "servicePrincipalId", namespace.id);
+        }
+      }
+    }
+  }
+  return mappedKinds;
+}
+
 function readPrivateJson(path: string, label: string): unknown {
   const text = readFileSync(path, "utf8");
   try {
@@ -844,6 +880,7 @@ export async function discardTenants(
       children: childRoutes.flatMap(([route, field]) => paths(route, field)),
     };
   });
+  mappedResourceKinds(namespaces);
   const unread = namespaces.flatMap((namespace) =>
     Array.from(bundleRecords(namespace, "agents"))
       .filter(
@@ -1019,38 +1056,7 @@ export async function importTenants(
       `ID map (--map).ids: expected nonempty string values and keys of at most 200 code points. ${recoverInput}`,
     );
   }
-  const mappedKinds = new Map<unknown, { kind: string; namespaceId: unknown }>();
-  const registerIdentity = (id: unknown, kind: string, namespaceId: unknown) => {
-    const previous = mappedKinds.get(id);
-    if (previous && (previous.kind !== kind || previous.namespaceId !== namespaceId)) {
-      throw new InvalidMigrationDataError(
-        `Bundle source IDs overlap across resource kinds or Namespaces; the ID map cannot represent both identities. ${recoverInput}`,
-      );
-    }
-    mappedKinds.set(id, { kind, namespaceId });
-  };
-  for (const namespace of allNamespaces) {
-    registerIdentity(namespace.id, "namespaces", namespace.id);
-  }
-  for (const namespace of namespaces) {
-    for (const field of [
-      "agents",
-      "configurations",
-      "presets",
-      "secrets",
-      "credentialSources",
-      "serviceAccounts",
-      "roles",
-      "accessBindings",
-    ]) {
-      for (const resource of bundleRecords(namespace, field)) {
-        registerIdentity(resource.id, field, namespace.id);
-        if (field === "agents" && resource.servicePrincipalId !== undefined) {
-          registerIdentity(resource.servicePrincipalId, "servicePrincipalId", namespace.id);
-        }
-      }
-    }
-  }
+  const mappedKinds = mappedResourceKinds(namespaces, allNamespaces);
   for (const [key, value] of Object.entries(savedIds)) {
     requireResourceId(value, mappedKinds.get(key)?.kind ?? "opaque", "ID map (--map).ids");
   }

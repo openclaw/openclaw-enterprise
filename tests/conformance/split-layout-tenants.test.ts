@@ -2050,3 +2050,37 @@ test("import refuses ambiguous source identities before requests or map saves", 
     });
   }
 });
+
+test("discard refuses identity collisions before deleting restorable resources", async () => {
+  const fixture = await createFixture();
+  const source = await created(fixture, "/namespaces", { name: "discard-map-key-source" });
+  await markReady(fixture, source.id);
+  await fixture.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.iamPolicy.createRole({
+      id: source.id,
+      namespaceId: source.id,
+      name: "Role sharing a Namespace ID",
+      permissions: [{ action: "read", resourceKind: "configuration" }],
+    }),
+  );
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === source.id);
+  let requests = 0;
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl(url, init) {
+      requests += 1;
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  // Discard must not destroy valid source data the automatic importer cannot represent.
+  await assert.rejects(
+    discardTenants(api, bundle, { timeoutMs: 0, intervalMs: 0, sleep: noSleep }),
+    /source IDs overlap/u,
+  );
+  assert.equal(requests, 0);
+  const role = createdResource(
+    (await fixture.api.expect("GET", `/namespaces/${source.id}/iam/roles/${source.id}`)).data,
+  );
+  assert.equal(role.id, source.id);
+});
