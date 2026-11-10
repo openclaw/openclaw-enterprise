@@ -1084,7 +1084,12 @@ test(
       assert.equal(stalePage.statusCode, 403);
       assert.match(stalePage.headers["content-type"], /^text\/html/);
       assert.match(stalePage.body, /Agent version changed/);
-      assert.ok(stalePage.body.includes(`${api.origin}/console/#native-agent=${key}`));
+      assert.ok(
+        stalePage.body.includes(
+          `<a href="${api.origin}/console/#native-agent=${key}">Return to console</a>`,
+        ),
+        "the recovery destination must be a clickable link",
+      );
       assert.equal(stalePage.headers.location, undefined);
       assert.equal(stalePage.headers["set-cookie"], undefined);
       assert.equal(stalePage.headers["cache-control"], "no-store");

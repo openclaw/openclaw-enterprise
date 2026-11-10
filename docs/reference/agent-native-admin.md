@@ -17,8 +17,9 @@ Agent, Namespace, revision and authorization. Neither cookie reaches the Gateway
 
 Repeating **Open Agent UI** reuses a valid handle with the same authority and
 expiry, preserving WebSockets. Otherwise, redemption issues a new handle.
-After a version change, refreshing the old session shows HTTP 403 **Agent version
-changed** with a Console return link. It never redirects or transfers access.
+A version-change refusal on an [eligible HTML navigation](#authorization-and-availability)
+shows HTTP 403 **Agent version changed** with a Console return link. It never
+redirects or transfers access. Other refusals keep their normal handling.
 
 ## Who can open it
 

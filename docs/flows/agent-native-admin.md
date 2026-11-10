@@ -216,8 +216,9 @@ fragment carries only the opaque host key. Without
 `Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
 Link previews, APIs, writes and WebSockets keep their refusal.
 
-A handle bound to a replaced version receives an HTTP 403 **Agent version changed**
-page with a Console return link. No cookie changes or automatic relaunch occur.
+When admission refuses a different version, eligible document navigations receive
+an HTTP 403 **Agent version changed** page with a Console return link. Other
+refusals keep their normal handling; no cookie changes or automatic relaunch occur.
 
 Denied browser permissions produce an HTTP 403 page linking to `/console/agents`
 on the configured public origin without naming the Agent. JSON refusals name
