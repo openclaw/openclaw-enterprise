@@ -220,7 +220,17 @@ test("failed checkout builds", async () => {
       assert.equal(args[0], "buildx");
       const tag = args[args.indexOf("--tag") + 1];
       const exit = tag.includes("/controller:") ? 23 : 47;
-      return execute(process.execPath, ["-e", "console.error(" + JSON.stringify(${JSON.stringify(privateOutput)}) + "); process.exit(" + exit + ")"]);
+      return execute(process.execPath, ["-e", "console.error(" + JSON.stringify(${JSON.stringify(privateOutput)}) + "); process.exit(" + exit + ")"]).catch((error) => {
+        if (exit === 47) {
+          // Exercise hostile metadata on a genuine child failure. Neither
+          // the accessor nor its private second result belongs in CI output.
+          let reads = 0;
+          Object.defineProperty(error, "signal", {
+            get: () => ++reads === 1 ? "SIGTERM" : ${JSON.stringify(privateOutput)},
+          });
+        }
+        throw error;
+      });
     },
   });
   try {

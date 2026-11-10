@@ -166,7 +166,7 @@ export function createDevUpModelProvider({
     }
   }
 
-  async function create(name, args, options) {
+  async function create(name, args, options, onCommandFailure) {
     lifetime.throwIfAborted();
     const resource = resources.find((entry) => entry.name === name);
     resource.uncertain = true;
@@ -178,7 +178,10 @@ export function createDevUpModelProvider({
       delete resource.uncertain;
       throw error;
     }
-    await docker(args, options);
+    await Promise.resolve(docker(args, options)).catch((error) => {
+      onCommandFailure?.(error);
+      throw error;
+    });
     delete resource.uncertain;
     await record();
   }
@@ -270,14 +273,30 @@ export function createDevUpModelProvider({
           ["--builder", env.BUILDX_BUILDER || "default"];
     const build = async (role, tag, args, { timeout: budgetMs }) => {
       const started = performance.now();
+      let processFailure = {};
       try {
-        await create(tag, args, { timeout: budgetMs });
+        await create(tag, args, { timeout: budgetMs }, (error) => {
+          // Read only command-owned data fields, never accessors. Journal and
+          // pre-dispatch cancellation errors do not describe a child process.
+          try {
+            for (const key of ["code", "signal", "killed"]) {
+              const value = Object.getOwnPropertyDescriptor(error, key)?.value;
+              if (["string", "number", "boolean"].includes(typeof value)) {
+                processFailure[key] = value;
+              }
+            }
+          } catch {
+            processFailure = {};
+          }
+        });
       } catch (error) {
         // Only fixed labels and process metadata enter CI output. The original
         // errors retain their private command output for local inspection.
         const exit =
-          Number.isInteger(error?.code) && error.code >= 0 && error.code <= 255
-            ? error.code
+          Number.isInteger(processFailure.code) &&
+          processFailure.code >= 0 &&
+          processFailure.code <= 255
+            ? processFailure.code
             : "unknown";
         const code = [
           "ENOENT",
@@ -286,8 +305,8 @@ export function createDevUpModelProvider({
           "EAGAIN",
           "ABORT_ERR",
           "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-        ].includes(error?.code)
-          ? error.code
+        ].includes(processFailure.code)
+          ? processFailure.code
           : "unknown";
         const signal = [
           "SIGTERM",
@@ -297,10 +316,11 @@ export function createDevUpModelProvider({
           "SIGPIPE",
           "SIGINT",
           "SIGHUP",
-        ].includes(error?.signal)
-          ? error.signal
+        ].includes(processFailure.signal)
+          ? processFailure.signal
           : "unknown";
-        const killed = typeof error?.killed === "boolean" ? error.killed : "unknown";
+        const killed =
+          typeof processFailure.killed === "boolean" ? processFailure.killed : "unknown";
         const elapsedMs = Math.round(performance.now() - started);
         throw new Error(
           `${role}: exit=${exit} code=${code} signal=${signal} killed=${killed} elapsedMs=${elapsedMs} budgetMs=${budgetMs}`,
