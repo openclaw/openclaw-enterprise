@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { basename, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
 
 export const skipperImageScope = "checkout-images-with-synthetic-model-trust-layer";
+const installedTestPath = "tests/integration/skipper-prepared-git-installed.test.mjs";
+const installedTestName =
+  "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats";
+const passedCounts = { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 };
 
 export function skipperInstalledProof(teamReview: boolean): string[] {
   return [
@@ -24,6 +29,60 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** Publish the passed runner result without copying diagnostics or inventing coverage. */
+export function projectSkipperRunnerReceipt(value: unknown) {
+  const summary = record(value);
+  assert.equal(summary.version, 1);
+  assert.equal(summary.command, "run");
+  assert.ok(typeof summary.sourceSha === "string" && /^[a-f0-9]{40}$/.test(summary.sourceSha));
+  assert.equal(summary.status, "passed");
+  assert.equal(summary.exitCode, 0);
+  assert.deepEqual(summary.counts, passedCounts);
+  assert.deepEqual(summary.issues, []);
+  assert.ok(Array.isArray(summary.files) && summary.files.length === 1);
+  const file = record(summary.files[0]);
+  assert.equal(file.path, installedTestPath);
+  assert.deepEqual(file.cleanup, { status: "passed" });
+  assert.ok(Array.isArray(file.tests) && file.tests.length === 1);
+  const test = record(file.tests[0]);
+  assert.equal(test.name, installedTestName);
+  assert.equal(test.status, "passed");
+  const { durationMs } = test;
+  assert.ok(typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0);
+  const scope = summary.scope === "full" || summary.scope === "focused" ? summary.scope : undefined;
+  const complete =
+    scope === "full" &&
+    file.exercised === true &&
+    file.signal === null &&
+    file.nodeExitCode === 0 &&
+    file.fileFailure === undefined &&
+    file.status === "passed" &&
+    isDeepStrictEqual(file.counts, passedCounts) &&
+    Array.isArray(file.issues) &&
+    file.issues.length === 0;
+  const counts = { ...passedCounts };
+  return {
+    version: 1,
+    command: "run",
+    sourceSha: summary.sourceSha,
+    status: "passed",
+    counts,
+    exitCode: 0,
+    scope,
+    issues: [],
+    files: [
+      {
+        path: installedTestPath,
+        status: "passed",
+        counts,
+        cleanup: { status: "passed" },
+        tests: [{ name: installedTestName, status: "passed", durationMs }],
+        ...(complete ? { exercised: true, signal: null, nodeExitCode: 0, issues: [] } : {}),
+      },
+    ],
+  };
+}
+
 /** Keep the selected failure's location and category together, without publishing its text. */
 export function skipperFailureSummary(resultText: string, root: string, fallback: string): string {
   const coordinate = (value: unknown): value is number =>
@@ -34,7 +93,7 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
   try {
     const files = record(JSON.parse(resultText)).files;
     assert.ok(Array.isArray(files));
-    const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
+    const path = installedTestPath;
     const file = files.map(record).find((entry) => entry.path === path);
     assert.ok(file && Array.isArray(file.tests));
     const failed = file.tests.map(record).find((entry) => entry.status === "failed");
@@ -100,21 +159,18 @@ export function qualifySkipperRelease(selection: unknown, evidence: unknown, cur
   assert.equal(receipt.lane, "skipper-prepared-git-installed");
   assert.equal(receipt.status, "passed");
   assert.equal(receipt.exitCode, 0);
-  const counts = { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 };
+  const counts = passedCounts;
   assert.deepEqual(receipt.counts, counts);
   assert.deepEqual(receipt.issues ?? [], []);
   assert.ok(Array.isArray(receipt.files) && receipt.files.length === 1);
   const file = record(receipt.files[0]);
-  assert.equal(file.path, "tests/integration/skipper-prepared-git-installed.test.mjs");
+  assert.equal(file.path, installedTestPath);
   assert.equal(file.status, "passed");
   assert.deepEqual(file.counts, counts);
   assert.deepEqual(file.cleanup, { status: "passed" });
   assert.ok(Array.isArray(file.tests) && file.tests.length === 1);
   const test = record(file.tests[0]);
-  assert.equal(
-    test.name,
-    "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats",
-  );
+  assert.equal(test.name, installedTestName);
   assert.equal(test.status, "passed");
   assert.ok(Array.isArray(receipt.proof));
   const teamReview = receipt.proof.includes(teamReviewProof[0]);

@@ -11,6 +11,7 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import {
+  projectSkipperRunnerReceipt,
   skipperFailureSummary,
   skipperInstalledProof,
   skipperImageScope,
@@ -440,27 +441,11 @@ if (failed) {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
   const results = join(env.RUNNER_TEMP, "results");
-  const { version, command, sourceSha, status, counts, exitCode } = summary;
-  assert.equal(summary.files.length, 1);
-  const [{ path, cleanup: testCleanup, tests }] = summary.files;
-  assert.equal(path, `tests/integration/${lane}.test.mjs`);
-  assert.deepEqual(testCleanup, { status: "passed" });
-  assert.deepEqual(
-    tests.map((test) => test.status),
-    ["passed"],
-  );
-  const [{ name, durationMs }] = tests;
   const receipt = {
-    version,
-    command,
+    ...projectSkipperRunnerReceipt(summary),
     lane,
-    sourceSha,
-    status,
-    counts,
-    exitCode,
     imageDigests,
     imageScope: skipperImageScope,
-    files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };
   await mkdir(results, { recursive: true });
