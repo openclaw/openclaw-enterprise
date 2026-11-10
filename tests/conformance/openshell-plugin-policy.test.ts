@@ -37,13 +37,20 @@ test("multi-segment Google resource names stay reachable in the sandbox rule", (
     scopes: ["https://www.googleapis.com/auth/adsense.readonly"],
   });
   const account = "/v2/accounts/pub-1";
+  const childAccounts = "/v2/accounts/pub-1:listChildAccounts";
+  for (const path of [account, childAccounts]) {
+    assert.equal(
+      adsense.some((allow) => allow.method === "GET" && restGlobMatches(allow.path, path)),
+      true,
+      `no GET rule matches ${path}: ${adsense
+        .filter((allow) => allow.method === "GET" && allow.path.startsWith("/v2/"))
+        .map((allow) => allow.path)
+        .join(", ")}`,
+    );
+  }
   assert.equal(
-    adsense.some((allow) => allow.method === "GET" && restGlobMatches(allow.path, account)),
-    true,
-    `no GET rule matches ${account}: ${adsense
-      .filter((allow) => allow.method === "GET" && allow.path.startsWith("/v2/"))
-      .map((allow) => allow.path)
-      .join(", ")}`,
+    adsense.some((allow) => allow.path.includes("*:")),
+    false,
   );
   // The accounts collection is a literal route and stays exact.
   assert.ok(adsense.some((allow) => allow.method === "GET" && allow.path === "/v2/accounts"));
