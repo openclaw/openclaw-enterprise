@@ -339,9 +339,8 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
-  const receipt = new URL(page.url()).searchParams.get("receiptId");
   const statusPath = agentPath + "/deletion-status";
-  const statusUrl = fixture.origin + statusPath + "?receiptId=" + receipt;
+  const statusUrl = fixture.origin + statusPath;
   // Polls run only when the test advances the clock. Pause 1 s ahead of the page's own time,
   // short of the first poll: a fixed time fails once sign-in and delete outlast it.
   const now = await page.evaluate(() => Date.now());

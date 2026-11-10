@@ -659,7 +659,7 @@
     {
       "path": "tests/integration/postgres-agent-deletion-status.test.ts",
       "expectedTests": [
-        "Agent deletion receipts follow real work through lost claims, takeover and removal of Agent access"
+        "Agent deletion status follows the Agent, and completion follows the verified finalizing actor"
       ]
     }
   ]

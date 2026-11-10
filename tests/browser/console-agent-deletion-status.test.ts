@@ -18,7 +18,7 @@ import {
   settlePageRequests,
 } from "./console-agents-browser-helpers.ts";
 
-test("the Console confirms deletion and reloads its receipt after the Agent and its grants are removed", async (t) => {
+test("the Console confirms deletion to its finalizing actor and shows other readers only that the Agent is not visible", async (t) => {
   const state = new InMemoryPlatformState();
   const fixture = await createConsoleAppFixture(t, { state, recordOperations: true });
   await fixture.bootstrap();
@@ -33,8 +33,8 @@ test("the Console confirms deletion and reloads its receipt after the Agent and 
   await loginThroughForm(page, fixture, agents);
   const browser = page.context();
   const search = page.getByRole("searchbox", { name: "Search Agents" });
-  const receipt = await verifyConsoleAgentDeletion(browser, fixture.origin, agent, async () => {
-    // Exercise the other scenario's page while the deletion page is following its receipt.
+  const statusLink = await verifyConsoleAgentDeletion(browser, fixture.origin, agent, async () => {
+    // Exercise the other scenario's page while the deletion page is following its status.
     // They share this sign-in, but neither may navigate or close the other's page.
     assert.equal(browser.pages().length, 2);
     await search.fill(agent.name);
@@ -54,25 +54,33 @@ test("the Console confirms deletion and reloads its receipt after the Agent and 
   await page.locator(".account-toggle:visible").first().click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL("**/console/login");
-  await loginThroughForm(page, fixture, receipt + "&returnTo=/console/settings");
+  await loginThroughForm(page, fixture, statusLink + "&returnTo=/console/settings");
   await page.getByRole("heading", { name: "Agent deleted", exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.has("returnTo"), false);
 
-  // The same saved receipt and real password sign-in, now as a different Namespace reader.
+  // The same saved link and real password sign-in, now as a Namespace reader who did not
+  // finish this deletion. Its denial reads the same as for an Agent that still exists, so the
+  // page never says Agent deleted.
   const other = await fixture.createNamespaceMember("another-reader", namespace.id, [
     ["read", "namespace"],
   ]);
   const { page: reader } = await newPage(t, fixture);
   const reads = apiRequests(reader, fixture.origin);
-  await loginThroughForm(reader, fixture, receipt, other.credentials);
-  await reader.getByRole("heading", { name: "Deletion status unavailable", exact: true }).waitFor();
+  await loginThroughForm(reader, fixture, statusLink, other.credentials);
+  const notVisible = reader.getByRole("status").filter({
+    has: reader.getByRole("heading", { name: "Agent not visible", exact: true }),
+  });
+  await notVisible
+    .getByText(
+      "This Agent is no longer visible to you. It may have been deleted, or your access may have changed.",
+    )
+    .waitFor();
+  assert.equal(await reader.getByRole("heading", { name: "Agent deleted" }).count(), 0);
   assert.deepEqual(
     reads
       .filter((r) => r.path.startsWith(`/namespaces/${namespace.id}/agents/${agent.id}`))
       .map((r) => r.path),
-    [
-      `/namespaces/${namespace.id}/agents/${agent.id}/deletion-status?receiptId=${new URL(receipt).searchParams.get("receiptId")}`,
-    ],
+    [`/namespaces/${namespace.id}/agents/${agent.id}/deletion-status`],
   );
   assert.equal(await reader.getByRole("list", { name: "Deletion progress" }).isVisible(), false);
   assert.equal(await reader.getByRole("button", { name: "Retry cleanup" }).isVisible(), false);
@@ -93,8 +101,8 @@ test("missing, unavailable or mismatched deletion status never confirms completi
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const accepted = await fixture.request("DELETE", path);
   assert.equal(accepted.status, 202);
-  // Someone else requested deletion. A reader may follow the live status without learning
-  // its receipt, and the status announcement must not say the reader requested the deletion.
+  // Someone else requested deletion. A reader of the Agent may follow its live status, and the
+  // status announcement must not say the reader requested the deletion.
   const member = await fixture.createNamespaceMember("deletion-observer", namespace.id, [
     ["read", "namespace"],
     ["read", "agent"],
@@ -117,17 +125,15 @@ test("missing, unavailable or mismatched deletion status never confirms completi
       exact: true,
     })
     .waitFor();
-  assert.equal(new URL(observer.url()).searchParams.has("receiptId"), false);
+  assert.deepEqual(Object.keys(accepted.body.meta), ["requestId"]);
 
-  const receiptId: string = accepted.body.meta.deletionReceiptId;
-  const url = `/console/agents/${agent.id}/deletion?namespace=${namespace.id}&receiptId=${receiptId}`;
+  const url = `/console/agents/${agent.id}/deletion?namespace=${namespace.id}`;
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
   const refresh = page.getByRole("button", { name: "Refresh deletion status" });
-  const statusUrl = `${fixture.origin}${path}/deletion-status?receiptId=${receiptId}`;
+  const statusUrl = `${fixture.origin}${path}/deletion-status`;
   for (const fault of [
     { agentId: "agt_" + randomUUID() },
-    { receiptId: "aud_" + randomUUID() },
     { namespaceId: "ns_" + randomUUID() },
     403,
     404,
@@ -149,7 +155,6 @@ test("missing, unavailable or mismatched deletion status never confirms completi
           const { data, meta }: AgentDeletionStatusResponse = await response.json();
           assert.equal(response.status(), 200);
           assert.equal(data.status, "queued");
-          assert.equal(data.receiptId, receiptId);
           // A real response with an apparent completion for another target must not be accepted.
           await route.fulfill({
             response,
@@ -160,10 +165,16 @@ test("missing, unavailable or mismatched deletion status never confirms completi
       { times: 1 },
     );
     await refresh.click();
+    // A denial or a missing record never confirms deletion; it reads only as not visible.
+    const denied = fault === 403 || fault === 404;
     await page
       .getByRole("status")
-      .getByRole("heading", { name: "Deletion status unavailable", exact: true })
+      .getByRole("heading", {
+        name: denied ? "Agent not visible" : "Deletion status unavailable",
+        exact: true,
+      })
       .waitFor();
+    assert.equal(await page.getByRole("heading", { name: "Agent deleted" }).count(), 0);
     assert.equal(await page.getByRole("list", { name: "Deletion progress" }).isVisible(), false);
     assert.equal(await page.getByRole("button", { name: "Retry cleanup" }).isVisible(), false);
     await refresh.click();
@@ -185,21 +196,29 @@ test("cleanup retry needs a still-failed status, current delete permission and a
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const accepted = await fixture.request("DELETE", path);
   assert.equal(accepted.status, 202);
-  const receiptId: string = accepted.body.meta.deletionReceiptId;
-  const status = `${fixture.origin}${path}/deletion-status?receiptId=${receiptId}`;
+  const status = `${fixture.origin}${path}/deletion-status`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
   // PostgreSQL covers the worker states. Vary only the status shown to this browser; the
-  // controller's permission check, repeat admission, new receipt, and its next status are real.
+  // controller's permission check, repeat admission, and the next status are real.
   let displayed: "waiting" | "failed" | "queued" = "waiting";
+  let retried = false;
+  page.on("request", (request) => {
+    if (request.method() === "DELETE" && request.url() === fixture.origin + path) {
+      retried = true;
+    }
+  });
   const nextAttemptAt = new Date(Date.now() + 60_000).toISOString();
   await page.route(status, async (route) => {
+    if (retried) {
+      await route.continue();
+      return;
+    }
     const response = await route.fetch();
     assert.equal(response.status(), 200);
     const { data, meta }: AgentDeletionStatusResponse = await response.json();
     assert.equal(data.status, "queued");
-    assert.equal(data.receiptId, receiptId);
     await route.fulfill({
       response,
       json: {
@@ -208,7 +227,7 @@ test("cleanup retry needs a still-failed status, current delete permission and a
       },
     });
   });
-  const url = `/console/agents/${agent.id}/deletion?namespace=${namespace.id}&receiptId=${receiptId}`;
+  const url = `/console/agents/${agent.id}/deletion?namespace=${namespace.id}`;
   await login(page, fixture, url);
   const localTime = await page.evaluate((value) => new Date(value).toLocaleString(), nextAttemptAt);
   await page
@@ -273,8 +292,8 @@ test("cleanup retry needs a still-failed status, current delete permission and a
   await settlePageRequests(page);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
-  // With the same failure and permission, keeping confirmation sends one real DELETE. Follow
-  // its new receipt through the controller, outside the old receipt's intercepted status above.
+  // With the same failure and permission, keeping confirmation sends one real DELETE. Its next
+  // status reads come from the controller, no longer through the interception above.
   await retry.click();
   const acceptedRetry = page.waitForResponse(
     (response) =>
@@ -283,10 +302,9 @@ test("cleanup retry needs a still-failed status, current delete permission and a
   await confirm.click();
   const response = await acceptedRetry;
   assert.equal(response.status(), 202);
-  const nextReceipt = (await response.json()).meta.deletionReceiptId;
-  assert.notEqual(nextReceipt, receiptId);
+  assert.deepEqual(Object.keys((await response.json()).meta), ["requestId"]);
   await queued.waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("receiptId"), nextReceipt);
+  assert.equal(new URL(page.url()).searchParams.has("receiptId"), false);
   assert.deepEqual(
     nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]),
     [["DELETE", path]],

@@ -873,8 +873,8 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
 });
 
 // Failed cleanup may offer a retry, but the real DELETE must reject access revoked after
-// its last permission check. The receipt page has no Agent name; keep the raw ID out of the
-// refusal while retaining the request ID and removing the destructive action.
+// its last permission check. The deletion status page has no Agent name; keep the raw ID out
+// of the refusal while retaining the request ID and removing the destructive action.
 test("a cleanup retry denied after its permission check explains the refusal and stops retrying", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused cleanup retry", {
     recordOperations: true,

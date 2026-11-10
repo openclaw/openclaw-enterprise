@@ -131,7 +131,7 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 }
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
-  test("losing Namespace access stops deletion receipt polling and respects focus moved during the read", async (t) => {
+  test("losing Agent access stops deletion status polling and respects focus moved during the read", async (t) => {
     const fixture = await createConsoleAppFixture(t, {
       provisionedPeople: ["scoped-deleter"],
       recordOperations: true,
@@ -166,11 +166,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
       return binding.data;
     };
     // A member whose only Agent grants target this Agent, as a Namespace administrator shares it.
-    const namespaceBinding = await bind(
-      [{ action: "read", resourceKind: "namespace" }],
-      "namespace",
-      namespace.id,
-    );
+    await bind([{ action: "read", resourceKind: "namespace" }], "namespace", namespace.id);
     const agentBinding = await bind(
       [
         { action: "read", resourceKind: "agent" },
@@ -195,26 +191,17 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const dialog = page.getByRole("dialog", { name: "Delete Scoped Candidate?" });
     await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
     await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
-    const receiptId = new URL(page.url()).searchParams.get("receiptId");
-    assert.ok(receiptId);
-    const statusPath = agentPath + "/deletion-status?receiptId=" + receiptId;
+    assert.equal(new URL(page.url()).searchParams.has("receiptId"), false);
+    const statusPath = agentPath + "/deletion-status";
     const reads = () => pathRequests(requests, "GET", statusPath).length;
 
-    // The same requester's receipt survives loss of this exact Agent grant, while Namespace read holds.
+    // Removing the requester's exact Agent grant ends its view of this deletion, although it
+    // still reads the Namespace and requested the deletion itself.
     const removed = await fixture.request(
       "DELETE",
       `${policyPath}/access-bindings/${agentBinding.id}`,
     );
     assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-    const refresh = page.getByRole("button", { name: "Refresh deletion status" });
-    const stillReadable = page.waitForResponse(fixture.origin + statusPath);
-    await refresh.click();
-    assert.equal((await stillReadable).status(), 200);
-    const removedNamespace = await fixture.request(
-      "DELETE",
-      `${policyPath}/access-bindings/${namespaceBinding.id}`,
-    );
-    assert.ok([200, 204].includes(removedNamespace.status));
 
     const denied = await holdNextStatusResponse(page, fixture.origin + statusPath);
     await page.clock.runFor(DELETION_POLL_MS);
@@ -222,7 +209,8 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const back = page.getByRole("link", { name: "← Agents", exact: true });
     await back.focus();
     denied.release();
-    await page.getByRole("heading", { name: "Deletion status unavailable" }).waitFor();
+    await page.getByRole("heading", { name: "Agent not visible" }).waitFor();
+    assert.equal(await page.getByRole("heading", { name: "Agent deleted" }).count(), 0);
     assert.equal(await page.getByRole("list", { name: "Deletion progress" }).isVisible(), false);
     assert.equal(await back.evaluate((node) => node.matches(":focus")), true);
     assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
