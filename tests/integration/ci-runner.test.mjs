@@ -926,6 +926,8 @@ syncBuiltinESMExports();
   assert.equal(summary.files[0].cleanup.status, "passed");
   assert.equal(await readFile(state, "utf8"), `${file}\n`);
   // The runner preserves native child exit codes, including failures other than 1.
+  assert.notEqual(result.status, 0);
+  assert.equal(result.status, summary.files[0].nodeExitCode);
   assert.equal(result.status, summary.exitCode);
   assert.doesNotMatch(result.stderr, /private-pipe-canary|Unhandled.*error/);
 });
