@@ -210,6 +210,10 @@ the GitHub API. Both carry Metadata read and the same selected repository ID.
 The API attachment uses Bearer injection at `api.github.com/graphql`. Stock
 `gh` receives a nonsecret startup value.
 
+Leave the shared GitHub issuance generation unset for this preview. The
+Worker accepts shared issuance only with the default read-only, one-repository
+profile. Preview tokens keep separate per-admission custody.
+
 The preview supports the bundled `gh` version with explicit repository, head,
 base, title and body for `gh pr create --draft`, and an explicit PR number and
 title for `gh pr edit --title`. It checks the CLI's discovery requests and

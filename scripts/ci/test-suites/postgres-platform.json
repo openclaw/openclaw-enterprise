@@ -424,7 +424,9 @@
         "selected read grant bounds ordinary Git push",
         "selected write grant bounds ordinary Git push",
         "selected repository set authorizes native Git read",
-        "selected repository set authorizes native Git write"
+        "selected repository set authorizes native Git write",
+        "an uncertain API mint stays quarantined across issuer rotation and does not take Git custody",
+        "shared GitHub issuance refuses the pull request preview at Worker startup"
       ]
     },
     {

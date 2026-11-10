@@ -1256,9 +1256,6 @@ test(
   "an uncertain API mint stays quarantined across issuer rotation and does not take Git custody",
   {
     ...requiresPostgres,
-    skip:
-      requiresPostgres.skip ||
-      (!process.env.OCC_TEST_STOCK_GH && "Run with the stock CLI preview lane."),
     timeout: 90_000,
   },
   async (t) => {
@@ -1378,6 +1375,23 @@ test(
         assert.equal(peer.gh.issuesOfTokens.length, 2, "unknown API issuance does not retry");
       },
       { contents: "write", pullPreview: true },
+    );
+  },
+);
+
+test(
+  "shared GitHub issuance refuses the pull request preview at Worker startup",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await assert.rejects(
+      selectedGrantGitJourney(
+        t,
+        import.meta.url,
+        async () => assert.fail("the incompatible Worker must not start"),
+        { contents: "write", pullPreview: true },
+        true,
+      ),
+      { message: "SHARED_REPOSITORY_GIT_REQUIRES_READ_ONLY_PROFILE" },
     );
   },
 );
