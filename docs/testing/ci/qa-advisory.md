@@ -19,12 +19,8 @@ QA Matrix Advisory is one workflow with four groups of test jobs:
 - **OIDC Agent chat:** Keycloak sign-in, ordinary-owner setup, a real Agent reply,
   and refusal of native administrative requests.
 
-The six-hour schedule starts all four groups in the same workflow run. They use
-real dependencies on disposable installations. Results are advisory and do not
-block merge or publication.
-
-`openshell` is the test runner's name for a suite (a **lane**). Its jobs are part
-of this workflow; they do not require another schedule or manual invocation.
+Each scheduled run starts all four groups on disposable installations with
+real dependencies. Results are advisory. `openshell` names the test runner lane.
 
 <a id="when-it-runs"></a>
 
@@ -38,11 +34,9 @@ of this workflow; they do not require another schedule or manual invocation.
 | Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
 
-PRs must come from this repository and must not be authored or triggered by
-Dependabot. A maintainer adds the label to a reviewed PR; create it first if
-absent. `full-qa` takes precedence when both labels are present. The focused
-Compose job still uses Kubernetes workloads and checks native redeployment and
-required-worker execution.
+Maintainers label reviewed PRs from this repository. Dependabot authors and
+triggers are ineligible. `full-qa` takes precedence. The focused Compose job
+uses Kubernetes workloads and checks native redeployment and required-worker execution.
 
 PR runs test the merge commit. While a qualifying label remains, a new commit
 replaces the previous run. Removing the label stops future selection; cancel an
@@ -56,10 +50,11 @@ manual advisory run.
 
 ## Scenarios
 
-The matrix creates disposable Compose and Kubernetes control planes, both with
-Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. Before the first preset, the matrix enables both Plugin Drivers and checks that OpenClaw offers Google Workspace and Codex offers Linear. The catalogs stay enabled across presets. The matrix does
-not use existing clusters or change the default kubeconfig. The exact test list
-is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
+Both disposable control planes use Kubernetes compute and separate Agents per
+scenario. The matrix enables both Plugin Drivers, checks the Google Workspace
+and Linear catalogs, and retains them across presets. It preserves existing
+clusters and kubeconfig. The [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json)
+lists the tests.
 
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                               |
 | ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -81,10 +76,10 @@ defines their applicability.
 
 ### Scenario details
 
-The OpenShell jobs cover `sandbox-policy`, `scratch-volume` and `plugin-install` automatically.
-To select these scenarios locally through the QA matrix, prepare their OpenShell
-fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector),
-[scratch storage](../openshell.md#openshell-sandbox) or [plugin installation](../openshell.md#codex-plugin-installation).
+To run OpenShell scenarios locally, prepare the matching fixture for
+[network policy](../openshell-coverage.md#qa-matrix-selector),
+[scratch storage](../openshell.md#openshell-sandbox), or
+[plugin installation](../openshell.md#codex-plugin-installation).
 
 The OpenClaw `model-ui` case checks the example Console theme through sign-in
 and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
@@ -198,11 +193,9 @@ runtime images. Follow the [native browser proof](../native-agent-browser.md)
 for inputs, execution and proof limits. It does not use the ordinary matrix's
 installation launcher.
 
-Select `scratch-volume` with `kubernetes` and `Codex`. It reuses the
-[real scratch entrypoint](../openshell.md#openshell-sandbox) against an explicitly
-prepared disposable OpenShell environment. This Codex case uses an OpenAI API key,
-with endpoint `https://api.openai.com/v1`. It does not qualify NVMe backing or
-node-loss recovery.
+Select `scratch-volume` with `kubernetes` and `Codex`. Use the
+[disposable scratch fixture](../openshell.md#openshell-sandbox) and an OpenAI API
+key for `https://api.openai.com/v1`. NVMe and node-loss recovery need separate proof.
 
 Select `codex-search-config` alone. It requires `OCC_TEST_QA_CODEX_MODEL_BASE_URL`,
 `OCC_TEST_QA_CODEX_MODEL`, and an API key through `OCC_TEST_QA_MODEL_API_KEY` or
@@ -261,14 +254,8 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-`TEST_ENV_FILE` is the private environment file described above.
-For scratch only, keep those private inputs and select:
-
-```sh
-OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
-OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=scratch-volume \
-  node --env-file="$TEST_ENV_FILE" --test tests/integration/qa-matrix-real.test.mjs
-```
+`TEST_ENV_FILE` is the private environment file described above. Set the
+[scenario selectors](#select-scenarios) for a focused run.
 
 ## Results and limits
 
