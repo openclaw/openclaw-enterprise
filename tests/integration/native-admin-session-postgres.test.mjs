@@ -1063,6 +1063,42 @@ test(
       );
     });
     assert.equal((await nativeGet(api, target.native, cookie)).statusCode, 403);
+    // A deployment invalidates this handle without logging the person out. Refreshing
+    // a named chat page must explain how to reopen, never silently adopt the new version.
+    const host = new URL(target.native.origin).host;
+    const key = new URL(target.native.origin).hostname.match(/^agent-([a-f0-9]{32})\./)[1];
+    const requestsBeforeRefresh = upstream.requests.length;
+    for (const activation of [{}, { "sec-fetch-user": "?1" }]) {
+      const stalePage = await api.app.inject({
+        method: "GET",
+        url: `/chat/main/simple-test-session-${"a".repeat(32)}`,
+        headers: {
+          host,
+          cookie,
+          accept: "text/html",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-dest": "document",
+          ...activation,
+        },
+      });
+      assert.equal(stalePage.statusCode, 403);
+      assert.match(stalePage.headers["content-type"], /^text\/html/);
+      assert.match(stalePage.body, /Agent version changed/);
+      assert.ok(
+        stalePage.body.includes(
+          `<a href="${api.origin}/console/#native-agent=${key}">Return to console</a>`,
+        ),
+        "the recovery destination must be a clickable link",
+      );
+      assert.equal(stalePage.headers.location, undefined);
+      assert.equal(stalePage.headers["set-cookie"], undefined);
+      assert.equal(stalePage.headers["cache-control"], "no-store");
+      assert.ok(stalePage.headers["x-request-id"]);
+      assert.equal(upstream.requests.length, requestsBeforeRefresh);
+    }
+    const staleApi = await nativeGet(api, target.native, cookie, "/api/status");
+    assert.equal(staleApi.statusCode, 403);
+    assert.match(staleApi.headers["content-type"], /^application\/json/);
     const revisedCookie = await launchNativeBrowserSession(api, parent, target, cookie);
     assert.notEqual(revisedCookie, cookie, "a new revision cannot reuse the previous handle");
     const revisedSocket = await openNativeWebSocket(port, target.native, revisedCookie);

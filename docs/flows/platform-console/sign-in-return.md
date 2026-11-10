@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-11-09
-last_updated_session: authoring-run/e00c2688-0a25-4443-a852-69dea27e73d0
+updated: 2026-11-10
+last_updated_session: authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761
 ---
 
 # Console sign-in and destination recovery
@@ -71,9 +71,12 @@ labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `htt
 URL must use that endpoint's origin and path, as Google's must use its fixed endpoint.
 An explicit `password: false` makes the form recovery-only and changes the
 provider-error advice from "use your password" to asking an administrator. The
-console puts an empty form behind **Recovery sign-in** when focus is outside it
-and no sign-in is pending. A late discovery reply keeps the form visible while
-focus is inside it, even if both fields are empty.
+console keeps the password form behind **Recovery sign-in** while discovery is
+pending, so early focus or autofill cannot make it the default sign-in method.
+Selecting recovery opens the form immediately; a later discovery reply preserves
+that choice, its input, and keyboard focus. Discovery that permits passwords or
+fails shows the form without requiring the recovery action. If that action has
+keyboard focus, focus moves to Email when the form replaces it.
 
 While sign-in is pending, the console ignores repeat password submissions and
 provider activations. Keyboard focus stays on the control that started the
@@ -162,6 +165,8 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 08:33: Keep password entry behind explicit recovery until sign-in discovery settles. (authoring-run/e3f98b7b-fd3a-415b-83f5-7b839709b761 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 
 - 2026-11-09 15:08: Remove direct GitHub discovery and membership errors in the accompanying changes. (authoring-run/e00c2688-0a25-4443-a852-69dea27e73d0 - daecab29c452af39945f5526257288771a77bdfc)
 
