@@ -4,7 +4,7 @@ Native browser access is disabled by default. It exposes an Agent Gateway’s ch
 
 ## Host-only session exchange
 
-For guarded GitHub sign-in, select `agentNativeAdmin.sessionMode: host-only-exchange`
+For guarded OIDC sign-in, select `agentNativeAdmin.sessionMode: host-only-exchange`
 (`OCC_AGENT_NATIVE_ADMIN_SESSION_MODE=host-only-exchange`) and omit
 `agentNativeAdmin.sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN`. Console and Agent
 origins must use same-site HTTPS and route to OCC. Launch creates no account or grant.
@@ -26,7 +26,7 @@ The console’s Agent browser surface requires a human session and exact Agent
 granted. Agent `read` alone and service API keys grant neither mode.
 
 Password and OIDC sign-in support native browser access with shared cookies.
-Guarded GitHub sign-in requires the [host-only session exchange](#host-only-session-exchange).
+OIDC also supports the [host-only session exchange](#host-only-session-exchange).
 Google sign-in does not support native browser access.
 
 ## Enable during creation
@@ -197,7 +197,7 @@ device state, plugins, or other persistent gateway data.
 - Helm requires HTTPS and an Agent DNS suffix even when native access is disabled. Native access also requires private gateway routing.
 - Auth setup rejects missing or incompatible Console and Agent DNS hosts, public-suffix cookie scope, and short auth secrets. The removed `sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN` inputs are rejected, including empty values.
 - Native access setup rejects invalid enablement, origins, or transport prerequisites. A missing `OCC_GATEWAY_API_KEY_PATH` reports `GATEWAY_API_KEY_UNAVAILABLE`.
-- Host-only exchange requires guarded GitHub sign-in, same-site HTTPS Console and Agent origins, and disabled sandbox preview.
+- Host-only exchange requires guarded OIDC sign-in, same-site HTTPS Console and Agent origins, and disabled sandbox preview.
 - See [availability statuses](#authorization-and-availability). With a selected version and derived origin, unsupported native configuration, gateway routing or an unclean Compute endpoint returns `unsupported`.
 - The console hides native access for disabled and denied states and explains stopped, unsupported, or unavailable states. When available, **Open chat** or **Open Agent UI** opens a new tab directly in shared-cookie mode or completes the host-only exchange.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.

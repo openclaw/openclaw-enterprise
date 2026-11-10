@@ -1,93 +1,108 @@
-# Automatic enrollment from a GitHub team
+# OIDC account enrollment
 
-An operator can let verified members of configured GitHub teams create their
-OCE account on first sign-in and join an existing native IAM Group. Set
-`OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID` (Helm `auth.github.autoEnrollGroupId`) to
-that Group's exact ID, including punctuation. Leaving it empty preserves
-administrator-managed enrollment.
-This requires the existing [GitHub sign-in profile](external-sign-in.md#github-sign-in-for-existing-accounts).
+Configure `auth.oidc.enrollment` to admit selected identities and optionally create
+OCE accounts at first sign-in. The same object is available as installation
+profile `controlPlane.oidc.enrollment` or JSON in `OCC_AUTH_OIDC_ENROLLMENT`.
+Without it, OIDC sign-in requires an explicitly attached account.
+See [OIDC setup](../../guides/deploy/oidc-sign-in.md) and the
+[upgrade from direct GitHub sign-in](../../guides/deploy/oidc-upgrade.md).
 
-## Configuration and permissions
+## Select admission and initial access
 
 ```yaml
 auth:
-  github:
-    enabled: true
-    allowedOrgs: []
-    allowedTeams:
-      - example/platform
-    autoEnrollGroupId: group_platform_members
+  oidc:
+    enrollment:
+      admission:
+        groupsClaim: groups
+        anyOf: [oce-members]
+      additionalScopes: [groups]
+      createAccount:
+        enabled: true
+        role:
+          id: role_config_agent_creator
+          scope:
+            namespaceId: "<existing Namespace ID>"
+      groupIds: [group_config_default-user]
 ```
 
-The Group must already exist at Installation scope. All configured `allowedTeams`
-qualify for the same Group; `allowedTeams` must be nonempty and `allowedOrgs`
-must be empty. Invalid combinations fail configuration validation. The
-[installation profile](../../guides/deploy/installation-profiles.md#external-sign-in-and-trusted-proxies)
-uses the same fields under `controlPlane.github`.
+The referenced Role, Namespace and Groups must exist. Startup validates these
+references after applying the Installation's IAM configuration. Every enrollment
+transaction checks them again. Unknown fields and invalid policy combinations
+fail activation.
 
-The Group's existing [AccessBindings](../authorization.md#access-bindings-and-groups)
-determine access. Enrollment creates no Role or binding. A Role bound only to the
-Installation resource does not grant access to Namespace or Agent resources;
-full administration requires the existing administrator Role with an unscoped
-Group binding. Group and broad binding management have no public API; this
-setting selects an operator-provisioned Group, rather than creating one.
+`admission` is required. The verified ID token must contain the named top-level
+claim as an array of strings, with at least one exact `anyOf` value. Values and
+claim names are case-sensitive; the allowlist cannot be empty. Missing or malformed
+claims refuse sign-in for both new and attached identities. This is an admission
+rule, not a mapping from IdP groups to Roles. Configure the IdP to emit the claim
+in its signed ID token.
 
-The GitHub App needs organization **Members: read**, as the existing team
-allowlist requires. For first-time enrollment it also needs user **Email
-addresses: read**. Users must accept that permission. OCE reads the authenticated
-user's [email addresses](https://docs.github.com/en/rest/users/emails#list-email-addresses-for-the-authenticated-user)
-and accepts exactly one verified primary address from the first 100 entries.
-A public profile address or GitHub login is never a substitute. No OAuth scope
-is requested, and no GitHub token is persisted.
+With enrollment configured, OCE requests `openid email profile` and any explicit
+`additionalScopes`. It does not call UserInfo. Without enrollment it requests only
+`openid`. Scope names must be OAuth scope tokens, without spaces.
 
-## Sign-in behavior
+`createAccount.enabled` defaults to `false`. When `true`, `role` is required:
 
-The callback verifies active organization and team membership before looking up
-an OCE account. It identifies the person by GitHub's immutable numeric user ID
-and the configured provider instance, not by email or login name. After the team
-check, OCE rereads the authenticated profile with the same token and requires the
-same numeric ID and login, rejecting a login change during membership lookup.
+| Role selection                         | Initial direct grant                              |
+| -------------------------------------- | ------------------------------------------------- |
+| `null`                                 | None. Group grants can still provide access.      |
+| `{id: ..., scope: installation}`       | The exact singleton Installation resource.        |
+| `{id: ..., scope: {namespaceId: ...}}` | The existing Namespace and its resources.         |
+| `{id: ..., scope: all}`                | Unscoped binding, including descendant resources. |
 
-For a new identity, OCE reads the verified primary email and atomically writes
-the account, Principal, external sign-in method, enrollment and Group membership,
-with audit records. The account has no direct grants. To preserve the existing
-account contract, OCE hashes a random local password and discards it without
-displaying or delivering it. The same callback can issue a session after the
-normal account and method-version checks.
+The Role must be Installation-scoped. Configured `role_config_` Roles are supported.
+An exact Installation binding does not grant Agent or Namespace access. Initial
+Role bindings apply only to newly created accounts; later logins do not add,
+restore or change them. Review the Role's permissions and scope together.
 
-An attached identity with an ineligible or stale sign-in proof is refused without
-requesting email addresses. An already attached, enabled account joins the Group without changing its name,
-email or sign-in methods. It does not request email addresses, so adding the
-setting does not make existing sign-ins depend on the new GitHub permission.
-Disabled or unenrolled accounts are not repaired. A matching email on a different
-OCE account never links or transfers the GitHub identity; an administrator must
-resolve that conflict using the existing account controls.
+`groupIds` selects existing Installation Groups by exact ID. Omission inherits
+[configured default Groups](../authorization/default-users.md); an explicit list
+replaces those defaults, and `[]` disables Group enrollment. Every admitted login
+adds missing memberships, including for an existing account. It does not remove
+memberships or change the Groups' bindings. Effective access combines direct
+and Group grants.
 
-Concurrent first sign-ins create at most one account and membership. An attempt
-that started before another callback created or attached its method can be
-refused by the existing currentness check; begin a fresh sign-in. A failure
-before transaction commit leaves no partial enrollment. A later session failure
-can leave a fully enrolled account without releasing a session cookie.
+## Identity, profile and transactions
 
-## Offboarding and failures
+OCE resolves the exact provider instance and `sub`. An existing identity keeps its
+OCE user ID, Principal, name, email, resource ownership and grants. It needs no
+profile claims to sign in. To use a manually created account, an administrator must
+[attach its OIDC identity explicitly](../../guides/deploy/oidc-sign-in.md#attach-and-detach).
+Email matching never attaches or transfers an identity.
 
-This setting enrolls accounts; it does not continuously synchronize membership.
-Every GitHub sign-in checks the current team membership. Existing sessions keep
-their normal maximum eight-hour lifetime. Removing someone from GitHub does not
-remove their OCE Group membership or invalidate access through another configured
-provider or an existing password. Use the supported [account disable operation](external-sign-in.md#session-and-recovery-controls)
-for immediate offboarding; revoking sessions alone does not prevent another
-sign-in. Separately issued [ServicePrincipal API keys](service-api-keys.md) retain
-their own authority and require separate revocation. Recovery-only password
-sign-in can restrict ordinary accounts to their external providers.
+An unknown identity can create an account only when creation is enabled. Its
+standard `email` must be valid, `email_verified` must be boolean `true`, and the
+trimmed, lowercased email must be unused in OCE. The optional `name` supplies the
+display name; otherwise OCE uses the email. Alternative email claims are not read.
+Perform profile mapping at the IdP. Configure verified email only when the IdP can
+vouch for that address. A collision requires administrator resolution.
 
-Disabling automatic enrollment stops future additions and leaves existing
-accounts and grants intact. OCE has no API to remove an individual Group member.
-Removing a [configured Group](../authorization/default-users.md) also removes
-its memberships.
+Creation commits the account, Principal, external method, initial Role binding,
+Group memberships and their audit records together. OCE hashes a random local
+password and discards it; it does not deliver a password or retain provider tokens.
+The normal session transaction then checks the account and method before issuing
+a cookie. A later session failure can leave a fully enrolled account without a
+session. Retry sign-in; do not create another account.
 
-Missing email permission, provider errors and timeouts refuse new enrollment;
-provider warnings identify the `email` step without logging addresses or tokens.
-Missing or ambiguous verified primary email refuses sign-in. A missing or
-Namespace-scoped Group fails before account creation. Check the configured Group
-ID and its bindings, the GitHub App permissions, and the existing sign-in audit.
+Concurrent first logins create at most one identity. An attempt that predates
+another callback's creation or an administrator's account change can be refused;
+start a new login. Only the transaction that creates an identity may issue its
+initial proof without an older account snapshot. Disabled or stale accounts are
+never repaired by enrollment. Changing the effective policy invalidates pending
+attempts, including changes to inherited default Groups.
+
+## Offboarding and troubleshooting
+
+Admission is checked on each OIDC login. It does not continuously synchronize
+IdP membership, end existing sessions, or remove OCE grants. Qualify the IdP's
+membership refresh behavior, including reused broker sessions, against the
+required revocation delay. A fresh token alone does not prove fresh membership.
+Use [account disablement](external-sign-in.md#session-and-recovery-controls) for
+immediate offboarding and revoke separately issued service keys independently.
+
+A refused admission or profile returns the generic sign-in error. Check the
+signed claim mapping, creation policy and email ownership. Missing Role, Namespace
+or Group references fail startup or enrollment; restore the intended policy
+reference before retrying. Never resolve an identity conflict by rewriting the
+subject or creating a replacement for an existing person's account.

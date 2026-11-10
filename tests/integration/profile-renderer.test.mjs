@@ -32,6 +32,7 @@ import {
   KubernetesComputeDriver,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { validateBackendDefinitions } from "../../packages/occ/src/backends.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { helmTemplate } from "../helpers/production-chart.mjs";
@@ -930,20 +931,45 @@ const repositorySecretKeys = [
   "publicCaSecretName",
 ];
 
-function withGitHubSignIn(input, github) {
+function withGoogleSignIn(input, google) {
   const controlPlane = input.controlPlane;
   return {
     ...input,
-    controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", github },
+    controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", google },
   };
 }
+
+test("preflight refuses Backend ID collisions only when both Backends are configured", async (t) => {
+  const repository = { ...repositoryConfiguration(), backendId: "chatgpt-primary" };
+  await assertPreflightFailure(
+    "codex",
+    managedCodexInput({ repository }),
+    /Generated Backend IDs must be unique; repository\.backendId .*chatgpt-primary.* is already used/,
+  );
+
+  // The name is not reserved: it is valid when no ChatGPT Backend is generated.
+  const repositoryOnly = await render("codex", codexInput({ repository }));
+  assert.equal(repositoryOnly.summary.ok, true);
+  assert.match(repositoryOnly.installation, /id: chatgpt-primary\n {4}type: github/);
+  const distinct = await render(
+    "codex",
+    managedCodexInput({ repository: repositoryConfiguration() }),
+  );
+  assert.equal(distinct.summary.ok, true);
+  assert.match(distinct.installation, /id: chatgpt-primary\n {4}type: chatgpt/);
+  assert.match(distinct.installation, /id: github-primary\n {4}type: github/);
+  for (const output of [repositoryOnly, distinct]) {
+    t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+    validateBackendDefinitions(loadYaml(output.installation).backend);
+  }
+});
 
 test(
   "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",
   { skip: helmSkip },
   async () => {
     const input = managedCodexInput({ repository: repositoryConfiguration() });
-    const accepted = await render("codex", withGitHubSignIn(input, {}));
+    const accepted = await render("codex", withGoogleSignIn(input, {}));
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
     helmTemplate(accepted);
     for (const secretName of [
@@ -958,22 +984,22 @@ test(
       // the chart's order, so either setting can be the one refused.
       await assertPreflightFailure(
         "codex",
-        withGitHubSignIn(input, { secretName }),
-        /controlPlane\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also controlPlane\.github\.secretName\./,
+        withGoogleSignIn(input, { secretName }),
+        /controlPlane\.google\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also controlPlane\.google\.secretName\./,
       );
       // The same name placed over the accepted values makes the chart refuse it too.
       const override = join(accepted.directory, `github-${secretName}.json`);
-      writeFileSync(override, JSON.stringify({ auth: { github: { secretName } } }));
+      writeFileSync(override, JSON.stringify({ auth: { google: { secretName } } }));
       const error = await renderError(() => helmTemplate(accepted, [override]));
       assert.match(
         `${error.stdout ?? ""}${error.stderr ?? ""}`,
-        /auth\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also auth\.github\.secretName/,
+        /auth\.google\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also auth\.google\.secretName/,
       );
     }
     // Without managed ChatGPT accounts the chart does not reserve that Secret name.
     const unmanaged = await render(
       "codex",
-      withGitHubSignIn(codexInput(), { secretName: "occ-chatgpt-admin" }),
+      withGoogleSignIn(codexInput(), { secretName: "occ-chatgpt-admin" }),
     );
     assert.equal(unmanaged.summary.ok, true, unmanaged.preflight.errors.join("\n"));
     helmTemplate(unmanaged);
@@ -1199,7 +1225,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     name: "preflight refuses credential Secrets named like the log collector's",
     profile: "codex",
     input: () => {
-      const input = withGitHubSignIn(
+      const input = withGoogleSignIn(
         managedCodexInput({ repository: repositoryConfiguration() }),
         {},
       );
@@ -1212,7 +1238,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     // Finding 1054: the database CA Secret counts too, as in the chart's table.
     cases: [
       "controlPlane.gatewayApiKeySecretName",
-      "controlPlane.github.secretName",
+      "controlPlane.google.secretName",
       "controlPlane.databaseCa.secretName",
       "codex.managedServiceAccounts.adminSecretName",
       ...repositorySecretKeys.map((key) => `repository.${key}`),
@@ -1227,11 +1253,11 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     // (finding 1046; the Helm-backed case is in profile-preflight-chart-parity).
     name: "preflight refuses sign-in Secrets named like the Gateway Secrets the chart generates",
     input: () => {
-      const input = withGitHubSignIn(baseInput(), {});
+      const input = withGoogleSignIn(baseInput(), {});
       input.controlPlane.google = {};
       return input;
     },
-    cases: ["github", "google"].flatMap((provider) =>
+    cases: ["google"].flatMap((provider) =>
       generatedGatewaySecrets("oce").map(({ name, role }) => [
         `controlPlane.${provider}.secretName`,
         [name],
@@ -1984,7 +2010,7 @@ function externalSignInInput(signIn = {}) {
     controlPlane: {
       ...controlPlane,
       recoveryUserId: "recovery-admin_1",
-      github: { egressCidrs: ["140.82.112.0/20"] },
+      google: { egressCidrs: ["140.82.112.0/20"] },
       ...signIn,
     },
   });
@@ -1995,23 +2021,23 @@ test(
   { skip: helmSkip },
   async () => {
     const trustedProxy = { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] };
-    const github = await render("openclaw", externalSignInInput({ trustedProxy }));
-    assert.equal(github.summary.ok, true);
-    // GitHub and Google native browser access remains unsupported.
-    assert.match(github.values, /agentNativeAdmin:\n {2}enabled: false\n/);
-    assert.match(github.values, /recoveryUserId: recovery-admin_1/);
+    const googleDefault = await render("openclaw", externalSignInInput({ trustedProxy }));
+    assert.equal(googleDefault.summary.ok, true);
+    // Google native browser access remains unsupported.
+    assert.match(googleDefault.values, /agentNativeAdmin:\n {2}enabled: false\n/);
+    assert.match(googleDefault.values, /recoveryUserId: recovery-admin_1/);
     assert.match(
-      github.values,
-      /github:\n {4}enabled: true\n {4}egressCidrs:\n {6}- 140\.82\.112\.0\/20/,
+      googleDefault.values,
+      /google:\n {4}enabled: true\n {4}egressCidrs:\n {6}- 140\.82\.112\.0\/20/,
     );
-    assert.match(github.values, /trustedProxy:\n {4}preset: ingress-nginx/);
-    assert.doesNotMatch(github.preflight.warnings.join("\n"), /trustedProxy is not set/);
-    assert.doesNotMatch(github.preflight.prerequisites.join("\n"), /native admin domain/);
-    const manifests = helmTemplate(github);
-    assert.match(manifests, /name: OCC_AUTH_GITHUB_CLIENT_ID/);
-    assert.match(manifests, /name: OCC_AUTH_GITHUB_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
+    assert.match(googleDefault.values, /trustedProxy:\n {4}preset: ingress-nginx/);
+    assert.doesNotMatch(googleDefault.preflight.warnings.join("\n"), /trustedProxy is not set/);
+    assert.doesNotMatch(googleDefault.preflight.prerequisites.join("\n"), /native admin domain/);
+    const manifests = helmTemplate(googleDefault);
+    assert.match(manifests, /name: OCC_AUTH_GOOGLE_CLIENT_ID/);
+    assert.match(manifests, /name: OCC_AUTH_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
     assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
-    assert.doesNotMatch(manifests, /OCC_AUTH_GITHUB_ALLOWED_/);
+    assert.doesNotMatch(manifests, /OCC_AUTH_GOOGLE_ALLOWED_/);
     // The API reads the scheme as URL parsing does, so an uppercase HTTPS origin is valid.
     const uppercase = await render(
       "openclaw",
@@ -2022,47 +2048,10 @@ test(
       helmTemplate(uppercase),
       /name: OCC_AUTH_BASE_URL\n\s+value: "HTTPS:\/\/Console\.OCE\.example\.internal"/,
     );
-    const allowlisted = await render(
-      "openclaw",
-      externalSignInInput({
-        trustedProxy,
-        github: { allowedOrgs: ["acme"], allowedTeams: ["other/platform"] },
-      }),
-    );
-    assert.equal(allowlisted.summary.ok, true, allowlisted.preflight.errors.join("\n"));
-    assert.match(
-      allowlisted.values,
-      /allowedOrgs:\n {6}- acme\n {4}allowedTeams:\n {6}- other\/platform/,
-    );
-    const allowlistManifests = helmTemplate(allowlisted);
-    assert.match(allowlistManifests, /name: OCC_AUTH_GITHUB_ALLOWED_ORGS\n\s+value: "acme"/);
-    assert.match(
-      allowlistManifests,
-      /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
-    );
-    const enrolling = await render(
-      "openclaw",
-      externalSignInInput({
-        trustedProxy,
-        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "team.platform" },
-      }),
-    );
-    assert.equal(enrolling.summary.ok, true, enrolling.preflight.errors.join("\n"));
-    assert.match(
-      helmTemplate(enrolling),
-      /name: OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID\n\s+value: "team.platform"/,
-    );
-    await assertPreflightFailure(
-      "openclaw",
-      externalSignInInput({
-        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "\uFEFF " },
-      }),
-      /autoEnrollGroupId must be a nonempty string/,
-    );
     // Password sign-in stays open to every account unless recovery-only is chosen.
-    assert.doesNotMatch(github.values, /passwordSignIn/);
+    assert.doesNotMatch(googleDefault.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
-    assert.doesNotMatch(github.preflight.prerequisites.join("\n"), /identity attached/);
+    assert.doesNotMatch(googleDefault.preflight.prerequisites.join("\n"), /identity attached/);
     const recoveryOnly = await render(
       "openclaw",
       externalSignInInput({ trustedProxy, passwordSignIn: "recovery-only" }),
@@ -2071,7 +2060,7 @@ test(
     assert.match(recoveryOnly.values, /passwordSignIn: recovery-only/);
     assert.match(
       recoveryOnly.preflight.prerequisites.join("\n"),
-      /GitHub, Google or OIDC identity attached to every ordinary account/,
+      /Google or OIDC identity attached to every ordinary account/,
     );
     assert.match(
       helmTemplate(recoveryOnly),
@@ -2082,7 +2071,6 @@ test(
       "codex",
       codexInput({
         controlPlane: externalSignInInput({
-          github: undefined,
           google: { allowedDomains: ["example.com"] },
         }).controlPlane,
       }),
@@ -2098,7 +2086,7 @@ test(
     const oidc = await render(
       "openclaw",
       externalSignInInput({
-        github: undefined,
+        google: undefined,
         oidc: {
           issuer: "https://sso.example.com/realms/acme",
           authorizationUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/auth",
@@ -2114,7 +2102,7 @@ test(
     assert.match(oidc.values, /oidc:\n {4}enabled: true\n/);
     assert.match(oidc.values, /agentNativeAdmin:\n {2}enabled: true\n/);
     assert.match(oidc.values, /issuer: https:\/\/sso\.example\.com\/realms\/acme\n/);
-    assert.doesNotMatch(oidc.values, /github:/);
+    assert.doesNotMatch(oidc.values, /google:/);
     const oidcManifests = helmTemplate(oidc);
     assert.match(
       oidcManifests,
@@ -2128,7 +2116,7 @@ test(
     const padded = await render(
       "openclaw",
       externalSignInInput({
-        github: undefined,
+        google: undefined,
         oidc: {
           issuer: " https://sso.example.com/realms/acme ",
           authorizationUrl: "\thttps://sso.example.com/realms/acme/protocol/openid-connect/auth",
@@ -2196,17 +2184,17 @@ test("profiles require the public suffix list for shared browser sessions", asyn
 });
 
 test("preflight warns, without failing, when no trusted proxy is set", async () => {
-  const github = await render("openclaw", externalSignInInput());
-  assert.equal(github.summary.ok, true);
+  const googleDefault = await render("openclaw", externalSignInInput());
+  assert.equal(googleDefault.summary.ok, true);
   assert.match(
-    github.preflight.warnings.join("\n"),
+    googleDefault.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: .*external sign-in starts have no per-client limit/,
   );
   assert.match(
-    github.preflight.warnings.join("\n"),
+    googleDefault.preflight.warnings.join("\n"),
     /trustedProxy is not set: .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
   );
-  assert.doesNotMatch(github.values, /trustedProxy:/);
+  assert.doesNotMatch(googleDefault.values, /trustedProxy:/);
   const password = await render("openclaw", baseInput());
   assert.equal(password.summary.ok, true);
   assert.match(
@@ -2227,9 +2215,8 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
     jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
   };
   for (const [provider, signIn] of [
-    ["github", { github: { secretName: "Bad_Name" } }],
-    ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
-    ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
+    ["google", { google: { secretName: "Bad_Name" } }],
+    ["oidc", { google: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
   ]) {
     await assertPreflightFailure(
       "openclaw",
@@ -2238,55 +2225,33 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
     );
   }
   for (const signIn of [
-    { github: { secretName: "github.login-v2" } },
-    { github: undefined, google: { secretName: "google.login-v2" } },
-    { github: undefined, oidc: { ...oidc, secretName: "oidc.login-v2" } },
+    { google: { secretName: "google.login-v2" } },
+    { google: undefined, oidc: { ...oidc, secretName: "oidc.login-v2" } },
   ]) {
     assert.equal((await render("openclaw", externalSignInInput(signIn))).summary.ok, true);
   }
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", async () => {
-  for (const github of [
-    { autoEnrollGroupId: "team.platform" },
-    {
-      autoEnrollGroupId: "team.platform",
-      allowedTeams: ["acme/platform"],
-      allowedOrgs: ["acme"],
-    },
-  ]) {
-    await assertPreflightFailure(
-      "openclaw",
-      externalSignInInput({ github }),
-      /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
-    );
-  }
   await assertPreflightFailure(
     "openclaw",
-    externalSignInInput({ github: { allowedTeams: ["platform"] } }),
-    /controlPlane.github.allowedTeams\[0\] must be a lowercase org\/team-slug entry/,
-  );
-  await assertPreflightFailure(
-    "openclaw",
-    externalSignInInput({
-      github: { allowedOrgs: Array.from({ length: 11 }, (_, index) => `org${index}`) },
-    }),
-    /allowedOrgs and allowedTeams list at most 10 entries together/,
+    externalSignInInput({ github: {} }),
+    /controlPlane.github was removed/,
   );
   await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ recoveryUserId: undefined }),
-    /controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc/,
+    /controlPlane.recoveryUserId is required with controlPlane.google or controlPlane.oidc/,
   );
   await assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, recoveryUserId: "admin" } }),
-    /controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
+    /controlPlane.recoveryUserId requires controlPlane.google or controlPlane.oidc/,
   );
   await assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, passwordSignIn: "recovery-only" } }),
-    /controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
+    /controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc/,
   );
   await assertPreflightFailure(
     "openclaw",
@@ -2305,12 +2270,12 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   );
   await assertPreflightFailure(
     "openclaw",
-    externalSignInInput({ github: { clientSecret: "inline" } }),
-    /controlPlane.github.clientSecret is not supported/,
+    externalSignInInput({ google: { clientSecret: "inline" } }),
+    /controlPlane.google.clientSecret is not supported/,
   );
   for (const [provider, key, value] of [
-    ["github", "clientIdKey", "bad/key"],
-    ["github", "clientSecretKey", "."],
+    ["google", "clientIdKey", "bad/key"],
+    ["google", "clientSecretKey", "."],
     ["google", "clientSecretKey", "a".repeat(254)],
     ["google", "clientIdKey", "..client-id"],
     ["oidc", "clientIdKey", "bad/key"],
@@ -2319,7 +2284,7 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     await assertPreflightFailure(
       "openclaw",
       externalSignInInput({
-        github: undefined,
+        google: undefined,
         [provider]:
           provider === "oidc"
             ? {
@@ -2335,8 +2300,8 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     );
   }
   for (const signIn of [
-    { github: { clientIdKey: ".hidden" } },
-    { github: undefined, google: { clientSecretKey: "a".repeat(253) } },
+    { google: { clientIdKey: ".hidden" } },
+    { google: { clientSecretKey: "a".repeat(253) } },
   ]) {
     assert.equal((await render("openclaw", externalSignInInput(signIn))).summary.ok, true);
   }
@@ -2394,13 +2359,13 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   ]) {
     await assertPreflightFailure(
       "openclaw",
-      externalSignInInput({ github: undefined, oidc: { ...oidc, ...override } }),
+      externalSignInInput({ google: undefined, oidc: { ...oidc, ...override } }),
       message,
     );
   }
   await assertPreflightFailure(
     "openclaw",
-    externalSignInInput({ github: undefined, oidc: { ...oidc, jwksUrl: undefined } }),
+    externalSignInInput({ google: undefined, oidc: { ...oidc, jwksUrl: undefined } }),
     /controlPlane.oidc.jwksUrl must be a nonempty string/,
   );
   await assertPreflightFailure(
@@ -2742,7 +2707,6 @@ test("preflight rejects a Google hosted domain the chart and API refuse", async 
   assert.equal(domain253.length, 253);
   const googleInput = (allowedDomains) =>
     externalSignInInput({
-      github: undefined,
       google: { allowedDomains },
     });
   for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
@@ -3057,10 +3021,18 @@ test("profile transport Secret prefixes agree with controller startup admission"
 });
 
 test(
-  "profiles explicitly opt guarded GitHub into host-only native admin",
+  "profiles explicitly opt guarded OIDC into host-only native admin",
   { skip: helmSkip },
   async () => {
     const input = externalSignInInput({
+      google: undefined,
+      oidc: {
+        issuer: "https://sso.example.com/realms/acme",
+        authorizationUrl: "https://sso.example.com/authorize",
+        tokenUrl: "https://sso.example.com/token",
+        jwksUrl: "https://sso.example.com/jwks",
+        egressCidrs: ["198.51.100.0/24"],
+      },
       authBaseUrl: "https://console.example.com",
       agentNativeAdminDomain: "agents.example.com",
       agentNativeAdminSessionMode: "host-only-exchange",
@@ -3078,7 +3050,7 @@ test(
     });
     // The chart owns the shared default; profiles must not revive a manual cookie domain.
     assert.deepEqual(loadYaml(shared.values).agentNativeAdmin, {
-      enabled: false,
+      enabled: true,
       domain: "agents.example.com",
     });
     const manifests = helmTemplate(output);
@@ -3092,16 +3064,7 @@ test(
       { sharedCookieDomain: "example.com" },
       { agentNativeAdminDomain: "agents.other.com" },
       { google: {} },
-      {
-        oidc: {
-          issuer: "https://sso.example.com/realms/acme",
-          authorizationUrl: "https://sso.example.com/authorize",
-          tokenUrl: "https://sso.example.com/token",
-          jwksUrl: "https://sso.example.com/jwks",
-          egressCidrs: ["198.51.100.0/24"],
-        },
-      },
-      { github: undefined },
+      { oidc: undefined },
       { agentNativeAdminSessionMode: "unknown" },
     ]) {
       await assert.rejects(

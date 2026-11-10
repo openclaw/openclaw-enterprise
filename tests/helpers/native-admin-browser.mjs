@@ -1415,6 +1415,22 @@ export async function runOidcAgentChatScenario(context) {
     clientId,
     secret: clientSecret,
     redirectUris: [ingress.origin + "/api/auth/providers/oidc/callback"],
+    protocolMappers: [
+      ...(clientSettings.protocolMappers ?? []),
+      {
+        name: "OCE admission groups",
+        protocol: "openid-connect",
+        protocolMapper: "oidc-group-membership-mapper",
+        consentRequired: false,
+        config: {
+          "claim.name": "groups",
+          "full.path": "false",
+          "id.token.claim": "true",
+          "access.token.claim": "false",
+          "userinfo.token.claim": "false",
+        },
+      },
+    ],
   });
   const [client] = await keycloakRealmAdmin(
     issuer,
@@ -1423,6 +1439,23 @@ export async function runOidcAgentChatScenario(context) {
     `/clients?clientId=${clientId}`,
   );
   context.after(() => keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`));
+  const groupName = `oce-members-${randomUUID()}`;
+  await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/groups", { name: groupName });
+  const groups = await keycloakRealmAdmin(
+    issuer,
+    secrets.admin,
+    "GET",
+    `/groups?search=${groupName}`,
+  );
+  const group = groups.find((entry) => entry.name === groupName);
+  assert.ok(group);
+  context.after(() => keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/groups/${group.id}`));
+  for (const subject of [
+    "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001",
+    "6f1c1e9a-3d4b-4c55-9a2e-0ca201000002",
+  ]) {
+    await keycloakRealmAdmin(issuer, secrets.admin, "PUT", `/users/${subject}/groups/${group.id}`);
+  }
   const topology = await arrangeProductionTopology(context, "embedded", undefined, {
     publicOrigin: ingress.origin,
     defaultUser: true,
@@ -1431,6 +1464,7 @@ export async function runOidcAgentChatScenario(context) {
     workspaceGateway: true,
     oidc: {
       issuer,
+      enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
       clientId,
       clientSecret,
       caCert,
@@ -1539,6 +1573,7 @@ export async function runOidcAgentChatScenario(context) {
     );
   const ownerPage = await signIn("alice");
   const ownerRequest = requestFor(ownerPage);
+  assert.equal((await ownerRequest("GET", "/api/auth/session")).data.user.id, alice.id);
   assert.equal((await ownerRequest("GET", "/installation")).status, 403);
   const capabilities = await ownerRequest("GET", `${namespacePath}/agent-capabilities`);
   assert.equal(capabilities.status, 200);
@@ -1583,6 +1618,7 @@ export async function runOidcAgentChatScenario(context) {
   await bind(carol, operatorRole, "agent", created.data.id);
   const operatorPage = await signIn("carol");
   const operatorRequest = requestFor(operatorPage);
+  assert.equal((await operatorRequest("GET", "/api/auth/session")).data.user.id, carol.id);
   assert.equal(
     (await operatorRequest("GET", `${namespacePath}/agents/${topology.agent.id}`)).status,
     403,
@@ -1610,12 +1646,18 @@ export async function runOidcAgentChatScenario(context) {
   );
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
   const initialMarker = `oidc-chat-${randomUUID()}`;
-  const initialReply = await submitChatTurnWithAssistantProof(
-    nativePage,
-    initialMarker,
-    frames,
-    waitFor,
-  );
+  let initialReply;
+  try {
+    initialReply = await submitChatTurnWithAssistantProof(
+      nativePage,
+      initialMarker,
+      frames,
+      waitFor,
+    );
+  } catch (error) {
+    await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
+    throw error;
+  }
   const lifecycle = await assertChatStreamStopAndResume({
     page: nativePage,
     initialReply,

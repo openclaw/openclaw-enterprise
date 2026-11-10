@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-06 19:16"
-last_updated_session: "authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1"
+updated: "2026-11-09 16:10"
+last_updated_session: "authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755"
 ---
 
 # Bootstrap and human authentication flow
@@ -16,8 +16,8 @@ rotation and revocation.
 ## Entry Points
 
 - Trigger: `node scripts/bootstrap-installation.mjs` with `NODE_ENV=development`
-  or `production`, `POST /api/auth/sign-in/email`, `POST /api/auth/providers/github/start`,
-  `GET /api/auth/providers/github/callback`, the matching `google` routes, or a protected
+  or `production`, `POST /api/auth/sign-in/email`, `POST /api/auth/providers/oidc/start`,
+  `GET /api/auth/providers/oidc/callback`, the matching `google` routes, or a protected
   controller request.
 - Source: [`scripts/bootstrap-installation.mjs`](../../scripts/bootstrap-installation.mjs),
   [`apps/controller/src/auth/index.ts:createControllerAuth`](../../apps/controller/src/auth/index.ts),
@@ -42,10 +42,10 @@ graph TD
   B --> G
   Bootstrap -->|Any error| H["Exit unsuccessfully; preserve tracked artifacts for manual repair"]
   subgraph Request["Human controller request"]
-    G --> P["Verify password or GitHub identity"]
-    P -->|Configured team enrollment| T["Verify team; enroll identity into selected Group"]
+    G --> P["Verify password or external identity"]
+    P -->|OIDC enrollment configured| T["Check signed admission; enroll account and grants"]
     T --> Q
-    P -->|GitHub profile enabled| Q["State rechecks account and method; commits session and audit"]
+    P -->|External profile enabled| Q["State rechecks account and method; commits session and audit"]
     Q --> J["Release session cookie"]
     P -->|Password-only profile| J
     Q -->|Disabled, stale proof, or commit failure| R["Reject login; no cookie"]
@@ -151,8 +151,8 @@ Malformed, duplicated or foreign keys return `401` without revoking or clearing
 sessions. This optional header narrows but never selects a session; the native
 admin proxy strips it upstream.
 
-When GitHub is configured, `apps/controller/src/auth/github.ts:createHumanLogin`
-provides password, GitHub, and logout endpoints through a guarded Better Auth adapter.
+When external sign-in is configured, `apps/controller/src/auth/human-login.ts:createHumanLogin`
+provides password, provider, and logout endpoints through a guarded Better Auth adapter.
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication` owns
 account and method checks and the State transaction. Password verification captures
 credential and account versions for the session transaction to recheck. Both methods
@@ -161,23 +161,20 @@ Better Auth releases the cookie. Session reads check the current account, method
 version, and Principal; sessions expire after eight hours without refresh. HTTPS uses the [shared session cookie](../reference/authentication.md#native-admin-shared-sessions);
 session reads and logout reject duplicates.
 
-For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
-`POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
-secret digests, provider instance, callback, and PKCE verifier. A host-only
-HttpOnly attempt cookie binds the browser. The eventual session cookie uses
-the shared Console and Agent domain.
-Callback consumption commits before exchange; a losing, expired, or invalid
-attempt does not exchange a code.
-`apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
-with the GitHub App client ID and secret and verifies the numeric subject through
-`/user`. Configured membership and first-time enrollment use that same token for
-GitHub's membership and email endpoints. The subject selects the external identity;
-a valid provider-returned login accompanies it into the audit but never selects an
-account or grants authority. Only a new enrollment retains the verified email;
-tokens are not persisted. The
-[GitHub reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-owns OAuth scopes, token disposal, App private-key custody, and fixed
-redirects.
+For OIDC, the Console reads provider discovery and posts to
+`/api/auth/providers/oidc/start`. `auth/human-login.ts:oidcProvider` binds the
+five-minute attempt to the provider instance, client-secret digest, and effective
+enrollment-policy digest. `createPostgresControllerAuth` resolves omitted Group
+IDs from the Installation defaults before computing that digest.
+The attempt stores state and browser-secret digests, callback and PKCE verifier.
+A host-only HttpOnly cookie binds the browser. Callback consumption commits before
+code exchange, so an invalid or consumed attempt cannot exchange a code.
+
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` verifies the ID token and,
+when configured, its admission claim. A matching claim reaches account lookup;
+a missing, malformed or unmatched claim is refused. The signed `sub` selects the
+identity. Profile claims are read only for an eligible unknown identity; see
+[enrollment](#6-enroll-an-oidc-identity). No provider token enters State.
 
 `attemptId` authenticates the attempt-state digest with HMAC. State records the
 result and its two-minute deadline with the session. The signed `SameSite=Strict`
@@ -188,27 +185,16 @@ key without extending it. Incompatible receipts require fresh sign-in. Password 
 `refuseUnmatched` rejects malformed, unbound, replayed or expired callbacks without
 audit, incrementing
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
-The callback audit records the HMAC-derived attempt ID. A verified
-GitHub profile also adds its subject and valid login to refusal or successful session
-audits; provider failures before profile verification have no identity.
-Denials after `consumeAttempt` matches are audited as
-[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
-`EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
-[allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
-`apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
-the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
-`authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
-State dependency failures and uncertain session completion are not denials; neither retries.
+The callback audit records the attempt ID and, after identity verification, its
+subject. Matched refusals use `PROVIDER_UNAVAILABLE`, `EXTERNAL_IDENTITY_REJECTED`
+or `ACCOUNT_DISABLED`. The route maps the first and last to specific Console
+reasons. Internal dependency failures and uncertain commits use
+`authReason=unavailable`; they are not identity denials and are not retried.
 
-Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
-start, callback, and result, with provider instance `google:<sha256(client ID)>`.
-Authorization adds scope `openid email` and an auth-secret HMAC of attempt state
-as nonce, without storage.
-`apps/controller/src/auth/google.ts:exchangeGoogleSubject` exchanges the code, fetches
-Google's signing keys with the shared HTTP deadline and byte limit, verifies the RS256 ID token's
-signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
-allowed domains are set), and returns only `sub`. Tokens and email are discarded.
+Google reuses `auth/human-login.ts:externalProviderEndpoints`.
+`apps/controller/src/auth/google.ts:exchangeGoogleSubject` verifies its ID token,
+including `hd` and `email_verified` when allowed domains are set, and returns
+`sub`. It does not use the OIDC enrollment policy.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
@@ -217,12 +203,12 @@ header hops.
 
 Password sign-in rejects unstorable email inside controller admission before
 known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
-guarded and recovery-only use `github.ts:recordPasswordDenial`, the same owner as
+guarded and recovery-only use `human-login.ts:recordPasswordDenial`, the same owner as
 credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
 email without a reserved-account lookup. Password text is not checked.
 Valid email enters controller admission before `/oce/password`, with the
-recovery email reserved like an administrator's. GitHub, Google and OIDC share process-local rate and concurrency limits
+recovery email reserved like an administrator's. Google and OIDC share process-local rate and concurrency limits
 for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
 HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
@@ -238,8 +224,7 @@ and exit codes.
 
 Activation requires stopped admission, drained or terminated requests, and stopped
 old controllers; startup does not fence live readers. Both PostgreSQL compositions
-require host-only exchange for GitHub native access, reject Google native access,
-and permit OIDC native access with shared cookies.
+reject Google with native administration; OIDC permits shared-cookie or host-only exchange.
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
 canonical origin and profile before activation. Invalid configuration leaves
 sessions, enrollment and recovery designation unchanged.
@@ -247,7 +232,7 @@ sessions, enrollment and recovery designation unchanged.
 fixes the usable recovery administrator, and removes unbound historical sessions
 in one State transaction before serving resumes. Unsupported or incomplete
 populations fail activation. See the
-[deployment procedure](../guides/deploy/production-installation.md#enable-github-browser-sign-in).
+[deployment procedure](../guides/deploy/production-installation.md#enable-external-browser-sign-in).
 
 Account routes enforce the
 [session and recovery controls](../reference/authentication/external-sign-in.md#session-and-recovery-controls):
@@ -263,7 +248,7 @@ Guarded reads return current account and method state, not operation receipts.
 Unknown completion returns a dependency failure without replay or compensation. Resolve uncertainty before proceeding.
 Without an external sign-in provider, composition omits account operations; routes
 still authorize the caller, then return `409 RESOURCE_CONFLICT`.
-Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#external-sign-in-profile)
 owns configuration, recovery limits, and operator-visible behavior.
 
 ### 4. Admit and authorize protected API calls
@@ -271,7 +256,7 @@ owns configuration, recovery limits, and operator-visible behavior.
 `ControllerAdmissionVerifier.verifyControllerRequest` applies the
 [browser origin rules](../reference/authentication.md#browser-request-origin) to
 unsafe session requests before admission, including sign-out before revocation
-and the GitHub result exchange, which shares the GitHub admission lane, before
+and the external result exchange, which shares the external admission lane, before
 reading. Explicit service API keys skip this check and never fall back to a cookie.
 
 `apps/controller/src/index.ts:createFastifyApp` validates the session and uses the
@@ -284,39 +269,49 @@ closed. Bearer credentials and caller-supplied identity headers are rejected.
 ### 5. Provision additional accounts
 
 `apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
-administrator create accounts with or without GitHub. `prepareAccount` validates
-and hashes the password without writes. `provisionPasswordAccount` writes the user,
+administrator create accounts. After authorization, the route's `RequestRateLimiter`
+charges the administrator Principal before `prepareAccount` validates and hashes the
+password. Exhaustion returns `429` with `Retry-After`, without writes. See the
+[account-creation limit](../reference/authentication.md#account-provisioning). `provisionPasswordAccount` writes the user,
 password method, Principal, optional existing-role binding, configured
 [default Group memberships](../reference/authorization/default-users.md#group-membership),
 enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`
 with unknown outcome: retrying the same email creates an account only if the first
 attempt did not commit; otherwise it returns `409`. Creation issues no session.
 
-### 6. Enroll a verified team member
+### 6. Enroll an OIDC identity
 
-With `autoEnrollGroupId`, `auth/github.ts:exchangeGithubSubject` verifies the
-team-only allowlist and rechecks the same token's numeric ID and login. For a
-missing identity, `githubEnrollmentProfile` reads a
-verified primary email within the remaining provider deadline; the callback
-hashes a random password and obtains a no-grant Principal from native IAM.
-Attached identities skip email retrieval. No provider credential enters State.
+`auth/oidc-enrollment.ts:oidcEnrollmentPolicy` validates and canonicalizes the
+operator policy. `resolveOidcEnrollmentPolicy` resolves default Groups and computes
+the policy fingerprint once during composition. Composition applies configured
+IAM first, then verifies Role, Namespace and Group references.
+`auth/oidc.ts:oidcEnrollmentProfile` returns a profile only for a standard verified
+email. The callback receives that profile as data.
 
-`PostgresHumanAuthentication.enrollExternal` serializes the provider/subject,
-checks the existing Installation Group and resolves the identity again inside
-one State transaction. Existing identities retain their attempt-currentness and
-disabled-account checks. New identities reuse `insertPasswordAccount`; only the
-transaction that inserted them can snapshot those new methods without an older
-attempt timestamp. Account, external method, membership and their audits commit
-together. The session transaction rechecks the proof before issuing its cookie. Group bindings supply permission; this path creates none.
+`snapshotExternal` distinguishes missing identities from refused existing
+identities. Only a missing identity can start account creation, and creation
+requires a valid profile. The callback hashes a random password and asks native
+IAM for the configured initial binding or no direct grant.
+
+`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.enrollExternal`
+serializes the provider/subject, holds the shared IAM configuration lock, validates
+references and resolves the identity again. Existing identities retain their
+attempt-currentness and disabled-account checks. New identities reuse
+`insertPasswordAccount`; only the transaction that inserted them can snapshot
+those new methods without an older attempt timestamp. Account, Principal,
+external method, initial Role binding, Group memberships and audits commit together.
+Existing accounts receive only missing Group memberships. The session transaction
+rechecks the resulting proof before issuing its cookie.
 
 ## Debugging and Verification
 
 Run `tests/integration/` files with `node --test`.
 
-- `node --test tests/integration/postgres-github-team-enrollment.test.ts` uses
+- `node --test tests/integration/postgres-oidc-enrollment.test.ts` uses
   production authentication, PostgreSQL and IAM through the ordinary Agent API.
-  Upstream GitHub responses and Compute are fixtures; it does not verify live
-  GitHub registration or deployment.
+  Upstream OIDC responses and Compute are fixtures; it does not verify live
+  provider registration or model execution. The `oidc-agent-chat` QA scenario uses
+  real Keycloak, a deployed Agent and a model reply.
 - `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
   untrusted origins on session mutations and sign-out, plus service-key admission.
 - `postgres-production-wireup.test.mjs` with `OCC_PRODUCTION_WIREUP_DATABASE_URL`
@@ -358,6 +353,10 @@ Run `tests/integration/` files with `node --test`.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 16:10: Trace startup policy resolution and the single external identity lookup. (authoring-run/17c43ed1-f4cd-439d-adb5-d2532f4e7755 - 65aa5bd78)
+
+- 2026-11-09 15:02: Trace OIDC admission, initial grants and native GitHub retirement in the accompanying changes. (authoring-run/fa345547-f102-4631-804e-25fc90a46621 - daecab29c452af39945f5526257288771a77bdfc)
 
 - 2026-11-06 19:16: Preserve team enrollment and host-only browser access; trace configured account memberships. (authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1 - 491908448534fbcee539aac386180fbf9268d59b)
 

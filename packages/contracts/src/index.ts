@@ -1172,11 +1172,13 @@ export type AgentRevisionMetadata = Pick<
 >;
 
 /**
- * A revision without its saved settings: metadata plus the database-checked fields that tell
- * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ * Revision metadata, its Harness descriptor and any recorded Harness settings. List routes
+ * return this projection without decoding the full admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+  Pick<AgentRevision, "configurationId" | "configurationGeneration"> & {
+    readonly harness: RevisionHarnessDescriptor;
+  };
 
 /** One page of revision summaries, newest first, and the revision number the next page starts below. */
 export interface AgentRevisionSummaryPage {

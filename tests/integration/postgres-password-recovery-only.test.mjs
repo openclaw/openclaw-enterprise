@@ -10,8 +10,9 @@ import {
   consoleOrigin as origin,
   createAccount,
   fakeGoogle,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
+  fixtureOidcIssuer,
   googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
@@ -47,16 +48,17 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+    const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
       {
+        oidc: true,
         email: "recovery-only-admin@example.test",
         password,
         secrets: {
           "occ-auth/secret": "recovery-only-auth-test-secret-at-least-32-bytes",
-          "occ-github-login/client-id": "recovery-only-github-client-id",
-          "occ-github-login/client-secret": "recovery-only-github-client-secret",
+          "occ-oidc-login/client-id": "recovery-only-oidc-client-id",
+          "occ-oidc-login/client-secret": "recovery-only-oidc-client-secret",
           "occ-google-login/client-id": googleClientId,
           "occ-google-login/client-secret": googleClientSecret,
         },
@@ -72,7 +74,7 @@ test(
           name,
           {
             email: `recovery-only-${name}@example.test`,
-            // An administrator other than the recovery account, with a GitHub identity.
+            // An administrator other than the recovery account, with a OIDC identity.
             ...(name === "operator" ? { role: "admin" } : {}),
           },
         ]),
@@ -87,13 +89,16 @@ test(
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
       const log = memoryLogger();
-      app = await composeApp(githubUpgradeSettings(admin.id), {
+      app = await composeApp(oidcUpgradeSettings(admin.id), {
         logger: log.logger,
       });
       assert.deepEqual(await providers(app), {
-        github: true,
+        oidc: true,
+        oidcSignIn: {
+          label: "single sign-on",
+          authorizationUrl: fixtureOidcIssuer.authorizationUrl,
+        },
         google: false,
-        oidc: false,
         password: true,
         sessionBinding: true,
       });
@@ -101,9 +106,9 @@ test(
       const signedIn = await passwordSignIn(app, origin, member, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       assert.deepEqual(warnings(log), [], "no warning without recovery-only");
-      // The member and the operator get GitHub identities; the disabled account is switched off.
-      await attach("github", member, memberSubject);
-      await attach("github", operator, operatorSubject);
+      // The member and the operator get OIDC identities; the disabled account is switched off.
+      await attach("oidc", member, memberSubject);
+      await attach("oidc", operator, operatorSubject);
       const changed = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(changed.statusCode, 200, changed.body);
       await app.close();
@@ -113,10 +118,10 @@ test(
     let log;
     await t.test("startup warns about enabled accounts without an external identity", async () => {
       log = memoryLogger();
-      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
+      app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
         logger: log.logger,
       });
-      // The recovery account, the member and operator with GitHub and the disabled account
+      // The recovery account, the member and operator with OIDC and the disabled account
       // are not listed.
       const [warning, ...rest] = warnings(log);
       assert.deepEqual(rest, []);
@@ -125,9 +130,12 @@ test(
       assert.deepEqual(warning.skippedUserIds, [stranded.id]);
       assert.equal(warning.skippedUserCount, 1);
       assert.deepEqual(await providers(app), {
-        github: true,
+        oidc: true,
+        oidcSignIn: {
+          label: "single sign-on",
+          authorizationUrl: fixtureOidcIssuer.authorizationUrl,
+        },
         google: false,
-        oidc: false,
         password: false,
         sessionBinding: true,
       });
@@ -180,16 +188,34 @@ test(
       adminHeaders = { cookie, origin };
     });
 
-    await t.test("an ordinary account signs in with its GitHub identity", async () => {
-      const { callback } = await githubSignIn(app, origin, memberSubject, address());
+    await t.test("an ordinary account signs in with its OIDC identity", async () => {
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(memberSubject) },
+        address(),
+      );
       await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("attaching an identity unstrands an account without a restart", async () => {
-      const { callback } = await githubSignIn(app, origin, strandedSubject, address());
-      assert.equal(callback.headers.location, "/console/?authError=github");
-      await attach("github", stranded, strandedSubject);
-      const retried = await githubSignIn(app, origin, strandedSubject, address());
+      const { callback } = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(strandedSubject) },
+        address(),
+      );
+      assert.equal(callback.headers.location, "/console/?authError=oidc");
+      await attach("oidc", stranded, strandedSubject);
+      const retried = await oidcSignIn(
+        app,
+        origin,
+        oidc,
+        { subject: String(strandedSubject) },
+        address(),
+      );
       assert.equal(retried.callback.headers.location, "/console/", retried.callback.body);
       assert.equal(
         (await passwordSignIn(app, origin, stranded, address())).statusCode,
@@ -199,7 +225,7 @@ test(
       await app.close();
       app = undefined;
       const restarted = memoryLogger();
-      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
+      app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
         logger: restarted.logger,
       });
       assert.deepEqual(warnings(restarted), [], "every enabled account has an identity");
@@ -208,7 +234,7 @@ test(
     });
 
     await t.test("only identities of the configured providers count", async () => {
-      // Google alone: GitHub identities cannot sign in, so every ordinary account is stranded.
+      // Google alone: OIDC identities cannot sign in, so every ordinary account is stranded.
       const googleLog = memoryLogger();
       app = await composeApp(recoveryOnly(googleUpgradeSettings(admin.id)), {
         logger: googleLog.logger,
@@ -220,9 +246,8 @@ test(
         [member.id, stranded.id, operator.id].sort(),
       );
       assert.deepEqual(await providers(app), {
-        github: false,
-        google: true,
         oidc: false,
+        google: true,
         password: false,
         sessionBinding: true,
       });
@@ -272,8 +297,8 @@ test(
         const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
         assert.equal(stored.rows[0].email, storedEmail);
         for (const settings of [
-          githubUpgradeSettings(userId),
-          recoveryOnly(githubUpgradeSettings(userId)),
+          oidcUpgradeSettings(userId),
+          recoveryOnly(oidcUpgradeSettings(userId)),
         ]) {
           app = await composeApp(settings);
           const sessionsBefore = await pool.query(

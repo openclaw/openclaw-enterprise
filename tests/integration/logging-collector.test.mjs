@@ -1596,7 +1596,7 @@ test(
               line({
                 severity: "WARN",
                 event: "authentication.recovery-seed-warning",
-                message: `OCC_AUTH_GITHUB_RECOVERY_USER_ID differs ${canary}`,
+                message: `OCC_AUTH_RECOVERY_USER_ID differs ${canary}`,
               }),
               // A near-match of a reviewed name is still dropped.
               line({ severity: "WARN", event: "shutdown.failed-unreviewed" }),

@@ -1,6 +1,6 @@
 # Maintain external sign-in with the API stopped
 
-Use `pnpm auth:maintain` when external sign-in (GitHub, Google, or OIDC) needs a change the online API
+Use `pnpm auth:maintain` when external sign-in (Google or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
 enrolled, sessions must be ended at once, or the Installation must return to
 password-only sign-in. `purge-sessions` also works on a password-only
@@ -210,7 +210,7 @@ and reopen ingress.
 Deactivation returns the Installation to the legacy password profile and
 requires the API to be stopped. In one transaction it removes the recovery
 designation, enrolment, session bindings, pending external sign-in attempts, and
-every session. Linked GitHub, Google, and OIDC identities stay in the database but
+every session. Linked Google and OIDC identities stay in the database but
 are unused, so `status` still counts them under `externalMethods`.
 
 The legacy profile ignores account disablement, so `deactivate` refuses while any
@@ -219,13 +219,11 @@ accounts' passwords instead, so they still cannot sign in. Deactivation also
 removes the database fence on unbound sessions, so the older image and plain
 password sign-in work again.
 
-Then, in the protected values, set `auth.github.enabled`, `auth.google.enabled`,
-and `auth.oidc.enabled` all to `false`, clear both `auth.oidc.caSecretName` and
+Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, remove `auth.oidc.enrollment`, clear both `auth.oidc.caSecretName` and
 `auth.oidc.caSecretKey`, remove `auth.recoveryUserId`, and reset
 `auth.passwordSignIn` to `all`. Run `helm upgrade`, which also restores the
-replicas. Without Helm, remove every `OCC_AUTH_GITHUB_*`, `OCC_AUTH_GOOGLE_*`,
-and `OCC_AUTH_OIDC_*` variable (including `OCC_AUTH_GITHUB_RECOVERY_USER_ID`) and
-`OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
+replicas. Without Helm, remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*` variable,
+`OCC_AUTH_RECOVERY_USER_ID`, and `OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
 provider is still configured, startup activates the profile again.
 
 Activating again later, at startup or with `activate`, enrolls every account
