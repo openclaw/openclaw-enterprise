@@ -40,6 +40,34 @@ test("publication workflow requires explicit chart opt-in and a successful image
     assert.deepEqual(verification.with[field], assembly.with[field], field);
   }
   assert.equal(workflow.jobs.prepare.uses, "./.github/workflows/container-check.yml");
+  const handoff = steps.find((step) => step.with?.name?.startsWith("built-runtime-"));
+  assert.equal(handoff.if, "${{ matrix.image == 'runtime' }}");
+  const runtimeSmoke = check.jobs["runtime-smoke"];
+  assert.equal(runtimeSmoke.needs, "prepare");
+  assert.equal(runtimeSmoke.strategy["fail-fast"], false);
+  const downloaded = runtimeSmoke.steps.find((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.equal(downloaded.with.name, handoff.with.name);
+  assert.equal(downloaded.with["run-id"], undefined);
+  assert.equal(downloaded.with.pattern, undefined);
+  const verified = runtimeSmoke.steps.find((step) => step.id === "verified");
+  const smoke = runtimeSmoke.steps.find((step) =>
+    step.run?.includes("container-release.mjs smoke"),
+  );
+  const qualified = runtimeSmoke.steps.find((step) =>
+    step.with?.name?.startsWith("platform-runtime-"),
+  );
+  assert.ok(runtimeSmoke.steps.indexOf(downloaded) < runtimeSmoke.steps.indexOf(verified));
+  assert.ok(runtimeSmoke.steps.indexOf(verified) < runtimeSmoke.steps.indexOf(smoke));
+  assert.ok(runtimeSmoke.steps.indexOf(smoke) < runtimeSmoke.steps.indexOf(qualified));
+  assert.equal(smoke.env.IMAGE_DIGEST, "${{ steps.verified.outputs.digest }}");
+  assert.equal(smoke["continue-on-error"], undefined);
+  assert.equal(qualified.if, undefined);
+  assert.equal(runtimeSmoke.steps.find((step) => step.run?.includes("cleanup.mjs")).if, "always()");
+  const controllerUpload = steps.find((step) => step.with?.name?.startsWith("platform-"));
+  assert.equal(controllerUpload.if, "${{ matrix.image == 'controller' }}");
+
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.equal(inputs.publish.type, "boolean");
   assert.equal(inputs.publish.default, false);

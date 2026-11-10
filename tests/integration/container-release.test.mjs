@@ -868,6 +868,65 @@ test("native platform exports verify offline and assemble into a digest-bound ar
       },
     );
   }
+  // Build handoff retains bytes and provenance but cannot qualify an image before native smoke.
+  const untested = await prepare("untested");
+  function buildCommand(command, arch, overrides = {}) {
+    return execFileSync(
+      process.execPath,
+      ["scripts/ci/container-release.mjs", command, join(untested.output, arch)],
+      {
+        env: {
+          ...untested.env,
+          PLATFORM: `linux/${arch}`,
+          IMAGE_DIGEST:
+            command === "record-build" ? untested.roots[arch === "amd64" ? 0 : 1] : undefined,
+          ...overrides,
+        },
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+  }
+  for (const arch of ["amd64", "arm64"]) {
+    await unlink(join(untested.output, arch, "platform.json"));
+    buildCommand("record-build", arch);
+    const buildPath = join(untested.output, arch, "build.json");
+    const originalBuild = await readFile(buildPath);
+    assert.equal(JSON.parse(originalBuild).native, false);
+    buildCommand("verify-build", arch);
+    await assert.rejects(readFile(join(untested.output, arch, "platform.json")), {
+      code: "ENOENT",
+    });
+    for (const overrides of [
+      { SOURCE_SHA: "d".repeat(40) },
+      { GITHUB_WORKFLOW_SHA: "e".repeat(40) },
+      { GITHUB_RUN_ID: "124" },
+      { GITHUB_RUN_ATTEMPT: "2" },
+      { CI_RUN_ID: "457" },
+      { CI_ATTEMPT: "2" },
+      { NODE_BASE_IMAGE: `node@sha256:${"d".repeat(64)}` },
+      { PLATFORM: arch === "amd64" ? "linux/arm64" : "linux/amd64" },
+    ]) {
+      assert.throws(() => buildCommand("verify-build", arch, overrides), /mismatch/);
+    }
+    await writeFile(buildPath, JSON.stringify({ ...JSON.parse(originalBuild), native: true }));
+    assert.throws(() => buildCommand("verify-build", arch), /Untested builds/);
+    await writeFile(buildPath, originalBuild);
+    const rootPath = join(
+      untested.output,
+      arch,
+      "blobs/sha256",
+      untested.roots[arch === "amd64" ? 0 : 1].slice(7),
+    );
+    const originalRoot = await readFile(rootPath);
+    await writeFile(rootPath, Buffer.alloc(originalRoot.length));
+    assert.throws(() => buildCommand("verify-build", arch), /blob digest mismatch/);
+    await writeFile(rootPath, originalRoot);
+    await writeFile(join(untested.output, arch, "platform.json"), "{}");
+    assert.throws(() => buildCommand("verify-build", arch), /must not contain platform.json/);
+    await unlink(join(untested.output, arch, "platform.json"));
+  }
+  assert.throws(() => run(untested), /platform.json/);
   const valid = await prepare("valid");
   function verify(arch, overrides = {}) {
     const i = arch === "amd64" ? 0 : 1;

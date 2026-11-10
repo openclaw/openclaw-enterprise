@@ -227,6 +227,86 @@ jobs:
           cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
           provenance: false
           push: false
+      - name: Record untested runtime build identity
+        if: ${{ matrix.image == 'runtime' }}
+        env:
+          IMAGE: runtime
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: node scripts/ci/container-release.mjs record-build "$RUNNER_TEMP/oci"
+      - name: Retain untested runtime for a fresh native runner
+        if: ${{ matrix.image == 'runtime' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Install existing smoke test prerequisites
+        if: ${{ matrix.image == 'controller' }}
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Smoke the exact export on its native architecture
+        if: ${{ matrix.image == 'controller' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
+        run: |
+          node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.image == 'controller' }}
+        with:
+          name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  runtime-smoke:
+    name: Smoke runtime (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ${{ vars.CONTAINER_AMD64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          - arch: arm64
+            runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}
+    env:
+      IMAGE: runtime
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check the exact source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Select the checked-in Node base for standalone verification
+        if: ${{ !inputs.ci_run_id }}
+        run: |
+          NODE_BASE_IMAGE="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
+          [[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]
+          printf 'NODE_BASE_IMAGE=%s\n' "$NODE_BASE_IMAGE" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+      - name: Verify the exact runtime build and every OCI blob
+        id: verified
+        run: node scripts/ci/container-release.mjs verify-build "$RUNNER_TEMP/oci"
       - name: Install existing smoke test prerequisites
         run: |
           sudo apt-get -o Acquire::Retries=3 update
@@ -235,23 +315,18 @@ jobs:
           corepack pnpm install --frozen-lockfile --ignore-scripts
       - name: Smoke the exact export on its native architecture
         env:
-          IMAGE: ${{ matrix.image }}
-          PLATFORM: linux/${{ matrix.arch }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
+          IMAGE_DIGEST: ${{ steps.verified.outputs.digest }}
         run: |
-          if [[ "$IMAGE" == runtime ]]; then
-            bash scripts/ci/setup-tools.sh k3d
-            export PATH="$RUNNER_TEMP/bin:$PATH"
-            export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
-          fi
+          bash scripts/ci/setup-tools.sh k3d
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
           node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
       - name: Clean up runtime smoke resources
-        if: always() && matrix.image == 'runtime'
+        if: always()
         run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: platform-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/oci
           compression-level: 0
           retention-days: 1

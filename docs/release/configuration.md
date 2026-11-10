@@ -28,6 +28,10 @@ retain four jobs; other lanes stay at four. The resource log records the selecte
 count, which both source verification and assembly consume. This admission
 budget does not guarantee peak usage or resolve an unexplained runner loss.
 
+Runtime smoke uses fresh native runners with the same runner overrides, after
+verifying the retained OCI build. Both construction and smoke must succeed; an
+intermediate build artifact is not a qualified release image.
+
 The [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) builds
 controller/runtime caches without provider secrets. GitHub supplies its cache
 credentials; it does not publish container images.

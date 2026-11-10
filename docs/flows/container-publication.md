@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-11-10
-last_updated_session: authoring-run/fa776ae0-d057-4981-a158-368024f6a38f
+last_updated_session: authoring-run/72ec367a-a73a-495d-a83b-4cd72345f6d4
 ---
 
 # Container publication flow
@@ -34,7 +34,10 @@ graph TD
   A["Operator selects main SHA and successful CI"] --> B["Validate source, CI and approved base"]
   B --> C["Pin timestamps to the source commit"]
   C --> D["Build controller and runtime on native AMD64 and ARM64"]
-  D --> E["Verify each native image and run smoke"]
+  D -->|controller| E["Verify native image and run smoke"]
+  D -->|runtime| R["Retain untested OCI build"]
+  R --> S["Fresh native runner verifies build and runs smoke"]
+  S --> H
   E --> H["Canonicalize descriptors and assemble OCI indexes"]
   H -->|either fails| X["Stop before publication"]
   H -->|both pass| F["Seal and upload each archive"]
@@ -188,35 +191,35 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 
 ### 2. Verify and assemble both platform variants
 
-`scripts/ci/container-release.mjs:smoke` requires a native runner matching the
-selected platform. It binds the OCI export to the build output digest, loads it
-with Skopeo, checks the loaded config and architecture, and runs the existing
-startup suite by immutable image ID with native deadlines. For the containerd
-store, `scripts/upgrade-image-identity.py` exports and hash-verifies the selected
-manifest/config; its config digest must match the original OCI config, which
-binds configuration and ordered layer diff IDs. Docker's manifest/index ID is
-not a config digest. The legacy store retains its direct config-ID check. A success receipt binds the platform digest
-to the source, workflow, run/attempt, CI evidence, image, and build base. Failed
-smokes cannot upload platform artifacts. The temporary loaded image is removed.
+Fresh native runners execute `.github/workflows/container-check.yml:jobs.runtime-smoke`.
+`container-release.mjs:runtimeBuild` binds `build.json` (`native: false`) to source,
+workflow, run/attempt, CI, base, platform and digest. Receivers verify that identity
+and all OCI blobs, rejecting preexisting `platform.json`.
+`built-runtime-*` cannot qualify for publication. Controllers retain one-job build/smoke.
 
-`.github/workflows/container-publish.yml:jobs.assemble` downloads both successful
-platform artifacts from this exact run/attempt. `container-release.mjs:assemble`
-rejects mismatched receipts, platform configs, blob sizes, or hashes before linking
-blobs into one OCI layout. It retains only the manifest media type, digest, size,
-and platform in each assembled descriptor, excluding exporter-only annotations
-such as the build time and local reference name. It writes the multi-platform
-index and archive without rebuilding either variant, then removes the temporary layouts.
-`readArchivePlatforms` checks the archive contains exactly one AMD64 and one ARM64
-Linux manifest with matching config and content digests. Publication still consumes
-this sealed archive; registry access is not needed during assembly.
+`scripts/ci/container-release.mjs:smoke` requires the selected native architecture.
+It binds the OCI export to the build digest, loads it with Skopeo, checks the
+loaded config and architecture, and runs startup tests by immutable image ID
+with native deadlines. For containerd, `scripts/upgrade-image-identity.py` exports
+and hash-verifies the manifest/config against the original OCI config, binding
+configuration and ordered layer diff IDs. The legacy store compares config IDs
+directly. Successful smoke writes `platform.json`, binding source, workflow,
+run/attempt, CI, image, base and platform digest. Failed smoke cannot upload
+`platform-*` artifacts; recovery requires both runtime smoke jobs to succeed.
 
-Before runtime smoke, `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports
-the verified loaded image ID into a disposable k3d cluster. It reuses the Images and
-Packaging lane's reviewed Codex seccomp derivation and sandbox probes, then passes
-the resulting profile and ownership state to the Docker tests. This preparation
-does not rebuild the runtime. Cleanup removes the owned cluster and temporary
-image tag on success or failure; a workflow cleanup step also runs after an
-interrupted smoke command.
+`.github/workflows/container-publish.yml:jobs.assemble` downloads both qualified
+platform artifacts from this run/attempt. `container-release.mjs:assemble`
+rejects receipt, platform, size or hash mismatches before linking blobs into one
+OCI layout. Descriptors retain media type, digest, size and platform, excluding
+exporter annotations such as timestamps and local names. Assembly writes the
+index and archive without rebuilding, then removes temporary layouts.
+`readArchivePlatforms` verifies exactly one AMD64 and one ARM64 Linux manifest
+with matching configs and digests. Assembly needs no registry access.
+
+`scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports the verified image into
+disposable k3d. It reuses the Images and Packaging lane's Codex seccomp derivation
+and sandbox probes, passing profile and ownership state to Docker tests. Cleanup
+removes the owned cluster and temporary image after success, failure or interruption.
 
 ### 3. Seal and enter publication
 
@@ -309,6 +312,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 04:12: Separate runtime OCI construction from native smoke with an unqualified artifact handoff. (authoring-run/72ec367a-a73a-495d-a83b-4cd72345f6d4 - 8719eb3a5ca0adf5016e8123b6f17e51032987c8)
 
 - 2026-11-10 00:50: Select ARM runtime compiler parallelism from observed capacity. (authoring-run/fa776ae0-d057-4981-a158-368024f6a38f - 13f2bf05a5c39bf01c35290583122f08ed7ae5ab)
 
