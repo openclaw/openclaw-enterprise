@@ -18,6 +18,7 @@ import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresModelProviders } from "./postgres-model-providers.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import {
@@ -578,6 +579,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.static_template_id, cs.static_template_version, cs.static_base_url, cs.static_protocol,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -626,6 +628,14 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const protocol = row.static_protocol;
+  if (
+    row.static_template_id != null &&
+    protocol !== "openai-responses" &&
+    protocol !== "openai-completions"
+  ) {
+    throw new PersistedStateInvalidError("Persisted static-key protocol is invalid.");
+  }
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
@@ -642,6 +652,16 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     name: text(row, "name"),
     type: text(row, "type"),
     config: config as Record<string, string>,
+    ...(protocol !== "openai-responses" && protocol !== "openai-completions"
+      ? {}
+      : {
+          staticKeyGrant: {
+            connectionTemplateId: text(row, "static_template_id"),
+            connectionTemplateVersion: Number(row.static_template_version),
+            baseUrl: text(row, "static_base_url"),
+            protocol,
+          },
+        }),
     ...(row.egress == null
       ? {}
       : { egress: jsonObject(row.egress) as unknown as ProtectedEgressSource }),
@@ -3040,8 +3060,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability,static_template_id,static_template_version,static_base_url,static_protocol)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10,$11,$12,$13,$14)`,
           [
             source.id,
             source.namespaceId,
@@ -3053,6 +3073,10 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
             source.ownerCapability,
+            source.staticKeyGrant?.connectionTemplateId ?? null,
+            source.staticKeyGrant?.connectionTemplateVersion ?? null,
+            source.staticKeyGrant?.baseUrl ?? null,
+            source.staticKeyGrant?.protocol ?? null,
           ],
         );
         if (secretInputs.length > 0) {
@@ -4587,6 +4611,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaces,
       configurations,
       savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      modelProviders: postgresModelProviders(client),
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),

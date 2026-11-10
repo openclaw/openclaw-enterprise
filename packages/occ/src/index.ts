@@ -34,6 +34,8 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   CONFIGURED_IAM_ID_PREFIXES,
   connectionValuesChanged,
+  inferenceKeyDestination,
+  normalizeInferenceBaseUrl,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
@@ -176,6 +178,11 @@ import type {
   McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  ConnectionTemplateSettings,
+  ModelProvider,
+  ModelProviderSettings,
+  InferenceProtocol,
+  StaticKeyGrant,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1077,22 +1084,28 @@ interface ApprovedTemplateSettings {
   readonly authorizationParameters?: Readonly<Record<string, string>>;
   readonly oauthClientId?: string;
 }
-type TemplateInput = ApprovedTemplateSettings &
-  (
-    | {
-        readonly mode: "manual";
-        readonly issuer: string;
-        readonly authorizationUrl: string;
-        readonly tokenUrl: string;
-        readonly revocationUrl?: string;
-        readonly destinations: readonly {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        }[];
-      }
-    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
-  );
+type TemplateInput =
+  | {
+      readonly mode: "static_bearer";
+      readonly baseUrl: string;
+      readonly protocol: InferenceProtocol;
+    }
+  | (ApprovedTemplateSettings &
+      (
+        | {
+            readonly mode: "manual";
+            readonly issuer: string;
+            readonly authorizationUrl: string;
+            readonly tokenUrl: string;
+            readonly revocationUrl?: string;
+            readonly destinations: readonly {
+              readonly host: string;
+              readonly port?: number;
+              readonly path?: string;
+            }[];
+          }
+        | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+      ));
 function templateAcceptsAuthMethod(
   observed: McpAuthorizationMetadata | undefined,
   method: OAuthClient["tokenEndpointAuthMethod"],
@@ -1118,6 +1131,8 @@ export type CreateOAuthClientInput = Pick<
 };
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
+  readonly connectionTemplateId?: string;
+  readonly connectionTemplateVersion?: number;
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
@@ -4901,7 +4916,8 @@ export class OpenClawController {
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
         (template) =>
-          template.current.oauthClientId !== undefined &&
+          (template.current.mode === "static_bearer" ||
+            template.current.oauthClientId !== undefined) &&
           (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
@@ -4978,6 +4994,11 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
+      if (version.mode === "static_bearer") {
+        throw new ResourceStateConflictError(
+          "Create a static credential with this template and a Secret.",
+        );
+      }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await this.connectionClientForVersion(state, namespaceId, version);
       const createdAt = this.timestamp();
@@ -5252,7 +5273,11 @@ export class OpenClawController {
     const template = await state.connectionTemplates.findConnectionTemplate(
       account.connectionTemplateId,
     );
-    if (!template || template.current.issuer !== account.issuer) {
+    if (
+      !template ||
+      template.current.mode === "static_bearer" ||
+      template.current.issuer !== account.issuer
+    ) {
       return [];
     }
     if (template.current.mode === "manual") {
@@ -5515,6 +5540,74 @@ export class OpenClawController {
     });
   }
 
+  async listModelProviders(principalId: string, namespaceId?: string) {
+    if (namespaceId === undefined) {
+      await this.authorizeTemplateAdministration(principalId);
+    } else {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    }
+    return this.read(async (state) => {
+      if (namespaceId !== undefined) {
+        await this.exactNamespace(state, namespaceId);
+      }
+      return state.modelProviders.listModelProviders();
+    });
+  }
+
+  async getModelProvider(principalId: string, id: string) {
+    await this.authorizeTemplateAdministration(principalId);
+    const provider = await this.read((state) => state.modelProviders.findModelProvider(id));
+    if (!provider) {
+      throw new ScopeViolationError("The Model Provider does not exist.");
+    }
+    return provider;
+  }
+
+  async saveModelProvider(
+    principalId: string,
+    id: string | undefined,
+    input: ModelProviderSettings,
+    audit: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ): Promise<ModelProvider> {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await holdSession?.(state);
+      const template = await state.connectionTemplates.lockConnectionTemplate(
+        input.connectionTemplateId,
+      );
+      const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
+      if (
+        !template ||
+        template.namespaceId !== undefined ||
+        template.current.mode !== "static_bearer" ||
+        template.current.baseUrl !== baseUrl ||
+        template.current.protocol !== input.protocol
+      ) {
+        throw new ResourceStateConflictError(
+          "Choose an Installation static-key template that approves this inference request.",
+        );
+      }
+      const modelIds = new Set(input.models.map((model) => model.id));
+      if (
+        modelIds.size !== input.models.length ||
+        (input.defaultModelId !== undefined && !modelIds.has(input.defaultModelId))
+      ) {
+        throw new ResourceStateConflictError(
+          "List each model once and choose a default from that list.",
+        );
+      }
+      const provider = { ...input, baseUrl, id: id ?? `mpr_${crypto.randomUUID()}` };
+      if (id === undefined) {
+        await state.modelProviders.createModelProvider(provider);
+      } else if (!(await state.modelProviders.updateModelProvider(provider))) {
+        throw new ScopeViolationError("The Model Provider does not exist.");
+      }
+      await state.audit.append(audit(provider.id));
+      return provider;
+    });
+  }
+
   async listConnectionTemplates(
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
@@ -5548,7 +5641,16 @@ export class OpenClawController {
   private async effectiveConnectionTemplate(
     input: TemplateInput,
     discover: DiscoverMcp,
-  ): Promise<ConnectionTemplateValues> {
+  ): Promise<ConnectionTemplateSettings> {
+    if (input.mode === "static_bearer") {
+      const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
+      return {
+        mode: input.mode,
+        baseUrl,
+        protocol: input.protocol,
+        destinations: [inferenceKeyDestination(baseUrl, input.protocol)],
+      };
+    }
     const settings = {
       scopes: [...input.scopes],
       authorizationParameters: input.authorizationParameters ?? {},
@@ -5616,10 +5718,10 @@ export class OpenClawController {
 
   private async assertTemplateClient(
     state: PlatformUnitOfWork,
-    values: ConnectionTemplateValues,
+    values: ConnectionTemplateSettings,
     namespaceId?: string,
   ) {
-    if (!values.oauthClientId) {
+    if (values.mode === "static_bearer" || !values.oauthClientId) {
       return;
     }
     const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
@@ -5695,6 +5797,11 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       if (values) {
+        if ((current.current.mode === "static_bearer") !== (values.mode === "static_bearer")) {
+          throw new ResourceStateConflictError(
+            "Create a new connection template to change its authentication method.",
+          );
+        }
         await this.assertTemplateClient(state, values, current.namespaceId);
       }
       const version =
@@ -5760,6 +5867,11 @@ export class OpenClawController {
   ) {
     this.requireIndependentMutation("OAuth client registration");
     const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    if (template.current.mode === "static_bearer") {
+      throw new ResourceStateConflictError(
+        "A static-key template cannot register an OAuth client.",
+      );
+    }
     const assertSelectedVersion = (version: number | undefined) => {
       if (version !== input.connectionTemplateVersion) {
         throw new ResourceStateConflictError(
@@ -5805,6 +5917,11 @@ export class OpenClawController {
       assertSelectedVersion(current?.current.version);
     };
     const publish = async (state: PlatformUnitOfWork) => {
+      if (template.current.mode === "static_bearer") {
+        throw new ResourceStateConflictError(
+          "A static-key template cannot register an OAuth client.",
+        );
+      }
       const selected = !template.current.oauthClientId;
       if (selected) {
         // Select the first registration. Another registration never replaces a chosen client.
@@ -8587,7 +8704,6 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
-    const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
@@ -8610,6 +8726,44 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
+      let staticKeyGrant: StaticKeyGrant | undefined;
+      let written = Object.freeze({ ...(input.config ?? {}) });
+      if (
+        input.connectionTemplateId !== undefined ||
+        input.connectionTemplateVersion !== undefined
+      ) {
+        if (
+          !input.connectionTemplateId ||
+          input.connectionTemplateVersion === undefined ||
+          !type.staticKeyBaseUrlConfig ||
+          Object.keys(written).length
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose a static-key source type and approve one template version. Its endpoint comes from that version.",
+          );
+        }
+        const template = await state.connectionTemplates.lockConnectionTemplate(
+          input.connectionTemplateId,
+        );
+        if (
+          !template ||
+          (template.namespaceId !== undefined && template.namespaceId !== locked.id) ||
+          template.current.mode !== "static_bearer" ||
+          template.current.version !== input.connectionTemplateVersion
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose the current static-key template version available to this Namespace.",
+          );
+        }
+        const { baseUrl, protocol, version } = template.current;
+        staticKeyGrant = {
+          connectionTemplateId: template.id,
+          connectionTemplateVersion: version,
+          baseUrl,
+          protocol,
+        };
+        written = Object.freeze({ [type.staticKeyBaseUrlConfig]: baseUrl });
+      }
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
@@ -8675,6 +8829,7 @@ export class OpenClawController {
         Object.freeze({
           id: sourceId,
           ...(egress === undefined ? {} : { egress }),
+          ...(staticKeyGrant && { staticKeyGrant }),
           namespaceId: locked.id,
           name: input.name,
           type: type.type,
@@ -17129,6 +17284,7 @@ export class OpenClawController {
       name: source.name,
       type: source.type,
       ownerCapability: source.ownerCapability,
+      ...(source.staticKeyGrant && { staticKeyGrant: source.staticKeyGrant }),
       config: source.config,
       secrets: source.secrets,
       ...(source.egress === undefined

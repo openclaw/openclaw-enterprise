@@ -13,6 +13,10 @@ export const CONNECTION_CALLBACK_PATH = "/oauth/callback";
 
 export function namespaceConnectionHandlers(redirectUri: string | undefined): ResourceHandlers {
   return {
+    async listUsableModelProviders({ controller, context, request, reply, namespaceId }) {
+      const data = await controller.listModelProviders(context.actorId, namespaceId);
+      reply.send({ data, meta: { requestId: request.id } });
+    },
     async listUsableConnectionTemplates({ controller, context, request, reply, namespaceId }) {
       const data = await controller.listUsableConnectionTemplates(context.actorId, namespaceId);
       reply.send({ data, meta: { requestId: request.id } });
