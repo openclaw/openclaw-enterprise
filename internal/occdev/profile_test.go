@@ -78,40 +78,50 @@ func TestProfileRefusals(t *testing.T) {
 func TestDownComputeDriver(t *testing.T) {
 	inspectErr := errors.New("cannot inspect development state directory /state: permission denied")
 	for name, test := range map[string]struct {
-		env              map[string]string
-		composeOptions   bool
-		present          bool
-		inspect          error
-		want, wantErr    string
-		consultsRecorded bool
+		env            map[string]string
+		composeOptions bool
+		present        bool
+		inspect        error
+		want           string
+		reason         downReason
+		wantErr        string
 	}{
-		"explicit docker ignores recorded state":        {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}, present: true, want: "docker"},
-		"explicit kubernetes without state":             {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes"}, want: "kubernetes"},
-		"unset with recorded state":                     {present: true, want: "kubernetes", consultsRecorded: true},
-		"unset without recorded state":                  {want: "docker", consultsRecorded: true},
-		"unset with compose control plane":              {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "compose"}, present: true, want: "kubernetes", consultsRecorded: true},
-		"unset with an uninspectable directory":         {inspect: inspectErr, wantErr: inspectErr.Error(), consultsRecorded: true},
-		"compose options keep docker":                   {composeOptions: true, present: true, want: "docker"},
-		"kubernetes control plane selects kubernetes":   {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, want: "kubernetes"},
-		"kubernetes control plane with compose options": {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, composeOptions: true, want: "kubernetes"},
-		"openshell selects kubernetes":                  {env: map[string]string{"OCC_DEVELOPMENT_SANDBOX_DRIVER": "openshell"}, want: "kubernetes"},
+		"explicit docker ignores recorded state":        {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}, present: true, want: "docker", reason: downComputeSelected},
+		"explicit kubernetes without state":             {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes"}, want: "kubernetes", reason: downComputeSelected},
+		"unset with recorded state":                     {present: true, want: "kubernetes", reason: downRecordedState},
+		"unset without recorded state":                  {want: "docker", reason: downNoRecordedState},
+		"unset with compose control plane":              {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "compose"}, present: true, want: "kubernetes", reason: downRecordedState},
+		"unset with an uninspectable directory":         {inspect: inspectErr, wantErr: inspectErr.Error()},
+		"compose options keep docker":                   {composeOptions: true, present: true, want: "docker", reason: downComposeOptions},
+		"kubernetes control plane selects kubernetes":   {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, want: "kubernetes", reason: downKubernetesSelected},
+		"kubernetes control plane with compose options": {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, composeOptions: true, want: "kubernetes", reason: downKubernetesSelected},
+		"openshell selects kubernetes":                  {env: map[string]string{"OCC_DEVELOPMENT_SANDBOX_DRIVER": "openshell"}, want: "kubernetes", reason: downKubernetesSelected},
 	} {
 		t.Run(name, func(t *testing.T) {
 			consulted := false
 			profile := resolveProfile(test.env)
-			got, err := profile.downComputeDriver(test.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", test.composeOptions, func() (bool, error) {
+			got, err := profile.downComputeDriver(test.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", test.composeOptions, func() (string, bool, error) {
 				consulted = true
-				return test.present, test.inspect
+				return "/state", test.present, test.inspect
 			})
 			if test.wantErr != "" {
 				if err == nil || err.Error() != test.wantErr {
 					t.Fatalf("downComputeDriver error = %v, want %q", err, test.wantErr)
 				}
-			} else if err != nil || got != test.want {
-				t.Fatalf("downComputeDriver = %q, %v; want %q", got, err, test.want)
+				if !consulted {
+					t.Fatal("recorded state not consulted")
+				}
+				return
 			}
-			if consulted != test.consultsRecorded {
-				t.Fatalf("recorded state consulted = %v, want %v", consulted, test.consultsRecorded)
+			if err != nil || got.ComputeDriver != test.want || got.Reason != test.reason {
+				t.Fatalf("downComputeDriver = %+v, %v; want %q for reason %d", got, err, test.want, test.reason)
+			}
+			// Only the unselected choices consult the state directory, and they carry its path.
+			if consulted != got.unselected() {
+				t.Fatalf("recorded state consulted = %v for reason %d", consulted, got.Reason)
+			}
+			if wantPath := map[bool]string{true: "/state"}[got.unselected()]; got.StateDirectory != wantPath {
+				t.Fatalf("state directory = %q, want %q", got.StateDirectory, wantPath)
 			}
 		})
 	}

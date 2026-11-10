@@ -246,6 +246,55 @@ test("dev-down from a fresh shell stops the recorded Kubernetes stack", async (t
   assert.ok(commands.some((entry) => entry.command === "k3d" && entry.args.includes("delete")));
 });
 
+test("dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  const started = await fixture.start();
+  assert.equal(started.status, 0, started.stderr);
+  const directory = join(fixture.directory, "openclaw-development");
+  const recordedState = await readFile(join(directory, "state.json"), "utf8");
+
+  // Every checkout shares the default state directory.
+  const other = join(fixture.directory, "other-checkout");
+  await mkdir(other);
+  for (const source of ["go.mod", "compose.yaml"]) {
+    await symlink(join(fixture.fixtureRepository, source), join(other, source));
+  }
+  const fresh = { ...fixture.env };
+  for (const key of [
+    "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+    "OCC_DEVELOPMENT_CONTROL_PLANE",
+    "OCC_DEVELOPMENT_SANDBOX_DRIVER",
+  ]) {
+    delete fresh[key];
+  }
+  const beforeCleanup = await readJsonLines(fixture.env.SAFETY_LOG);
+  const refused = await runCommand(fixture.cli, ["dev", "down"], { cwd: other, env: fresh });
+  assert.notEqual(refused.status, 0);
+  for (const expected of [
+    `development state directory ${directory} records the Kubernetes development stack occ-dev-owned of checkout ${fixture.fixtureRepository}, not this checkout ${other}`,
+    "occ dev down stopped nothing",
+    `run occ dev down from ${fixture.fixtureRepository}`,
+  ]) {
+    assert.ok(refused.stderr.includes(expected), refused.stderr);
+  }
+  assert.equal(refused.stdout, "");
+  assert.equal(await readFile(join(directory, "state.json"), "utf8"), recordedState);
+  assert.deepEqual(
+    (await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length),
+    [],
+  );
+
+  // An explicit Kubernetes selection still stops the recorded stack from here.
+  const stopped = await runCommand(fixture.cli, ["dev", "down"], {
+    cwd: other,
+    env: { ...fresh, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" },
+  });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /Stopped Kubernetes development stack occ-dev-owned\./);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
 for (const controlPlane of ["compose", "kubernetes"]) {
   for (const [reason, cluster] of [
     ["33-character name", `occ-dev-${"a".repeat(25)}`],

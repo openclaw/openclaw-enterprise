@@ -32,8 +32,11 @@ directory) and stops the Kubernetes stack recorded there; the Kubernetes control
 plane or a Sandbox Driver selection also selects that path. Compose options
 after `--`, or an absent state directory, stop the Docker profile instead. A
 state directory that exists but is unreadable or invalid stops cleanup with an
-error naming it; down never falls back to Docker in that case. The final line
-says which stack was stopped.
+error naming it; down never falls back to Docker in that case. Every checkout
+shares the default state directory, so when the recorded stack belongs to
+another checkout, unselected cleanup stops nothing and names that checkout: run
+`occ dev down` there, or select `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`.
+The final line says which stack was stopped.
 The explicitly selected Kubernetes-only profile rejects Compose options. Use
 `scripts/dev-up` and `scripts/dev-down` as the common entry points for every
 profile; the Compute and Sandbox Driver settings select the implementation.

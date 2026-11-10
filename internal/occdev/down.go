@@ -20,16 +20,13 @@ func Down(ctx context.Context, opts Options) error {
 		return err
 	}
 	stateSetting := r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"]
-	recorded := false
-	computeDriver, err := profile.downComputeDriver(r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", len(opts.ComposeArgs) > 0, func() (bool, error) {
-		_, present, err := recordedStateDirectory(stateSetting)
-		recorded = present
-		return present, err
+	choice, err := profile.downComputeDriver(r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", len(opts.ComposeArgs) > 0, func() (string, bool, error) {
+		return recordedStateDirectory(stateSetting)
 	})
 	if err != nil {
 		return err
 	}
-	switch computeDriver {
+	switch choice.ComputeDriver {
 	case "docker":
 		if err := profile.CheckDockerCompute(); err != nil {
 			return err
@@ -74,10 +71,9 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.run(ctx, r.engine, args...); err != nil {
 			return err
 		}
-		if r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] == "" && len(opts.ComposeArgs) == 0 {
+		if choice.Reason == downNoRecordedState {
 			// Say why down chose Docker when nothing selected it.
-			directory, _ := stateDirectoryPath(stateSetting)
-			fmt.Fprintf(r.opts.Out, "Stopped Docker-compatible development stack (no recorded Kubernetes development state in %s).\n", directory)
+			fmt.Fprintf(r.opts.Out, "Stopped Docker-compatible development stack (no recorded Kubernetes development state in %s).\n", choice.StateDirectory)
 			return nil
 		}
 		fmt.Fprintln(r.opts.Out, "Stopped Docker-compatible development stack.")
@@ -92,15 +88,16 @@ func Down(ctx context.Context, opts Options) error {
 		// When down followed a recorded state directory, never fall back to
 		// Docker: name the directory so the operator can repair or remove it.
 		unusable := func(err error) error {
-			path, _ := stateDirectoryPath(stateSetting)
-			if !recorded {
-				if errors.Is(err, fs.ErrNotExist) && path != "" {
-					return fmt.Errorf("no recorded Kubernetes development state in %s: %w", path, err)
+			if choice.Reason != downRecordedState {
+				if errors.Is(err, fs.ErrNotExist) {
+					if path, pathErr := stateDirectoryPath(stateSetting); pathErr == nil {
+						return fmt.Errorf("no recorded Kubernetes development state in %s: %w", path, err)
+					}
 				}
 				return err
 			}
 			return fmt.Errorf("development state directory %s exists but is not usable Kubernetes development state: %w; "+
-				"occ dev down stopped nothing; repair it and retry, or select OCC_DEVELOPMENT_COMPUTE_DRIVER=docker to stop a Docker-compatible stack", path, err)
+				"occ dev down stopped nothing; repair it and retry, or select OCC_DEVELOPMENT_COMPUTE_DRIVER=docker to stop a Docker-compatible stack", choice.StateDirectory, err)
 		}
 		directory, err := stateDirectory(stateSetting, opts.Repository, true)
 		if err != nil {
@@ -114,6 +111,14 @@ func Down(ctx context.Context, opts Options) error {
 		state, err := readState(directory)
 		if err != nil {
 			return unusable(err)
+		}
+		// Every checkout shares the default state directory. Following it
+		// without a selection must not stop another checkout's stack.
+		if choice.Reason == downRecordedState && !sameCheckout(state.Repository, opts.Repository) {
+			return fmt.Errorf("development state directory %s records the Kubernetes development stack %s of checkout %s, not this checkout %s; "+
+				"occ dev down stopped nothing; run occ dev down from %s, or select OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes to stop that stack from here "+
+				"(OCC_DEVELOPMENT_COMPUTE_DRIVER=docker stops this checkout's Docker-compatible stack)",
+				directory, state.Cluster, state.Repository, opts.Repository, state.Repository)
 		}
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
@@ -158,6 +163,21 @@ func Down(ctx context.Context, opts Options) error {
 		return profile.CheckComputeDriver()
 	}
 }
+
+// sameCheckout reports whether two checkout paths name the same directory,
+// including through a symlinked path.
+func sameCheckout(recorded, current string) bool {
+	if filepath.Clean(recorded) == filepath.Clean(current) {
+		return true
+	}
+	a, err := os.Stat(recorded)
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(current)
+	return err == nil && os.SameFile(a, b)
+}
+
 func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {
 	var failures []error
 	// A recorded import attachment must not keep either profile's owned network alive.
