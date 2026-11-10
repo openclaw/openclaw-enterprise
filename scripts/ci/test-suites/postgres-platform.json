@@ -442,6 +442,8 @@
     {
       "path": "tests/integration/postgres-openshell-git-routes.test.ts",
       "expectedTests": [
+        "v9 Git-only withdrawal retains the exact active grant-ready delivery without material",
+        "v9 finite Git expiry retains only fresh witnesses for both GitHub attachments",
         "finite Git removal is revision scoped and wins concurrent cold route adoption",
         "OpenShell Git routes persist identity and custody facts under one fenced holder",
         "a replacement lease cannot settle or replay an uncertain rotate installation",

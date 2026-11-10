@@ -223,11 +223,11 @@ including when a sender can reuse a token. GitHub still enforces the App's
 permissions and repository rules.
 
 OCC denies new Git and API requests after expiry or committed removal. The
-original issuer retires each token family. Current grant-mode cleanup can
-retire the execution before detaching a provider. Keeping the model running
-requires a durable withdrawal path that verifies both original GitHub
-attachments, the original execution fence, and current model authorization.
-Verify that path on an installed mixed online execution.
+original issuer retires each token family. On a mixed v9 execution, the Worker
+requires fresh evidence of both original GitHub attachments, the original
+execution fence, and current model authorization before retaining the runtime.
+Verify a model turn before and after withdrawal on the installed execution.
+A replacement attachment or loss of required authority can retire the runtime.
 [Repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-pull-request-preview)
 
 ## Verify the installed path
@@ -252,13 +252,15 @@ Run these checks against the exact images and configuration selected for rollout
    model source's IAM grant and confirm that model requests cannot reach their
    origin while authorized Git still works. Restore that grant, then remove
    Git [standing approval](../repository-credentials.md#keep-git-access-on-the-same-running-agent)
-   with its current generation. Verify that fresh Git requests are denied with
-   no new origin request. Version 9 may retire the entire runtime on Git removal;
-   record that outcome. Continued inference after this removal is not guaranteed.
+   with its current generation. After Worker cleanup, verify that a fresh Git
+   request on the same inspected connection is denied before reaching the
+   origin, even with a warm credential. Compare the Sandbox, workload and
+   policy generation, then complete a new model turn in the original
+   conversation.
 
-Keep the saved bindings unchanged during these checks. Removing a model or
-Git binding may stop or redeploy the execution; version 9 does not support live
-policy reduction that keeps the other path running.
+Keep the saved bindings in place during these checks. Optional Git withdrawal
+takes effect at OCC on the next request. Removing a saved model or Git binding
+may stop or redeploy the execution.
 
 Middleware refusal reports `request_credential_denied`. A token response of
 `invalid_client` points to identity, trust or audience; `invalid_grant` points to
