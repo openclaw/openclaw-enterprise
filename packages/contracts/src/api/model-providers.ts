@@ -36,9 +36,14 @@ const fields = {
   defaultModelId: Type.Optional(modelId),
   connectionTemplateId: ConnectionTemplateId,
 };
+const settingsFingerprint = Type.String({ pattern: "^[a-f0-9]{64}$" });
 export const ModelProviderBody = Type.Object(fields, strict);
+export const UpdateModelProviderBody = Type.Object(
+  { ...fields, expectedSettingsFingerprint: settingsFingerprint },
+  strict,
+);
 export const ModelProviderParams = Type.Object({ modelProviderId: ModelProviderId }, strict);
-const provider = Type.Object({ id: ModelProviderId, ...fields }, strict);
+const provider = Type.Object({ id: ModelProviderId, ...fields, settingsFingerprint }, strict);
 const meta = Type.Object({ requestId: RequestId }, strict);
 export const ModelProviderResponse = Type.Object({ data: provider, meta }, strict);
 export const ModelProviderListResponse = Type.Object({ data: Type.Array(provider), meta }, strict);

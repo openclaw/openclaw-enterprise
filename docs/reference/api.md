@@ -2680,7 +2680,7 @@ Complete a browser connection for the signed-in person who started it
 | [`GET /model-providers`](#get-modelproviders) | List Installation model providers |
 | [`POST /model-providers`](#post-modelproviders) | Create an Installation model provider |
 | [`GET /model-providers/{modelProviderId}`](#get-modelprovidersmodelproviderid) | Read a model provider |
-| [`PUT /model-providers/{modelProviderId}`](#put-modelprovidersmodelproviderid) | Replace model provider settings |
+| [`PUT /model-providers/{modelProviderId}`](#put-modelprovidersmodelproviderid) | Replace model provider settings if the saved fingerprint matches |
 | [`GET /namespaces/{namespaceId}/model-providers`](#get-namespacesnamespaceidmodelproviders) | List the model providers available when creating an Agent |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
@@ -3105,6 +3105,7 @@ List Installation model providers
 | `data[].models[].maxTokens` | `integer` | No | minimum: 1 |
 | `data[].models[].name` | `string` | No | min length: 1; max length: 200 |
 | `data[].protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `data[].settingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3232,6 +3233,7 @@ Example request
 | `data.models[].maxTokens` | `integer` | No | minimum: 1 |
 | `data.models[].name` | `string` | No | min length: 1; max length: 200 |
 | `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `data.settingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3310,6 +3312,7 @@ Read a model provider
 | `data.models[].maxTokens` | `integer` | No | minimum: 1 |
 | `data.models[].name` | `string` | No | min length: 1; max length: 200 |
 | `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `data.settingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3339,7 +3342,7 @@ Example response
 
 <span id="put-modelprovidersmodelproviderid"></span>
 
-Replace model provider settings
+Replace model provider settings if the saved fingerprint matches
 
 **Operation ID:** `updateModelProvider`
 
@@ -3367,6 +3370,7 @@ Replace model provider settings
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `defaultModelId` | `string` | No | min length: 1; max length: 256; pattern: `^[^\s\x00-\x1f\x7f]+$` |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `expectedSettingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `models` | `array<object>` | Yes | min items: 1; max items: 256 |
 | `models[].contextWindow` | `integer` | No | minimum: 1 |
 | `models[].cost` | `object` | No | — |
@@ -3431,6 +3435,7 @@ Example request
 | `data.models[].maxTokens` | `integer` | No | minimum: 1 |
 | `data.models[].name` | `string` | No | min length: 1; max length: 200 |
 | `data.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `data.settingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3509,6 +3514,7 @@ List the model providers available when creating an Agent
 | `data[].models[].maxTokens` | `integer` | No | minimum: 1 |
 | `data[].models[].name` | `string` | No | min length: 1; max length: 200 |
 | `data[].protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
+| `data[].settingsFingerprint` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
