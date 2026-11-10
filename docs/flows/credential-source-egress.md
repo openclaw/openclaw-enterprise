@@ -63,10 +63,10 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-Bundled OpenShell rejects new static OpenAI sources, adoption and revisions via
-`InstalledDriver.assertNewStaticProviderUse`. Source refusal precedes Secret material
-reads; deployment refusal precedes protected routes. Retained revisions keep their
-provider, request authorization, withdrawal and cleanup.
+Bundled OpenShell rejects new static OpenAI use via
+`InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
+reads; deployment refusal precedes counterpart probes. Retained revisions keep
+their provider, authorization, withdrawal and cleanup.
 
 OCC checks source and Secret permissions; existing sources need opt-in. Version 3
 binds Sandbox and Proxy to one registered Driver.

@@ -8303,6 +8303,12 @@ export class OpenClawController {
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
+    // Retirement is permanent; an unavailable counterpart cannot make this deployment retryable.
+    for (const source of sources) {
+      if (source.egress?.adoption === "live") {
+        owner.assertNewStaticProviderUse(source.egress.key.provider);
+      }
+    }
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
       if (repositoryGit === undefined) {
         // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
@@ -8390,9 +8396,6 @@ export class OpenClawController {
       );
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
-      }
-      if (admitted.adoption === "live") {
-        owner.assertNewStaticProviderUse(provider.ref);
       }
       const grant = provider.normalizeGrant([modelId], source.config);
       let digestGrant = grant;

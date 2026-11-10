@@ -394,5 +394,24 @@ test(
         );
       });
     }
+    await t.test("missing middleware cannot hide permanent deployment retirement", async () => {
+      // The real Gateway client observes a peer without its middleware registration.
+      // Retirement must win over that recoverable transport-qualification failure.
+      f.observed.available = false;
+      try {
+        const response = await p.inject(
+          "POST",
+          `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
+          undefined,
+          app,
+        );
+        assert.equal(response.statusCode, 409, response.body);
+        assert.deepEqual(response.json().error, { code: "RESOURCE_CONFLICT", message: refusal });
+        assert.deepEqual(await snapshot(), retained, "retirement must not mutate retained state");
+        assert.equal(f.providerRequests.length, 0);
+      } finally {
+        f.observed.available = true;
+      }
+    });
   },
 );
