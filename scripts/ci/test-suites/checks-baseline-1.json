@@ -25,7 +25,7 @@
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
-    "tests/integration/presets-controller.test.mjs",
+    "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.mjs",
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.mjs",
@@ -339,7 +339,7 @@
       "path": "tests/conformance/workspace-node-supervisor.test.mjs"
     },
     {
-      "path": "tests/integration/presets-controller.test.mjs"
+      "path": "tests/integration/presets-controller.test.ts"
     },
     {
       "path": "tests/integration/profile-renderer.test.mjs",
