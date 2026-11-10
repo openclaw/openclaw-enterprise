@@ -799,6 +799,7 @@
               }
             ],
             "hidden": [
+              "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
