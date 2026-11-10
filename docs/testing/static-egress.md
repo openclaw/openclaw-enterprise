@@ -242,20 +242,21 @@ cluster or model runtime and supplies no installation receipt.
 ## Select the prepared connected lane
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the `egress-connected` CLI lane. CI, GitHub dispatch and the generic `openshell`
-HTTP fixture do not run it. This retained lane is for existing qualified
-installations. It requires a prepared, authenticated controller, worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
+with the manual `egress-connected` CLI lane, outside CI and GitHub dispatch.
+Its default path requires an owner accepting fresh static sources. Bundled
+retirement requires the [A-to-B upgrade procedure](static-egress-upgrade.md).
+Both need prepared, authenticated controllers and a qualified supplier gateway.
+Missing selected inputs fail.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
 NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).
 [Migrate a dedicated](postgresql.md) `openclaw_k8s_*` database, then run the controller
 and observer as `occ_app`. The test compares the database Installation with the controller's.
 
-The protected product and supplier source must agree on physical namespace
-mapping, loaded-enforcement receipt readiness, finite Responses protection and
-zero automatic retries, including the startup authentication probe. Build and
-select the corresponding immutable images before running. This test cannot
-qualify a checkout that lacks those contracts or a legacy gateway-copy setup.
+Select immutable product and supplier images agreeing on physical namespace
+mapping, loaded-enforcement readiness, finite Responses protection and zero
+automatic retries, including the startup probe. Missing contracts and legacy
+gateway-copy setups cannot qualify.
 
 Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
 The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
@@ -300,9 +301,10 @@ node --env-file=/absolute/path/to/private/connected.env \
   --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
-The lane sets `OCC_TEST_EGRESS_CONNECTED=1`. Its 30-minute deadline bounds activation
-(12 minutes), Codex turns (90 seconds), API requests (20 seconds) and local cluster
-commands (120 seconds). Allow 40 minutes for test and cleanup, plus stack teardown.
+The lane sets `OCC_TEST_EGRESS_CONNECTED=1`. Its 45-minute deadline includes an
+optional controller replacement of at most 15 minutes. Activation has 12 minutes,
+Codex turns 90 seconds, API requests 20 seconds and local cluster commands 120 seconds.
+Allow 55 minutes for test and cleanup, plus stack teardown.
 Killing a local client does not establish remote termination. Never replay an uncertain operation.
 
 ### Read evidence and retain cleanup custody
@@ -311,9 +313,10 @@ The test creates resources through public APIs, deploys through the real worker,
 reads its persisted installation, and checks the authenticated supplier receipt.
 It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
 explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes seventeen requests: one
-normal startup probe, fifteen measured Codex sends (including six hostile
+`authorityScope: "execution"`. The origin observes nineteen requests: one
+normal startup probe, seventeen measured Codex sends (including seven hostile
 responses and recovery), and one managed request from an ordinary sibling.
+The upgrade path adds one retained-revision turn after B becomes ready.
 For that sibling and the direct TCP probe, the operator uses the supplier's
 authenticated [workload launch path](./protected-repository-custody.md) so both
 inherit the installed connection mediation. Kubernetes exec remains suitable for

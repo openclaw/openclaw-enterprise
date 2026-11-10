@@ -20,6 +20,10 @@ import {
   registerCleanupAndStartProvider,
   observeInstalledProtection,
 } from "../helpers/egress-installed-agent.mjs";
+import {
+  prepareControllerUpgrade,
+  observeControllerUpgrade,
+} from "../helpers/egress-controller-upgrade.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -56,7 +60,7 @@ test(
   "protected Codex and a sibling share bounded execution authority through IAM revocation and live rotation",
   {
     skip: selected ? false : "Select OCC_TEST_EGRESS_CONNECTED=1 with a prepared protected stack.",
-    timeout: 30 * 60_000,
+    timeout: 45 * 60_000,
   },
   async (t) => {
     const progress = { stage: "input-preflight" };
@@ -69,14 +73,51 @@ test(
         setup.input.oceCommit,
         "run this qualification from the selected candidate checkout",
       );
+      const upgrade = setup.input.controllerUpgrade;
+      if (upgrade) {
+        assert.equal(
+          execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+            encoding: "utf8",
+          }).trim(),
+          "",
+          "upgrade qualification requires a clean candidate checkout",
+        );
+        execFileSync("git", [
+          "merge-base",
+          "--is-ancestor",
+          upgrade.fromCommit,
+          setup.input.oceCommit,
+        ]);
+      }
       const evidence = await createRunEvidence(t, setup, progress);
-      const stack = await observePreparedStack(t, setup, evidence, progress);
+      const initialSetup = upgrade
+        ? {
+            ...setup,
+            input: {
+              ...setup.input,
+              images: { ...setup.input.images, controller: upgrade.fromImage },
+            },
+          }
+        : setup;
+      const stack = await observePreparedStack(t, initialSetup, evidence, progress);
       const owned = await registerCleanupAndStartProvider(t, setup, stack, evidence);
       const deployment = await deployProtectedAgent(setup, stack, evidence, owned);
       const installed = await observeInstalledProtection(setup, stack, evidence, deployment);
       const turns = await observeRunningAgent(setup, stack, evidence, owned, deployment, installed);
 
       await verifyManagedClientsAndDirectBypass(setup, evidence, owned, installed, turns);
+      if (upgrade) {
+        const retained = await prepareControllerUpgrade(
+          setup,
+          stack,
+          evidence,
+          owned,
+          deployment,
+          installed,
+        );
+        await observeControllerUpgrade(setup, stack, evidence, owned, deployment, retained);
+        await turns.successfulTurn("retained-after-controller-upgrade", "initial");
+      }
       await revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns);
       await regrantAndObserveRecovery(owned, deployment, turns);
       const rotatedSecret = await rotateSecretOnly(setup, stack, evidence, deployment, turns);
@@ -85,8 +126,8 @@ test(
       await withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployment, installed);
       assert.equal(
         owned.provider.observations.length,
-        19,
-        "one startup probe, seventeen measured Codex sends and one managed sibling send; no retries",
+        upgrade ? 20 : 19,
+        "one startup probe, seventeen measured Codex sends, one sibling send and an optional retained turn; no retries",
       );
     } catch (error) {
       throw safeConnectedFailure(error, progress.stage);

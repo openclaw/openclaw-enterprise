@@ -258,6 +258,30 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
   assert.throws(() => wholeExecution({ ...fresh, authorityProfile: undefined }), {
     code: "ERR_ASSERTION",
   });
+  const controllerUpgrade = {
+    fromCommit: "c".repeat(40),
+    fromImage: `fixture/controller@sha256:${"c".repeat(64)}`,
+    timeoutMs: 60_000,
+  };
+  const upgrading = { ...fresh, controllerUpgrade };
+  assert.equal(wholeExecution(upgrading), upgrading);
+  assert.throws(() => validate({ ...input, controllerUpgrade }), { code: "ERR_ASSERTION" });
+  for (const change of [
+    { fromCommit: input.oceCommit },
+    { fromCommit: "short-sha" },
+    { fromImage: input.images.controller },
+    { fromImage: `other/controller@sha256:${"a".repeat(64)}` },
+    { fromImage: "fixture/controller:mutable" },
+    { timeoutMs: 0 },
+    { timeoutMs: 15 * 60_000 + 1 },
+    { timeoutMs: "60000" },
+    { script: "/unreviewed/upgrade.sh" },
+  ]) {
+    assert.throws(
+      () => wholeExecution({ ...fresh, controllerUpgrade: { ...controllerUpgrade, ...change } }),
+      { code: "ERR_ASSERTION" },
+    );
+  }
   const rejectedAuth = [
     undefined,
     { mode: "unauthenticated" },

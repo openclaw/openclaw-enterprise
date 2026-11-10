@@ -112,6 +112,25 @@ export function validateConnectedInputs(input, controller, { wholeExecution = fa
   for (const head of [input.oceCommit, input.supplierCommit]) {
     assert.match(head ?? "", /^[a-f0-9]{40}$/);
   }
+  if (input.controllerUpgrade !== undefined) {
+    const upgrade = input.controllerUpgrade;
+    assert.equal(wholeExecution, true, "controller upgrades require the whole-execution lane");
+    assert.deepEqual(Object.keys(upgrade).sort(), ["fromCommit", "fromImage", "timeoutMs"]);
+    assert.match(upgrade.fromCommit ?? "", /^[a-f0-9]{40}$/);
+    assert.notEqual(upgrade.fromCommit, input.oceCommit, "select different controller revisions");
+    assert.match(upgrade.fromImage ?? "", /^[^\s@]+@sha256:[a-f0-9]{64}$/);
+    assert.notEqual(
+      upgrade.fromImage.split("@sha256:")[1],
+      input.images.controller.split("@sha256:")[1],
+      "select different controller image digests",
+    );
+    assert.ok(
+      Number.isSafeInteger(upgrade.timeoutMs) &&
+        upgrade.timeoutMs >= 60_000 &&
+        upgrade.timeoutMs <= 15 * 60_000,
+      "controller upgrade must allow between one and fifteen minutes",
+    );
+  }
   const gateway = new URL(input.openShellBackend.endpoint);
   assert.equal(gateway.protocol, "https:");
   assert.equal(gateway.username + gateway.password + gateway.search + gateway.hash, "");
