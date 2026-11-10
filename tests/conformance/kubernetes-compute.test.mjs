@@ -9077,10 +9077,20 @@ async function chatgptIssuanceFixture() {
     await request().driver.createCredential(account);
     binding.externalCredentialId = null;
   };
+  const afterSecretRead = async (afterRead) => {
+    const { core } = await secrets.driver.apiClients;
+    const read = core.readNamespacedSecret;
+    core.readNamespacedSecret = async (request) => {
+      const result = await read(request);
+      afterRead();
+      return result;
+    };
+  };
   const account = { id: secrets.serviceAccountId, namespaceId: tenant.id, name: "issued" };
   return {
     ...secrets,
     account,
+    afterSecretRead,
     binding,
     crashedIssuance,
     deletedAccounts,
@@ -9164,19 +9174,15 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
   await t.test(
     "a reclaim whose lock was lost while reading the Secret touches nothing a later issuance committed",
     async () => {
-      const { account, binding, crashedIssuance, driver, objects, key, request, revoked } =
+      const { account, afterSecretRead, binding, crashedIssuance, objects, key, request, revoked } =
         await chatgptIssuanceFixture();
       await crashedIssuance(account);
       // The request's PostgreSQL session ends during the Kubernetes read, releasing the account
       // lock; another issuance records the Secret it now holds before the read returns. The
       // binding reread after the read sees that record, so nothing is revoked or deleted.
-      const { core } = await driver.apiClients;
-      const read = core.readNamespacedSecret;
-      core.readNamespacedSecret = async (request) => {
-        const result = await read(request);
+      await afterSecretRead(() => {
         binding.externalCredentialId = "cred-1";
-        return result;
-      };
+      });
       await assert.rejects(
         request().driver.createCredential(account),
         (error) =>
@@ -9191,21 +9197,17 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
   await t.test(
     "a reclaim whose session ended while reading the Secret fails without touching it",
     async () => {
-      const { account, crashedIssuance, driver, objects, key, request, revoked, state } =
+      const { account, afterSecretRead, crashedIssuance, objects, key, request, revoked, state } =
         await chatgptIssuanceFixture();
       await crashedIssuance(account);
       // The PostgreSQL session ends during the Kubernetes read, so the binding reread on the
       // transaction's connection fails: no proof the lock still holds, so nothing is revoked.
       const lost = new DependencyUnavailableError("The database session ended.");
-      const { core } = await driver.apiClients;
-      const read = core.readNamespacedSecret;
-      core.readNamespacedSecret = async (request) => {
-        const result = await read(request);
+      await afterSecretRead(() => {
         state.queryInTransaction = async () => {
           throw lost;
         };
-        return result;
-      };
+      });
       await assert.rejects(request().driver.createCredential(account), (error) => error === lost);
       assert.deepEqual(revoked, []);
       assert.equal(objects.has(key), true);
