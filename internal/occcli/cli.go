@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
@@ -9,10 +10,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,26 +25,15 @@ import (
 
 const defaultTimeoutSeconds = "30"
 
+var dns1123LabelPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
+
+func dns1123Label(name string) bool {
+	return len(name) >= 1 && len(name) <= 63 && dns1123LabelPattern.MatchString(name)
+}
+
 // outputFormatsAnnotation lists the -o values a command accepts; the first replaces
 // the global "table" default.
 const outputFormatsAnnotation = "occ/output-formats"
-
-const (
-	runtimeLogFollowInterval = 2 * time.Second
-	runtimeLogFollowTail     = "1000"
-)
-
-// sleepContext waits for d or until ctx is done. Tests replace it.
-var sleepContext = func(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
 
 // Version is replaced with a release version when distribution packaging is added.
 var Version = "dev"
@@ -58,6 +48,8 @@ type application struct {
 	output         string
 	parsedTimeout  time.Duration
 	ctx            context.Context
+	// commandPath is the running command after "occ", such as "agent list".
+	commandPath string
 }
 
 // New builds the OCC domain command tree.
@@ -69,7 +61,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		Version:       Version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Args:          cobra.NoArgs,
+		Args:          missingCommandArgs(signInCommands),
 		// Runnable like commandGroup, so cobra checks Args and rejects an unknown
 		// command instead of printing help and exiting 0.
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -96,6 +88,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		os.Getenv("OCC_SERVICE_KEY_FILE"),
 		"Bootstrap or service-key response file",
 	)
+	// --ca-bundle= is not refused like the flags in emptyFlagValues: it clears OCC_CA_BUNDLE.
 	flags.StringVar(
 		&app.caBundle,
 		"ca-bundle",
@@ -112,7 +105,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		&app.namespace,
 		"namespace",
 		os.Getenv("OCC_NAMESPACE"),
-		"Namespace scope for Configuration, Secret, Preset, credential source, IAM, and Agent operations",
+		"Namespace scope for Configuration, Secret, Preset, credential source, ServiceAccount, IAM, and Agent operations",
 	)
 	flags.StringVarP(&app.output, "output", "o", "table", "Output format: table, json, or yaml")
 
@@ -125,6 +118,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.secretCommand(),
 		app.presetCommand(),
 		app.credentialSourceCommand(),
+		app.serviceAccountCommand(),
 		app.agentCommand(),
 		developmentCommand(),
 	)
@@ -134,6 +128,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 			child.Run, child.RunE = nil, helpTopic
 		}
 	}
+	app.addRefusalHints(command)
 	return command
 }
 
@@ -178,7 +173,7 @@ func (app *application) installationCommand() *cobra.Command {
 			})
 		},
 	}
-	command.AddCommand(get, deploymentInventory)
+	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"))
 	return command
 }
 
@@ -190,7 +185,11 @@ func (app *application) namespaceCommand() *cobra.Command {
 		Use:   "create NAME",
 		Short: "Create a Namespace",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// createNamespace existingNamespace: a DNS-1123 label of at most 63 characters.
+			if command.Flags().Changed("existing-namespace") && !dns1123Label(existingNamespace) {
+				return fmt.Errorf("--existing-namespace must be a DNS-1123 label of at most 63 characters")
+			}
 			client, err := app.client()
 			if err != nil {
 				return err
@@ -266,338 +265,11 @@ func (app *application) namespaceCommand() *cobra.Command {
 	return command
 }
 
-func (app *application) iamCommand() *cobra.Command {
-	command := commandGroup("iam", "Manage Namespace IAM policy")
-	command.AddCommand(
-		app.iamRoleCommand(),
-		app.iamAccessBindingCommand(),
-		app.iamServicePrincipalCommand(),
-	)
-	return command
-}
-
-func (app *application) iamServicePrincipalCommand() *cobra.Command {
-	command := commandGroup("service-principal", "Manage Namespace ServicePrincipals for automation and CLI keys")
-
-	create := &cobra.Command{
-		Use:     "create",
-		Short:   "Create a Namespace ServicePrincipal with no grants",
-		Example: iamServicePrincipalCreateExample,
-		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			principal, err := client.CreateIAMServicePrincipal(namespace)
-			if err != nil {
-				return err
-			}
-			return app.printIAMServicePrincipal(principal, false)
-		},
-	}
-
-	list := &cobra.Command{
-		Use:   "list",
-		Short: "List Namespace ServicePrincipals",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			principals, err := client.ListIAMServicePrincipals(namespace)
-			if err != nil {
-				return err
-			}
-			return app.printIAMServicePrincipal(principals, true)
-		},
-	}
-
-	get := &cobra.Command{
-		Use:   "get ID",
-		Short: "Show a Namespace ServicePrincipal",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			principal, err := client.GetIAMServicePrincipal(namespace, args[0])
-			if err != nil {
-				return err
-			}
-			return app.printIAMServicePrincipal(principal, false)
-		},
-	}
-
-	command.AddCommand(create, list, get)
-	return command
-}
-
-func (app *application) serviceKeyCommand() *cobra.Command {
-	command := commandGroup("service-key", "Issue and revoke service keys")
-
-	var principalID, name, outFile string
-	var expiresInDays int
-	create := &cobra.Command{
-		Use:     "create",
-		Short:   "Issue a key for a ServicePrincipal and write it to a new key file",
-		Example: serviceKeyCreateExample,
-		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if expiresInDays != 0 && (expiresInDays < 1 || expiresInDays > 365) {
-				return fmt.Errorf("--expires-in-days must be between 1 and 365")
-			}
-			if app.namespace != "" {
-				if err := namespaceIDArg.check(app.namespace); err != nil {
-					return fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
-				}
-			}
-			// Create the file first, so an existing path or a bad directory fails
-			// before a key exists that nothing could save.
-			file, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-			if err != nil {
-				return fmt.Errorf("failed to create key file: %w", err)
-			}
-			written := false
-			defer func() {
-				_ = file.Close()
-				if !written {
-					_ = os.Remove(outFile)
-				}
-			}()
-			client, err := app.client()
-			if err != nil {
-				return err
-			}
-			body := map[string]any{"servicePrincipalId": principalID, "name": name}
-			if app.namespace != "" {
-				body["namespaceId"] = app.namespace
-			}
-			if expiresInDays != 0 {
-				body["expiresIn"] = expiresInDays * 24 * 60 * 60
-			}
-			key, err := client.CreateServiceKey(body)
-			if err != nil {
-				return err
-			}
-			details, ok := key.(map[string]any)
-			keyID, _ := details["id"].(string)
-			if !ok || keyID == "" {
-				return fmt.Errorf("OCC returned an invalid service key")
-			}
-			// The file holds the issuance envelope, which --service-key-file reads.
-			writeErr := json.MarshalWrite(file, map[string]any{"data": key})
-			if writeErr == nil {
-				writeErr = file.Close()
-			}
-			if writeErr != nil {
-				// Nobody holds the unsaved key: revoke it, and name it if that fails too.
-				if _, revokeErr := client.RevokeServiceKey(keyID); revokeErr != nil {
-					return fmt.Errorf(
-						"failed to write key file (%w); revoke unsaved service key %s with occ service-key revoke",
-						writeErr,
-						keyID,
-					)
-				}
-				return fmt.Errorf("failed to write key file (%w); the unsaved service key %s was revoked", writeErr, keyID)
-			}
-			written = true
-			delete(details, "key")
-			return app.printServiceKey(details)
-		},
-	}
-	create.Flags().StringVar(&principalID, "service-principal", "", "ServicePrincipal ID")
-	create.Flags().StringVar(&name, "name", "", "Key name (1-32 characters)")
-	create.Flags().StringVar(&outFile, "out", "", "New key file to write (mode 0600; must not exist)")
-	create.Flags().IntVar(&expiresInDays, "expires-in-days", 0, "Lifetime in days, 1-365 (default 30)")
-	_ = create.MarkFlagRequired("service-principal")
-	_ = create.MarkFlagRequired("name")
-	_ = create.MarkFlagRequired("out")
-
-	revoke := &cobra.Command{
-		Use:   "revoke ID",
-		Short: "Revoke a service key",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			client, err := app.client()
-			if err != nil {
-				return err
-			}
-			result, err := client.RevokeServiceKey(args[0])
-			if err != nil {
-				return err
-			}
-			return app.printItems(result, false, []column{
-				{title: "ID", key: "id"},
-				{title: "REVOKED", key: "revoked"},
-			})
-		},
-	}
-
-	command.AddCommand(create, revoke)
-	return command
-}
-
-func (app *application) iamRoleCommand() *cobra.Command {
-	command := commandGroup("role", "Manage Namespace IAM Roles")
-
-	var createFile string
-	create := &cobra.Command{
-		Use:     "create",
-		Short:   "Create a Namespace IAM Role from a JSON document",
-		Example: iamRoleCreateExample,
-		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, body, client, err := app.namespaceJSONClient(createFile)
-			if err != nil {
-				return err
-			}
-			role, err := client.CreateIAMRole(namespace, body)
-			if err != nil {
-				return err
-			}
-			return app.printIAMRole(role, false)
-		},
-	}
-	create.Flags().StringVar(&createFile, "file", "", "JSON document path")
-	_ = create.MarkFlagRequired("file")
-
-	list := &cobra.Command{
-		Use:   "list",
-		Short: "List Namespace IAM Roles",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			roles, err := client.ListIAMRoles(namespace)
-			if err != nil {
-				return err
-			}
-			return app.printIAMRole(roles, true)
-		},
-	}
-
-	get := &cobra.Command{
-		Use:   "get ID",
-		Short: "Show a Namespace IAM Role",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			role, err := client.GetIAMRole(namespace, args[0])
-			if err != nil {
-				return err
-			}
-			return app.printIAMRole(role, false)
-		},
-	}
-
-	deleteCommand := &cobra.Command{
-		Use:   "delete ID",
-		Short: "Delete an unreferenced Namespace IAM Role",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteIAMRole(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("iam role", args[0])
-		},
-	}
-
-	command.AddCommand(create, list, get, deleteCommand)
-	return command
-}
-
-func (app *application) iamAccessBindingCommand() *cobra.Command {
-	command := commandGroup("access-binding", "Manage Namespace IAM AccessBindings")
-
-	var createFile string
-	create := &cobra.Command{
-		Use:     "create",
-		Short:   "Create a Namespace IAM AccessBinding from a JSON document",
-		Example: iamAccessBindingCreateExample,
-		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, body, client, err := app.namespaceJSONClient(createFile)
-			if err != nil {
-				return err
-			}
-			binding, err := client.CreateIAMAccessBinding(namespace, body)
-			if err != nil {
-				return err
-			}
-			return app.printIAMAccessBinding(binding, false)
-		},
-	}
-	create.Flags().StringVar(&createFile, "file", "", "JSON document path")
-	_ = create.MarkFlagRequired("file")
-
-	list := &cobra.Command{
-		Use:   "list",
-		Short: "List Namespace IAM AccessBindings",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			bindings, err := client.ListIAMAccessBindings(namespace)
-			if err != nil {
-				return err
-			}
-			return app.printIAMAccessBinding(bindings, true)
-		},
-	}
-
-	get := &cobra.Command{
-		Use:   "get ID",
-		Short: "Show a Namespace IAM AccessBinding",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			binding, err := client.GetIAMAccessBinding(namespace, args[0])
-			if err != nil {
-				return err
-			}
-			return app.printIAMAccessBinding(binding, false)
-		},
-	}
-
-	deleteCommand := &cobra.Command{
-		Use:   "delete ID",
-		Short: "Delete a Namespace IAM AccessBinding",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			if err := client.DeleteIAMAccessBinding(namespace, args[0]); err != nil {
-				return err
-			}
-			return app.printDeletion("iam access-binding", args[0])
-		},
-	}
-
-	command.AddCommand(create, list, get, deleteCommand)
-	return command
-}
-
 func (app *application) configurationCommand() *cobra.Command {
 	command := commandGroup("configuration", "Manage Configurations in the selected Namespace")
+	command.Args = missingCommandArgs(map[string]string{
+		"list": "occ has no configuration list; the CONFIGURATION column of \"occ agent list\" shows each Agent's Configuration ID.",
+	})
 
 	var createFile string
 	create := &cobra.Command{
@@ -639,9 +311,10 @@ func (app *application) configurationCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update a Configuration from a JSON document",
-		Args:  idArgs(configurationIDArg),
+		Use:     "update ID",
+		Short:   "Update a Configuration from a JSON document",
+		Example: configurationUpdateExample,
+		Args:    idArgs(configurationIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -914,13 +587,15 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		Use:   "update ID",
 		Short: "Push current or replacement Secret values to the gateway copy",
 		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// An explicit empty --file was refused by refuseEmptyFlags.
+			fileSet := command.Flags().Changed("file")
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
 			}
 			body := jsontext.Value("{}")
-			if updateFile != "" {
+			if fileSet {
 				body, err = readJSON(updateFile)
 				if err != nil {
 					return err
@@ -941,10 +616,85 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values",
+		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
 	)
 
-	command.AddCommand(create, list, get, update, deleteCommand)
+	rotate := &cobra.Command{
+		Use:   "rotate ID",
+		Short: "Force a refresh-type source to mint a new token",
+		Args:  idArgs(credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			source, err := client.RotateCredentialSource(namespace, args[0])
+			if err != nil {
+				return err
+			}
+			return app.printCredentialSource(source, false)
+		},
+	}
+
+	command.AddCommand(create, list, get, update, rotate, deleteCommand)
+	return command
+}
+
+func (app *application) serviceAccountCommand() *cobra.Command {
+	command := commandGroup("service-account", "Manage ServiceAccounts in the selected Namespace")
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List ServiceAccounts",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			accounts, err := client.ListServiceAccounts(namespace)
+			if err != nil {
+				return err
+			}
+			return app.printItems(accounts, true, []column{
+				{title: "ID", key: "id"},
+				{title: "NAME", key: "name"},
+			})
+		},
+	}
+
+	var force bool
+	deleteCommand := &cobra.Command{
+		Use:   "delete ID",
+		Short: "Delete an unreferenced ServiceAccount",
+		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
+			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
+			"the Backend is gone; a ChatGPT workspace administrator must then revoke it at the provider.\n" +
+			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
+		Args: idArgs(serviceAccountIDArg),
+		RunE: func(command *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			unrevoked, err := client.DeleteServiceAccount(namespace, args[0], force)
+			if err != nil {
+				return err
+			}
+			if unrevoked == nil {
+				return app.printDeletion("service account", args[0])
+			}
+			return app.printUnrevokedServiceAccountDeletion(command.ErrOrStderr(), args[0], unrevoked)
+		},
+	}
+	deleteCommand.Flags().BoolVar(
+		&force,
+		"force",
+		false,
+		"Delete even if no ChatGPT Backend can revoke the account's access token",
+	)
+
+	command.AddCommand(list, deleteCommand)
 	return command
 }
 
@@ -1002,15 +752,22 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printAgent(agent, false)
+			if err := app.printAgent(agent, false); err != nil {
+				return err
+			}
+			if app.output != "table" {
+				return nil
+			}
+			return app.printAgentHarness(client, namespace, args[0], agent)
 		},
 	}
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update an Agent from a JSON document",
-		Args:  idArgs(agentIDArg),
+		Use:     "update ID",
+		Short:   "Update an Agent's draft from a JSON document",
+		Example: agentUpdateExample,
+		Args:    idArgs(agentIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -1026,11 +783,12 @@ func (app *application) agentCommand() *cobra.Command {
 	update.Flags().StringVar(&updateFile, "file", "", "JSON document path")
 	_ = update.MarkFlagRequired("file")
 
+	var harnessOverridesFile, retainedHarnessRevision string
 	deploy := &cobra.Command{
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
@@ -1039,43 +797,197 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			revision, err := client.DeployAgent(namespace, args[0])
+			overrides := map[string]any{}
+			if harnessOverridesFile != "" {
+				value, err := readJSON(harnessOverridesFile)
+				if err != nil {
+					return err
+				}
+				if err := json.Unmarshal(value, &overrides); err != nil || overrides == nil {
+					return fmt.Errorf("Harness overrides must be a JSON object")
+				}
+			}
+			if retainedHarnessRevision != "" {
+				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
+				if err != nil {
+					return err
+				}
+				record, ok := previous.(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision is unavailable")
+				}
+				harness, ok := record["harness"].(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision has no Harness settings")
+				}
+				overrides, ok = harness["overrides"].(map[string]any)
+				if !ok {
+					return fmt.Errorf("the selected revision has no requested Harness overrides")
+				}
+			}
+			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
 				return err
 			}
-			return app.printItems(revision, false, []column{
+			if err := app.printItems(revision, false, []column{
 				{title: "ID", key: "id"},
 				{title: "REVISION", key: "revision"},
 				{title: "AGENT", key: "agentId"},
 				{title: "CONFIGURATION", key: "configurationId"},
-			})
+			}); err != nil {
+				return err
+			}
+			unreadableRevisionNotice(client, command.ErrOrStderr(), namespace, args[0], revision)
+			return nil
 		},
 	}
-	revisions := &cobra.Command{
-		Use:   "revisions AGENT_ID",
-		Short: "List an Agent's immutable revisions (deployment IDs)",
-		Args:  idArgs(agentIDArg),
+	deploy.Flags().StringVar(&harnessOverridesFile, "harness-overrides", "", "JSON file containing requested Harness overrides")
+	deploy.Flags().StringVar(&retainedHarnessRevision, "retain-harness-overrides", "", "Revision ID whose requested Harness overrides to submit")
+	deploy.MarkFlagsMutuallyExclusive("harness-overrides", "retain-harness-overrides")
+	firstDeploymentCommand := func(recoverOnly bool) *cobra.Command {
+		var intent occclient.FirstDeploymentIntent
+		var generation string
+		var overridesFile string
+		name, description := "deploy-first", "Deploy exactly the reviewed Configuration, only if never deployed"
+		if recoverOnly {
+			name, description = "recover-first-deployment", "Read an exact first-deployment receipt without deploying"
+		}
+		cmd := &cobra.Command{
+			Use:   name + " ID",
+			Short: description,
+			Args:  idArgs(agentIDArg),
+			RunE: func(command *cobra.Command, args []string) error {
+				namespace, err := app.requiredNamespace()
+				if err != nil {
+					return err
+				}
+				parsed, err := strconv.ParseInt(generation, 10, 64)
+				if err != nil || strconv.FormatInt(parsed, 10) != generation {
+					return fmt.Errorf("--generation must be a canonical positive decimal integer")
+				}
+				if overridesFile != "" {
+					value, err := readJSON(overridesFile)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(value, &intent.HarnessOverrides); err != nil || intent.HarnessOverrides == nil {
+						return fmt.Errorf("Harness overrides must be a JSON object")
+					}
+				}
+				intent.ExpectedGeneration = parsed
+				if err := intent.Validate(); err != nil {
+					return err
+				}
+
+				client, err := app.client()
+				if err != nil {
+					return err
+				}
+				var receipt any
+				if recoverOnly {
+					receipt, err = client.RecoverAgentFirstDeployment(namespace, args[0], intent)
+				} else {
+					receipt, err = client.DeployAgentFirst(namespace, args[0], intent)
+				}
+				if err != nil {
+					if !recoverOnly {
+						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err, overridesFile)
+					}
+					return err
+				}
+				if receipt == nil {
+					_, noticeErr := fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					if app.output == "table" {
+						// The notice is the entire result in table mode.
+						if noticeErr != nil {
+							return fmt.Errorf("write first-deployment recovery notice to stderr: %w; restore stderr and repeat this recover-first-deployment command", noticeErr)
+						}
+						return nil
+					}
+				}
+				return app.printItems(receipt, false, []column{
+					{title: "REVISION", key: "revisionId"}, {title: "AGENT", key: "agentId"},
+					{title: "CONFIGURATION", key: "configurationId"}, {title: "GENERATION", key: "configurationGeneration"},
+				})
+			},
+		}
+		cmd.Flags().StringVar(&overridesFile, "harness-overrides", "", "JSON file containing the same requested Harness overrides for deployment and recovery")
+		cmd.Flags().StringVar(&intent.Key, "key", "", "Stable nonsecret intent key")
+		cmd.Flags().StringVar(&intent.ExpectedConfigurationID, "configuration", "", "Reviewed Configuration ID")
+		cmd.Flags().StringVar(&generation, "generation", "", "Reviewed Configuration generation (canonical positive decimal)")
+		for _, flag := range []string{"key", "configuration", "generation"} {
+			_ = cmd.MarkFlagRequired(flag)
+		}
+		return cmd
+	}
+	revision := &cobra.Command{
+		Use:   "revision AGENT_ID REVISION_ID",
+		Short: "Read one exact Agent revision and its saved settings",
+		Args:  idArgs(agentIDArg, revisionIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			result, err := client.ListAgentRevisions(namespace, args[0])
+			value, err := client.GetAgentRevision(namespace, args[0], args[1])
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, namespace, args[0], result)
-			if err != nil {
-				return err
-			}
-			return app.printAgentRevisionList(rows)
+			return app.printBrowsingItems(value, false, []column{
+				{title: "ID", key: "id"},
+				{title: "REVISION", key: "revision"},
+				{title: "CONFIGURATION", key: "configurationId"},
+				{title: "GENERATION", key: "configurationGeneration"},
+			})
 		},
 	}
+	var revisionLimit int
+	var revisionCursor string
+	revisions := &cobra.Command{
+		Use:   "revisions AGENT_ID",
+		Short: "List an Agent's immutable revisions (deployment IDs), newest first, one page at a time",
+		Args:  idArgs(agentIDArg),
+		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("limit") && (revisionLimit < 1 || revisionLimit > 100) {
+				return fmt.Errorf("--limit must be between 1 and 100")
+			}
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			page, err := client.ListAgentRevisions(namespace, args[0], revisionLimit, revisionCursor)
+			if err != nil {
+				return err
+			}
+			rows, err := describeAgentRevisions(client, namespace, args[0], page.Revisions)
+			if err != nil {
+				return err
+			}
+			if err := app.printAgentRevisionList(rows); err != nil {
+				return err
+			}
+			if page.NextCursor != "" {
+				flags := command.Flags()
+				if flags.Changed("url") || flags.Changed("service-key-file") || flags.Changed("ca-bundle") ||
+					flags.Changed("timeout-seconds") || flags.Changed("output") {
+					return noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
+				}
+				limit := ""
+				if flags.Changed("limit") {
+					limit = fmt.Sprintf(" --limit %d", revisionLimit)
+				}
+				return noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
+			}
+			return nil
+		},
+	}
+	revisions.Flags().IntVar(&revisionLimit, "limit", 0, "revisions per page, 1 to 100 (default 50)")
+	revisions.Flags().StringVar(&revisionCursor, "cursor", "", "continue from the cursor a previous page printed")
 	deploymentStatus := &cobra.Command{
 		Use:   "deployment-status AGENT_ID [DEPLOYMENT_ID]",
-		Short: "Show durable status for one Agent deployment, by default the latest revision",
+		Short: "Show durable status for one Agent deployment, by default the latest revision you can read",
 		Args:  idArgs(agentIDArg, optionalID(revisionIDArg)),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -1084,13 +996,14 @@ func (app *application) agentCommand() *cobra.Command {
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				result, err := client.ListAgentRevisions(namespace, args[0])
-				if err != nil {
+				var number float64
+				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
+					if errors.Is(err, errNoReadableRevisions) {
+						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
+					}
 					return err
 				}
-				if deploymentID, err = latestRevisionID(args[0], result); err != nil {
-					return err
-				}
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
@@ -1111,14 +1024,38 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Only an Agent the caller can already read tells whether anything ran:
+			// stopped with no active revision is a never-deployed or already
+			// stopped Agent (finding D746); stopped with an active revision is a
+			// stop requested earlier that has not finished, still running or
+			// failed (finding D765). A failed read keeps the plain notice.
+			idle, stopping := false, false
+			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+				resource, _ := before.(map[string]any)
+				active, _ := resource["activeRevisionId"].(string)
+				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+			}
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
 				return err
 			}
+			resource, _ := agent.(map[string]any)
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
+			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ agent deploy %s\" to start the Agent again\n", args[0])
+			if idle {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return nil
+			}
+			if stopping {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
+				return nil
+			}
+			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
 		},
 	}
@@ -1145,6 +1082,9 @@ func (app *application) agentCommand() *cobra.Command {
 		get,
 		update,
 		deploy,
+		firstDeploymentCommand(false),
+		firstDeploymentCommand(true),
+		revision,
 		revisions,
 		deploymentStatus,
 		stop,
@@ -1153,19 +1093,71 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentCredentialWithdrawalCommand(),
 		app.agentRuntimeCommand(),
 		app.agentLogsCommand(),
+		app.agentPolicyCommand(),
 	)
 	return command
 }
 
-// describeAgentRevisions adds what tells revisions apart to each listed
-// revision: whether it is the Agent's active revision and the status of the
-// deployment that created it. A revision whose deployment status the caller may
-// not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, namespace, agentID string, value any) ([]any, error) {
-	revisions, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("OCC returned an invalid resource collection")
+func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		return
 	}
+	var apiErr *occclient.APIError
+	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout {
+		return
+	}
+	// A lost or unreadable reply, timeout, or server failure does not establish
+	// whether admission committed. Never turn this diagnostic into a retry.
+	fmt.Fprintln(notices, "First-deployment outcome is unconfirmed. Before another deployment, read the original receipt with the same caller (the service-key file must still identify that caller):")
+	quote := func(value string) string {
+		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	}
+	// Connection settings can contain shell metacharacters; the intent and IDs
+	// have already passed their restricted-ASCII validation. No key value is read.
+	overridesOption := ""
+	if overridesFile != "" {
+		overridesOption = " --harness-overrides " + quote(overridesFile)
+	}
+	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d%s\n",
+		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration, overridesOption)
+}
+
+// defaultDeploymentNotice says which revision deployment-status chose without
+// an ID. Revision lists are permission-filtered, so the latest revision the
+// caller can read may be an old failed one while the active revision is hidden.
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
+	agent, err := client.GetAgent(namespace, agentID)
+	resource, _ := agent.(map[string]any)
+	active, _ := resource["activeRevisionId"].(string)
+	switch {
+	case err != nil:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
+		return
+	case active == "":
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; agent %s has no active revision", latest, agentID)
+		return
+	case active == latest:
+		noticef(notices, "notice: showing the active revision %s", latest)
+		return
+	}
+	order, err := revisionOrder(client, namespace, agentID, active, number)
+	var apiErr *occclient.APIError
+	switch {
+	case order != "":
+		noticef(notices, "notice: showing revision %s, %s than the active revision %s; run \"occ --namespace %s agent deployment-status %s %s\" for the active revision", latest, order, active, namespace, agentID, active)
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision %s is not readable with your permissions", latest, active)
+	default:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision is %s", latest, active)
+	}
+}
+
+// describeAgentRevisions marks the Agent's active revision in each listed
+// revision. Each summary already carries the deploymentStatus and
+// deploymentErrorCode OCC read with the list, including for a revision whose
+// saved settings are unreadable, so the CLI keeps them as OCC sent them.
+func describeAgentRevisions(client *occclient.Client, namespace, agentID string, revisions []any) ([]any, error) {
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
 		return nil, err
@@ -1181,20 +1173,6 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 		row := maps.Clone(revision)
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
-		row["deploymentStatus"] = nil
-		if id != "" {
-			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
-			var apiErr *occclient.APIError
-			switch {
-			case err == nil:
-				if status, ok := deployment.(map[string]any); ok {
-					row["deploymentStatus"] = status["status"]
-				}
-			case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden):
-			default:
-				return nil, err
-			}
-		}
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -1242,293 +1220,6 @@ func (app *application) agentCredentialWithdrawalCommand() *cobra.Command {
 
 	command.AddCommand(request, get)
 	return command
-}
-
-// agentRevision returns the requested revision, or the Agent's active revision.
-// Without an active revision (for example, after a failed first deploy) it uses
-// the latest revision and says so on notices, because that is the version whose
-// Pods and output explain the failure. When it had to read the chosen revision's
-// runtime description to decide, it returns that description too (else nil).
-func (app *application) agentRevision(
-	client *occclient.Client,
-	notices io.Writer,
-	namespace, agentID, revision string,
-) (string, any, error) {
-	if revision != "" {
-		if err := revisionIDArg.check(revision); err != nil {
-			return "", nil, err
-		}
-		return revision, nil, nil
-	}
-	agent, err := client.GetAgent(namespace, agentID)
-	if err != nil {
-		return "", nil, err
-	}
-	resource, _ := agent.(map[string]any)
-	active, _ := resource["activeRevisionId"].(string)
-	if active == "" {
-		revisions, err := client.ListAgentRevisions(namespace, agentID)
-		if err != nil {
-			return "", nil, err
-		}
-		latest, err := latestRevisionID(agentID, revisions)
-		if err != nil {
-			return "", nil, err
-		}
-		noticef(notices, "agent %s has no active revision; using latest revision %s", agentID, latest)
-		return latest, nil, nil
-	}
-	// A newer revision than the active one is being deployed or has failed; while
-	// its Pods exist they hold the current failure, and the active revision may
-	// have none (a dedicated replacement stops its predecessor).
-	probe := newerRevisionWithPods(client, namespace, agentID, active)
-	switch {
-	case probe.hasPods:
-		noticef(
-			notices,
-			"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision",
-			probe.latest, active, active,
-		)
-		return probe.latest, probe.description, nil
-	case probe.err != nil:
-		// The runtime probe needs more permission than reading logs, so a log
-		// reader may be refused here yet allowed to read the newer revision.
-		noticef(
-			notices,
-			"notice: reading the active revision %s; a newer revision %s exists but its runtime could not be read (%v); pass --revision %s to read it",
-			active, probe.latest, probe.err, probe.latest,
-		)
-	default:
-		noticef(notices, "notice: reading the active revision %s", active)
-	}
-	return active, nil, nil
-}
-
-// newerRevision is the result of probing for a revision newer than the active one.
-type newerRevision struct {
-	// latest is the newer revision, or "" when there is none or the list failed.
-	latest string
-	// hasPods reports that latest's runtime description lists Pods.
-	hasPods bool
-	// description is latest's runtime description when it was read.
-	description any
-	// err is the failure to read latest's runtime description.
-	err error
-}
-
-// newerRevisionWithPods looks for a latest revision that is not the active one
-// and reads its runtime description to see whether it has Pods. A failure to
-// list revisions keeps the active revision silently.
-func newerRevisionWithPods(client *occclient.Client, namespace, agentID, active string) newerRevision {
-	revisions, err := client.ListAgentRevisions(namespace, agentID)
-	if err != nil {
-		return newerRevision{}
-	}
-	latest, err := latestRevisionID(agentID, revisions)
-	if err != nil || latest == active {
-		return newerRevision{}
-	}
-	description, err := client.GetAgentRuntime(namespace, agentID, latest)
-	if err != nil {
-		return newerRevision{latest: latest, err: err}
-	}
-	resource, _ := description.(map[string]any)
-	pods, _ := resource["pods"].([]any)
-	return newerRevision{latest: latest, hasPods: len(pods) > 0, description: description}
-}
-
-func (app *application) agentRuntimeCommand() *cobra.Command {
-	var revision string
-	command := &cobra.Command{
-		Use:   "runtime AGENT_ID",
-		Short: "Show Pod status, restarts, last termination and log sources for an Agent revision",
-		Args:  idArgs(agentIDArg),
-		RunE: func(command *cobra.Command, args []string) error {
-			namespace, client, err := app.namespaceClient()
-			if err != nil {
-				return err
-			}
-			revisionID, description, err := app.agentRevision(client, command.ErrOrStderr(), namespace, args[0], revision)
-			if err != nil {
-				return err
-			}
-			if description == nil {
-				description, err = client.GetAgentRuntime(namespace, args[0], revisionID)
-				if err != nil {
-					return err
-				}
-			}
-			if app.output != "table" {
-				return app.printStructured(description)
-			}
-			return app.printRuntime(description)
-		},
-	}
-	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision that has Pods, else the active revision, else the latest revision)")
-	return command
-}
-
-type runtimeLogOptions struct {
-	source   string
-	revision string
-	pod      string
-	previous bool
-	tail     int
-	since    time.Duration
-	follow   bool
-	level    string
-}
-
-func (app *application) agentLogsCommand() *cobra.Command {
-	options := runtimeLogOptions{}
-	command := &cobra.Command{
-		Use:   "logs AGENT_ID",
-		Short: "Print redacted container or sandbox output for an Agent revision",
-		Long: "Print one bounded, redacted page of Gateway or Harness container output, or of the\n" +
-			"Agent's sandbox policy decisions (--source sandbox).\n" +
-			"Requires Agent read_logs (or administer) and read. Each view is audited.\n" +
-			"--follow polls every 2 seconds with the view's cursor until interrupted.",
-		Args:        idArgs(agentIDArg),
-		Annotations: map[string]string{outputFormatsAnnotation: "text,json"},
-		RunE: func(command *cobra.Command, args []string) error {
-			return app.runAgentLogs(command, args[0], options)
-		},
-	}
-	flags := command.Flags()
-	flags.StringVar(&options.source, "source", "", "Log source: gateway, agent or sandbox")
-	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision that has Pods, else the active revision, else the latest revision)")
-	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
-	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
-	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")
-	flags.DurationVar(&options.since, "since", 0, "Only lines newer than this duration, up to 24h")
-	flags.BoolVar(&options.follow, "follow", false, "Poll for new lines every 2 seconds")
-	flags.StringVar(&options.level, "level", "", "Minimum level: error, warn, info or debug (default: every level; lines of unknown level are always shown)")
-	_ = command.MarkFlagRequired("source")
-	return command
-}
-
-func (options runtimeLogOptions) query() (url.Values, error) {
-	switch options.source {
-	case "gateway", "agent":
-	case "sandbox":
-		if options.pod != "" || options.previous {
-			return nil, fmt.Errorf("--pod and --previous do not apply to --source sandbox")
-		}
-	default:
-		return nil, fmt.Errorf("invalid --source %q: expected gateway, agent or sandbox", options.source)
-	}
-	if options.tail < 1 || options.tail > 1000 {
-		return nil, fmt.Errorf("--tail must be between 1 and 1000")
-	}
-	if options.since < 0 || options.since > 24*time.Hour {
-		return nil, fmt.Errorf("--since must be between 1s and 24h")
-	}
-	if options.follow && options.previous {
-		return nil, fmt.Errorf("--follow cannot be combined with --previous: the previous instance does not change")
-	}
-	switch options.level {
-	case "", "error", "warn", "info", "debug":
-	default:
-		return nil, fmt.Errorf("invalid --level %q: expected error, warn, info or debug", options.level)
-	}
-	query := url.Values{
-		"source":    {options.source},
-		"tailLines": {strconv.Itoa(options.tail)},
-	}
-	if options.pod != "" {
-		query.Set("pod", options.pod)
-	}
-	if options.previous {
-		query.Set("previous", "true")
-	}
-	if options.since > 0 {
-		query.Set("sinceSeconds", strconv.Itoa(max(1, int(math.Ceil(options.since.Seconds())))))
-	}
-	if options.level != "" {
-		query.Set("minLevel", options.level)
-	}
-	return query, nil
-}
-
-func (app *application) runAgentLogs(command *cobra.Command, agentID string, options runtimeLogOptions) error {
-	query, err := options.query()
-	if err != nil {
-		return err
-	}
-	namespace, client, err := app.namespaceClient()
-	if err != nil {
-		return err
-	}
-	ctx := cmp.Or(app.ctx, context.Background())
-	notices := command.ErrOrStderr()
-	revisionID, _, err := app.agentRevision(client, notices, namespace, agentID, options.revision)
-	if err != nil {
-		if options.follow && ctx.Err() != nil {
-			return nil
-		}
-		return err
-	}
-	cursor := ""
-	for {
-		pageQuery := query
-		if cursor != "" {
-			// A cursor continues the view; the server derives the window from it.
-			pageQuery = url.Values{
-				"source":    query["source"],
-				"tailLines": {runtimeLogFollowTail},
-				"cursor":    {cursor},
-			}
-			if pod := query.Get("pod"); pod != "" {
-				pageQuery.Set("pod", pod)
-			}
-			if level := query.Get("minLevel"); level != "" {
-				pageQuery.Set("minLevel", level)
-			}
-		}
-		page, err := client.GetAgentRuntimeLogs(namespace, agentID, revisionID, pageQuery)
-		wait := runtimeLogFollowInterval
-		if err != nil {
-			if options.follow && ctx.Err() != nil {
-				return nil
-			}
-			var apiErr *occclient.APIError
-			if !options.follow || !errors.As(err, &apiErr) {
-				return err
-			}
-			switch {
-			case apiErr.Status == http.StatusTooManyRequests:
-				wait = max(wait, apiErr.RetryAfter)
-				fmt.Fprintf(notices, "notice: rate limited; retrying in %s\n", wait)
-			case apiErr.Status == http.StatusGatewayTimeout:
-				fmt.Fprintf(notices, "notice: the read timed out; retrying in %s\n", wait)
-			case apiErr.Status == http.StatusBadRequest && apiErr.Code == "RUNTIME_LOGS_CURSOR_INVALID" && cursor != "":
-				fmt.Fprintln(notices, "notice: the cursor was rejected; starting a new view")
-				cursor = ""
-				continue
-			default:
-				// 501 and 503 (and every other failure) end the command with a non-zero exit.
-				return err
-			}
-		} else {
-			if err := app.printRuntimeLogPage(page, notices); err != nil {
-				return err
-			}
-			if !options.follow {
-				return nil
-			}
-			if page.Cursor == nil {
-				cursor = ""
-			} else {
-				cursor = *page.Cursor
-			}
-		}
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err := sleepContext(ctx, wait); err != nil {
-			return nil
-		}
-	}
 }
 
 func (app *application) agentRuntimeCredentialsCommand() *cobra.Command {
@@ -1579,12 +1270,81 @@ func commandGroup(use, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:         use,
 		Short:       short,
-		Args:        cobra.NoArgs,
+		Args:        missingCommandArgs(nil),
 		Annotations: map[string]string{helpOnlyAnnotation: "true"},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
 	}
+}
+
+// signInCommands are commands people try first that occ does not have: it
+// authenticates with a service key file only (finding D745).
+var signInCommands = func() map[string]string {
+	const signIn = "occ has no sign-in command: it uses a service key file. Set OCC_SERVICE_KEY_FILE to the key an Installation administrator issued you."
+	return map[string]string{"login": signIn, "auth": signIn, "device-login": signIn, "whoami": signIn}
+}()
+
+// missingCommandArgs refuses positional arguments like cobra.NoArgs, but a
+// command name in missing gets its own explanation after cobra's text, and a
+// one-letter typo of a subcommand gets a suggestion (finding D765).
+func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
+	return func(command *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if explanation, ok := missing[args[0]]; ok {
+				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
+			}
+			if suggestion := suggestSubcommand(command, args[0]); suggestion != "" {
+				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestion)
+			}
+		}
+		return cobra.NoArgs(command, args)
+	}
+}
+
+// suggestSubcommand returns the subcommand a typo most likely meant, or "".
+// It suggests only a name one edit away ("lst" for "list", never "get"), or
+// else the one name that a typed prefix of at least two characters starts
+// ("de" alone matches both delete and deploy, so it gets nothing). An empty
+// argument is never one edit from a name and is too short for a prefix.
+func suggestSubcommand(command *cobra.Command, typed string) string {
+	var prefixed []string
+	for _, child := range command.Commands() {
+		if !child.IsAvailableCommand() {
+			continue
+		}
+		if editDistance(typed, child.Name()) <= 1 {
+			return child.Name()
+		}
+		if len(typed) >= 2 && strings.HasPrefix(child.Name(), typed) {
+			prefixed = append(prefixed, child.Name())
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	return ""
+}
+
+// editDistance is the Levenshtein distance between two command names.
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 // printsTextOnly reports commands that never call OCC: the root and command
@@ -1651,10 +1411,13 @@ func helpWithOutputFormats(help func(*cobra.Command, []string)) func(*cobra.Comm
 }
 
 func (app *application) validateOptions(command *cobra.Command) error {
+	if err := refuseEmptyFlags(command); err != nil {
+		return err
+	}
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
-		if app.output == "table" {
+		if !command.Flags().Changed("output") {
 			app.output = formats[0]
 		}
 	}
@@ -1670,6 +1433,41 @@ func (app *application) validateOptions(command *cobra.Command) error {
 		return fmt.Errorf("OCC timeout must be a positive integer number of seconds")
 	}
 	app.parsedTimeout = time.Duration(seconds) * time.Second
+	return nil
+}
+
+// emptyFlagValues says what each listed flag must name. These flags read an
+// empty value as omitted, so an explicit --flag= is refused before any work
+// instead of silently taking the default or failing later with a misleading
+// error. --ca-bundle= deliberately clears OCC_CA_BUNDLE, and --namespace=
+// clears OCC_NAMESPACE (service-key create then issues an Installation-scoped
+// key; Namespace commands refuse it), so neither is listed. The other string
+// flags refuse an empty value themselves.
+var emptyFlagValues = map[string]string{
+	"facet":                               "a sandbox policy facet such as networking",
+	"file":                                "a JSON document",
+	"key-output":                          "a key file path",
+	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
+	"sandbox-network-policy-file":         "a Sandbox network policy file",
+	"level":                               "error, warn, info or debug",
+	"out":                                 "a key file path",
+	"pod":                                 "a Pod",
+	"revision":                            "a revision ID",
+	"service-key-file":                    "a bootstrap or service-key response file",
+	"service-principal":                   "a ServicePrincipal ID",
+	"source":                              "gateway, agent or sandbox",
+	"url":                                 "the OCC endpoint URL",
+}
+
+// refuseEmptyFlags refuses an explicitly empty value for a flag in
+// emptyFlagValues, in flag-name order.
+func refuseEmptyFlags(command *cobra.Command) error {
+	for _, name := range slices.Sorted(maps.Keys(emptyFlagValues)) {
+		flag := command.Flags().Lookup(name)
+		if flag != nil && flag.Changed && flag.Value.String() == "" {
+			return fmt.Errorf("--%s must name %s", name, emptyFlagValues[name])
+		}
+	}
 	return nil
 }
 
@@ -1715,9 +1513,18 @@ func (app *application) client() (*occclient.Client, error) {
 
 func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
+		// A Namespace-scoped key file records its one Namespace; offer it
+		// without a request (finding D765).
+		namespace := ""
+		if app.serviceKeyFile != "" {
+			namespace = occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		}
+		if namespaceIDArg.check(namespace, "") == nil {
+			return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace; this service key works only in Namespace %s, so pass --namespace %s", namespace, namespace)
+		}
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
-	if err := namespaceIDArg.check(app.namespace); err != nil {
+	if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 		return "", fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 	}
 	return app.namespace, nil
@@ -1728,9 +1535,22 @@ func readJSON(path string) (jsontext.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", path, err)
 	}
-	value := jsontext.Value(contents)
-	if !value.IsValid() {
+	decoder := jsontext.NewDecoder(bytes.NewBuffer(contents))
+	if _, err := decoder.ReadValue(); err != nil {
+		// Decoder errors can contain input fragments and object names.
+		var syntax *jsontext.SyntacticError
+		if errors.As(err, &syntax) {
+			switch syntax.Err {
+			case jsontext.ErrDuplicateName:
+				return nil, fmt.Errorf("invalid JSON file %s: duplicate object key at byte offset %d", path, syntax.ByteOffset)
+			case io.ErrUnexpectedEOF:
+				return nil, fmt.Errorf("invalid JSON file %s: incomplete JSON at byte offset %d", path, syntax.ByteOffset)
+			}
+		}
 		return nil, fmt.Errorf("invalid JSON file %s", path)
 	}
-	return value, nil
+	if _, err := decoder.ReadToken(); err != io.EOF {
+		return nil, fmt.Errorf("invalid JSON file %s", path)
+	}
+	return jsontext.Value(contents), nil
 }

@@ -4,6 +4,7 @@ import {
   installObservabilityControlPlane,
   observabilitySelection,
 } from "../helpers/production-observability-k3d.mjs";
+import { verifyInstalledWorkerRestarts } from "../helpers/worker-termination-installed.mjs";
 
 const attributes = (entries = []) =>
   Object.fromEntries(entries.map(({ key, value }) => [key, value.stringValue]));
@@ -26,7 +27,17 @@ test(
         }
       }
     };
-    assert.equal((await f.request("GET", "/installation", undefined, false)).status, 401);
+    const unauthenticated = await f.request("GET", "/installation", undefined, false);
+    try {
+      assert.equal(unauthenticated.status, 401);
+    } catch (error) {
+      throw Object.assign(error, {
+        openclawCiDiagnostic: {
+          kind: "observability-installation-status",
+          status: unauthenticated.status,
+        },
+      });
+    }
     assert.ok((await f.api("GET", "/installation")).id);
     assert.equal((await f.kubernetes.resources("daemonsets", f.system)).length, 0);
     const listeners = [];
@@ -45,7 +56,8 @@ test(
         `console.log(await (await fetch(${JSON.stringify(url)})).text())`,
       );
       assert.match(local, /occ_process_start_time_seconds\{[^\n]+\} [0-9.]+/);
-      const logs = await f.kubectl("-n", f.system, "logs", pod.metadata.name, "--tail=100");
+      // worker.started is logged once at boot; a slow install can push it out of a short tail.
+      const logs = await f.kubectl("-n", f.system, "logs", pod.metadata.name);
       assert.match(logs, component === "api" ? /http.completed/ : /worker.started/);
     }
     await assertScrapes(listeners.map((url) => ["scraper", f.monitoring, url, 0]));
@@ -129,5 +141,17 @@ test(
       assert.match(metrics.text, /otelcol_exporter_sent_log_records/);
     }
     f.record("Shipped Collector exported real attributed OCC logs to a minimal OTLP receiver");
+    await verifyInstalledWorkerRestarts(f, readLogs, "container");
+  },
+);
+
+test(
+  "worker observer retains two real restartable-init worker exits",
+  observabilitySelection,
+  async (t) => {
+    const f = await installObservabilityControlPlane(t, { nativeRepository: true });
+    const readLogs = await f.installLogReceiver();
+    await verifyInstalledWorkerRestarts(f, readLogs, "restartable-init");
+    assert.ok((await f.api("GET", "/installation")).id);
   },
 );

@@ -145,6 +145,79 @@ and existing revision ownership and bookkeeping remain required. The
 [current harness reference](../../docs/reference/harness-execution.md#harness-authentication)
 owns this behavior; the preceding delivery evidence records the earlier design.
 
+## PAT unification amendment (2026-10-07)
+
+[PR #1648](https://github.com/openclaw/openclaw-enterprise/pull/1648) replaces
+`chatgpt_service_account` with `codex_pat` for managed account credentials.
+Imported PATs and issued account tokens share that method; `source.kind` selects
+their existing Secret or ServiceAccount owner. Managed bindings use
+`{ method: "codex_pat", source: { kind: "service_account", namespaceId, id } }`.
+Exact source authorization, same-Namespace ownership, admitted credential
+references, and Backend/workspace checks remain required. The
+[current binding reference](../../docs/reference/agents.md#harness-authentication)
+owns the complete grammar.
+
+The retired managed binding is unsupported development state. Migration `0049`
+rejects retained legacy bindings atomically, including historical revisions,
+instead of converting them. The binding reference above records the upgrade
+limitation.
+
+Dedicated Codex uses `login --with-access-token` for both PAT sources. This
+supersedes the token/workspace projection and forced-workspace login option in
+the original delivery table: only the token is projected, while managed
+workspace ownership remains checked at admission and dispatch. Provider-backed
+proof of token confinement to the issued workspace remains outstanding; the
+control-plane checks do not establish that provider behavior.
+
+Existing OAuth device login and native token custody are unchanged by this
+amendment. PAT unification requires no new Credential Gateway or token service;
+the OAuth replacement is separate work in
+[PR #1559](https://github.com/openclaw/openclaw-enterprise/pull/1559).
+
+## Embedded custom-provider amendment (2026-10-26, proposed)
+
+Extend Kubernetes embedded OpenClaw API-key delivery to an explicitly configured
+`models.providers.<id>` entry. This is a limited exception to the original
+arbitrary-provider exclusion. Dedicated OpenClaw, dedicated Codex, and
+`credential_source` behavior remain unchanged. Other provider-delivery extensions
+remain outside this amendment.
+
+Reuse `harnessAuth: { method: "api_key", source: <OCC Secret reference> }`,
+including exact Namespace ownership, actor and Agent authorization, immutable
+revision references, and dispatch rechecks. Kubernetes Compute projects the
+selected Secret as `OCE_MODEL_API_KEY` in the combined gateway/Harness. The
+selected custom provider must reference that environment variable through its
+`apiKey`, using `${OCE_MODEL_API_KEY}` or a validated env SecretRef. For example:
+
+```json
+{
+  "apiKey": { "source": "env", "provider": "default", "id": "OCE_MODEL_API_KEY" }
+}
+```
+
+Compute owns the environment name. Configuration environment values and generic
+Secret bindings cannot override it. Missing provider configuration, a missing or
+conflicting key reference, competing credential headers, and selections outside
+the binding's provider fail admission. Model IDs and API adapters remain native
+OpenClaw configuration; this change adds no vendor-specific routing or model
+catalog. Existing OpenAI and Anthropic environment conventions remain unchanged.
+
+The bounded startup probe uses the same custom provider transport and the
+Compute-owned environment reference, with only the admitted key available to its
+child process. It must complete a genuine primary-model request before readiness.
+Embedded deployment retains its `Recreate` cutover and manual recovery behavior.
+The combined workload can read its delivered credential; this does not provide
+Gateway/Harness credential isolation or upstream revocation.
+
+Verification must exercise ordinary Secret creation, binding, and embedded
+provisioning with a configured provider, a successful startup probe, model turns
+through Responses and Messages adapters, and a tool call. Admission tests must
+reject missing/conflicting references and credential overrides, while dedicated
+custom-provider rejection remains covered. Independent selectable catalogs,
+runtime source-pin upgrades, new auth methods, and credential brokerage are
+separate work. This amendment is proposed; the draft implementation still
+requires independent review and live qualification.
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]

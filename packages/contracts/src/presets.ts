@@ -1,3 +1,4 @@
+import type { OpenClawConfigurationDocument } from "./index.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { deepFreeze } from "@openclaw-enterprise/utils";
@@ -8,7 +9,7 @@ import {
   presetTemplateDefaults,
   unresolvedPresetVariableTypes,
   validatePresetTemplate,
-} from "./preset-variables.mjs";
+} from "./preset-variables.mts";
 
 export type PresetVariable =
   | { readonly type: "password"; readonly description?: string }
@@ -17,17 +18,37 @@ export type PresetVariable =
   | { readonly type: "boolean"; readonly description?: string; readonly default?: boolean };
 
 // Rendering produces an editable draft; ordinary creation APIs validate launch fields.
-export type PresetLaunchSettings = Omit<PresetTemplate, "variables">;
+export type PresetLaunchSettings = Omit<PresetDraftTemplate, "variables" | "configuration"> & {
+  readonly configuration?: {
+    readonly values?: OpenClawConfigurationDocument;
+    readonly secretBindings?: unknown;
+  };
+};
 
 // Typed launch fields may contain string tokens until rendering and admission.
 export interface PresetAgentTemplate extends Readonly<Record<string, unknown>> {
   readonly initialWorkspaceFiles?: Readonly<Record<string, unknown>>;
-  readonly pluginApprovers?: ReadonlyArray<Readonly<{ channel: string; id: string }>>;
+  readonly pluginApprovers?: unknown;
 }
 
-export interface PresetTemplate {
+// Syntax validation leaves credential bindings for normalization.
+export interface PresetDraftTemplate {
   readonly variables?: Readonly<Record<string, PresetVariable>>;
   readonly agent?: PresetAgentTemplate;
+  readonly configuration?: {
+    readonly values?: Readonly<Record<string, unknown>>;
+    readonly secretBindings?: unknown;
+  };
+}
+
+// Installation definitions have no Namespace until existing Preset admission runs.
+export interface PresetDraftDefinition {
+  readonly name: string;
+  readonly template: PresetDraftTemplate;
+}
+
+// Normalization validates the binding map, but Agent draft fields remain unfinished.
+export interface PresetTemplate extends PresetDraftTemplate {
   readonly configuration?: {
     readonly values?: Readonly<Record<string, unknown>>;
     readonly secretBindings?: Readonly<Record<string, unknown>>;
@@ -42,6 +63,9 @@ export interface Preset {
   readonly createdAt: string;
 }
 
+/** A Preset without its template, as list routes return it. */
+export type PresetSummary = Pick<Preset, "id" | "namespaceId" | "name" | "createdAt">;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -55,7 +79,10 @@ function hasFields(value: unknown, fields: string[]): value is Record<string, un
 }
 
 /** Only authentication defaults and credential bindings are admitted here; draft launch fields may be unfinished. */
-function validateCredentials(template: PresetTemplate, namespaceId: string) {
+function validateCredentials(
+  template: PresetDraftTemplate,
+  namespaceId: string,
+): asserts template is PresetTemplate {
   const resolved = presetTemplateDefaults(template);
   const definitions = template.variables ?? {};
   const scalar = (original: unknown, value: unknown, schema: Type.TSchema): boolean => {
@@ -83,7 +110,8 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
           "A preset Secret binding uses a reserved or invalid environment destination.",
         );
       }
-      const value = resolved.configuration?.secretBindings?.[name];
+      const resolvedBindings = resolved.configuration?.secretBindings;
+      const value = isRecord(resolvedBindings) ? resolvedBindings[name] : undefined;
       if (
         !isRecord(binding) ||
         !isRecord(value) ||
@@ -130,9 +158,13 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
           Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
         ) &&
         reference(auth.source, value.source)) ||
-      (hasFields(auth, ["method", "serviceAccountId"]) &&
-        scalar(auth.method, value.method, Type.Literal("chatgpt_service_account")) &&
-        scalar(auth.serviceAccountId, value.serviceAccountId, ServiceAccountId)))
+      (hasFields(auth, ["method", "source"]) &&
+        scalar(auth.method, value.method, Type.Literal("codex_pat")) &&
+        hasFields(auth.source, ["kind", "namespaceId", "id"]) &&
+        isRecord(value.source) &&
+        scalar(auth.source.kind, value.source.kind, Type.Literal("service_account")) &&
+        scalar(auth.source.namespaceId, value.source.namespaceId, Type.Literal(namespaceId)) &&
+        scalar(auth.source.id, value.source.id, ServiceAccountId)))
   ) {
     return;
   }

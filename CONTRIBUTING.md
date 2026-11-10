@@ -30,9 +30,12 @@ production database, cluster, or credential for tests without explicit approval.
 
 ## Set up a development checkout
 
-Use Node.js 24 or newer, the exact pnpm version in [`package.json`](package.json),
-and the Go version selected by [`go.mod`](go.mod). In a trusted checkout,
-explicitly prepare dependencies with:
+Use Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer), the exact pnpm version in [`package.json`](package.json),
+and the Go version selected by [`go.mod`](go.mod).
+For `pnpm format:fix` and `pnpm format:check`, use the Bun version in
+[`.bun-version`](.bun-version). Both commands scan the selected files without a
+formatter cache.
+In a trusted checkout, explicitly prepare dependencies with:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -44,10 +47,8 @@ unmanaged hook and does not override `core.hooksPath`. Preserve existing hook
 configuration; run the checks directly when a custom hook path bypasses the
 managed hook.
 
-Dependency installation is setup, not an implicit verification step. Do not
-reconcile dependencies in a shared checkout or worktree while another job uses
-them. If the installed graph does not match the manifests, report the gap or
-use dependency-independent checks rather than installing as an agent side effect.
+Do not reconcile dependencies in a shared checkout or worktree while another
+job uses them.
 
 For a running local platform, follow [Local Setup](docs/guides/quickstart.md).
 It uses Kubernetes; see the [contributor profile](docs/guides/deploy/local-kubernetes-development.md)
@@ -104,45 +105,39 @@ defect, not merely restate mocks.
 Use the [developer skills](docs/testing/developer-skills.md) for test quality,
 proof selection, diff cleanup, and requested independent review.
 
-By default, open new PRs from a topic branch in your own fork against
-`openclaw/openclaw-enterprise`. This is the default for core team members too,
-even with upstream write access. Maintainers may continue using upstream topic
-branches in authorized workflows, and agents follow existing user instructions
-that select that path. Maintainers retain their review, merge, and approved
-bypass permissions. When updating an assigned existing PR, keep its head
-repository and branch.
+Maintainers retain their review, merge, and approved bypass permissions. When
+updating an assigned existing PR, keep its head repository and branch.
 
-Before publishing, verify the authenticated GitHub account with
-`gh api user --jq .login` and confirm it matches the requesting contributor.
-For the default workflow, create or reuse that contributor's fork. Inspect the
-actual fetch and push URLs with `git remote -v`; preserve existing remotes.
-In a new fork checkout, `origin` usually points to the fork and `upstream` to
-`openclaw/openclaw-enterprise`, but remote names do not establish ownership.
-Fetch the intended upstream base before comparing or refreshing a branch.
+Before publishing with a personal credential, verify the authenticated GitHub
+account with `gh api user --jq .login` and confirm it matches the requesting
+contributor. For an explicitly delegated GitHub App installation task, verify the
+operator's approved App, installation and repository scope instead. Use the
+[verified App bot identity](docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
+for repository-local Git author settings. The
+[`/user` endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
+does not support installation tokens; its refusal does not establish that the
+repository credential is invalid. App delegation permits only the explicitly
+assigned repositories, branches and PRs.
+
+Inspect the actual fetch and push URLs with `git remote -v`; preserve existing
+remotes. Remote names do not establish ownership or the intended destination.
+Fetch the intended base before comparing or refreshing a branch.
 
 Before each push, verify the destination repository's push URL, destination ref,
 remote head, and author of any existing PR. Stop on unexpected changes. After replacing
-`FORK_REMOTE`, `CONTRIBUTOR_LOGIN`, and `BRANCH` with the verified values and
+`PUSH_REMOTE`, `BASE_REPOSITORY`, `BASE_BRANCH`, `HEAD_REF`, and `BRANCH` with the verified values and
 writing the PR description to `/tmp/enterprise-pr.md`, publish with explicit
 head and base repositories:
 
 ```sh
-git push FORK_REMOTE HEAD:refs/heads/BRANCH
-gh pr create --repo openclaw/openclaw-enterprise --base main \
-  --head CONTRIBUTOR_LOGIN:BRANCH --title "Describe the change" \
+git push PUSH_REMOTE HEAD:refs/heads/BRANCH
+gh pr create --repo BASE_REPOSITORY --base BASE_BRANCH \
+  --head HEAD_REF --title "Describe the change" \
   --body-file /tmp/enterprise-pr.md
 ```
 
-Use the intended target branch in `--base` when it differs from `main`.
-An explicit `--head` keeps `gh pr create` from choosing where to push the branch.
-
-Leave **Allow edits from maintainers** enabled for fork PRs. The GitHub CLI
-enables it by default; omit `--no-maintainer-edit` and verify
-`maintainer_can_modify` is `true` on the created PR. This lets maintainers commit
-fixes and prepare the branch for merging. If the fork contains Actions
-workflows, GitHub also grants workflow-edit access that can expose fork secrets;
-enable that broader access only when acceptable and record it in the PR. See
-[GitHub's maintainer-edit permissions](https://docs.github.com/en/pull-requests/how-tos/work-with-forks/allowing-changes-to-a-pull-request-branch-created-from-a-fork).
+Keep `HEAD` literal in the `git push` command. `HEAD_REF` identifies the PR's source
+branch. An explicit `--head` keeps `gh pr create` from choosing where to push the branch.
 
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.
@@ -153,7 +148,8 @@ enable that broader access only when acceptable and record it in the PR. See
 - Request relevant maintainers' feedback. Resolve substantive findings and
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
-  the final UI as native GitHub attachments in the PR's Verification section.
+  the final UI as native GitHub attachments, not gists, and show them in the
+  PR's Verification section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
   review, and reporting.
@@ -170,19 +166,23 @@ specific holds; record the reason for the bypass. Do not bypass an unresolved
 finding or claim a missing review succeeded.
 
 An RFC is needed for architectural changes that the team needs to understand,
-not for ordinary bug fixes, small features, or polish. Request human review early,
-but do not wait to write or revise the implementation. Keep the RFC consistent
-with the final code and land them together when ready, either in one PR or as
-linked PRs merged in dependency order. Core team members do not wait for an RFC
-response unless a specific decision or hold requires it.
+not for ordinary bug fixes, small features, or polish. Request human review early.
+For a Driver contract change, submit the proposed contract for human review
+before writing the implementation. Once submitted, implementation and RFC review
+can proceed in parallel unless a specific decision or hold requires waiting.
+Keep the RFC consistent with the final code and land them together when ready,
+either in one PR or as linked PRs merged in dependency order. Core team members
+do not wait for an RFC response unless a specific decision or hold requires it.
 
-Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. After
-the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
+Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
+checks. The command is read-only; it does not establish merge readiness. If the
+authenticated-user lookup is unavailable, it still reports the PR and checks,
+but marks the actor and account match unknown. Verify publishing authority
+separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
 ```sh
-gh pr merge "$PR_NUMBER" --merge --match-head-commit "$HEAD_SHA"
+gh pr merge "$PR_NUMBER" --squash --match-head-commit "$HEAD_SHA"
 ```
 
 If the review rule prevents an authorized core team author from merging their
@@ -202,25 +202,40 @@ trailer where needed. Credit material review, documentation, and other non-code
 help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
-Before a release, or when correcting an omission, refresh the README wall from
-the repository root with Node.js 24 or newer and an authenticated GitHub CLI:
+The [contributor workflow](.github/workflows/contributors.yml) refreshes the README
+wall once when a PR merges into the default branch, including fork PRs. It does
+not run on each push or on unmerged closures. You can also run it manually from
+the Actions page. It checks out only the default branch and opens or updates one
+PR on `automation/contributors` when the generated README differs. This branch
+is reserved for generated updates; do not add manual commits to it.
+
+To enable PR creation, a repository administrator must enable **Allow GitHub
+Actions to create and approve pull requests** under **Settings > Actions >
+General**. The workflow does not approve or merge PRs. PRs created with
+`GITHUB_TOKEN` do not start ordinary PR checks automatically; close and reopen
+the generated PR as a maintainer to start those checks before review and merge.
+No personal token or GitHub App secret is required.
+
+Before a release, or when correcting an omission, you can refresh the wall from
+the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
 
 ```sh
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.mjs` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly; the generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull
 requests, and public user profiles. Existing `gh` authentication is sufficient;
 no administrator access or GitHub App is needed. It prints the observed default
 branch SHA and writes only the README contributor block. Review the diff and
-submit it through the normal PR process. Refreshes are manual.
+submit it through the normal PR process.
 
 The wall combines GitHub contributors and authors of PRs merged into the default
-branch, deduplicates by account ID, and sorts by current login. Documentation
-contributors and default avatars are included. GitHub bot accounts are omitted.
+branch, deduplicates by account ID and explicit account aliases, and sorts by
+current login. Documentation contributors and default avatars are included.
+GitHub bot accounts are omitted.
 The contributor API can lag, and co-authors or people helping outside merged PRs
 may need explicit inclusion. Merged PRs whose author is unavailable are skipped;
 previously published credit still requires an explicit correction before removal.
@@ -233,6 +248,11 @@ an HTTPS `url` pointing to public evidence and a nonempty `reason`, plus one of:
 - `displayName` to change an included person's avatar alt text. Combine it with
   `include: true` when that person is absent from automatic discovery.
 - `exclude: true` for a service account or requested opt-out.
+- `aliasOf: "ACCOUNT_ID"` to show a person's canonical account once when they
+  contribute from multiple accounts. Supply public identity evidence; do not
+  infer identity from matching pictures alone. The target must resolve to a human
+  account, and cannot itself be an alias or excluded. Do not combine `aliasOf`
+  with `include`, `exclude`, or `displayName` on the same entry.
 
 Find the ID with `gh api users/LOGIN --jq .id`. Do not copy upstream's contributor
 list or store private email addresses. Never set both `include` and `exclude`.

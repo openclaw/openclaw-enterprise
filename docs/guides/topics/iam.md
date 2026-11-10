@@ -33,7 +33,9 @@ administrators create human accounts through the
 [HTTP API](../../reference/authentication.md#account-provisioning) only, and
 manage Namespace Roles and AccessBindings through the
 [HTTP API or CLI](../../reference/authorization.md#manage-namespace-policy).
-Groups and Restrictions remain managed by the selected IAM authority. See
+Apart from the Groups that the
+[Installation configuration](#let-people-create-agents) declares, Groups and
+Restrictions remain managed by the selected IAM authority. See
 [Authorization](../../reference/authorization.md) for available actions, scope,
 and how denials work.
 
@@ -66,6 +68,10 @@ A new account starts with no access. As a human Installation administrator:
    USER_ID="$(jq -r .data.id created.json)"
    PRINCIPAL_ID="$(jq -r .data.principalId created.json)"
    ```
+
+   No API lists accounts. With GitHub, Google or OIDC sign-in enabled,
+   `GET /api/auth/accounts/$USER_ID` returns `principalId` again; a signed-in
+   person finds their `USER_ID` as `user.id` in `GET /api/auth/session`.
 
 3. If the person signs in only through GitHub, Google or OIDC (always, under
    `recovery-only`), attach their identity to `USER_ID` now unless step 2
@@ -123,9 +129,125 @@ nobody uses. It is still a credential:
 Add actions such as `update` or `deploy` to the Role for more access; see
 [Authorization](../../reference/authorization.md) for actions and scope. Role
 creation refuses `create` Permissions, and a binding refuses a Role with none
-for its target's kind, because those grants could never apply. Pass the
-Installation administrator `roleId` at creation only for someone who
-administers the whole Installation.
+for its target's kind, because those grants could never apply.
+
+Use Namespace bindings for everyone who is not an Installation administrator.
+
+## Appoint an administrator
+
+Pass the Installation administrator `roleId` in the account creation body (step
+2 of [Add a person](#add-a-person)). The binding is scoped to the exact
+Installation, while the bootstrap administrator's binding is unscoped, so the
+appointed account holds only `installation:administer` and `installation:read`:
+
+- It can create accounts, read the Installation, Backends and the observability
+  link, and
+  [issue service keys](../../reference/authentication/service-api-keys.md#issuance)
+  for principals whose grants it already holds.
+- Its Namespace list is empty. It cannot create or read Namespaces, create
+  Secrets, credential sources or Agents, start a device login, read the
+  deployment inventory, or change Namespace IAM. Each refusal is a `403`
+  audited as an authorization denial, and its message still says to ask an
+  Installation administrator.
+- To let it manage IAM in one Namespace, the bootstrap administrator binds it
+  there to a Role with `namespace:read`, as in step 4 of
+  [Add a person](#add-a-person). Namespace IAM writes then work in that
+  Namespace; Namespace creation stays refused.
+- Like every account created through the API, it joins the configured
+  [default Groups](#let-people-create-agents). With them, it can create Agents
+  in `default`.
+
+Appoint one only for account and service-key administration. The draft
+[RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
+proposes a change to this behavior.
+
+## Let people create Agents
+
+Declare the Default users Roles, Group, and bindings in the Installation
+configuration to let people create Agents in the shared `default` Namespace
+without other grants. Each account that an administrator creates afterwards
+joins the Group. The person owns each Agent, Configuration, Secret, and
+credential source they create, and deploys their Agents themselves. Other
+members cannot see or change those resources.
+[Default users and configured Roles](../../reference/authorization/default-users.md)
+defines each field and its limits.
+
+1. Add the `iam` block from the
+   [reference example](../../reference/authorization/default-users.md#installation-iam-configuration)
+   to the
+   [Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
+   of both the API and the worker. Omit the `namespace_creator` binding unless
+   members can also create and own Namespaces. OCC sets no limit on how many
+   Namespaces or Agents a member creates.
+2. Restart the API and the worker. At startup, OCC writes the Roles, the Group,
+   and the bindings. A configuration error stops startup and names the field.
+3. Create each person's account (steps 1–3 of [Add a person](#add-a-person)).
+   The account joins `default-user` as it is created. Accounts that already
+   exist do not join; there is no API, CLI, or console support to add them.
+
+The person can now create Agents in `default`. To stop all members from
+creating more, remove the binding from the configuration and restart. To stop
+one person, [disable their account](#remove-a-person). What they created stays,
+and their Agents keep running. To end their access to one resource, delete it,
+or delete its Owner binding `binding_owner_<resource-id>` with
+`occ iam access-binding delete` in that Namespace.
+
+## Remove a person
+
+Accounts cannot be deleted; disable the account instead. As a human Installation
+administrator with your session in `OCC_SESSION_COOKIE_JAR` (step 1 of
+[Add a person](#add-a-person)), set `USER_ID` to the account's `id`, kept from its
+creation. Without it, read it from the database with your approved access:
+`SELECT id FROM occ."user" WHERE email = 'person@example.com'`. Read the account
+version, then disable:
+
+```bash
+VERSION="$(curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/api/auth/accounts/$USER_ID" | jq -er .data.version)" &&
+jq -n --argjson version "$VERSION" '{expectedVersion: $version}' |
+  curl --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$OCC_URL/api/auth/accounts/$USER_ID/disable"
+```
+
+The response acknowledges `data.userId`. Repeat the GET above to verify
+`data.disabled: true` and read the new `data.version`. Every session of the account
+ends at once, and password and GitHub, Google or OIDC sign-in are refused; an external
+sign-in tells the person the account is disabled. IAM grants stay, unused. The recovery
+account cannot be disabled, and account controls need external sign-in (on a
+password-only Installation they return `409`). `POST .../enable` reverses disablement;
+use the freshly read version as `expectedVersion` in its body.
+
+Disabling does not end service keys. Keys belong to ServicePrincipals, and OCE does not
+record whom a key was issued for, so find a person's keys by the name given at issuance
+(name them after the person, as in [CLI access](../cli.md#give-a-member-or-automation-cli-access)).
+Issuance and revocation are audited with the key's ID and name; this query lists keys
+issued with a name prefix and not yet revoked:
+
+```sql
+SELECT issued.occurred_at, issued.details ->> 'serviceKeyId' AS key_id,
+       issued.details ->> 'serviceKeyName' AS name,
+       issued.details ->> 'servicePrincipalId' AS service_principal_id
+FROM occ.audit_events issued
+WHERE issued.action = 'openclaw.auth.service-keys.create'
+  AND issued.outcome = 'success'
+  AND issued.details ->> 'serviceKeyName' LIKE 'nora-%'
+  AND NOT EXISTS (
+    SELECT 1 FROM occ.audit_events revoked
+    WHERE revoked.action = 'openclaw.auth.service-keys.revoke'
+      AND revoked.outcome = 'success'
+      AND revoked.details ->> 'serviceKeyId' = issued.details ->> 'serviceKeyId')
+ORDER BY issued.occurred_at;
+```
+
+Revoke each with `occ service-key revoke <key-id>` or
+[the HTTP request](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key).
+Keys past their expiry are already refused. If a ServicePrincipal served only this
+person, also delete its AccessBindings in each Namespace: find them with
+`occ iam access-binding list` and remove each with `occ iam access-binding delete <id>`.
+Finally, disable the person at their identity provider as well.
 
 ## Let a person run an existing Agent
 
@@ -142,14 +264,61 @@ and bind it to each target:
 | Each Secret or credential source it binds | `read`, `operate`                                            |
 | Each Preset the Configuration uses        | `read`                                                       |
 | Each AgentRevision                        | `read`                                                       |
+| Its SandboxPolicy                         | `read`                                                       |
 
-A binding applies only the Role's permissions for its target's kind. Omit
-`delete` to keep the Agent's removal with administrators. Bind each new revision
+A binding applies only the Role's permissions for its target's kind. Deploying
+needs `operate` on each Secret and credential source the Agent binds, also for a
+person without `update`. Omit `delete` to keep the Agent's removal with administrators. Bind each new Agent revision
 after it is deployed, or the person cannot see its status; see
 [Agent revisions](agent-revisions.md). Secret reads return metadata, never values.
+The SandboxPolicy ID is `sbp_` followed by the UUID part of the Agent ID.
+`occ agent policy get` and `occ agent policy recommendations` need its `read`.
 
-The person still cannot create Agents, Secrets or Configurations. To message
-the Agent, the person needs a channel its Configuration sets up or
-[native admin](../../reference/agent-native-admin.md) with Agent `administer`,
-which is unavailable on Installations with GitHub, Google or OIDC sign-in
-enabled.
+The console has no form for these grants. **Share Agent** on the Agent's
+**Access** tab grants full [native administration](../console/agent-sharing.md)
+of the Agent, not this set, so use the CLI or HTTP API as in
+[Add a person](#add-a-person).
+
+The person still cannot create Agents, Secrets or Configurations. Codex device
+login on the Agent needs Agent `update` and `read`, plus Secret and
+credential-source `create` in the Namespace, which exact-resource grants
+cannot give; see
+[Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
+To message the Agent, the person can use a configured channel or
+[native chat](../../reference/agent-native-admin.md) with exact Agent `operate`.
+Native administration requires `administer`. Password and OIDC sessions support
+native access; GitHub and Google sessions do not.
+
+## Let an Agent use a Secret
+
+Besides the person who deploys it, the Agent's own ServicePrincipal needs
+`operate` on each Secret and credential source the Agent binds; without it, OCC
+refuses the deployment. When a person who can operate those Secrets deploys,
+OCC
+[writes these grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+Otherwise, only an Installation administrator can give the Agent this grant:
+bind a Role that holds only Secret `operate` to the Agent's ServicePrincipal,
+once for each exact Secret.
+
+When the console creates an Agent, it binds the Role
+`role_<namespace-id>_agent_secret_operate`, named `Agent Secret operate`, and
+creates that Role on first use. Later console grants reuse any Namespace Role
+that holds exactly Secret `operate`. Do the same with an administrator key file
+and `OCC_NAMESPACE` set:
+
+```bash
+AGENT_SP="$(occ agent get '<agent-id>' -o json | jq -r .servicePrincipalId)"
+ROLE_ID="$(occ iam role list -o json | jq -r 'map(select(.permissions == [{"action":"operate","resourceKind":"secret"}]))[0].id // empty')"
+if [ -z "$ROLE_ID" ]; then
+  echo '{"name":"Agent Secret operate","permissions":[{"action":"operate","resourceKind":"secret"}]}' > role.json
+  ROLE_ID="$(occ iam role create --file role.json -o json | jq -r .id)"
+fi
+jq -n --arg p "$AGENT_SP" --arg r "$ROLE_ID" --arg s '<secret-id>' \
+  '{subjectKind:"identity",subjectId:$p,roleId:$r,resourceKind:"secret",resourceId:$s}' > binding.json
+occ iam access-binding create --file binding.json
+```
+
+Repeat the last two commands for each Secret. Creating the binding also needs
+`read` on that exact Secret. For a credential source, use `credential_source` in
+the Role and the binding. `occ iam access-binding list` shows the Agent's
+grants: their `SUBJECT` is `$AGENT_SP`.

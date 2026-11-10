@@ -1,3 +1,97 @@
+import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+
+// TODO: Remove refusal-only metadata after the managed native-profile blocker is resolved.
+// Return only fixed diagnostic labels. Never retain text from a native error,
+// HTTP body or process log, which can contain model data and credentials.
+export function nativeTaskFailureSummary(value) {
+  const text = typeof value === "string" ? value.slice(0, 65_536) : "";
+  const patterns = [
+    ["profile-grant-mismatch", /Codex did not grant the requested (?:named )?permission profile/i],
+    [
+      "profile-not-found",
+      /(?:unknown|missing|unrecognized|not found).*permission.*profile|permission.*profile.*(?:not found|not configured|does not exist|unknown)/i,
+    ],
+    [
+      "managed-profile-refusal",
+      /allowed_permission_profiles|allowedPermissionProfiles|permission profile.*(?:not allowed|disallowed|requirements|managed)|requirements.*permission.*profile/i,
+    ],
+    [
+      "native-policy-refusal",
+      /sandbox policy.*(?:refused|denied|not allowed)|approval.*(?:required|denied)|permission.*(?:denied|not allowed)/i,
+    ],
+    ["thread-unavailable", /thread.*(?:not found|not loaded|unavailable|missing)/i],
+    [
+      "gateway-authentication",
+      /gateway.*(?:unauthorized|authentication failed|password mismatch|auth failed)|missing gateway token|gateway token mismatch/i,
+    ],
+    [
+      "device-identity-required",
+      /device identity required|pairing required|device identity.*(?:missing|required)/i,
+    ],
+    [
+      "model-authentication",
+      /invalid api key|incorrect api key|authentication_error|invalid authentication|Codex.*(?:unauthorized|authentication failed)/i,
+    ],
+    ["model-rate-or-quota", /rate.limit|quota exceeded|insufficient_quota|too many requests/i],
+    [
+      "network-or-tls",
+      /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|connection refused|failed to connect|certificate.*(?:failed|invalid)|SSL_ERROR/i,
+    ],
+  ];
+  const classes = patterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const method = ["thread/start", "thread/resume", "thread/fork", "turn/start"].find((name) =>
+    text.includes(name),
+  );
+  return {
+    classes: classes.length ? classes : ["unclassified"],
+    nativeMethod: method ?? "unknown",
+  };
+}
+
+export function nativePolicyRequirementsSummary(response) {
+  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!record(response) || !Object.hasOwn(response, "requirements")) {
+    return { available: false };
+  }
+  const requirements = response.requirements;
+  if (requirements === null) {
+    return { available: true, requirementsPresent: false };
+  }
+  if (!record(requirements)) {
+    return { available: false };
+  }
+  const allowlist = requirements.allowedPermissionProfiles;
+  const present =
+    record(allowlist) && Object.values(allowlist).every((value) => typeof value === "boolean");
+  const allowlistKnown =
+    Object.hasOwn(requirements, "allowedPermissionProfiles") && (allowlist === null || present);
+  const keys = present ? Object.keys(allowlist) : [];
+  const defaultId = requirements.defaultPermissions;
+  const builtin = {
+    ":workspace": "builtin-workspace",
+    ":read-only": "builtin-read-only",
+    ":danger-full-access": "builtin-danger-full-access",
+  };
+  return {
+    available: true,
+    requirementsPresent: true,
+    profileAllowlistKnown: allowlistKnown,
+    profileAllowlistPresent: allowlistKnown ? present : "unknown",
+    profileAllowlistCount: present ? keys.length : "unknown",
+    workspaceAllowed: present ? allowlist[":workspace"] === true : "unknown",
+    readOnlyAllowed: present ? allowlist[":read-only"] === true : "unknown",
+    generatedNetworkProfilesAllowed: present
+      ? keys.filter((key) => /^openclaw-network-[a-f0-9]{16}$/.test(key) && allowlist[key] === true)
+          .length
+      : "unknown",
+    defaultProfileKind: Object.hasOwn(builtin, defaultId)
+      ? builtin[defaultId]
+      : typeof defaultId === "string"
+        ? "other-named"
+        : "unknown",
+  };
+}
+
 // A trace may record an interim tool error before that same call completes.
 // Only its latest result, or an exact process-session poll, can prove success.
 export function completedToolResult(trace, call) {
@@ -36,6 +130,60 @@ export function completedToolResult(trace, call) {
     }
   }
   return undefined;
+}
+
+// Nested code-mode calls are runtime records, not commands inferred from model code.
+// Keep the actual parent linkage and place their call before their result.
+export function expandTranscriptMessage(message, seq, parentCalls) {
+  if (message.role === "assistant" && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (block?.type === "toolCall" && typeof block.id === "string") {
+        parentCalls.add(block.id);
+      }
+    }
+  }
+  const details = message.details;
+  if (message.role !== "custom" || message.customType !== "openclaw.nested-tool.v1") {
+    return [{ seq: seq * 2, message }];
+  }
+  if (
+    !details ||
+    !parentCalls.has(details.parentToolCallId) ||
+    typeof details.toolCallId !== "string" ||
+    typeof details.toolName !== "string" ||
+    !details.input ||
+    typeof details.input !== "object" ||
+    !details.result ||
+    typeof details.result !== "object"
+  ) {
+    return [];
+  }
+  return [
+    {
+      seq: seq * 2,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: details.toolCallId,
+            name: details.toolName,
+            arguments: details.input,
+          },
+        ],
+      },
+    },
+    {
+      seq: seq * 2 + 1,
+      message: {
+        ...details.result,
+        role: "toolResult",
+        toolCallId: details.toolCallId,
+        toolName: details.toolName,
+        isError: details.isError === true || details.result.isError === true,
+      },
+    },
+  ];
 }
 
 const repositoryCommandEvidence = String.raw`
@@ -90,6 +238,7 @@ export const sessionEvidenceScript = String.raw`
   // exporting their raw arguments, output, or credential-bearing environment.
   const summary = process.argv[5] ? JSON.parse(process.argv[5]) : undefined;
   ${repositoryCommandEvidence}
+  ${expandTranscriptMessage.toString()}
   function operationsFor(block) {
     if (!["exec", "bash"].includes(block.name)) return [];
     const args = standaloneArguments(block.arguments?.command);
@@ -129,10 +278,14 @@ export const sessionEvidenceScript = String.raw`
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
+    // Current runtimes store large entry fields separately; older runtimes inline them.
+    const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_entry_snapshots'").get();
+    const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key = ? AND field = 'systemPromptReport'").get(sessionKey) : undefined;
+    const promptReport = snapshot ? JSON.parse(snapshot.value_json) : entry?.systemPromptReport;
     const promptTools =
-      entry?.systemPromptReport?.source === "run" &&
-      Array.isArray(entry.systemPromptReport.tools?.entries)
-        ? entry.systemPromptReport.tools.entries
+      promptReport?.source === "run" &&
+      Array.isArray(promptReport.tools?.entries)
+        ? promptReport.tools.entries
             .map((tool) => tool?.name)
             .filter((name) => typeof name === "string")
         : undefined;
@@ -157,6 +310,7 @@ export const sessionEvidenceScript = String.raw`
         turnPrefix: prefix,
         promptSeen: false,
         terminalAssistantSeen: false,
+        terminalAssistantDelivered: false,
         toolCallMirrorSeen: false,
         toolResultMirrorSeen: false,
       };
@@ -175,6 +329,7 @@ export const sessionEvidenceScript = String.raw`
       const index = withoutSuffix.lastIndexOf(marker);
       return index === -1 ? undefined : withoutSuffix.slice(0, index);
     }
+    const parentCalls = new Set();
     for (const row of rows) {
       const eventText = row.event_json ?? zstdDecompressSync(row.event_zstd).toString("utf8");
       if (Buffer.byteLength(eventText) !== (row.event_utf8_bytes ?? Buffer.byteLength(eventText))) {
@@ -183,7 +338,7 @@ export const sessionEvidenceScript = String.raw`
       const event = JSON.parse(eventText);
       eventTypeCounts[event.type ?? "unknown"] = (eventTypeCounts[event.type ?? "unknown"] ?? 0) + 1;
       if (event.type !== "message") continue;
-      const message = event.message;
+      for (const { message, seq } of expandTranscriptMessage(event.message, row.seq, parentCalls)) {
       const hasMarker = contains(message, marker);
       const mirrorIdentity = message?.__openclaw?.mirrorIdentity;
       roleCounts[message.role ?? "unknown"] = (roleCounts[message.role ?? "unknown"] ?? 0) + 1;
@@ -192,11 +347,16 @@ export const sessionEvidenceScript = String.raw`
         turn(promptPrefix).promptSeen = true;
       }
       const assistantPrefix = prefixForMirrorIdentity(mirrorIdentity, ":assistant");
-      if (message.role === "assistant" && hasMarker && assistantPrefix !== undefined) {
-        turn(assistantPrefix).terminalAssistantSeen = true;
+      if (message.role === "assistant" && assistantPrefix !== undefined) {
+        // Delivery is owned by the exact runtime mirror identity. The model's
+        // optional completion wording is a separate diagnostic fact.
+        turn(assistantPrefix).terminalAssistantDelivered = true;
+        if (hasMarker) {
+          turn(assistantPrefix).terminalAssistantSeen = true;
+        }
       }
       messages.push({
-        seq: row.seq,
+        seq,
         role: message.role,
         hasMarker,
         stopReason: message.stopReason,
@@ -211,7 +371,7 @@ export const sessionEvidenceScript = String.raw`
           if (block?.type === "toolCall" && selectedTools.includes(block.name)) {
             const toolPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":call");
             if (toolPrefix !== undefined) turn(toolPrefix).toolCallMirrorSeen = true;
-            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity,
+            calls.push({ seq, id: block.id, name: block.name, mirrorIdentity,
               ...(summary ? { processSessionId: block.name === "process" && typeof block.arguments?.sessionId === "string" ? block.arguments.sessionId : undefined, processAction: block.name === "process" ? block.arguments?.action : undefined, operations: operationsFor(block) } : {}),
             });
           }
@@ -229,7 +389,7 @@ export const sessionEvidenceScript = String.raw`
         if (resultPrefix !== undefined) turn(resultPrefix).toolResultMirrorSeen = true;
         const resultText = textOf(message.content) + (typeof message.details?.aggregated === "string" ? "\n" + message.details.aggregated : "");
         results.push({
-          seq: row.seq,
+          seq,
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           isError: message.isError === true,
@@ -247,13 +407,14 @@ export const sessionEvidenceScript = String.raw`
       if (message.role === "toolResult" && typeof message.toolName === "string") {
         resultToolNames.add(message.toolName);
       }
+      }
     }
     process.stdout.write(JSON.stringify({
       databasePath,
       sessionKey,
       sessionId: session.current_session_id,
       exists: true,
-      promptReportSource: entry?.systemPromptReport?.source,
+      promptReportSource: promptReport?.source,
       promptToolNames: promptTools,
       messageCount: messages.length,
       userMarkerSeen: messages.some((message) => message.role === "user" && message.hasMarker),
@@ -281,74 +442,164 @@ export const sessionEvidenceScript = String.raw`
 // Read only: command success comes from the owning Codex thread, whose mirrored
 // display transcript can omit exit status. Never start or replay a model turn.
 export const codexRepositoryEvidenceScript = String.raw`
-  const assert = require("node:assert/strict");
   const WebSocket = require("ws");
   const marker = process.argv[1];
   const expected = JSON.parse(process.argv[2]);
   ${repositoryCommandEvidence}
-  const socket = new WebSocket(process.env.APP_SERVER_URL, {
-    headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
-  });
-  const pending = new Map();
-  let nextId = 0;
-  const deadline = setTimeout(() => {
-    process.stderr.write("Codex repository evidence timed out\n");
-    socket.close();
-    process.exitCode = 1;
-  }, 20000);
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
-  });
-  socket.addEventListener("message", ({ data }) => {
-    const message = JSON.parse(String(data));
-    const operation = pending.get(message.id);
-    if (!operation) return;
-    pending.delete(message.id);
-    message.error ? operation.reject(new Error("Codex evidence request failed")) : operation.resolve(message.result);
-  });
-  socket.addEventListener("error", () => { process.exitCode = 1; });
-  socket.addEventListener("open", async () => {
-    try {
-      await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
-      socket.send(JSON.stringify({ method: "initialized" }));
-      // Client source labels vary across supported bridges; the exact task marker below selects the turn.
-      const listed = await request("thread/list", { limit: 20, modelProviders: [] });
-      assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
-      const matches = [];
-      for (const candidate of listed.data) {
-        const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
-        for (const turn of thread.turns) {
-          if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
-          const commands = turn.items.filter(item => item.type === "commandExecution").map(item => {
-            // Codex reports the actual shell argv as a quoted command. Accept
-            // only its single non-login shell wrapper around one literal command.
-            let args = standaloneArguments(item.command);
-            if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
-            const lines = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.split(/\r?\n/).map(line => line.trim()) : [];
-            return {
-              id: item.id,
-              operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
-              status: item.status,
-              exitCode: item.exitCode,
-              http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
-              sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(item.aggregatedOutput ?? ""),
-              commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
-              pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
-            };
-          });
-          matches.push({ threadId: thread.id, turnId: turn.id, status: turn.status, commands });
-        }
-      }
-      assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");
-      process.stdout.write(JSON.stringify(matches[0]));
-    } catch {
-      process.stderr.write("Codex repository evidence unavailable\n");
-      process.exitCode = 1;
-    } finally {
-      clearTimeout(deadline);
-      socket.close();
+  ${PLUGIN_RUNTIME_HELPERS}
+  (async () => {
+    // Plugin-enabled peers rotate their transport token for each startup.
+    // Resolve it through the same verified status contract as gateway startup;
+    // ordinary Codex peers continue to use the admitted base token.
+    const runtime = readGatewayPluginRuntime();
+    if (runtime?.manifest?.kind === "codex" && hasEnabledPluginSelections(runtime)) {
+      const status = await readPeerPluginRuntimeStatus();
+      process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(status.startupId);
     }
+    // The gateway observes a remote peer, not the runtime helper's local client.
+    const socket = new WebSocket(process.env.APP_SERVER_URL, {
+      headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+    });
+    const pending = new Map();
+    let nextId = 0;
+    let stage = "connect";
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      try { socket.close(); } catch { /* Always retain the fixed observer receipt. */ }
+      process.stdout.write(JSON.stringify(value), () => process.exit(0));
+    };
+    const unavailable = (reason, failure) => finish({ status: "unavailable", observerStage: stage, observerReason: reason, ...(failure ? { failure } : {}), commands: [] });
+    const deadline = setTimeout(() => unavailable("deadline"), 20000);
+    const request = (method, params) => new Promise((resolve, reject) => {
+      const id = ++nextId;
+      pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(String(data));
+      const operation = pending.get(message.id);
+      if (!operation) return;
+      pending.delete(message.id);
+      message.error
+        ? operation.reject(new Error("native read failed"))
+        : operation.resolve(message.result);
+    });
+    socket.addEventListener("error", () => unavailable("connection"));
+    socket.addEventListener("open", async () => {
+      try {
+        stage = "initialize";
+        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
+        socket.send(JSON.stringify({ method: "initialized" }));
+        stage = "thread-list";
+        const listed = await request("thread/list", { limit: 20, modelProviders: [] });
+        if (listed.nextCursor !== null) return unavailable("inventory-limit");
+        const matches = [];
+        for (const candidate of listed.data) {
+          stage = "thread-read";
+          const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
+          for (const turn of thread.turns) {
+            if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
+            const commands = turn.items.filter(item => item.type === "commandExecution").map(item => {
+              // Codex reports the actual shell argv as a quoted command. Accept
+              // only its single non-login shell wrapper around one literal command.
+              let args = standaloneArguments(item.command);
+              if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
+              const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.slice(-262144) : "";
+              const lines = output.split(/\r?\n/).map(line => line.trim());
+              // Hints from bounded native output, never raw output or verified causes.
+              const failureCategories = [
+                ["dns", /could not resolve host|ENOTFOUND|EAI_AGAIN/i],
+                ["connect-refused", /ECONNREFUSED|connection refused/i],
+                ["connect-failed", /failed to connect|ENETUNREACH|EHOSTUNREACH/i],
+                ["connect-timeout", /ETIMEDOUT|connection timed out|connection timeout/i],
+                ["connect-reset", /ECONNRESET|connection reset/i],
+                ["tls", /certificate verify failed|server certificate verification failed|SSL certificate problem|SSL_ERROR|unable to get local issuer|self.signed certificate|GnuTLS recv error|TLS connection.*terminated/i],
+                ["http-auth-rejected", /returned error: (?:401|403)\b|HTTP\/[0-9.]+ (?:401|403)\b|HTTP (?:error |status )?(?:401|403)\b/i],
+                ["local-path", /not a git repository|destination path.*already exists|no such file or directory|ENOENT/i],
+                ["filesystem-denied", /EACCES|EPERM|EROFS|permission denied|read.only file system/i],
+              ].filter(([, pattern]) => pattern.test(output)).map(([category]) => category);
+              return {
+                id: item.id,
+                operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
+                status: item.status,
+                exitCode: item.exitCode,
+                http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
+                pushRefRefused: /repository-push-ref-not-allowed\b/.test(item.aggregatedOutput ?? ""),
+                sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(output),
+                failureCategories,
+                commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
+                pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
+              };
+            });
+            matches.push({
+              threadId: thread.id,
+              turnId: turn.id,
+              status: turn.status,
+              cwdMatchesExpectedWorkspace: thread.cwd === expected[0]?.workdir,
+              rolloutPath: thread.path,
+              commands,
+            });
+          }
+        }
+        if (matches.length !== 1) return unavailable(matches.length ? "ambiguous-owned-turn" : "no-owned-turn");
+        finish(matches[0]);
+      } catch (error) {
+        unavailable("native-read-failed", error?.diagnostic);
+      }
+    });
+  })().catch(() => {
+    process.stdout.write(JSON.stringify({ status: "unavailable", observerStage: "startup", observerReason: "connection-or-runtime-unavailable", commands: [] }));
   });
+`;
+
+// One read on the deployed peer, independent of whether a model turn exists.
+// TODO: remove after the managed native-profile blocker is resolved.
+export const codexRepositoryRequirementsScript = String.raw`
+  const WebSocket = require("ws");
+  ${PLUGIN_RUNTIME_HELPERS}
+  const summarize = ${nativePolicyRequirementsSummary.toString()};
+  let socket;
+  let stage = "runtime-status";
+  let finished = false;
+  const finish = (value) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(deadline);
+    try { socket?.close(); } catch { /* Keep the fixed receipt. */ }
+    process.stdout.write(JSON.stringify({ evidenceKind: "diagnostic-only", observerStage: stage, ...value }), () => process.exit(0));
+  };
+  const deadline = setTimeout(() => finish({ available: false, reason: "observer-timeout" }), 20000);
+  (async () => {
+    const runtime = readGatewayPluginRuntime();
+    if (runtime?.manifest?.kind === "codex" && hasEnabledPluginSelections(runtime)) {
+      const status = await readPeerPluginRuntimeStatus();
+      process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(status.startupId);
+    }
+    stage = "connect";
+    socket = new WebSocket(process.env.APP_SERVER_URL, { headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN } });
+    socket.addEventListener("error", () => finish({ available: false, reason: "connection-unavailable" }));
+    socket.addEventListener("close", () => finish({ available: false, reason: "connection-closed" }));
+    socket.addEventListener("open", () => {
+      stage = "initialize";
+      socket.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "repository-policy-observer", version: "1.0.0" }, capabilities: { experimentalApi: true } } }));
+    });
+    socket.addEventListener("message", ({ data }) => {
+      try {
+        const response = JSON.parse(String(data));
+        if ((response.id === 1 && stage !== "initialize") || (response.id === 2 && stage !== "requirements-read") || (response.id !== 1 && response.id !== 2)) return;
+        if (response.error) {
+          const codes = { "-32601": "method-not-found", "-32602": "invalid-params", "-32603": "internal-error", "-32000": "server-error" };
+          return finish({ available: false, reason: "native-rpc-refused", rpcCode: Object.hasOwn(codes, response.error.code) ? codes[response.error.code] : "other" });
+        }
+        if (response.id === 1) {
+          socket.send(JSON.stringify({ method: "initialized" }));
+          stage = "requirements-read";
+          socket.send(JSON.stringify({ id: 2, method: "configRequirements/read" }));
+        } else finish(summarize(response.result));
+      } catch { finish({ available: false, reason: "invalid-native-response" }); }
+    });
+  })().catch(() => finish({ available: false, reason: "runtime-or-connection-unavailable" }));
 `;

@@ -7,15 +7,53 @@ over a Kubernetes port-forward bound to your machine's loopback address. For
 an interactive check with the same loopback password, use the
 [OpenClaw TUI](../deploy/production-tui.md).
 
+## Choose a model for dedicated Codex
+
+Use the same credential that the Agent will use. If you use an existing credential source and only have its registered name, ask its owner for a Codex model ID that works with it.
+
+**ChatGPT service account token.** From the operator’s Bash shell, use the private token file to look up its workspace account, then list the model IDs in that account’s Codex catalog. Set `credential_file` to the token file you selected in the quickstart.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  token_header() {
+    jq -nr --rawfile token "$credential_file" '"Authorization: Bearer " + ($token | rtrimstr("\n"))'
+  }
+  identity=$(token_header | curl -fsS --header @- \
+    https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami)
+  account=$(jq -er '.chatgpt_account_id | select(test("^[a-zA-Z0-9_-]+$"))' <<<"$identity")
+  headers=(--header "ChatGPT-Account-ID: $account")
+  if jq -e '.chatgpt_account_is_fedramp' <<<"$identity" >/dev/null; then
+    headers+=(--header 'X-OpenAI-Fedramp: true')
+  fi
+  token_header | curl -fsS --header @- "${headers[@]}" \
+    'https://chatgpt.com/backend-api/codex/models?client_version=0.156.0' |
+    jq -r '.models[] | select(.visibility == "list") | .slug'
+)
+```
+
+The [OCE model discovery API](../../reference/api.md#post-namespacesnamespaceidagentsmodels) can also look up the catalog when the API Pods have [model discovery egress](../../reference/console/create-and-deploy.md#create-an-agent).
+
+**OpenAI API key.** Query the [OpenAI Models API](https://developers.openai.com/api/reference/resources/models/methods/list) with the same private key file. Pass the authorization header through standard input so the key stays out of the command arguments.
+
+```bash
+jq -nr --rawfile key "$credential_file" '"Authorization: Bearer " + ($key|rtrimstr("\n"))' |
+  curl --fail --silent --show-error --header @- https://api.openai.com/v1/models |
+  jq -r '.data[].id' | sort
+```
+
+Choose a text model that supports Codex. The API-key catalog can also include models for images, audio, and embeddings. The deployment’s startup probe checks inference with the selected ID and credential.
+
 ## What each check establishes
 
-| Check                                                      | Evidence                                                                                                 |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Authenticated `occ installation get`                       | The control plane accepts the caller's credential.                                                       |
-| Accepted deployment                                        | OCC stored a revision and queued work.                                                                   |
-| Deployment `succeeded` and the expected `activeRevisionId` | The worker completed the requested work and OCC selected that revision; this is not a live health probe. |
-| Successful OCC workspace-file read                         | Private routing and file access work for that Agent and caller.                                          |
-| Fresh nonce returned by the model                          | The selected Agent executed a model request.                                                             |
+| Check                                                      | Evidence                                                                                                |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Authenticated `occ installation get`                       | The control plane accepts the caller's credential.                                                      |
+| Accepted deployment                                        | OCC stored a version and queued work.                                                                   |
+| Deployment `succeeded` and the expected `activeRevisionId` | The worker completed the requested work and OCC selected that version; this is not a live health probe. |
+| Successful OCC workspace-file read                         | Private routing and file access work for that Agent and caller.                                         |
+| Fresh nonce returned by the model                          | The selected Agent executed a model request.                                                            |
 
 Run the checks needed for your task. A model response does not establish tool,
 plugin, repository, sandbox, or workspace-file behavior; verify those operations
@@ -29,7 +67,7 @@ Python 3, and `kubectl` permission to get and list Pods and create
 password from Kubernetes, you also need read access to the Agent's `gateway-password-<suffix>` Secret (and to its
 transport Secret for an Agent deployed before that separate Secret existed). Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`,
 `KUBECONFIG_FILE`, and `CONTEXT` from the [production Agent guide](../deploy/production-agents.md).
-Set `REVISION_ID` to the immutable revision you want to verify.
+Set `REVISION_ID` to the Agent revision ID for the version you want to verify.
 
 Configure the Agent to serve model requests and use the Kubernetes-managed local
 password. Add these fields to the existing native gateway Configuration without
@@ -56,19 +94,19 @@ execution, in the control-plane Gateway namespace); an Agent deployed before tha
 separate Secret existed keeps it in its transport Secret until its next
 deployment. The initial credential API generates the password;
 external operators can provision one during [Agent deployment](../deploy/production-agents.md#configure-the-agent-runtime).
-If these Configuration fields changed, [deploy a new revision](../deploy/production-agents.md#configure-the-agent-runtime)
+If these Configuration fields changed, [deploy a new version](../deploy/production-agents.md#configure-the-agent-runtime)
 and capture its new `REVISION_ID`. Wait for that deployment to succeed and for OCC
 to report that exact ID as active.
 The password is separate from the model provider's credential.
 
 ## Open a local connection
 
-An active revision can still be replacing the previous gateway. In the first
+A selected version can still be replacing the previous gateway. In the first
 operator shell, run the entire block below. It waits for exactly one Running,
-Ready, nonterminating Pod for the requested revision and confirms that it mounts
-that revision's immutable ConfigMap. It polls every five seconds for up to 60
+Ready, nonterminating Pod for the requested version and confirms that it mounts
+that version's immutable ConfigMap. It polls every five seconds for up to 60
 attempts. No match, multiple Ready matches, or a Kubernetes error stops the
-check without opening a connection to another revision.
+check without opening a connection to another version.
 
 ```bash
 # For two-cluster dedicated execution, set GATEWAY_RUNTIME_NAMESPACE to its control target.
@@ -137,7 +175,7 @@ forward_requested_gateway
 ```
 
 Leave the command running after `Forwarding from 127.0.0.1:18789` appears.
-If it reports no matching Pod, inspect the requested revision and tenant Pods
+If it reports no matching Pod, inspect the requested version and tenant Pods
 before rerunning the block; do not forward to the Agent-wide Service. If the
 local port is occupied, change `18789` in both the forward and the verification
 example. In another operator shell with the same environment, set
@@ -245,8 +283,8 @@ PY
 
 Expect `Model response verified (OPENCLAW_...).` If the denial check fails, stop
 and review gateway authentication before exposing the endpoint. If the model
-call fails, check that the selected revision is active, its model credential is
-valid, and the gateway and Harness are available. Use [platform troubleshooting](troubleshooting.md)
+call fails, check that OCC selected the expected version, its model credential
+is valid, and the gateway and Harness are available. Use [platform troubleshooting](troubleshooting.md)
 when the control plane or several Agents are affected.
 
 Stop the port-forward with Ctrl+C. This removes the temporary password copy

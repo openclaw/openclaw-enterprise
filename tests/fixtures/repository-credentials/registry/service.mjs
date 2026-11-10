@@ -1,5 +1,3 @@
-import assert from "node:assert/strict";
-import { appModule } from "../runtime.mjs";
 import { createResourceScope } from "../resources.mjs";
 import { startServiceListeners } from "../service-resources.mjs";
 
@@ -7,12 +5,11 @@ export function createRegistryServiceOwner(
   resources,
   {
     loadGitHubRepositoryRegistry,
-    createGitHubRegistryDriverFactory,
+    createPreparedGitHubRegistryFactory,
     registryFile,
     backendId,
-    privateKeyFile,
+    socketPath,
     config,
-    key,
     clock,
     tls,
     apiOrigin,
@@ -24,46 +21,26 @@ export function createRegistryServiceOwner(
   let registry;
   const start = async () => {
     registry = await loadGitHubRepositoryRegistry(registryFile, backendId);
-    const factory = createGitHubRegistryDriverFactory({
+    const factory = createPreparedGitHubRegistryFactory({
       registry,
-      authority: key,
-      privateKeyFile,
+      socketPath,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,
       clock,
-      trustedEndpoints: { apiOrigin, gitOrigin, ca: tls.ca },
+      apiOrigin,
+      gitOrigin,
     });
     activeScope = createResourceScope();
-    const [{ createProviderQueue }, { createGitHubRepositoryDescriptions }] = await Promise.all([
-      appModule("drivers/repo/credentials/provider-queue"),
-      appModule("drivers/repo/github/credentials/descriptions"),
-    ]);
-    const providerQueue = createProviderQueue(config.limits.providerQueue);
-    const repositoryDescriptions = createGitHubRepositoryDescriptions({
-      registry,
-      key,
-      privateKeyFile,
-      config,
-      clock,
-      providerQueue,
-      trustedEndpoints: { apiOrigin, gitOrigin, ca: tls.ca },
-    });
-    activeScope.after(async () => {
-      const summary = await repositoryDescriptions.shutdown(config.limits.shutdownGraceMs);
-      assert.equal(summary.graceExpired, false, "metadata credential cleanup must finish");
-    });
     const started = await startServiceListeners(activeScope, {
       config,
       factory,
       clock,
       tls,
       upstreamOrigins: [apiOrigin, gitOrigin],
-      providerQueue,
-      repositoryDescriptions,
     });
     current = { factory, ...started };
   };
-  // Restart closes only service state; the outer scope retains its key and upstreams.
+  // Restart closes only service state; the outer scope retains the worker-owned inputs and upstreams.
   resources.after(() => activeScope?.close());
   return {
     start,

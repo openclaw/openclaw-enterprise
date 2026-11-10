@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const workflow = JSON.parse(
@@ -17,6 +17,27 @@ const workflow = JSON.parse(
 
 // These checks protect the release configuration contract, not GitHub's scheduler.
 test("publication workflow requires explicit chart opt-in and a successful image job", () => {
+  // Publication must require source verification for the same native build inputs.
+  const check = JSON.parse(
+    execFileSync(
+      process.env.OCC_YQ_BIN ?? "yq",
+      ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
+      { encoding: "utf8" },
+    ),
+  );
+  const steps = check.jobs.prepare.steps;
+  const verification = steps.find((step) => step.with?.target === "openclaw-bridge-tests");
+  const assembly = steps.find((step) => step.id === "build");
+  assert.ok(verification);
+  assert.ok(steps.indexOf(verification) < steps.indexOf(assembly));
+  assert.equal(verification.if, "${{ matrix.image == 'runtime' }}");
+  assert.equal(verification["continue-on-error"], undefined);
+  assert.equal(assembly.if, undefined);
+  assert.equal(verification.with.outputs, "type=cacheonly");
+  for (const field of ["context", "file", "platforms", "build-args", "labels"]) {
+    assert.deepEqual(verification.with[field], assembly.with[field], field);
+  }
+  assert.equal(workflow.jobs.prepare.uses, "./.github/workflows/container-check.yml");
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.equal(inputs.publish.type, "boolean");
   assert.equal(inputs.publish.default, false);
@@ -69,8 +90,7 @@ test("publication keeps its lock across jobs and reports image success after cha
   assert.equal(step.env.IMAGE_RESULT, "${{ needs.publish.result }}");
   assert.equal(step.env.CHART_RESULT, "${{ needs.publish-chart.result }}");
   assert.equal(step.env.CHART_REQUESTED, "${{ inputs.publish && inputs.publish_chart }}");
-  const directory = await mkdtemp(join(tmpdir(), "oce-publication-summary-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-publication-summary-");
   // Execute the actual summary step for its meaningful terminal outcomes.
   // Supplied results represent GitHub context; this is not a hosted dispatch proof.
   for (const [imagesRequested, chartRequested, imageResult, chartResult] of [

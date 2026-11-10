@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "displayName": "Example Agents",
+  "logo": "logo.png",
+  "colors": {
+    "accent": "#2457C5",
+    "accentHover": "#19439F",
+    "accentSubtle": "#2457C514",
+    "onAccent": "#FFFFFF"
+  }
+}

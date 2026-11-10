@@ -1,22 +1,30 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { renameSync } from "node:fs";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/refusal-text.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -31,10 +39,10 @@ test("service API keys authenticate scoped automation without replacing sessions
   const authOptions = {
     installationId,
     mode: "development",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
+    agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: false,
   };
   const auth = createControllerAuth(authOptions);
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
@@ -71,7 +79,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: authOptions.baseURL },
     computeDriver,
     secretDriver: createTestSecretDriver(),
     configurationDriver: createTestConfigurationDriver(),
@@ -84,23 +92,31 @@ test("service API keys authenticate scoped automation without replacing sessions
       return controller;
     },
   });
+  let rotateKeyBeforeResponse;
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    if (rotateKeyBeforeResponse && reply.statusCode === 403) {
+      rotateKeyBeforeResponse();
+      rotateKeyBeforeResponse = undefined;
+    }
+    done(null, payload);
+  });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
-  const session = await signInWithEmailPassword({ origin, ...credentials });
+  const session = await signInWithEmailPassword({
+    origin,
+    headers: { origin: authOptions.baseURL },
+    ...credentials,
+  });
   async function request(
     method,
     path,
     { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
   ) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetchLoopback(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, { host: "console.oce.localhost", ...headers }),
+    );
     assert.equal(response.headers.get("cache-control"), "no-store");
     return { status: response.status, ...(await response.json()) };
   }
@@ -174,9 +190,91 @@ test("service API keys authenticate scoped automation without replacing sessions
     },
   );
 
+  await t.test(
+    "audit rows name the service key that acted, apart from its principal's other keys",
+    async () => {
+      const second = await issue();
+      assert.equal(second.status, 201);
+      const configurationIds = [];
+      for (const key of [issued.data, second.data]) {
+        const created = await request("POST", `/namespaces/${namespaceId}/configurations`, {
+          headers: { "x-api-key": key.key },
+          body: { kind: "agent", values: { model: "gpt-test" } },
+        });
+        assert.equal(created.status, 201);
+        configurationIds.push(created.data.id);
+        const mutation = auditSink.events.find(
+          (event) =>
+            event.action === "openclaw.configurations.create" &&
+            event.resource.id === created.data.id,
+        );
+        assert.equal(mutation.actorId, principal.id);
+        assert.equal(mutation.details?.actorServiceKeyId, key.id);
+      }
+      // A denial names the key too; the key's Role reads Presets but cannot create them.
+      const deniedBefore = auditSink.events.length;
+      assert.equal(
+        (
+          await request("POST", `/namespaces/${namespaceId}/presets`, {
+            headers: { "x-api-key": second.data.key },
+            body: { name: "denied-preset", template: { agent: { name: "Denied" } } },
+          })
+        ).status,
+        403,
+      );
+      const denial = auditSink.events
+        .slice(deniedBefore)
+        .find((event) => event.kind === "authorization_denial");
+      assert.equal(denial.actorId, principal.id);
+      assert.equal(denial.details?.actorServiceKeyId, second.data.id);
+      // The acting key joins the denial's IAM evidence; it does not replace it.
+      assert.equal(denial.details.iamEvidence.identityId, principal.id);
+      // Session requests carry no key; key management names the key acted on and its name.
+      for (const id of configurationIds) {
+        const deleted = await fetchLoopback(
+          `${origin}/namespaces/${namespaceId}/configurations/${id}`,
+          {
+            method: "DELETE",
+            headers: {
+              host: "console.oce.localhost",
+              cookie: session.cookie,
+              origin: authOptions.baseURL,
+            },
+          },
+        );
+        assert.equal(deleted.status, 204);
+      }
+      assert.equal(
+        (await request("DELETE", `/api/auth/service-keys/${second.data.id}`)).status,
+        200,
+      );
+      for (const action of ["create", "revoke"]) {
+        const managed = auditSink.events.find(
+          (event) =>
+            event.action === `openclaw.auth.service-keys.${action}` &&
+            event.details.serviceKeyId === second.data.id,
+        );
+        assert.equal(managed.actorId, seed.principal.id);
+        assert.equal(managed.details.serviceKeyName, "tenant-automation");
+        assert.equal(Object.hasOwn(managed.details, "actorServiceKeyId"), false);
+      }
+      const sessionDeletes = auditSink.events.filter(
+        (event) =>
+          event.action === "openclaw.configurations.delete" &&
+          configurationIds.includes(event.resource.id),
+      );
+      assert.equal(sessionDeletes.length, 2);
+      for (const event of sessionDeletes) {
+        assert.equal(event.details?.actorServiceKeyId, undefined);
+      }
+      const recorded = JSON.stringify(auditSink.events);
+      assert.equal(recorded.includes(issued.data.key), false);
+      assert.equal(recorded.includes(second.data.key), false);
+    },
+  );
+
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-cli-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");
@@ -509,14 +607,92 @@ test("service API keys authenticate scoped automation without replacing sessions
       /failed to create key file/,
     );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // An explicit zero is invalid, not the API's omitted 30-day default.
+    const zeroExpiryFile = join(directory, "zero-expiry-key.json");
+    await assert.rejects(
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          "zero-expiry",
+          "--out",
+          zeroExpiryFile,
+          "--expires-in-days=0",
+        ],
+        { env: installationEnv },
+      ),
+      { stderr: /between 1 and 365/ },
+    );
+    await assert.rejects(open(zeroExpiryFile), { code: "ENOENT" });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    for (const days of [1, 365]) {
+      const before = Date.now();
+      const created = JSON.parse(
+        (
+          await run(
+            occCli,
+            [
+              "service-key",
+              "create",
+              "--service-principal",
+              installationPrincipal.id,
+              "--name",
+              `expiry-${days}`,
+              "--out",
+              join(directory, `expiry-${days}.json`),
+              `--expires-in-days=${days}`,
+              "-o",
+              "json",
+            ],
+            { env: installationEnv },
+          )
+        ).stdout,
+      );
+      assert.ok(Math.abs(Date.parse(created.expiresAt) - before - days * 86_400_000) < 10_000);
+      await run(occCli, ["service-key", "revoke", created.id], { env: adminEnv });
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
+    const emojiKeyFile = join(directory, "emoji-key.json");
+    const emojiCreate = (name, out) =>
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          name,
+          "--out",
+          out,
+          "-o",
+          "json",
+        ],
+        { env: installationEnv },
+      );
+    const emoji = JSON.parse((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    assert.equal(emoji.name, "😀".repeat(32));
+    await assert.rejects(emojiCreate("😀".repeat(33), join(directory, "emoji-33.json")), {
+      stderr: /1 to 32 characters/,
+    });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber + 1);
+    await run(occCli, ["service-key", "revoke", emoji.id], { env: adminEnv });
     const revokedRotated = await run(
       occCli,
       ["service-key", "revoke", rotatedDetails.id, "-o", "json"],
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
+    // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
-      stderr: /HTTP 401/,
+      stderr:
+        /^Error: OCC rejected the service key in \S+rotated-admin-key\.json: it is invalid, expired or revoked\. Ask an Installation administrator for a new key\.\n$/,
     });
     // A secret Role bound to the Namespace could never grant anything there: the CLI shows
     // the API's refusal naming the Permissions instead of reporting a created binding.
@@ -643,6 +819,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     assert.equal(JSON.parse(deletingAgent.stdout).status, "deleting");
 
+    // Rotate after admission refuses the Namespace key, before the CLI receives that refusal.
+    rotateKeyBeforeResponse = () => renameSync(adminKeyFile, keyFile);
     await assert.rejects(
       run(occCli, ["installation", "get", "--output", "json"], { env }),
       (error) => {
@@ -650,9 +828,21 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
+        // The hint names the Namespace of the key this request sent, not the rotated one, and
+        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+        // repeating OCC's own sentence (finding D770).
+        assert.ok(
+          error.stderr.includes(
+            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
+          ),
+        );
+        assert.equal(error.stderr.split("works only in").length, 2);
         return true;
       },
     );
+    // A new command reads the replacement Installation key; only the refused one used the old key.
+    assert.equal(rotateKeyBeforeResponse, undefined, "rotated the key before delivering the 403");
+    await run(occCli, ["iam", "service-principal", "list"], { env });
   });
 
   await t.test(
@@ -660,15 +850,20 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
-        assert.equal((await request("GET", path, { headers: invalidHeaders })).status, 401);
+        const refused = await request("GET", path, { headers: invalidHeaders });
+        assert.equal(refused.status, 401);
+        // Only a request that sent an Authorization header gets header advice (finding D762).
+        assert.equal(refused.error.message, CREDENTIAL_REQUIRED);
         await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
-      assert.equal((await request("GET", path, { headers: {} })).status, 401);
-      assert.equal(
-        (await request("GET", path, { headers: { authorization: `Bearer ${issued.data.key}` } }))
-          .status,
-        401,
-      );
+      const anonymous = await request("GET", path, { headers: {} });
+      assert.equal(anonymous.status, 401);
+      assert.equal(anonymous.error.message, CREDENTIAL_REQUIRED);
+      const bearer = await request("GET", path, {
+        headers: { authorization: `Bearer ${issued.data.key}` },
+      });
+      assert.equal(bearer.status, 401);
+      assert.equal(bearer.error.message, AUTHORIZATION_HEADER_REFUSED);
     },
   );
 
@@ -679,7 +874,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       const eventsBefore = auditSink.events.length;
       const denied = await request("GET", other, { headers });
       assert.equal(denied.status, 403);
-      assert.equal(denied.error.message, "The admitted Namespace does not match.");
+      // Names the key's own Namespace, never the requested one (finding D763).
+      assert.equal(denied.error.message, serviceKeyOutsideNamespace(namespaceId));
       assert.equal(auditSink.events.length, eventsBefore + 1);
       const audit = auditSink.events.at(-1);
       assert.equal(audit.kind, "authorization_denial");
@@ -691,13 +887,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const [binding] = policy.bindings.splice(bindingIndex, 1);
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.bindings.push(binding);
-    policy.restrictions.push({
-      id: "deny-read",
-      namespaceId,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
-    });
+    restrict(policy, "read", "namespace", { namespaceId });
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.restrictions.length = 0;
     assert.equal((await request("GET", path, { headers })).status, 200);
@@ -794,13 +984,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const restricted of [false, true]) {
         if (restricted) {
           policy.bindings.push(adminBinding);
-          policy.restrictions.push({
-            id: "deny-service-key-management",
-            resourceKind: "installation",
-            resourceId: installationId,
-            action: "administer",
-            effect: "deny",
-          });
+          restrict(policy, "administer", "installation", { resourceId: installationId });
         }
         await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }
@@ -823,12 +1007,13 @@ test("service API keys authenticate scoped automation without replacing sessions
       }
       // Audits attribute issuance/revocation to the service actor, not the human
       // who originally issued its key, and never contain credential material.
-      for (const [action, key] of [
-        ["create", child.data],
-        ["create", replacement.data],
-        ["revoke", created.data],
-        ["revoke", child.data],
-        ["revoke", replacement.data],
+      // Each also names the key that acted (`actorServiceKeyId`) apart from the key acted on.
+      for (const [action, key, actorKey] of [
+        ["create", child.data, created.data],
+        ["create", replacement.data, created.data],
+        ["revoke", created.data, replacement.data],
+        ["revoke", child.data, replacement.data],
+        ["revoke", replacement.data, replacement.data],
       ]) {
         assert.ok(
           auditSink.events.some(
@@ -836,8 +1021,11 @@ test("service API keys authenticate scoped automation without replacing sessions
               event.action === `openclaw.auth.service-keys.${action}` &&
               event.actorId === installationPrincipal.id &&
               event.details.serviceKeyId === key.id &&
+              event.details.serviceKeyName === key.name &&
+              event.details.actorServiceKeyId === actorKey.id &&
               event.details.servicePrincipalId === key.servicePrincipalId,
           ),
+          `${action} ${key.name}`,
         );
         assert.equal(JSON.stringify(auditSink.events).includes(key.key), false);
       }
@@ -941,6 +1129,42 @@ test("service API keys authenticate scoped automation without replacing sessions
       (await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`)).status,
       200,
     );
+  });
+
+  await t.test("key names count code points, as the schema and the CLI do", async () => {
+    const tooLong =
+      "The request does not match the operation contract: body /name is too long (expected at most 32 characters).";
+    // 32 code points that are 64 UTF-16 units still fit, and the name round-trips.
+    for (const name of ["😀".repeat(32), "\u{20000}".repeat(32), `${"a".repeat(31)}😀`]) {
+      const named = await request("POST", "/api/auth/service-keys", { body: { ...body, name } });
+      assert.equal(named.status, 201, name);
+      assert.equal(named.data.name, name);
+      assert.equal(
+        (await request("DELETE", `/api/auth/service-keys/${named.data.id}`)).status,
+        200,
+      );
+    }
+    const keysBefore = memoryDatabase.apikey.length;
+    const over = await request("POST", "/api/auth/service-keys", {
+      body: { ...body, name: "😀".repeat(33) },
+    });
+    assert.equal(over.status, 400);
+    assert.equal(over.error.message, tooLong);
+    assert.deepEqual(over.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    // Should Better Auth still refuse a name the schema admitted, the caller gets the
+    // schema's 400, not a dependency 503, and no key is stored.
+    const createServiceKey = auth.createServiceKey;
+    auth.createServiceKey = (input) => createServiceKey({ ...input, name: "a".repeat(65) });
+    try {
+      const refused = await issue();
+      assert.equal(refused.status, 400);
+      assert.equal(refused.error.code, "INVALID_REQUEST");
+      assert.equal(refused.error.message, tooLong);
+      assert.deepEqual(refused.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    } finally {
+      auth.createServiceKey = createServiceKey;
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBefore);
   });
 
   await t.test(
@@ -1087,14 +1311,14 @@ test("service API keys authenticate scoped automation without replacing sessions
 test("service key issuance cannot exceed the caller's own IAM grants", async (t) => {
   const installationId = `ins_${randomUUID()}`;
   const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
-  const baseURL = "http://127.0.0.1";
+  const baseURL = "https://console.oce.localhost";
   const auth = createControllerAuth({
     installationId,
     mode: "development",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: false,
   });
   const adminCredentials = {
     email: "admin@example.invalid",
@@ -1151,7 +1375,7 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     auth,
     iamDriver: new NativeIAMDriver({ loadNativeIAMState: async () => policy }),
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: baseURL },
     computeDriver: createDevelopmentComputeDriver(),
     secretDriver: createTestSecretDriver(),
     configurationDriver: createTestConfigurationDriver(),
@@ -1166,18 +1390,21 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
-  const adminSession = await signInWithEmailPassword({ origin, ...adminCredentials });
-  const operatorSession = await signInWithEmailPassword({ origin, ...operatorCredentials });
+  const adminSession = await signInWithEmailPassword({
+    origin,
+    headers: { origin: baseURL },
+    ...adminCredentials,
+  });
+  const operatorSession = await signInWithEmailPassword({
+    origin,
+    headers: { origin: baseURL },
+    ...operatorCredentials,
+  });
   async function request(method, path, { headers, body } = {}) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        origin: baseURL,
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetchLoopback(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, { host: "console.oce.localhost", origin: baseURL, ...headers }),
+    );
     return { status: response.status, ...(await response.json()) };
   }
   const asAdmin = { cookie: adminSession.cookie };

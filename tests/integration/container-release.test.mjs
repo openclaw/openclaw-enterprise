@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -27,6 +26,9 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -110,8 +112,7 @@ test("staged release chart records both verified digests and defaults to the con
     t.skip("Helm is required for the staged chart proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-release-chart-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-release-chart-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -147,8 +148,7 @@ test("a chart retry accepts matching files across Helm package timestamps and re
     t.skip("Helm is required for the chart retry proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-retry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-retry-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -158,12 +158,14 @@ test("a chart retry accepts matching files across Helm package timestamps and re
   const second = join(directory, "second");
   const changed = join(directory, "changed");
   await Promise.all([mkdir(first), mkdir(second), mkdir(changed)]);
-  for (const destination of [first, second]) {
-    execFileSync(helm, ["package", staged, "--destination", destination]);
-    if (destination === first) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
+  execFileSync(helm, ["package", staged, "--destination", first]);
+  // Helm 3.19 stamps each tar entry with the time it writes it, rounded to the nearest second
+  // (Go's archive/tar). Every first entry rounds to at most the second nearest to now, so
+  // packaging again once now is past the next half second gives every entry a later timestamp,
+  // without waiting a fixed 2 s.
+  const laterSecond = (Math.round(Date.now() / 1_000) + 0.5) * 1_000 + 50;
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, laterSecond - Date.now())));
+  execFileSync(helm, ["package", staged, "--destination", second]);
   const archiveName = "openclaw-enterprise-0.1.0.tgz";
   const firstArchive = join(first, archiveName);
   const secondArchive = join(second, archiveName);
@@ -191,8 +193,7 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
     t.skip("Helm is required for the chart bootstrap package proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-bootstrap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-bootstrap-");
   await writeBootstrapChart(directory, "0.0.0-bootstrap.123.1");
   execFileSync(helm, ["package", directory, "--destination", directory]);
   const archive = join(directory, "openclaw-enterprise-0.0.0-bootstrap.123.1.tgz");
@@ -206,29 +207,19 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 });
 
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
+  const directory = await temporaryDirectory(t, "oce-chart-push-stream-");
   const helm = join(directory, "helm");
-  const previous = process.env.OCC_HELM_BIN;
-  t.after(async () => {
-    if (previous === undefined) {
-      delete process.env.OCC_HELM_BIN;
-    } else {
-      process.env.OCC_HELM_BIN = previous;
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.OCC_HELM_BIN = helm;
+  setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\n`);
-  await chmod(helm, 0o700);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
   assert.equal(pushChart("chart.tgz", "oci://registry.invalid/charts"), reported);
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     actual: 1,
     expected: 0,
   });
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n'\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n'\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     message: /^Helm did not report the chart digest on stderr\./,
   });
@@ -306,15 +297,7 @@ for (const workflow of [
 test("only explicit bootstrap lookups tolerate missing package metadata", async (t) => {
   // The external API supplies status codes; the real client must distinguish
   // absence from authorization failures before harmless bootstrap is permitted.
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   for (const status of [401, 403, 404, 429, 500]) {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
     await assert.rejects(
@@ -351,15 +334,7 @@ test("container context rejects malformed repository privacy in preparation and 
 });
 
 test("post-marker metadata retries only 404 and remains bounded", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   // Accelerate only the backoff; the real client still interprets API responses.
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const pkg = { name: "example", package_type: "container", visibility: "public" };
@@ -387,15 +362,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
 });
 
 test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
   // GHCR can omit repository even for connected packages. The real validator
   // must accept that response without consulting deployment review history.
@@ -648,16 +615,17 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
   }
 });
 
+async function writeOciBlob(layout, value) {
+  const bytes = Buffer.from(JSON.stringify(value));
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  await writeFile(join(layout, "blobs/sha256", hash), bytes);
+  return { digest: `sha256:${hash}`, size: bytes.length };
+}
+
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
-  async function blob(value) {
-    const bytes = JSON.stringify(value);
-    const hash = createHash("sha256").update(bytes).digest("hex");
-    await writeFile(join(directory, "blobs/sha256", hash), bytes);
-    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
-  }
+  const blob = (value) => writeOciBlob(directory, value);
   const manifests = [];
   const configs = [];
   // These are actual OCI scratch-image configs/manifests in a tar archive.
@@ -749,15 +717,7 @@ test("OCI archive validation binds both platforms to their real manifest and con
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const path = "orgs/openclaw/packages/container/example";
   let calls = 0;
@@ -799,9 +759,8 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
   }
 });
 
-test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "container-platform-assembly-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+test("native platform exports verify offline and assemble into a digest-bound archive", async (t) => {
+  const directory = await temporaryDirectory(t, "container-platform-assembly-");
   async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
     const env = {
@@ -814,18 +773,18 @@ test("separate platform exports assemble into a digest-bound archive and reject 
       GITHUB_RUN_ATTEMPT: "1",
       CI_RUN_ID: "456",
       CI_ATTEMPT: "1",
-      NODE_BASE_IMAGE: "pinned-node",
+      NODE_BASE_IMAGE: `docker.io/library/node:24@sha256:${"c".repeat(64)}`,
     };
     const expected = [];
+    const roots = [];
     for (const arch of ["amd64", "arm64"]) {
       const layout = join(output, arch);
       await mkdir(join(layout, "blobs/sha256"), { recursive: true });
-      async function blob(value, mediaType) {
-        const bytes = Buffer.from(JSON.stringify(value));
-        const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-        await writeFile(join(layout, "blobs/sha256", digest.slice(7)), bytes);
-        return { digest, size: bytes.length, mediaType };
-      }
+      await writeFile(join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
+      const blob = async (value, mediaType) => ({
+        ...(await writeOciBlob(layout, value)),
+        mediaType,
+      });
       const config = await blob(
         { os: "linux", architecture: fault === "platform" ? "amd64" : arch },
         "application/vnd.oci.image.config.v1+json",
@@ -867,6 +826,7 @@ test("separate platform exports assemble into a digest-bound archive and reject 
               },
               "application/vnd.oci.image.index.v1+json",
             );
+      roots.push(descriptor.digest);
       await writeFile(
         join(layout, "index.json"),
         JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }),
@@ -880,22 +840,22 @@ test("separate platform exports assemble into a digest-bound archive and reject 
           attempt: fault === "attempt" ? "2" : "1",
           ciRunId: "456",
           ciAttempt: "1",
-          nodeBaseImage: "pinned-node",
+          nodeBaseImage: `docker.io/library/node:24@sha256:${"c".repeat(64)}`,
           image: fault === "image" ? "controller" : "runtime",
           platforms: ["linux/amd64", "linux/arm64"],
           platform: `linux/${arch}`,
-          native: fault !== "emulated",
+          native: fault === "emulated" ? undefined : true,
           digest: fault === "output-digest" ? `sha256:${"a".repeat(64)}` : descriptor.digest,
         }),
       );
-      if (fault === "layer" && arch === "arm64") {
+      if (["layer", "layer-size"].includes(fault) && arch === "arm64") {
         await writeFile(
           join(layout, "blobs/sha256", layer.digest.slice(7)),
-          "corrupted layer bytes",
+          fault === "layer-size" ? "short" : Buffer.alloc(layer.size),
         );
       }
     }
-    return { output, env, expected };
+    return { output, env, expected, roots };
   }
   function run(input) {
     return execFileSync(
@@ -909,9 +869,89 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     );
   }
   const valid = await prepare("valid");
+  function verify(arch, overrides = {}) {
+    const i = arch === "amd64" ? 0 : 1;
+    return JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["scripts/ci/container-release.mjs", "verify-platform", join(valid.output, arch)],
+        {
+          env: {
+            ...valid.env,
+            PLATFORM: valid.expected[i].platform,
+            IMAGE_DIGEST: valid.roots[i],
+            ...overrides,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        },
+      ),
+    );
+  }
+  const snapshot = () => execFileSync("tar", ["-cf", "-", "-C", valid.output, "amd64", "arm64"]);
+  execFileSync("chmod", ["-R", "a-w", valid.output]);
+  try {
+    const before = snapshot();
+    for (const [i, arch] of ["amd64", "arm64"].entries()) {
+      const { platform, digest, configDigest } = valid.expected[i];
+      assert.deepEqual(verify(arch), {
+        platform,
+        rootDigest: valid.roots[i],
+        manifestDigest: digest,
+        configDigest,
+      });
+    }
+    for (const overrides of [
+      { GITHUB_RUN_ID: "124" },
+      { GITHUB_RUN_ATTEMPT: "2" },
+      { SOURCE_SHA: "d".repeat(40) },
+      { GITHUB_WORKFLOW_SHA: "e".repeat(40) },
+      { IMAGE: "controller" },
+      { PLATFORM: "linux/arm64" },
+      { IMAGE_DIGEST: valid.roots[1] },
+    ]) {
+      assert.throws(() => verify("amd64", overrides), /mismatch/);
+    }
+    assert.throws(() => verify("amd64", { PLATFORM: "linux/s390x" }), /Expected linux/);
+    assert.throws(() => verify("amd64", { IMAGE_DIGEST: undefined }), /native build output digest/);
+    assert.deepEqual(snapshot(), before);
+  } finally {
+    execFileSync("chmod", ["-R", "u+w", valid.output]);
+  }
+  const manual = { CI_RUN_ID: "", CI_ATTEMPT: "" };
+  const receiptPath = join(valid.output, "amd64/platform.json");
+  const original = await readFile(receiptPath);
+  const receipt = JSON.parse(original);
+  await writeFile(receiptPath, JSON.stringify({ ...receipt, ciRunId: "", ciAttempt: "" }));
+  verify("amd64", manual);
+  assert.throws(() => verify("amd64", { ...manual, CI_ATTEMPT: "1" }), /Expected a CI run ID/);
+  await writeFile(
+    receiptPath,
+    JSON.stringify({ ...receipt, ciRunId: undefined, ciAttempt: undefined }),
+  );
+  assert.throws(() => verify("amd64", manual), /receipt ciRunId mismatch/);
+  assert.throws(
+    () => verify("amd64", { CI_RUN_ID: undefined, CI_ATTEMPT: undefined }),
+    /Expected a CI run ID/,
+  );
+  await writeFile(receiptPath, original);
+  for (const entry of ["oci-layout", "blobs/sha256"]) {
+    const path = join(valid.output, "amd64", entry);
+    const outside = join(valid.output, "outside");
+    await rename(path, outside);
+    await symlink(outside, path);
+    assert.throws(() => verify("amd64"), /Expected (a regular OCI file|an OCI layout directory)/);
+    await unlink(path);
+    await rename(outside, path);
+  }
   run(valid);
   const digest = (await readFile(valid.env.GITHUB_OUTPUT, "utf8")).trim().slice("digest=".length);
-  assert.deepEqual(readArchivePlatforms(join(valid.output, "image.tar"), digest), valid.expected);
+  execFileSync(process.execPath, ["scripts/ci/container-release.mjs", "seal", valid.output], {
+    env: { ...valid.env, IMAGE_DIGEST: digest },
+  });
+  const sealed = JSON.parse(await readFile(join(valid.output, "metadata.json"), "utf8"));
+  assert.deepEqual(sealed.platformDigests, valid.expected);
+  assert.equal(sealed.digest, digest);
   const index = JSON.parse(
     execFileSync("tar", [
       "-xOf",
@@ -939,6 +979,7 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     "platform",
     "output-digest",
     "layer",
+    "layer-size",
     "source",
     "attempt",
     "image",
@@ -954,19 +995,151 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const { lanes } = loadTestSuites(
     fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
   );
-  const laneFiles = ["images-runtime-startup", "images-runtime-startup-2"].flatMap((lane) =>
-    lanes[lane].files.map((file) => file.path),
-  );
-  // The model probe outcomes moved into lane 2 from Image Model Probes, whose files
-  // the release smoke has never run. Every other file a lane splits off must stay in
-  // the release smoke, or a native-platform release loses those cases silently.
-  const ciOnly = ["tests/integration/runtime-image-model-probe-outcomes.test.mjs"];
-  for (const path of ciOnly) {
-    assert.ok(laneFiles.includes(path), `${path} is no longer in a runtime startup lane.`);
+  // Find runtime image files by path in every lane, so a file under a lane with any name
+  // cannot drop out of the smoke silently.
+  const runtimeImageFiles = [
+    ...new Set(
+      Object.values(lanes).flatMap((lane) =>
+        lane.files
+          .map((file) => file.path)
+          .filter((path) => path.startsWith("tests/integration/runtime-image-")),
+      ),
+    ),
+  ];
+  // Runtime image files the release smoke does not run, why, and the lane that holds them
+  // (null: any lane).
+  const notInSmoke = {
+    // Drives the image helpers against a stand-in docker binary; it needs no image.
+    "tests/integration/runtime-image-failure-output.test.mjs": null,
+    // Model probe files: the release smoke has never run them. The contention case runs
+    // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
+    "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
+  };
+  for (const [path, lane] of Object.entries(notInSmoke)) {
+    const holders = Object.keys(lanes).filter((name) =>
+      lanes[name].files.some((file) => file.path === path),
+    );
+    assert.ok(
+      lane === null ? holders.length > 0 : holders.includes(lane),
+      `${path} is no longer in ${lane ?? "a lane"}; review whether the release smoke should run it.`,
+    );
   }
+  // Image Runtime Startup files outside the runtime-image-* names.
+  const otherSmokeFiles = [
+    "tests/integration/codex-plugin-stdio-real.test.ts",
+    // Its OpenShell initializer case executes the pinned native workspace initializer.
+    "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/workspace-files-native.test.mjs",
+  ];
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),
-    laneFiles.filter((path) => !ciOnly.includes(path)).sort(),
-    "Keep the release smoke list equal to the lane files; drop a ciOnly entry once the smoke runs it.",
+    [
+      ...runtimeImageFiles.filter((path) => !Object.hasOwn(notInSmoke, path)),
+      ...otherSmokeFiles,
+    ].sort(),
+    "Keep the release smoke list equal to the runtime image files; drop a notInSmoke entry once the smoke runs it.",
   );
+
+  // Second check, by lane name: every Image Runtime Startup part, and every file in them.
+  const startupLanes = Object.keys(lanes).filter((lane) =>
+    /^images-runtime-startup(?:-\d+)?$/.test(lane),
+  );
+  assert.deepEqual(startupLanes.sort(), [
+    "images-runtime-startup",
+    "images-runtime-startup-2",
+    "images-runtime-startup-3",
+  ]);
+  const laneFiles = startupLanes.flatMap((lane) => lanes[lane].files.map((file) => file.path));
+  assert.deepEqual(
+    [...runtimeImageSmokeTests].sort(),
+    laneFiles.filter((path) => !Object.hasOwn(notInSmoke, path)).sort(),
+    "Keep the release smoke list equal to the Image Runtime Startup lane files.",
+  );
+});
+
+test("native smoke rejects a transported image with another configuration before startup", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-smoke-config-");
+  const binary = join(directory, "bin");
+  const blobs = join(directory, "blobs/sha256");
+  await mkdir(binary);
+  await mkdir(blobs, { recursive: true });
+  async function blob(value) {
+    const bytes = JSON.stringify(value);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(blobs, hash), bytes);
+    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
+  }
+  const architecture = process.arch === "x64" ? "amd64" : process.arch;
+  const config = {
+    architecture,
+    os: "linux",
+    config: {},
+    rootfs: { type: "layers", diff_ids: [] },
+  };
+  const original = await blob(config);
+  const replacement = await blob({ ...config, config: { Cmd: ["unexpected"] } });
+  const manifest = (selected) => ({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: { mediaType: "application/vnd.oci.image.config.v1+json", ...selected },
+    layers: [],
+  });
+  const sealed = await blob(manifest(original));
+  const transported = await blob(manifest(replacement));
+  const descriptor = {
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    ...transported,
+  };
+  await writeFile(join(directory, "index.json"), JSON.stringify({ manifests: [sealed] }));
+  await writeFile(
+    join(directory, "inspect.json"),
+    JSON.stringify([
+      { Id: transported.digest, Descriptor: descriptor, Os: "linux", Architecture: architecture },
+    ]),
+  );
+  execFileSync("tar", ["-cf", join(directory, "export.tar"), "-C", directory, "blobs"]);
+  // Command stand-ins supply a real hash-addressed OCI metadata archive. The
+  // supported smoke command and Python verifier must reject its substituted
+  // config; this checks identity admission, not a Docker load or runtime.
+  await writeCommand(
+    binary,
+    "skopeo",
+    `
+case "$1" in
+  inspect) cat "$SMOKE_FIXTURE/blobs/sha256/${sealed.digest.slice(7)}" ;;
+  copy) ;;
+  *) exit 91 ;;
+esac`,
+  );
+  await writeCommand(
+    binary,
+    "docker",
+    `
+case "$2" in
+  inspect) cat "$SMOKE_FIXTURE/inspect.json" ;;
+  save) cat "$SMOKE_FIXTURE/export.tar" ;;
+  rm) ;;
+  *) exit 92 ;;
+esac`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/ci/container-release.mjs", "smoke", directory],
+    {
+      env: {
+        ...process.env,
+        PATH: `${binary}:${process.env.PATH}`,
+        SMOKE_FIXTURE: directory,
+        IMAGE: "controller",
+        PLATFORM: `linux/${architecture}`,
+        IMAGE_DIGEST: sealed.digest,
+      },
+      encoding: "utf8",
+      timeout: 30000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Loaded image configuration differs from the sealed OCI export/);
+  assert.equal(result.stdout.includes("Smoke controller"), false);
 });

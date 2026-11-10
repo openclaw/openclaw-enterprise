@@ -1,16 +1,18 @@
+import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
-} from "../../drivers/repo/credentials/client-contracts.ts";
+} from "../../drivers/repo/access/client-contracts.ts";
 import type {
   RepositoryCredentialBoundSessionInput,
   RepositoryCredentialSessionResult,
   SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
+} from "../../drivers/repo/access/service-contracts.ts";
 
 /** Private wire response; the selected Driver renders the portable runtime files. */
 export type RepositoryCredentialControlOpenResult =
@@ -19,23 +21,6 @@ export type RepositoryCredentialControlOpenResult =
   | { readonly kind: "missing" };
 
 export interface RepositoryCredentialControlClient {
-  descriptions(
-    namespaceId: string,
-    repositoryRefs: readonly string[],
-    signal: AbortSignal,
-  ): Promise<
-    Readonly<{
-      providerInstanceId: string;
-      appId: string;
-      githubInstallationId: string;
-      descriptions: readonly Readonly<{
-        repositoryRef: string;
-        repositoryId: string;
-        description: string;
-      }>[];
-      pending: boolean;
-    }>
-  >;
   checkAdmissionReady(signal: AbortSignal): Promise<void>;
   open(
     input: RepositoryCredentialBoundSessionInput,
@@ -64,45 +49,7 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => !fields.includes(key)) ||
-    fields.some((key) => !Object.hasOwn(value, key))
-  ) {
-    return unavailable();
-  }
-  return value as Record<string, unknown>;
-}
-
-function githubId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[1-9][0-9]{0,15}$/.test(value) &&
-    Number.isSafeInteger(Number(value))
-  );
-}
-
-function identity(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value) > 512 ||
-    hasControlCharacter(value)
-  ) {
-    return unavailable();
-  }
-  return value;
-}
-
-function counter(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    return unavailable();
-  }
-  return value;
-}
+const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
@@ -129,18 +76,10 @@ function status(value: unknown): SessionStatus {
     "activeUses",
     "cleanup",
   ]);
-  const cleanup = object(parsed.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
+  const cleanup = parseCleanup(parsed.cleanup);
   const deadlineWallMs = counter(parsed.deadlineWallMs);
   if (
     (parsed.state !== "OPEN" && parsed.state !== "CLOSED" && parsed.state !== "DISPOSED") ||
-    typeof cleanup.auxiliaryPending !== "boolean" ||
     deadlineWallMs === 0
   ) {
     return unavailable();
@@ -151,14 +90,7 @@ function status(value: unknown): SessionStatus {
     deadlineWallMs,
     binding: binding(parsed.binding),
     activeUses: counter(parsed.activeUses),
-    cleanup: Object.freeze({
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    }),
+    cleanup: Object.freeze(cleanup),
   });
   if (
     result.state === "DISPOSED" &&
@@ -197,15 +129,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== fields.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, fields) ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||
@@ -247,87 +171,6 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
       throw new Error("The repository credential control socket must be an absolute Unix path.");
     }
     this.#socket = options.controlSocket;
-  }
-
-  async descriptions(namespaceId: string, repositoryRefs: readonly string[], signal: AbortSignal) {
-    if (
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(namespaceId) ||
-      !Array.isArray(repositoryRefs) ||
-      repositoryRefs.length < 1 ||
-      repositoryRefs.length > 20 ||
-      new Set(repositoryRefs).size !== repositoryRefs.length ||
-      repositoryRefs.some((ref) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(ref))
-    ) {
-      throw new RepositoryCredentialControlError(false);
-    }
-    const reply = await this.call(
-      "POST",
-      "/v1/repository-descriptions",
-      signal,
-      { namespaceId, repositoryRefs },
-      undefined,
-      64 * 1024,
-    );
-    const parsed = object(reply.body, [
-      "providerInstanceId",
-      "appId",
-      "githubInstallationId",
-      "descriptions",
-      "pending",
-    ]);
-    if (
-      reply.status !== 200 ||
-      typeof parsed.providerInstanceId !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(parsed.providerInstanceId) ||
-      !githubId(parsed.appId) ||
-      !githubId(parsed.githubInstallationId) ||
-      typeof parsed.pending !== "boolean" ||
-      !Array.isArray(parsed.descriptions) ||
-      parsed.descriptions.length > 20
-    ) {
-      return unavailable();
-    }
-    const descriptions = new Map<string, { repositoryId: string; description: string }>();
-    const duplicates = new Set<string>();
-    for (const value of parsed.descriptions) {
-      if (value === null || typeof value !== "object" || Array.isArray(value)) {
-        continue;
-      }
-      const entry = value as Record<string, unknown>;
-      const ref = entry.repositoryRef;
-      if (typeof ref !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(ref)) {
-        continue;
-      }
-      if (descriptions.has(ref) || duplicates.has(ref)) {
-        descriptions.delete(ref);
-        duplicates.add(ref);
-        continue;
-      }
-      if (
-        Object.keys(entry).some(
-          (key) => !["repositoryRef", "repositoryId", "description"].includes(key),
-        ) ||
-        !githubId(entry.repositoryId) ||
-        typeof entry.description !== "string" ||
-        entry.description.trim().length === 0 ||
-        entry.description.length > 512 ||
-        hasControlCharacter(entry.description)
-      ) {
-        continue;
-      }
-      descriptions.set(ref, { repositoryId: entry.repositoryId, description: entry.description });
-    }
-    return Object.freeze({
-      providerInstanceId: parsed.providerInstanceId,
-      appId: parsed.appId,
-      githubInstallationId: parsed.githubInstallationId,
-      descriptions: Object.freeze(
-        [...descriptions].map(([repositoryRef, entry]) =>
-          Object.freeze({ repositoryRef, ...entry }),
-        ),
-      ),
-      pending: parsed.pending,
-    });
   }
 
   async checkAdmissionReady(signal: AbortSignal): Promise<void> {
@@ -429,9 +272,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     method: "GET" | "POST",
     path: string,
     signal: AbortSignal,
-    input?:
-      | RepositoryCredentialBoundSessionInput
-      | Readonly<{ namespaceId: string; repositoryRefs: readonly string[] }>,
+    input?: RepositoryCredentialBoundSessionInput,
     admissionId?: string,
     maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {

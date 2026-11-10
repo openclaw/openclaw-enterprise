@@ -45,7 +45,12 @@ export type AdmittedCaller =
       readonly session: AdmittedSession;
     })
   | (AdmittedCallerBase & {
-      readonly method: "api_key" | "oag";
+      readonly method: "api_key";
+      /** The non-secret ID of the verified service key, recorded on the request's audit rows. */
+      readonly serviceKeyId?: string;
+    })
+  | (AdmittedCallerBase & {
+      readonly method: "oag";
     });
 
 export interface AdmissionVerifier {
@@ -60,14 +65,15 @@ export const UNTRUSTED_ORIGIN_MESSAGE =
 export class AdmissionFailure extends Error {
   readonly status: 401 | 403;
   readonly code: "UNAUTHENTICATED" | "FORBIDDEN";
-  // A reason that is safe to explain to the caller; other admission failures stay generic.
-  readonly reason: "untrusted_origin" | undefined;
+  // A reason that is safe to explain to the caller, from the caller's own request; other
+  // admission failures stay generic.
+  readonly reason: "untrusted_origin" | "authorization_header" | undefined;
 
   constructor(
     status: 401 | 403,
     code: "UNAUTHENTICATED" | "FORBIDDEN",
     message: string,
-    reason?: "untrusted_origin",
+    reason?: "untrusted_origin" | "authorization_header",
   ) {
     super(message);
     this.name = "AdmissionFailure";

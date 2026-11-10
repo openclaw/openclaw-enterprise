@@ -2,7 +2,7 @@
 {{- $routing := .Values.gatewayRouting }}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . }}
 {{- $serviceName := include "openclaw.gatewayRouting.serviceName" . }}
-{{- $hostname := default (printf "%s.%s.svc" $serviceName $routing.envoyNamespace) $routing.hostname }}
+{{- $hostname := include "openclaw.gatewayRouting.hostname" . }}
 {{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . }}
 {{- $routeNamespaceLabel := include "openclaw.gatewayRouting.routeNamespaceLabel" . }}
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . }}
@@ -225,6 +225,9 @@ spec:
   ingress:
     {{- if $routing.sandbox.enabled }}
     - from:
+        {{- range $index, $peer := $routing.sandbox.ingressPeers -}}
+        {{- include "openclaw.networkPolicy.peer" (dict "name" (printf "gatewayRouting.sandbox.ingressPeers[%d]" $index) "value" $peer) -}}
+        {{- end -}}
         {{- toYaml $routing.sandbox.ingressPeers | nindent 8 }}
       ports:
         - protocol: TCP
@@ -284,7 +287,7 @@ spec:
               kubernetes.io/metadata.name: {{ $routing.envoyNamespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml $routing.envoyGatewayPodLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "gatewayRouting.envoyGatewayPodLabels" "value" $routing.envoyGatewayPodLabels) | nindent 14 }}
       ports:
         - protocol: TCP
           port: 18000

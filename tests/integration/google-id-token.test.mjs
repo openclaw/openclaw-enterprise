@@ -152,11 +152,7 @@ test("code exchange posts to the fixed token endpoint and verifies against fixed
     requests.push({ url, method: init.method ?? "GET", redirect: init.redirect, body: init.body });
     return respond(url);
   });
-  const json = (value, status = 200) =>
-    new Response(JSON.stringify(value), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+  const json = (value, status = 200) => Response.json(value, { status });
 
   respond = (url) =>
     url === "https://oauth2.googleapis.com/token"

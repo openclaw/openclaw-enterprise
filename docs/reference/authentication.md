@@ -1,8 +1,9 @@
 # Authentication
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
-user sessions established through email/password sign-in or an administrator-enrolled
-GitHub, Google or OIDC identity. Programmatic non-Agent automation authenticates with service
+user sessions established through email/password sign-in or an enrolled
+GitHub, Google or OIDC identity. GitHub can use opt-in
+[team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
 The selected IAM Driver resolves the authenticated account or service identity
@@ -12,7 +13,7 @@ to an explicitly provisioned Principal or ServicePrincipal and owns
 For a sign-in procedure, see
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
 For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) at `/console/` uses these session endpoints. Public signup, OIDC
+The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
 
@@ -102,12 +103,19 @@ not require Origin, and an invalid key never falls back to a session cookie.
 | `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
 
+Human-session Namespace IAM writes retain assigning authority through their transaction; see
+[Sharing commit guarantees](authorization.md#manage-namespace-policy).
+
 The `sessionKey` names the current session, stays stable across reads, and changes
 on each sign-in. It cannot authenticate; the token stays in its HttpOnly cookie.
 Sending it back as `x-occ-session-key` narrows a request to that session: a
 foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
 revokes nor clears the cookie. Without the header, requests are unchanged. Console
 pins each tab's key this way.
+
+Password-only sign-out confirms session deletion before clearing its cookie. A
+storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie;
+retry sign-out after storage recovers.
 
 Password-only sessions expire seven days after sign-in; use does not extend
 them. With GitHub, Google or OIDC sign-in enabled, every session expires after
@@ -121,10 +129,18 @@ ends it.
 Sign-in takes `{"email": "...", "password": "..."}`. The session arrives only
 through `Set-Cookie`.
 
+Sign-in rejects NUL or unpaired-surrogate emails with `400 INVALID_REQUEST`
+before account or known-device State reads. Both profiles retain denial audits
+and budget accounting, including recovery-only and counted `503` audit failures.
+Limited attempts remain `429`; passwords are unchanged. Stored U+FFFD email is
+unsupported: password-only returns `400 FORBIDDEN` without a session. Guarded
+credential checks can create a session and cookie, but HTTP session inspection
+returns `500 INTERNAL_ERROR`, not usable-session proof.
+
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
-attempts wait 1–8 s and return `429` with `Retry-After`, whether or not the email
-exists; an Installation administrator's correct password still signs in, and so does
+attempts wait 1–8 s and return `429` with `Retry-After`, repeated in the message, whether
+or not the email exists; an Installation administrator's correct password still signs in, and so does
 the recovery account's with an external provider. Successful sign-ins spend nothing. Without
 one, browsers share the ingress address and startup logs
 `authentication.sign-in-limit-warning`. A successful sign-in within the budget
@@ -137,21 +153,17 @@ the auth secret; `untracked` events have no key and no hash. The email and
 address are never logged. The bundled Collector
 exports the event and lane, not the hash.
 
-Every password sign-in whose password is checked attempts an
-`authentication.login` audit: success names the account's Principal and `userId`;
-a wrong password or unknown email is `denied` with `INVALID_CREDENTIALS` and no
-account. Audit writes fail closed: a success whose audit cannot be written
-returns `503` without issuing a session cookie. A server-side session may
-persist if its creation or cleanup cannot be confirmed. In both profiles, a wrong
-password whose denial cannot be written counts as a credential failure against
-any tracked sign-in budgets. The ordinary response is `503`; the slow lane may
-instead return `429`. An untracked or already-exhausted lane is paced without
-necessarily adding a new tracked failure entry. If the audit write cannot be
-confirmed, its persistence outcome may be unknown. A `429` is also unaudited when admission
-refuses the attempt before the password is checked;
-`authentication.sign-in-limited` reports the limited lane.
-An administrator's attempt in the slow lane is still checked, so a wrong password
-there returns `429` and is audited as `denied` when the write succeeds.
+Password checks attempt an `authentication.login` audit: success names the
+account's Principal and `userId`; wrong passwords and unknown emails produce
+`denied`/`INVALID_CREDENTIALS` without account identity. Audit writes fail closed.
+Failed success audits return `503` without a cookie; uncertain session creation
+or cleanup may leave a server-side session. Failed denial audits still count
+against tracked budgets, returning `503` or, in the slow lane, `429`. Untracked
+or exhausted lanes are paced without necessarily adding failure entries.
+Unconfirmed audit writes have unknown persistence outcomes. Admission `429`s
+before password checking are unaudited and reported by
+`authentication.sign-in-limited`. Slow-lane administrator checks remain audited;
+wrong passwords return `429`.
 
 ### Known devices
 
@@ -183,8 +195,8 @@ check. With external sign-in, a disabled account's entries verify
 nothing until it is enabled again; reset the password as well to revoke them for
 good. The controller reads the account only for an entry issued for the attempted
 email, so forged or foreign cookies add no timing signal about which emails exist,
-and a completed read that rejects the binding gives no exemption. Proof reads are
-bounded per controller: 30 per signed entry per minute, two active per entry,
+and a completed read that rejects the binding gives no exemption. Each controller
+limits proof reads to 30 per signed entry per minute, two active per entry,
 600 per minute overall, and 16 active overall. There is no proof cache or waiting
 queue. If a read fails or is refused, its signed entry keys also constrain the
 ordinary email/address lane: losing proof cannot reopen a spent device allowance.
@@ -216,24 +228,30 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 
 ## Native admin shared sessions
 
-Agent native admin UI access starts from an ordinary controller browser session.
-With the trusted-operator pilot enabled, the session cookie is scoped to the
-explicit `nativeAdmin.sharedCookieDomain` parent so the console and derived Agent
-hosts share one human session. Service API keys cannot open native admin UI.
-When native admin is disabled, leftover shared-cookie-domain configuration is
-ignored and the host-only `openclaw_occ` cookie remains.
+By default, browser sessions use one shared cookie scope, including when native Agent
+access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
+OCC derives their longest common DNS-label suffix and rejects IP literals,
+missing or unrelated hosts, public suffixes, and malformed DNS names. For
+`console.oce.example.com` and `agents.oce.example.com`, the scope is
+`oce.example.com`. There is no cookie-domain override. Guarded GitHub can instead select the
+[host-only exchange](agent-native-admin.md#host-only-session-exchange): the
+Console cookie stays on its host, and the Agent receives a revocable handle
+bound to the parent session. The exchange creates no account or grant.
 
-The explicit parent domain is validated against the console origin and Agent host
-suffix on DNS-label boundaries. Public suffixes, malformed domains, and outside
-hosts are rejected; OCC never infers a broader parent. Because a domain cookie
-cannot use `__Host-`, the shared session uses prefix `openclaw_occ_shared`
-(`__Secure-openclaw_occ_shared.session_token` on HTTPS). Successful sign-in and
-sign-out clear prior host-only `openclaw_occ` and `openclaw_occ_shared` cookie
-names so browsers never choose between duplicates.
+Every host that receives this domain cookie must be a trusted OCE ingress
+endpoint. Public preview hosts must remain outside it. The cookie uses
+`__Secure-openclaw_occ_shared.session_token`, `Secure`, `HttpOnly`, `Path=/`,
+and the existing SameSite and CSRF protections. Password, OIDC, GitHub and Google
+sign-in share this format in shared-cookie mode. Duplicate session-cookie values are rejected.
 
-Native-host requests authenticate the shared OCE session, resolve the exact
-Agent represented by the requested host, authorize exact Agent `administer`, and
-validate the current active revision and supported native configuration before
+Sign-out revokes the current session and expires its cookie. OCE does not
+clear obsolete cookie names or scopes. Remove stale OCE cookies in the browser
+if they cause duplicate-cookie refusals. External-provider attempt cookies
+remain host-only.
+
+Native-host requests authenticate the shared OCE session or host-only handle, resolve the exact
+Agent represented by the requested host, authorize exact Agent `operate` or `administer`, and
+validate the selected version and supported native configuration before
 proxying. OCC strips browser cookies, `Authorization`, API and session keys,
 forwarded identity, and native scope headers before forwarding upstream, so the native
 gateway never receives the OCE session cookie. Native chat or other Agent-host
@@ -246,16 +264,19 @@ singleton Installation, and stays available with GitHub sign-in enabled. One
 transaction writes the account, Principal, grant, enrollment and an optional
 `"github":{"subject":"<numeric id>"}` identity (`409` if GitHub is off or taken).
 
-An optional `roleId` binds an existing Installation Role (`400` if unknown or
-Namespace-scoped); without one the account has no grants. It cannot create Roles
-or infer grants. Audit records `principalId` and `roleId` or `grant: "none"`.
+An optional `roleId` binds an existing Installation Role (`400` if unknown,
+Namespace-scoped, or a configured `role_config_` Role); without one the account
+has no grants. It cannot create Roles or infer grants. The same transaction adds
+the account to each
+[configured default Group](authorization/default-users.md#group-membership).
+Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
 Creation issues no session.
 
-The only Installation Role is the built-in Installation administrator
-(`role_admin_<uuid>`). The API cannot create other Installation Roles, and the
-Namespace policy API does not list this one. Omit `roleId` for everyone except
-another Installation administrator, then grant Namespace access with the
-returned `principalId`; see [Add a person](../guides/topics/iam.md#add-a-person).
+Apart from configured Roles, the only Installation Role is the built-in
+Installation administrator (`role_admin_<uuid>`). No API creates another, and
+the Namespace policy API omits this one. Its Installation-scoped binding grants only
+`installation:administer` and `installation:read`; see
+[Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
 A representative provisioning body is:
 
 ```json
@@ -266,8 +287,7 @@ A representative provisioning body is:
 ```
 
 Emails are normalized to lowercase. Passwords must contain 12–128 characters.
-Provisioning has no public email-verification or signup flow; duplicates are
-rejected.
+Duplicates are rejected; there is no email verification.
 
 ## Authorization and failures
 
@@ -312,14 +332,4 @@ endpoint exposure and provisioning authorization.
 
 ## Changelog
 
-- 2026-09-30 22:10: Qualify known-browser availability when finite account proof is unavailable. (authoring-run/d22560bc-da4b-4470-ab17-83e8ce51825c - a4daf446aef9eb3571c4b43dac986a6f58d86cf0)
-
-- 2026-09-20 08:53: Replaced native-admin launch-code sessions with the shared OCE session cookie boundary and cookie-domain validation. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
-
-- 2026-08-31 22:29: Define single-attempt bootstrap failure handling with retained artifacts, no automatic recovery, and manual operator repair. (01a05a3d-526f-7553-8cd8-070bd1847acb - 94a5440898bf331987148d7733f0075506af64a6)
-
-- 2026-08-31 17:43: Document fresh human/service administrator bootstrap, private key delivery, and operator recovery. (codex/01a05a69-3fbe-7441-9e6d-20394758cf94 - 0797098646028ac00cb26cd4afcbc9b2cf8bcb24)
-
-- [2026-08-28 20:17]: Allow IAM-authorized service administrators to issue and revoke keys; retain human-session account creation and bootstrap. (codex/01a04927-11d8-7083-a4b7-9f3124559d82 - d4b5b01d02cf68a89965f7c00a0fc7d0dcec18d8)
-
-- [2026-08-28 17:54]: Reorganize as a current feature reference; move procedural setup to the shared guides. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
+[Authentication documentation history](authentication/history.md) preserves the older dated entries.

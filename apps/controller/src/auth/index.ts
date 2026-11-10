@@ -1,14 +1,11 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { domainToASCII } from "node:url";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { APIError, betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { splitSetCookieHeader } from "better-auth/cookies";
-import { hashPassword } from "better-auth/crypto";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import { parse as parseDomain } from "tldts";
 import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
@@ -18,6 +15,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresHumanAuthentication,
+  CallerStateDeniedError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -29,6 +27,7 @@ import {
   type SchemaAuthAdapterOptionsV1,
   type PostgresPlatformState,
   type PreparedPasswordAccount,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import {
@@ -44,6 +43,9 @@ import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
+import { sessionAuthority } from "./session-authority.ts";
+import { passwordSignOut } from "./password-sign-out.ts";
+import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
@@ -73,6 +75,7 @@ export {
   type OidcLoginConfiguration,
   type OidcSignInConfiguration,
 } from "./oidc.ts";
+export { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 
 /**
  * Who may sign in with a password in the guarded profile: every enrolled account
@@ -162,20 +165,30 @@ import type {
   AdmittedSession,
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
-import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
+import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
+import { betterAuthIssuer, deriveSharedCookieDomain, validHttpBaseURL } from "./configuration.ts";
 
-export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
+export {
+  betterAuthIssuer,
+  deriveSharedCookieDomain,
+  normalizeSharedCookieDomain,
+  hostnameMatchesSharedCookieDomain,
+  OCC_BETTER_AUTH_ISSUER_PREFIX,
+} from "./configuration.ts";
 
-export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
 const LOCAL_PASSWORD_MAX_LENGTH = 128;
+export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
-const SAFE_COOKIE_DOMAIN =
-  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+// The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
+// Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
+// The schema stays the authority; storage is unbounded text.
+export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
+const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 type ControllerPlugins = (
-  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"]
+  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"] | typeof passwordSignOut
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -194,8 +207,9 @@ export interface ControllerAuthOptions {
   readonly secret: string;
   readonly database?: BetterAuthOptions["database"];
   readonly memoryDatabase?: MemoryDB;
-  readonly secureCookies?: boolean;
-  readonly sharedCookieDomain?: string;
+  readonly agentDomain: string;
+  /** Shared sessions are the default; native exchange keeps the parent session host-only. */
+  readonly sessionMode?: "shared-cookie" | "host-only-exchange";
   readonly humanLogin?: ReturnType<typeof createHumanLogin>;
   /** Trusted proxies whose client-address header keys sign-in admission. */
   readonly clientAddress?: ClientAddressConfiguration;
@@ -213,6 +227,12 @@ export interface ControllerAuthOptions {
    * paced refusals do not wait the full eight seconds, and observe when floors start.
    */
   readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
+  /**
+   * Hashes and verifies every local password. Default `scryptPasswordHasher`; the server
+   * leaves it unset. Tests that do not exercise hashing pass a cheap one built in their own
+   * helpers, so fixtures do not spend a full scrypt per account and sign-in.
+   */
+  readonly passwordHasher?: PasswordHasher;
   /**
    * The password-only profile's known-device account state (see known-device.ts). Without
    * it, and without an external provider, entries are bound to the user and a hash of its
@@ -283,6 +303,7 @@ export {
 } from "@openclaw-enterprise/iam";
 
 export interface ControllerAuth {
+  readonly nativeBrowser?: PostgresHumanAuthentication["nativeBrowser"];
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
@@ -377,6 +398,12 @@ export interface ControllerAuth {
   signOut(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   session(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   resolveSession(request: FastifyRequest): Promise<AuthenticatedSession | undefined>;
+  withSessionAuthority<T>(session: AuthenticatedSession, work: () => Promise<T>): Promise<T>;
+  holdSession(
+    unit: PlatformUnitOfWork,
+    session: AuthenticatedSession,
+    request: FastifyRequest,
+  ): Promise<void>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
     readonly name: string;
@@ -384,27 +411,6 @@ export interface ControllerAuth {
   }): Promise<ServiceKey & { readonly key: string }>;
   getServiceKey(id: string): Promise<ServiceKey | undefined>;
   revokeServiceKey(key: ServiceKey): Promise<void>;
-}
-
-export function normalizeSharedCookieDomain(domain: string | undefined): string | undefined {
-  const trimmed = domain?.trim().replace(/^\./, "").replace(/\.$/, "");
-  if (!isNonEmptyString(trimmed)) {
-    return undefined;
-  }
-  const normalized = domainToASCII(trimmed).toLowerCase();
-  if (!SAFE_COOKIE_DOMAIN.test(normalized)) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must be a DNS parent domain.");
-  }
-  const parsed = parseDomain(normalized, { allowPrivateDomains: true, validateHostname: true });
-  if (parsed.isIp || parsed.domain === null || parsed.publicSuffix === normalized) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must not be a public suffix.");
-  }
-  return normalized;
-}
-
-export function hostnameMatchesSharedCookieDomain(hostname: string, domain: string): boolean {
-  const normalizedHost = domainToASCII(hostname.trim().replace(/\.$/, "")).toLowerCase();
-  return normalizedHost === domain || normalizedHost.endsWith(`.${domain}`);
 }
 
 function authHeaders(headers: AdmissionHeaders | FastifyRequest["headers"] | undefined): Headers {
@@ -441,48 +447,11 @@ function sessionHeaders(
   return prepared;
 }
 
-function sessionCookieNames(prefix: string): readonly string[] {
-  return [`${prefix}.session_token`, `__Secure-${prefix}.session_token`];
-}
-
-function activeSessionCookieName(
-  prefix: string,
-  secureOrigin: boolean,
-  humanLogin: boolean,
-): string {
-  const name = `${prefix}.session_token`;
-  if (!secureOrigin) {
-    return name;
-  }
-  return `${humanLogin ? "__Host-" : "__Secure-"}${name}`;
-}
-
-function hostOnlySessionCookieClearance(enabled: boolean, activePrefix: string): readonly string[] {
-  if (!enabled) {
-    return [];
-  }
-  const names = new Set([
-    ...sessionCookieNames(OCC_AUTH_COOKIE_PREFIX),
-    ...sessionCookieNames(activePrefix),
-  ]);
-  return [...names].map((name) => {
-    const secure = name.startsWith("__Secure-") ? "; Secure" : "";
-    return `${name}=; Max-Age=0; Path=/; HttpOnly${secure}; SameSite=Lax`;
-  });
-}
-
-function setAuthHeaders(
-  reply: FastifyReply,
-  headers?: Headers | null,
-  additionalCookies: readonly string[] = [],
-): void {
+function setAuthHeaders(reply: FastifyReply, headers?: Headers | null): void {
   if (!headers) {
-    if (additionalCookies.length > 0) {
-      reply.header("set-cookie", [...additionalCookies]);
-    }
     return;
   }
-  const cookies: string[] = [...additionalCookies];
+  const cookies: string[] = [];
   headers.forEach((value, name) => {
     if (name.toLowerCase() === "set-cookie") {
       cookies.push(...splitSetCookieHeader(value));
@@ -496,7 +465,7 @@ function setAuthHeaders(
 }
 
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
-  if (error instanceof AdmissionFailure) {
+  if (error instanceof AdmissionFailure || error instanceof RequestFailure) {
     return { status: error.status, code: error.code };
   }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
@@ -522,10 +491,39 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
       };
     }
     if (error instanceof APIError) {
+      if (
+        typeof status === "number" &&
+        Number.isSafeInteger(status) &&
+        status >= 500 &&
+        status < 600
+      ) {
+        return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+      }
       return { status: 401, code: "UNAUTHENTICATED" };
     }
   }
   return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+}
+
+/** Better Auth refused a service-key name's length; the route answers 400, not a 503. */
+export class ServiceKeyNameRefused extends Error {
+  constructor(cause: unknown) {
+    super("The service-key name was refused.", { cause });
+    this.name = "ServiceKeyNameRefused";
+  }
+}
+
+function serviceKeyNameRefusal(error: unknown): boolean {
+  const code = (error as { readonly body?: { readonly code?: unknown } } | null)?.body?.code;
+  return error instanceof Error && error.name === "APIError" && code === "INVALID_NAME_LENGTH";
+}
+
+/** A curated auth endpoint answered 5xx: its database or audit store failed. */
+class AuthDependencyUnavailable extends Error {
+  constructor() {
+    super("Authentication dependency unavailable.");
+    this.name = "AuthDependencyUnavailable";
+  }
 }
 
 /**
@@ -539,12 +537,14 @@ class DenialAuditUnavailable extends Error {
   }
 }
 
-// The Console reason for each GitHub allowlist refusal (RFC-0061) and for an attached identity
-// whose account is disabled. No other value reaches the redirect.
+// The Console reason for each GitHub allowlist refusal (RFC-0061), for an attached identity
+// whose account is disabled, for a provider that could not answer, and for a callback that
+// failed inside OCE (`unavailable`). No other value reaches the redirect.
 const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
   MEMBERSHIP_REQUIRED: "membership",
   MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
   ACCOUNT_DISABLED: "account-disabled",
+  PROVIDER_UNAVAILABLE: "provider-unavailable",
 };
 
 /** An audited callback refusal whose Console reason the callback redirect carries. */
@@ -741,6 +741,43 @@ function safeAuthenticatedSession(response: unknown): AuthenticatedSession | und
   return { id, userId, expiresAt: expiry.toISOString() };
 }
 
+/** What an auth endpoint says when it fails: `refused` for a refusal, `action` names it. */
+interface AuthEndpointFailure {
+  /** The one answer to every refusal, so it says nothing about the account or the factor. */
+  readonly refused: string;
+  /** Names the operation in the outage answer, for example "Sign-in". */
+  readonly action: string;
+}
+
+function waitDuration(seconds: number): string {
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+}
+
+// The status already tells a rate limit and an outage apart from a refusal, and Retry-After
+// already carries the wait, so these answers reveal nothing the refusal hides.
+function authFailureMessage(error: unknown, status: number, failure: AuthEndpointFailure): string {
+  // A malformed request names its offending field, as on every API route. Every caller
+  // checks the Origin before it reads any credential, so naming the refused Origin
+  // reveals nothing about the session or password; keep it that way, because the
+  // endpoint's own message would misdirect a CLI user.
+  if (error instanceof RequestFailure) {
+    return error.message;
+  }
+  if (error instanceof AdmissionFailure && error.reason === "untrusted_origin") {
+    return UNTRUSTED_ORIGIN_MESSAGE;
+  }
+  if (status === 429) {
+    // Only the password limiter sets a wait; the external sign-in budgets refill each minute.
+    return error instanceof SignInRateLimited
+      ? `Too many attempts. Wait ${waitDuration(error.retryAfterSeconds)}, then try again.`
+      : "Too many attempts. Wait a minute, then try again.";
+  }
+  if (status === 503) {
+    return `${failure.action} is temporarily unavailable. Try again shortly. If it continues, ask an operator to check the API logs.`;
+  }
+  return failure.refused;
+}
+
 async function sendAuthEndpoint(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -750,12 +787,11 @@ async function sendAuthEndpoint(
     readonly status?: number;
   } | null>,
   data: (response: unknown) => unknown,
-  failureMessage: string,
-  additionalCookies: readonly string[] = [],
+  failureText: AuthEndpointFailure,
 ): Promise<void> {
   try {
     const result = await run();
-    setAuthHeaders(reply, result?.headers, additionalCookies);
+    setAuthHeaders(reply, result?.headers);
     reply.status(result?.status ?? 200).send({
       data: data(result?.response ?? null),
       meta: { requestId: request.id },
@@ -768,13 +804,7 @@ async function sendAuthEndpoint(
     reply.status(failure.status).send({
       error: {
         code: failure.code,
-        // Every caller checks the Origin before it reads any credential, so naming the refused
-        // Origin reveals nothing about the session or password; keep it that way, because the
-        // endpoint's own message would misdirect a CLI user.
-        message:
-          error instanceof AdmissionFailure && error.reason === "untrusted_origin"
-            ? UNTRUSTED_ORIGIN_MESSAGE
-            : failureMessage,
+        message: authFailureMessage(error, failure.status, failureText),
       },
       meta: { requestId: request.id },
     });
@@ -836,6 +866,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         401,
         "UNAUTHENTICATED",
         "Controller API bearer authentication is disabled.",
+        "authorization_header",
       );
     }
     if (request.requestedScope.installationId !== this.#installationId) {
@@ -866,6 +897,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         },
         decisionId: `adm_${randomUUID()}`,
         method: "api_key",
+        serviceKeyId: key.id,
       };
     }
 
@@ -933,37 +965,35 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
 
   const expectedBrowserOrigin = new URL(options.baseURL).origin;
-  const sharedCookieDomain = normalizeSharedCookieDomain(options.sharedCookieDomain);
-  if (
-    sharedCookieDomain !== undefined &&
-    !hostnameMatchesSharedCookieDomain(new URL(expectedBrowserOrigin).hostname, sharedCookieDomain)
-  ) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host.");
+  if (Object.hasOwn(options, "sharedCookieDomain")) {
+    throw new Error(
+      "sharedCookieDomain has been removed; session cookie scope is derived from Console and Agent hostnames.",
+    );
   }
-  if (
-    sharedCookieDomain !== undefined &&
-    (new URL(options.baseURL).protocol !== "https:" || options.secureCookies === false)
-  ) {
-    throw new Error("OCC_AUTH_COOKIE_DOMAIN requires secure HTTPS session cookies.");
+  const sessionMode = options.sessionMode ?? "shared-cookie";
+  if (sessionMode !== "shared-cookie" && sessionMode !== "host-only-exchange") {
+    throw new Error("Session mode must be shared-cookie or host-only-exchange.");
   }
+  const derivedCookieDomain = deriveSharedCookieDomain(options.baseURL, options.agentDomain);
+  const hostBoundSession = sessionMode === "host-only-exchange";
+  const sharedCookieDomain = hostBoundSession ? undefined : derivedCookieDomain;
   const humanLogin = options.humanLogin;
-  const secureOrigin = new URL(options.baseURL).protocol === "https:";
-  const hostBoundSession = humanLogin !== undefined && secureOrigin;
-  const cookiePrefix =
-    sharedCookieDomain === undefined ? OCC_AUTH_COOKIE_PREFIX : OCC_SHARED_AUTH_COOKIE_PREFIX;
-  const sessionCookieName = activeSessionCookieName(
-    cookiePrefix,
-    secureOrigin,
-    humanLogin !== undefined,
-  );
-  const hostOnlySessionCookieCleanup = hostOnlySessionCookieClearance(
-    sharedCookieDomain !== undefined,
-    cookiePrefix,
-  );
+  if (
+    hostBoundSession &&
+    (humanLogin?.githubProviderId === undefined ||
+      humanLogin.googleProviderId !== undefined ||
+      humanLogin.oidcProviderId !== undefined)
+  ) {
+    throw new Error("Host-only exchange requires guarded GitHub sign-in without Google or OIDC.");
+  }
+  const cookiePrefix = hostBoundSession ? OCC_AUTH_COOKIE_PREFIX : OCC_SHARED_AUTH_COOKIE_PREFIX;
+  const sessionCookieName = `${hostBoundSession ? "__Host-" : "__Secure-"}${cookiePrefix}.session_token`;
   const issuer = betterAuthIssuer(options.installationId);
+  const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
+  const passwordHasher = options.passwordHasher ?? scryptPasswordHasher;
   const auth = betterAuth<BetterAuthOptions & { plugins: ControllerPlugins }>({
     appName: "OpenClaw Control Plane",
     baseURL: options.baseURL,
@@ -995,25 +1025,21 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             cookieCache: { enabled: false },
           },
           logger: { disabled: true },
-          onAPIError: {
-            onError(error) {
-              // Better Call logs unclassified exceptions even when the auth logger is disabled.
-              throw error instanceof APIError
-                ? error
-                : APIError.fromStatus("SERVICE_UNAVAILABLE", {
-                    message: "Authentication dependency unavailable.",
-                  });
-            },
-          },
+          // Better Call logs an unclassified exception to the console even when the auth
+          // logger is disabled, and since Better Auth 1.7.9 `onAPIError.onError` can only
+          // observe it. Throwing leaves the router without logging; runPrivateEndpoint owns
+          // the error and answers it as a dependency failure.
+          onAPIError: { throw: true },
         }),
     plugins: [
-      ...(humanLogin === undefined ? [] : [humanLogin.plugin]),
+      ...(humanLogin === undefined ? [passwordSignOut] : [humanLogin.plugin]),
       apiKey({
         configId: SERVICE_KEY_CONFIG,
         defaultPrefix: "occ_",
         enableMetadata: true,
         enableSessionForAPIKeys: false,
         requireName: true,
+        maximumNameLength: SERVICE_KEY_NAME_MAX_UTF16_UNITS,
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
@@ -1024,6 +1050,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       requireEmailVerification: false,
       minPasswordLength: LOCAL_PASSWORD_MIN_LENGTH,
       maxPasswordLength: LOCAL_PASSWORD_MAX_LENGTH,
+      password: {
+        hash: (password) => passwordHasher.hash(password),
+        verify: (input) => passwordHasher.verify(input),
+      },
     },
     trustedOrigins: [options.baseURL],
     rateLimit: { enabled: humanLogin === undefined },
@@ -1036,26 +1066,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             useSecureCookies: false,
             cookies: { session_token: { name: sessionCookieName } },
           }
-        : {}),
-      ...(sharedCookieDomain === undefined
-        ? {}
-        : { crossSubDomainCookies: { enabled: true, domain: sharedCookieDomain } }),
+        : {
+            useSecureCookies: true,
+            crossSubDomainCookies: { enabled: true, domain: derivedCookieDomain },
+          }),
       defaultCookieAttributes: {
         httpOnly: true,
         path: "/",
         sameSite: "lax",
-        secure:
-          hostBoundSession ||
-          sharedCookieDomain !== undefined ||
-          (options.secureCookies ?? options.mode === "production"),
+        secure: true,
       },
     },
   });
   const api = auth.api;
   // The known-device cookie is host-only (__Host-) whenever the origin is HTTPS. With an
   // external provider its name follows the curated endpoints that issue it.
-  const knownDeviceSecure =
-    humanLogin?.knownDeviceSecure ?? (secureOrigin && options.secureCookies !== false);
+  const knownDeviceSecure = humanLogin?.knownDeviceSecure ?? true;
   // What a known-device entry is bound to: with an external provider, the guarded account
   // state (versions and enabled state); otherwise the composition's password state.
   const knownDeviceState: KnownDeviceAccountState =
@@ -1107,6 +1133,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // Timing differences here are hidden by the slow lane's floor. Lookup failures
       // propagate, so an outage is 503 rather than a refusal.
       async isReserved(email) {
+        // Invalid spellings must not select a reserved account through storage normalization.
+        if (unstorableTextFailure("body", email) !== undefined) {
+          return false;
+        }
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
@@ -1271,13 +1301,20 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     if (body !== undefined) {
       headers.set("content-type", "application/json");
     }
-    const response = await auth.handler(
-      new Request(url, {
-        method: request.method,
-        headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
-    );
+    const authRequest = new Request(url, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    let response: Response;
+    try {
+      response = await auth.handler(authRequest);
+    } catch {
+      // Better Auth answers its own APIErrors; it throws only an error it cannot classify
+      // (onAPIError.throw), such as a database or audit failure. The error itself may hold
+      // dependency detail, so it is not logged or returned.
+      throw new AuthDependencyUnavailable();
+    }
     if (!response.ok) {
       if (response.status === 429) {
         throw APIError.fromStatus("TOO_MANY_REQUESTS", {
@@ -1285,7 +1322,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         });
       }
       if (response.status >= 500) {
-        const failure = new Error("Authentication dependency unavailable.");
+        const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
         if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
@@ -1325,7 +1362,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             return runPrivateEndpoint(request, `/oce/providers/${name}/start`);
           },
           (value) => value,
-          `${label} sign-in could not be started.`,
+          { refused: `${label} sign-in could not be started.`, action: `${label} sign-in` },
         );
       },
       async callback(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -1339,10 +1376,19 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           setAuthHeaders(reply, result.headers);
           reply.redirect("/console/");
         } catch (error) {
-          reply.redirect(
+          // A refusal keeps its reason. A callback that failed inside OCE (its database or
+          // audit store) is an outage, not a refusal of this identity. Every other refusal,
+          // including a provider this API does not configure, stays generic.
+          const reason =
             error instanceof CallbackRefusal
-              ? `/console/?authError=${name}&authReason=${error.consoleReason}`
-              : `/console/?authError=${name}`,
+              ? error.consoleReason
+              : error instanceof AuthDependencyUnavailable
+                ? "unavailable"
+                : undefined;
+          reply.redirect(
+            reason === undefined
+              ? `/console/?authError=${name}`
+              : `/console/?authError=${name}&authReason=${reason}`,
           );
         }
       },
@@ -1363,7 +1409,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             const sessionKey = (value as { readonly sessionKey?: unknown } | null)?.sessionKey;
             return { sessionKey: isNonEmptyString(sessionKey) ? sessionKey : null };
           },
-          `${label} sign-in could not be confirmed.`,
+          { refused: `${label} sign-in could not be confirmed.`, action: `${label} sign-in` },
         );
       },
     };
@@ -1384,30 +1430,37 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         // Read from the validated input, not the credential pair, so the admission key
         // is plainly derived from the email alone.
         const email = String(input.email).trim().toLowerCase();
+        // An email with a NUL character or an unpaired surrogate is a 400, as on every API
+        // route. It is refused inside admission, so it spends budget like the bad-credential
+        // answer it replaces. The password is never stored as text and is not checked.
+        const unstorableEmail = unstorableTextFailure("body", { email: input.email });
         const deviceCookie = knownDeviceFromCookieHeader(request.headers.cookie, knownDeviceSecure);
         // The account's state is read only for an entry issued for this email, so a
         // forged or foreign cookie reads nothing; a stale entry just means no exemption.
         let deviceConstraints: readonly string[] = [];
-        const device = await verifyKnownDevice(
-          options.secret,
-          email,
-          deviceCookie,
-          Date.now(),
-          knownDeviceState,
-          (keys, read) => {
-            deviceConstraints = keys;
-            return knownDeviceReads.admit(
-              keys.map((key) => admissionKey("device", key)),
-              async () => {
-                const state = await read();
-                // A completed fresh read can establish a stale/disabled entry. Only
-                // an unavailable proof retains constraints; it never grants an exemption.
-                deviceConstraints = [];
-                return state;
-              },
-            );
-          },
-        );
+        const device =
+          unstorableEmail === undefined
+            ? await verifyKnownDevice(
+                options.secret,
+                email,
+                deviceCookie,
+                Date.now(),
+                knownDeviceState,
+                (keys, read) => {
+                  deviceConstraints = keys;
+                  return knownDeviceReads.admit(
+                    keys.map((key) => admissionKey("device", key)),
+                    async () => {
+                      const state = await read();
+                      // A completed fresh read can establish a stale/disabled entry. Only
+                      // an unavailable proof retains constraints; it never grants an exemption.
+                      deviceConstraints = [];
+                      return state;
+                    },
+                  );
+                },
+              )
+            : undefined;
         // The address lane needs a trusted proxy: without one, browsers behind the ingress
         // share its address, so only the email (or known-device) lane applies.
         const attempt = {
@@ -1420,9 +1473,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin) {
           // The curated endpoint checks the password, issues the session and marks the
           // browser as a known device; only credential rejections spend budget.
-          return passwordAdmission.admit(attempt, () =>
-            runPrivateEndpoint(request, "/oce/password", body),
-          );
+          return passwordAdmission.admit(attempt, async () => {
+            // Preserve the guarded denial audit without looking up the invalid email.
+            if (unstorableEmail !== undefined) {
+              try {
+                await humanLogin.recordPasswordDenial();
+              } catch (error) {
+                throw new DenialAuditUnavailable(error);
+              }
+              throw unstorableEmail;
+            }
+            return runPrivateEndpoint(request, "/oce/password", body);
+          });
         }
         return passwordAdmission.admit(attempt, async () => {
           const audit = options.passwordSignInAudit;
@@ -1430,9 +1492,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // password reset or account recreation that commits during the sign-in then bumps
           // the state past it and revokes the entry, instead of the old password's sign-in
           // being bound to the new state. A failed read only skips the marking.
-          const accountState = await knownDeviceState(email).catch(() => undefined);
+          const accountState =
+            unstorableEmail === undefined
+              ? await knownDeviceState(email).catch(() => undefined)
+              : undefined;
           let result;
           try {
+            // Audited as a refusal, as Better Auth's own invalid-email answer was.
+            if (unstorableEmail !== undefined) {
+              throw unstorableEmail;
+            }
             result = await api.signInEmail({
               body: { ...body, rememberMe: true },
               headers: authHeaders(request.headers),
@@ -1481,8 +1550,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           ? { authenticated: true, sessionKey }
           : { authenticated: true };
       },
-      "The caller did not provide valid authentication credentials.",
-      hostOnlySessionCookieCleanup,
+      {
+        refused: "The caller did not provide valid authentication credentials.",
+        action: "Sign-in",
+      },
     );
   }
 
@@ -1511,19 +1582,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           }
           requireSessionKey(headers, options.secret, current);
         }
+        // Guarded logout already holds the user in its original State transaction.
         if (humanLogin) {
           return runPrivateEndpoint(request, "/oce/sign-out");
         }
-        return api.signOut({
-          headers,
-          asResponse: false,
-          returnHeaders: true,
-          returnStatus: true,
-        });
+        const current = await resolveSession(request);
+        const revoke = () =>
+          api.signOut({
+            headers,
+            asResponse: false,
+            returnHeaders: true,
+            returnStatus: true,
+          });
+        return current === undefined ? revoke() : withSessionAuthority(current.id, revoke);
       },
       (response) => response,
-      "The controller session could not be revoked.",
-      hostOnlySessionCookieCleanup,
+      { refused: "The controller session could not be revoked.", action: "Sign-out" },
     );
   }
 
@@ -1545,7 +1619,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         return result;
       },
       (response) => safeSessionResponse(response, options.secret),
-      "The controller session could not be resolved.",
+      { refused: "The controller session could not be resolved.", action: "The session check" },
     );
   }
 
@@ -1614,21 +1688,35 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     signOut,
     session,
     resolveSession,
+    withSessionAuthority: (session, work) => withSessionAuthority(session.id, work),
+    holdSession: async (_unit, session, request) => {
+      const current = await resolveSession(request);
+      if (current?.id !== session.id || current.userId !== session.userId) {
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
+      }
+    },
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.
-      const created = await api.createApiKey({
-        body: {
-          configId: SERVICE_KEY_CONFIG,
-          userId: principal.id,
-          name,
-          ...(expiresIn === undefined ? {} : { expiresIn }),
-          metadata: {
-            installationId: options.installationId,
-            ...(principal.namespaceId === undefined ? {} : { namespaceId: principal.namespaceId }),
+      let created;
+      try {
+        created = await api.createApiKey({
+          body: {
+            configId: SERVICE_KEY_CONFIG,
+            userId: principal.id,
+            name,
+            ...(expiresIn === undefined ? {} : { expiresIn }),
+            metadata: {
+              installationId: options.installationId,
+              ...(principal.namespaceId === undefined
+                ? {}
+                : { namespaceId: principal.namespaceId }),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
+      }
       return { ...serviceKeyDetails(created, options.installationId)!, key: created.key };
     },
     async getServiceKey(id) {
@@ -1749,7 +1837,7 @@ export async function hashLocalPassword(password: string): Promise<string> {
       `Passwords must contain ${LOCAL_PASSWORD_MIN_LENGTH} to ${LOCAL_PASSWORD_MAX_LENGTH} characters.`,
     );
   }
-  return hashPassword(password);
+  return scryptPasswordHasher.hash(password);
 }
 
 export async function createPostgresControllerAuth(
@@ -1808,11 +1896,7 @@ export async function createPostgresControllerAuth(
         `${providerLabel} sign-in requires original PostgreSQL State and the native IAM Driver.`,
       );
     }
-    if (options.sharedCookieDomain !== undefined) {
-      throw new Error(
-        `${providerLabel} sign-in supports host-only cookies without shared native administration.`,
-      );
-    }
+
     if (options.mode === "production" && new URL(options.baseURL).protocol !== "https:") {
       throw new Error(`Production ${providerLabel} sign-in requires HTTPS.`);
     }
@@ -1831,6 +1915,13 @@ export async function createPostgresControllerAuth(
         options.baseURL,
         {
           trustedClientAddress: controllerOptions.clientAddress !== undefined,
+          enrollmentPrincipal: (account) =>
+            createAuthPrincipalSeed(
+              options.installationId,
+              betterAuthIssuer(options.installationId),
+              account,
+              { grant: "none" },
+            ),
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),
@@ -1899,6 +1990,15 @@ export async function createPostgresControllerAuth(
   }
   return {
     ...auth,
+    holdSession: async (unit, session) => {
+      if (guarded) {
+        await persistence!.holdSession(unit, session.userId, session.id);
+      }
+      if (!(await unit.installations.holdAuthenticationSession(session.id, session.userId))) {
+        throw new CallerStateDeniedError("The assigning session is no longer current.");
+      }
+    },
+    ...(guarded && persistence ? { nativeBrowser: persistence.nativeBrowser } : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

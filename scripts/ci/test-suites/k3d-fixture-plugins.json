@@ -16,7 +16,8 @@
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubelet-volume-refresh-k3d.test.mjs",
-    "tests/integration/kubernetes-compute-driver-real.test.mjs"
+    "tests/integration/kubernetes-compute-driver-real.test.mjs",
+    "tests/integration/harness-workspace-released-k3d.test.mjs"
   ],
   "files": [
     {
@@ -29,6 +30,12 @@
       "path": "tests/integration/kubernetes-compute-driver-real.test.mjs",
       "expectedTests": [
         "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/harness-workspace-released-k3d.test.mjs",
+      "expectedTests": [
+        "Harness init makes released kubelet-created workspace directories private without losing files"
       ]
     }
   ]

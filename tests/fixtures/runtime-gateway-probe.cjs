@@ -75,7 +75,12 @@ const { WebSocketServer } = require("ws");
     const began = Date.now();
     assert.deepEqual(await probe("plugins.list", {}, 300), { ok: false, code: "UNAVAILABLE" });
     assert.ok(Date.now() - began < 3000, "timeout settles without peer cooperation");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The server sees the SDK's close a round trip later: wait for it, bounded, then read once
+    // more at the deadline.
+    const closedBy = Date.now() + 3000;
+    while (server.clients.size > 0 && Date.now() < closedBy) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.equal(server.clients.size, 0, "the timed-out SDK connection closes");
     hold = false;
     assert.equal((await probe("plugins.list", {}, 3000)).ok, true);

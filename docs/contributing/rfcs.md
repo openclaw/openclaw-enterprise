@@ -21,7 +21,7 @@ for review and merge.
    solves the problem, and what is out of scope. Show what existing owners or
    mechanisms can be reused before introducing another component.
 3. **Ask for human feedback early.** Open the RFC for review and link the code
-   or planned implementation. Code and RFC revisions can proceed in parallel;
+   or planned implementation. Code and RFC versions can proceed in parallel;
    waiting for an RFC response is not a prerequisite to starting implementation.
 4. **Revise both as you learn.** Incorporate material feedback and implementation
    discoveries. Keep decisions, diagrams, and interfaces consistent with the
@@ -55,6 +55,9 @@ Cover the details that matter to this decision:
 - **Security and failure:** state relevant authority, trust and credential
   boundaries, defaults, denial behavior, and consequential failure or recovery.
   Explain what survives an uncertain outcome and who can act next.
+- **Acceptance criteria:** use the template's [Acceptance Criteria](rfc-template.md#acceptance-criteria)
+  section to define observable outcomes and end-to-end verification before
+  implementation begins.
 - **Delivery and evidence:** identify the smallest connected result, genuine
   dependencies, and checks for success and material failure. Distinguish
   source review, integrated behavior, installed runtime, and live-service proof

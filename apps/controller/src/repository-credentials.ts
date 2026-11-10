@@ -1,9 +1,10 @@
+import { RetiredGitHubAuthorityError } from "./composition/repository-credentials/config.ts";
 import { pathToFileURL } from "node:url";
 import { startCredentialService } from "./composition/repository-credentials/service.ts";
 
 export { startCredentialService } from "./composition/repository-credentials/service.ts";
 export type { RunningService } from "./composition/repository-credentials/service.ts";
-export type { CredentialService } from "./drivers/repo/credentials/service-contracts.ts";
+export type { CredentialService } from "./drivers/repo/access/service-contracts.ts";
 
 /** Direct process composition; check-config loads no session or listener owner. */
 // Usage: --config FILE [--check-config] [--development-authority]; each flag at most once.
@@ -36,8 +37,12 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch(() => {
-    process.stderr.write("repository credential service failed\n");
+  void main().catch((error) => {
+    process.stderr.write(
+      error instanceof RetiredGitHubAuthorityError
+        ? `${error.message}\n`
+        : "repository credential service failed\n",
+    );
     process.exitCode = 1;
   });
 }

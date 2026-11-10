@@ -10,14 +10,14 @@ data:
         uid: occ-prometheus
         type: prometheus
         access: proxy
-        url: http://{{ .Release.Name }}-prometheus:9090
+        url: http://{{ include "demo.serviceName" (dict "root" . "component" "prometheus") }}:9090
         isDefault: true
         editable: false
       - name: OCC operational logs
         uid: occ-loki
         type: loki
         access: proxy
-        url: http://{{ .Release.Name }}-loki:3100
+        url: http://{{ include "demo.serviceName" (dict "root" . "component" "loki") }}:3100
         editable: false
   dashboards.yaml: |
     apiVersion: 1

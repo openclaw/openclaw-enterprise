@@ -4,3 +4,6 @@ node_modules/
 **/dist/
 pnpm-lock.yaml
 docs/reference/api.md
+
+# Generated with one reviewable record per line.
+apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/operations.json
