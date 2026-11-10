@@ -3134,3 +3134,70 @@ test("Harness controls submit the latest request directly and recover from desti
   await page.getByText("Resolved Harness settings", { exact: true }).waitFor();
   assert.equal(pathRequests(requests, "POST", path + "/deploy").length, 2);
 });
+
+test("a draft must reload when the Agent selects a different provider for the same route", async (t) => {
+  const fixture = await staticEgressFixture(t, { admitRevision: false });
+  assert.ok(
+    "origin" in fixture &&
+      "credentials" in fixture &&
+      "registerCleanupBeforeAppClose" in fixture &&
+      "grant" in fixture,
+  );
+  const { namespace, agent, modelProvider } = fixture;
+  const root = "/namespaces/" + namespace.id;
+  const agentPath = root + "/agents/" + agent.id;
+  const create = async (path: string, body: unknown) => {
+    const result = await fixture.request("POST", path, { body });
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    return result.data;
+  };
+
+  // A second administrator can switch between these providers without changing authentication,
+  // the model, or its destination. The provider ID alone makes the open draft stale.
+  const template = await create("/connection-templates", {
+    displayName: "Inference key",
+    mode: "static_bearer",
+    ...modelProvider,
+  });
+  const shared = {
+    ...modelProvider,
+    models: [{ id: "fixture-model" }],
+    connectionTemplateId: template.id,
+  };
+  const first = await create("/model-providers", { ...shared, displayName: "Research" });
+  const second = await create("/model-providers", {
+    ...shared,
+    displayName: "Research replacement",
+  });
+  const source = await create(root + "/credential-sources", {
+    name: "research-key",
+    type: "openai",
+    secrets: fixture.source.secrets,
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: template.current.version,
+  });
+  await fixture.updateAgent(namespace.id, agent.id, {
+    modelProviderId: first.id,
+    harnessAuth: { method: "credential_source", sourceId: source.id },
+    credentialSources: [{ sourceId: source.id }],
+  });
+  await create(root + "/iam/access-bindings", {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: fixture.grant.roleId,
+    resourceKind: "credential_source",
+    resourceId: source.id,
+  });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await waitForEnabled(deploy);
+  await fixture.updateAgent(namespace.id, agent.id, { modelProviderId: second.id });
+  await deploy.click();
+  await page
+    .getByText("Agent settings changed. Reload this draft before deploying.", { exact: true })
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", agentPath + "/deploy").length, 0);
+});
