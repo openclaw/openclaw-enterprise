@@ -7415,8 +7415,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
-        if (revision.harness.privateInferencePeer) {
-          await this.reconcilePrivateInferencePolicy(revision, namespace);
+        if (
+          revision.harness.privateInferencePeer &&
+          !(await this.reconcilePrivateInferencePolicy(revision, namespace))
+        ) {
+          return incomplete();
+        }
+        if (revision.harness.privateInferencePeer && !egressContext) {
+          if (!sandboxDriver.releasePrivateInference) {
+            throw new ConfigurationFailure(
+              "OpenShell cannot release the admitted private inference policy.",
+            );
+          }
+          if (!(await sandboxDriver.releasePrivateInference(harnessContext))) {
+            return incomplete();
+          }
         }
         let heldForRepositoryGitMaterial = false;
         if (egressContext !== undefined) {
@@ -7874,8 +7887,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
-    if (revision.harness.privateInferencePeer) {
-      await this.reconcilePrivateInferencePolicy(revision, namespace);
+    if (
+      revision.harness.privateInferencePeer &&
+      !(await this.reconcilePrivateInferencePolicy(revision, namespace))
+    ) {
+      throw new DependencyUnavailableError(
+        "The dedicated private inference supervisor is still being provisioned.",
+      );
     }
     await this.revokeUnavailablePublicGithubRead(revision, namespace);
     await this.deliverWorkspaceSetup(revision, workspaceSetup, namespace);
@@ -14581,7 +14599,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private async verifyPrivateInferencePeer(revision: Readonly<AgentRevision>): Promise<void> {
     const peer = revision.harness.privateInferencePeer;
-    if (!peer) return;
+    if (!peer) {
+      return;
+    }
     const provider = savedModelProvider(revision.harness.configuration);
     if (
       !provider ||
@@ -15651,7 +15671,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private async reconcilePrivateInferencePolicy(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const peer = revision.harness.privateInferencePeer;
     const provider = savedModelProvider(revision.harness.configuration);
     const driver = this.sandboxDriverForRevision(revision);
@@ -15659,6 +15679,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       !peer ||
       !provider ||
       !driver?.workspaceNodePeerLabels ||
+      !driver.harnessResource ||
+      !driver.observeHarness ||
       driver.implementation !== "openshell"
     ) {
       throw new ConfigurationFailure(
@@ -15669,14 +15691,64 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.sandboxNamespaceForRevision(revision, namespace),
       namespace,
     );
-    const labels = await driver.workspaceNodePeerLabels({ ...context, revision });
+    const sandboxContext = { ...context, revision };
+    const labels = await driver.workspaceNodePeerLabels(sandboxContext);
+    if (!labels) {
+      return false;
+    }
+    const sandboxId = labels["openshell.ai/sandbox-id"];
+    if (!sandboxId || labels["openshell.ai/boundary-role"] !== "supervisor") {
+      throw new ConfigurationFailure(
+        "OpenShell did not identify the revision's dedicated supervisor.",
+      );
+    }
+    const clients = await this.clients(namespace.plane);
+    const pods = completeKubernetesList(
+      await this.request(() =>
+        clients.core.listNamespacedPod({
+          namespace: namespace.name,
+          labelSelector: labelsToSelector(labels),
+        }),
+      ),
+    );
+    if (pods.length === 0) {
+      if ((await driver.observeHarness(sandboxContext)).state !== "running") {
+        return false;
+      }
+      throw new ConfigurationFailure(
+        "Private inference requires a per-Sandbox supervisor Pod in the revision Namespace.",
+      );
+    }
+    const pod = pods[0]!;
+    const metadata = pod.metadata;
+    const sandbox = driver.harnessResource(sandboxContext);
+    const supervisor = pod.spec?.containers.find(({ name }) => name === "supervisor");
+    // Stock OpenShell passes its proxy settings directly to this executable. Hostname CONNECT
+    // delegates the final resolution to another server after OpenShell has checked allowed_ips.
     if (
-      !labels ||
-      !labels["openshell.ai/sandbox-id"] ||
-      labels["openshell.ai/boundary-role"] !== "supervisor"
+      pods.length !== 1 ||
+      !metadata?.uid ||
+      metadata.namespace !== namespace.name ||
+      metadata.deletionTimestamp ||
+      pod.status?.phase === "Succeeded" ||
+      pod.status?.phase === "Failed" ||
+      metadata.labels?.["openshell.ai/boundary-pair"] !== sandboxId ||
+      metadata.labels?.["openshell.ai/managed-by"] !== "openshell" ||
+      metadata.labels?.["openshell.ai/component"] !== "supervisor" ||
+      !metadata.ownerReferences?.some(
+        (ref) =>
+          ref.apiVersion === "agents.x-k8s.io/v1beta1" &&
+          ref.kind === "Sandbox" &&
+          ref.name === sandbox.resourceName &&
+          ref.uid,
+      ) ||
+      supervisor?.command?.[0] !== "/openshell-supervisor" ||
+      [...supervisor.command, ...(supervisor.args ?? [])].some(
+        (arg) => arg.split("=")[0] === "--upstream-proxy-connect-by-hostname",
+      )
     ) {
-      throw new DependencyUnavailableError(
-        "The private inference NetworkPolicy requires the exact observed supervisor.",
+      throw new ConfigurationFailure(
+        "Private inference requires one OpenShell-owned per-Sandbox supervisor using the validated destination IP.",
       );
     }
     const port = Number(new URL(provider.baseUrl).port || 443);
@@ -15718,6 +15790,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       owner,
       namespace,
     );
+    return true;
   }
 
   private async reconcileWorkspaceNodePolicy(

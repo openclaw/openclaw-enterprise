@@ -95,5 +95,8 @@ test("ordinary deployment admits concurrent source-authorized destinations and i
 });
 
 test("Agents share a named provider while their revisions pin the route, model metadata, and allowed operation", async (t) => {
-  await exerciseNamedProvider(await staticEgressFixture(t, { admitRevision: false }));
+  await exerciseNamedProvider(
+    await staticEgressFixture(t, { admitRevision: false }),
+    "kubernetes_service",
+  );
 });

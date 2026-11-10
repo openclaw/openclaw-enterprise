@@ -271,6 +271,9 @@ export interface SandboxDriver extends Driver {
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
+  /** Release a held private inference route after Compute verifies the dedicated sender.
+   * Return true only after the Sandbox has applied the approved policy for this execution. */
+  releasePrivateInference?(context: SandboxHarnessContext): Promise<boolean>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(

@@ -120,6 +120,17 @@ export async function staticEgressFixture(
   const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
   const certPath = generated.certPath;
   const objects = new Map();
+  const modelService = {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: { name: "model", namespace: "inference", uid: randomUUID() },
+    spec: {
+      type: "ClusterIP",
+      clusterIP: "10.43.17.8",
+      selector: { app: "model" },
+      ports: [{ port: 443, targetPort: 9443, protocol: "TCP" }],
+    },
+  };
   let namespace;
   const namespaceResource = () => ({
     apiVersion: "v1",
@@ -142,6 +153,13 @@ export async function staticEgressFixture(
   const kube = createHttpsServer({ key, cert }, async (request, response) => {
     response.setHeader("content-type", "application/json");
     const url = new URL(request.url, "http://localhost");
+    if (
+      request.method === "GET" &&
+      url.pathname === "/api/v1/namespaces/inference/services/model"
+    ) {
+      response.end(JSON.stringify(modelService));
+      return;
+    }
     if (url.pathname === "/api/v1/namespaces") {
       await beforeNamespaceResponse?.();
       const nsId = namespace.id;
@@ -633,7 +651,7 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant, modelProvider };
+    return { ...app, namespace, agent, source, grant, modelProvider, modelService };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>

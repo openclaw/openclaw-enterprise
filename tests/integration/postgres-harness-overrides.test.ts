@@ -18,7 +18,7 @@ test(
       { appFactory: postgresApp },
       true,
     );
-    await exerciseNamedProvider(fixture);
+    await exerciseNamedProvider(fixture, "private_ipv4");
     assert.ok("pool" in fixture);
     // A fresh State reader and Compute instance cannot reconstruct old routes from new defaults.
     const restarted = new PostgresPlatformState(fixture.pool);
