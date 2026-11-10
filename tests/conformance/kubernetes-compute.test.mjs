@@ -4025,7 +4025,7 @@ test("activation of a version without repository credentials never consults the 
       assert.fail("the install time is read only for repository-bound versions");
     },
   };
-  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
+  const { state, driver, revision, gatewayName, agentName, objects, prepare, markReady } =
     dedicatedFirstDeployFixture({ openShellGit });
   assert.equal(revision.repositoryCredentials, undefined);
   assert.equal((await prepare()).ready, false);
@@ -4035,6 +4035,43 @@ test("activation of a version without repository credentials never consults the 
   state.gatewayWorkspaceNodeId = "node-1";
   assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, authContext(revision));
+  assert.equal(
+    await driver.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+    "not-applicable",
+    "the selected Compute recognizes an active revision without repository access",
+  );
+  assert.equal(
+    await driver.repositoryWorkerRestartDisposition(
+      { ...revision, compute: { ...revision.compute, id: "another-compute" } },
+      AbortSignal.timeout(2_000),
+    ),
+    "unknown",
+    "a Compute cannot assess another implementation's revision",
+  );
+  const [namespaceKey, namespace] = [...objects].find(([, value]) => value.kind === "Namespace");
+  objects.delete(namespaceKey);
+  assert.equal(
+    await driver.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+    "unknown",
+    "absence of Git does not prove ownership of a missing namespace",
+  );
+  objects.set(namespaceKey, {
+    ...namespace,
+    metadata: {
+      ...namespace.metadata,
+      labels: { ...namespace.metadata.labels, "openclaw.dev/namespace": "another-namespace" },
+    },
+  });
+  assert.equal(
+    await driver.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+    "unknown",
+    "a foreign namespace must not receive a positive assessment",
+  );
+  objects.set(namespaceKey, namespace);
+  assert.equal(
+    await driver.repositoryWorkerRestartDisposition(revision, AbortSignal.abort()),
+    "unknown",
+  );
 });
 
 // A node that has not paired within the pass's wait leaves the pass pending; the

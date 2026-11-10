@@ -229,6 +229,9 @@
       "path": "tests/conformance/kubernetes-client.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-network-policy.test.mjs"
+    },
+    {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
     },
     {
@@ -781,6 +784,12 @@
         "selected repository issuance sends every selected stable ID and explicit permissions",
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
+    },
+    {
+      "path": "tests/conformance/topology-controller-manifests.test.ts",
+      "expectedTests": [
+        "controller topology keeps API-only fixture inputs separate from the worker"
       ]
     }
   ]

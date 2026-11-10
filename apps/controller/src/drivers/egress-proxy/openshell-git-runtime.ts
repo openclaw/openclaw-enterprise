@@ -13,6 +13,7 @@ import type {
   ProtectedRepositoryGitMaterial,
   ProxyRevisionContext,
   RepositoryGitInstallationFence,
+  RepositoryWorkerRestartDisposition,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -422,6 +423,8 @@ export class OpenShellGitRuntime {
   private owner: OnlineGitOwner | undefined;
   private emit: RepositoryTransportEmit | undefined;
   private routes: OpenShellGitRouteStore | undefined;
+  private restartEvidence:
+    ((revision: Readonly<AgentRevision>, signal: AbortSignal) => Promise<boolean>) | undefined;
   /** This worker process, as the persisted routes name their holder. */
   private readonly instance = randomUUID();
   private stopped = new AbortController();
@@ -471,6 +474,45 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell Git delivery does not match the admitted binding.");
     }
     return scope;
+  }
+
+  /** Composition connects only a read callback; API observation never starts the sender. */
+  connectRestartObservation(
+    read: (revision: Readonly<AgentRevision>, signal: AbortSignal) => Promise<boolean>,
+  ): void {
+    this.restartEvidence = read;
+  }
+
+  async repositoryWorkerRestartDisposition(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition> {
+    if (signal.aborted) {
+      return "unknown";
+    }
+    if (revision.repositoryCredentials === undefined) {
+      return revision.egressPlan?.repositoryGit === undefined &&
+        revision.egressPlan?.repositoryGitAuthorization === undefined
+        ? "not-applicable"
+        : "unknown";
+    }
+    try {
+      const scope = this.scope(revision);
+      const preview = revision.executionAdmission.version === 6;
+      const held = requiresOriginalLauncher(revision, scope.binding.profile);
+      // The current owner cannot prepare or recover historical installation-wide routes.
+      if (!preview && !held) {
+        return "unknown";
+      }
+      if (revision.repositoryCredentials.standingApprovalId !== undefined) {
+        if (!(await this.restartEvidence?.(revision, signal)) || signal.aborted) {
+          return "unknown";
+        }
+      }
+      return "original-worker-required";
+    } catch {
+      return "unknown";
+    }
   }
 
   /** A warm owner can verify its launch. A cold owner can only prove replacement. */
@@ -2018,7 +2060,9 @@ export class OpenShellGitRuntime {
 
   /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
   connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): OpenShellGitRouteStore {
-    this.routes = new PostgresOpenShellGitRouteStore(pool);
+    const store = new PostgresOpenShellGitRouteStore(pool);
+    this.routes = store;
+    this.restartEvidence = store.restartEvidence.bind(store);
     this.emit = emit;
     return this.routes;
   }
@@ -2152,6 +2196,8 @@ export function openShellRepositoryAccess(
   ) => StandingGitExecution | undefined,
 ): SandboxRepositoryAccess {
   return {
+    repositoryWorkerRestartDisposition: (context) =>
+      git.repositoryWorkerRestartDisposition(context.revision, context.signal),
     verifyExecution: (context) => git.verifyExecution(context.revision, context.signal),
     retireExpired: async (context) => {
       const owner = await standing(context);

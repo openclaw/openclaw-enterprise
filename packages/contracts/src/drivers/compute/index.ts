@@ -216,9 +216,19 @@ export interface ComputePreflightResult {
   readonly warnings: readonly ComputePreflightWarning[];
 }
 
+/** Prospective repository-only assessment; never authority to retain or release an execution. */
+export type RepositoryWorkerRestartDisposition =
+  "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
+
 export interface ComputeDriver extends Driver {
   /** Enforces the admitted public TCP mode without bypassing provider-owned networking. */
   readonly publicNetworkEgress?: true | undefined;
+  /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
+  repositoryWorkerRestartDisposition?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition>;
+
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.

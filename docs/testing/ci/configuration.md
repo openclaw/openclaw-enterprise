@@ -79,6 +79,11 @@ jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requiremen
 and defaults differ by lane: follow its linked suite guide. Missing required
 inputs fail selected lanes.
 
+OpenShell image overrides must retain the pinned release digest, or use the
+[complete candidate image and chart selection](openshell-execution.md#select-candidate-images-and-charts)
+during local preparation. Hosted jobs do not acquire candidate source checkouts
+or charts from image variables alone.
+
 QA model overrides default to `gpt-6-luna`.
 
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).

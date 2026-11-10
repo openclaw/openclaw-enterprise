@@ -1611,29 +1611,41 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         }
         out(selected[operation]);
       } else if (args.includes("deployment-inventory")) {
-        out(
-          state.inventoryResponse ?? {
-            installationId: "ins_test",
-            namespaces: state.inventoryNamespaces ?? [
-              {
-                id: "ns_test",
-                status: "ready",
-                agents: state.agent
-                  ? [
-                      {
-                        id: "agt_test",
-                        status: "active",
-                        desiredRuntimeState: "running",
-                        executionMode: "embedded",
-                        activeRevisionId: "rev_old",
-                        deploymentInProgress: false,
-                      },
-                    ]
-                  : [],
-              },
-            ],
-          },
-        );
+        const response = state.inventoryResponses?.[state.inventoryReadCount ?? 0];
+        state.inventoryReadCount = (state.inventoryReadCount ?? 0) + 1;
+        save();
+        if (state.inventoryRequiresApi && state.api === 0) {
+          return fail(1, "API unavailable");
+        }
+        if (response === "denied") {
+          return fail(1, "permission denied");
+        }
+        if (response !== undefined) {
+          out(response);
+          return io.exit(0);
+        }
+        out({
+          installationId: "ins_test",
+          namespaces: state.inventoryNamespaces ?? [
+            {
+              id: "ns_test",
+              status: "ready",
+              agents: state.agent
+                ? [
+                    {
+                      id: "agt_test",
+                      status: "active",
+                      desiredRuntimeState: "running",
+                      executionMode: "embedded",
+                      activeRevisionId: "rev_old",
+                      deploymentInProgress: false,
+                      repositoryWorkerRestart: "reverification-supported",
+                    },
+                  ]
+                : [],
+            },
+          ],
+        });
       } else if (
         state.names &&
         args.includes("get") &&
@@ -1933,7 +1945,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       executionCluster = null,
       installationName = "Production",
       inventoryNamespaces = null,
-      inventoryResponse,
+      inventoryResponses,
+      inventoryRequiresApi = false,
       activeRevisionResponse,
       names = null,
       configurationValues = null,
@@ -2133,7 +2146,8 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       preflightFault,
       installationName,
       inventoryNamespaces,
-      inventoryResponse,
+      inventoryResponses,
+      inventoryRequiresApi,
       activeRevisionResponse,
       names,
       configurationValues,
@@ -2422,7 +2436,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         if (readFailure) {
           assert.deepEqual(
             inventoryFiles.filter((file) => file.endsWith(".json")),
-            ["deployment-inventory.json"],
+            ["deployment-inventory.json", "restart-preflight.json"],
           );
         }
         for (const file of inventoryFiles) {
@@ -2431,28 +2445,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
             /tenant-native-value/u,
           );
         }
-      });
-    }
-    // A stream must not let a valid final document hide a missing or unrelated inventory.
-    const inventory = { installationId: "ins_test", namespaces: [] };
-    for (const [name, response] of [
-      ["empty inventory output", ""],
-      ["duplicate inventories", `${JSON.stringify(inventory)}\n${JSON.stringify(inventory)}`],
-      [
-        "invalid inventory followed by valid inventory",
-        `${JSON.stringify({ ...inventory, installationId: "ins_other" })}\n${JSON.stringify(inventory)}`,
-      ],
-    ]) {
-      await t.test(name, async (t) => {
-        const f = await fixture(t, { controllerOnly: true, inventoryResponse: response });
-        await assert.rejects(f.run(), /deployment inventory/u);
-        assert.deepEqual(await f.events(), []);
-        const state = await f.state();
-        assert.equal(state.version, 1);
-        assert.equal(state.api, 1);
-        assert.equal(state.worker, 1);
-        assert.equal(state.dispatches, 0);
-        assert.deepEqual(state.preflight?.created ?? [], []);
       });
     }
     const agent = {
@@ -2507,7 +2499,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       await t.test(name, async (t) => {
         // The same common inventory gate protects runtime upgrades as well.
         const f = await fixture(t, {
-          inventoryResponse: { installationId: "ins_test", namespaces },
+          inventoryResponses: [{ installationId: "ins_test", namespaces }],
         });
         await assert.rejects(f.run(), /deployment inventory/u);
         assert.deepEqual(await f.events(), []);
@@ -2576,7 +2568,14 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       assert.equal((await f.events())[0], "revision-read rev_old");
       const files = await readdir(join(f.evidence, "inventory"));
       const summaries = files.filter(
-        (file) => file.endsWith(".json") && file !== "deployment-inventory.json",
+        (file) =>
+          file.endsWith(".json") &&
+          ![
+            "deployment-inventory.json",
+            "restart-preflight.json",
+            "before-stop.json",
+            "before-stop-selection.json",
+          ].includes(file),
       );
       assert.equal(summaries.length, 1);
       assert.deepEqual(
@@ -2589,6 +2588,187 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         },
       );
     });
+  });
+
+  function restartInventory(
+    repositoryWorkerRestart = "reverification-supported",
+    revision = "rev_old",
+  ) {
+    return {
+      installationId: "ins_test",
+      namespaces: [
+        {
+          id: "ns_test",
+          status: "ready",
+          agents: [
+            {
+              id: "agt_test",
+              status: "active",
+              desiredRuntimeState: "running",
+              executionMode: "embedded",
+              activeRevisionId: revision,
+              deploymentInProgress: false,
+              ...(repositoryWorkerRestart === "missing" ? {} : { repositoryWorkerRestart }),
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  // These cases exercise the shipped shell and real jq against external command
+  // responses. Driver integration separately proves the server's assessment.
+  test("repository restart preflight refuses unsafe or incomplete retained fleets before writes", async (t) => {
+    for (const [name, response, expected] of [
+      ...["original-worker-required", "unknown", "missing", "future-value"].map((disposition) => [
+        disposition,
+        restartInventory(disposition),
+        /Namespace "ns_test", Agent "agt_test", revision "rev_old": (original-worker-required|unknown)/u,
+      ]),
+      ["denied", "denied", /cannot read the complete deployment inventory/u],
+      ["empty output", "", /inventory is incomplete/u],
+      [
+        "multiple documents",
+        JSON.stringify(restartInventory()) + "\n" + JSON.stringify(restartInventory()),
+        /inventory is incomplete/u,
+      ],
+      // A later valid document must not hide an earlier ownership mismatch.
+      [
+        "invalid inventory followed by valid inventory",
+        JSON.stringify({ installationId: "ins_other", namespaces: [] }) +
+          "\n" +
+          JSON.stringify(restartInventory()),
+        /inventory is incomplete/u,
+      ],
+    ]) {
+      await t.test(name, async (t) => {
+        const f = await fixture(t, { controllerOnly: true, inventoryResponses: [response] });
+        await assert.rejects(f.run(), expected);
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual(state.preflight?.created ?? [], []);
+        assert.equal(state.api, 1);
+        assert.equal(state.worker, 1);
+        assert.equal(state.version, 1);
+        assert.equal(state.dispatches, 0);
+      });
+    }
+  });
+
+  test("repository restart preflight refreshes selections immediately before stopping writers", async (t) => {
+    for (const [name, initial, fresh] of [
+      [
+        "new revision",
+        restartInventory(),
+        restartInventory("reverification-supported", "rev_changed"),
+      ],
+      ["changed assessment", restartInventory(), restartInventory("not-applicable")],
+      ["new Agent", { installationId: "ins_test", namespaces: [] }, restartInventory()],
+      ["lost access", restartInventory(), "denied"],
+    ]) {
+      await t.test(name, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          inventoryResponses: [initial, fresh],
+        });
+        await assert.rejects(
+          f.run(),
+          /inventory selections or repository restart assessments changed|cannot read the complete deployment inventory/u,
+        );
+        const state = await f.state();
+        assert.equal(state.inventoryReadCount, 2);
+        assert.equal(state.api, 1);
+        assert.equal(state.worker, 1);
+        assert.equal(state.version, 1);
+        assert.equal(state.dispatches, 0);
+        assert.equal(
+          (await f.events()).some((event) => event.startsWith("scale-")),
+          false,
+        );
+      });
+    }
+  });
+
+  test("repository restart preflight permits positively assessed or empty fleets without deploying", async (t) => {
+    for (const [name, inventory] of [
+      ["supported", restartInventory()],
+      ["no repository access", restartInventory("not-applicable")],
+      ["empty", { installationId: "ins_test", namespaces: [] }],
+    ]) {
+      await t.test(name, async (t) => {
+        const f = await fixture(t, {
+          controllerOnly: true,
+          inventoryResponses: [inventory, inventory],
+        });
+        await f.run();
+        const state = await f.state();
+        assert.equal(state.inventoryReadCount, 2);
+        assert.equal(state.dispatches, 0);
+        assert.equal(state.version, 2);
+        assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
+      });
+    }
+  });
+
+  test("repository restart preflight resumes prospectively only while the worker still runs", async (t) => {
+    await t.test(
+      "stopped API must be available for fresh inventory before the remaining stop",
+      async (t) => {
+        const inventory = restartInventory();
+        const f = await fixture(t, {
+          controllerOnly: true,
+          inventoryRequiresApi: true,
+          inventoryResponses: [
+            inventory,
+            inventory,
+            inventory,
+            restartInventory("original-worker-required"),
+            inventory,
+          ],
+        });
+        await f.failNext("fail-scale-worker");
+        await assert.rejects(f.run(), injectedFault);
+        assert.deepEqual(
+          (await f.events()).filter((event) => event.startsWith("scale-")),
+          ["scale-api"],
+        );
+        await assert.rejects(f.run("--resume"), /Restore access to the existing API/u);
+        assert.equal((await f.state()).api, 0);
+        assert.equal((await f.state()).worker, 1);
+        assert.equal((await f.state()).version, 1);
+        assert.equal((await f.state()).dispatches, 0);
+        // Once the operator restores the old API, an unsafe fresh assessment still
+        // refuses. Earlier positive evidence cannot authorize the remaining stop.
+        const state = await f.state();
+        state.api = 1;
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await assert.rejects(f.run("--resume"), /original-worker-required/u);
+        assert.equal((await f.state()).api, 1);
+        await f.run("--resume");
+        assert.equal((await f.state()).dispatches, 0);
+        assert.equal((await f.events()).filter((event) => event === "scale-worker").length, 1);
+      },
+    );
+    await t.test(
+      "after stopping both writers recovery does not replay stops or reread inventory",
+      async (t) => {
+        const inventory = restartInventory();
+        const f = await fixture(t, {
+          controllerOnly: true,
+          candidates: true,
+          inventoryResponses: [inventory, inventory, "denied"],
+        });
+        await f.failNext("lost-secret-response");
+        await assert.rejects(f.run(), injectedFault);
+        const count = (await f.state()).inventoryReadCount;
+        assert.equal((await f.state()).worker, 0);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+        await f.run("--resume");
+        assert.equal((await f.state()).inventoryReadCount, count);
+        assert.equal((await f.events()).filter((event) => event.startsWith("scale-")).length, 2);
+        assert.equal((await f.state()).dispatches, 0);
+      },
+    );
   });
 
   // Existing controller-only semantics intentionally remain unchanged unless selected.
@@ -3739,8 +3919,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       "scale-api",
       "scale-worker",
       "secret-replaced",
-      "scale-api",
-      "scale-worker",
       "migration",
     ]);
     const state = await f.state();
@@ -4115,7 +4293,6 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         await f.run("--resume");
         assert.deepEqual(await f.events(), [
           "scale-api",
-          "scale-api",
           "scale-worker",
           "secret-replaced",
           "migration",
@@ -4213,7 +4390,10 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
   });
 
   test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
-    const f = await fixture(t, { agent: true });
+    // A normal runtime upgrade can replace a worker-bound revision, but a lost
+    // response must never turn that planned replacement into a second deployment.
+    const inventory = restartInventory("original-worker-required");
+    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
     await f.failNext("lost-agent-response");
     await assert.rejects(f.run(), /deployment outcome is unknown/);
     const calls = f.commands.length;
@@ -4232,6 +4412,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
     await f.run("--resume");
     assert.equal((await f.state()).dispatches, 1);
+    assert.equal((await f.state()).inventoryReadCount, 2);
   });
 
   describe("resume evidence directory ownership", { concurrency: 2 }, () => {
@@ -5256,7 +5437,12 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     { concurrency: true },
     async (t) => {
       const cases = [];
-      for (const name of ["candidate-values.yaml", "targets.jsonl"]) {
+      for (const name of [
+        "candidate-values.yaml",
+        "targets.jsonl",
+        "inventory/restart-preflight.json",
+        "prepared-helm-attempt.json",
+      ]) {
         cases.push(
           t.test(name, async (subtest) => {
             const f = await fixture(subtest);
@@ -7744,11 +7930,13 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run(), injectedFault);
     const original = await assertHelmIntent(f, 1, 2);
     const preparation = await readFile(join(f.evidence, "parameters.json"), "utf8");
-    // The new candidate is staged before quiescence; stopping here must leave
-    // the accepted failed submission authoritative on the next resume.
-    await f.failNext("fail-scale-worker");
+    const values = await readFile(join(f.directory, "values.json"), "utf8");
+    // The retry's dry-run fails after staging values, before replacing the local
+    // values or publishing a new intent. The failed submission stays authoritative.
+    await f.failNext("fail-server-dry-run");
     await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
+    assert.equal(await readFile(join(f.directory, "values.json"), "utf8"), values);
     await assert.rejects(f.run("--resume"), /migration --check/);
     assert.equal((await f.state()).helmSubmissions, 1);
     await f.failNext("lost-helm-response");
