@@ -425,6 +425,4 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 - 2026-11-10 17:10: Hint tenant access on Namespace delete. (fix-4929)
 
-- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
-
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.
