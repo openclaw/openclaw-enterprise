@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
@@ -355,6 +355,159 @@ test("the authenticated connected request stays on the runner's exact loopback c
   );
   await assert.rejects(get("/redirect"), TypeError);
   assert.equal(foreignRequests, 0, "neither request reached the foreign listener");
+});
+
+test("connected response evidence survives cleanup without retaining untrusted fields", async (t) => {
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  const requestId = `req_${randomUUID()}`;
+  const serviceKey = `fixture-${randomUUID()}`;
+  const cases = [
+    {
+      code: "RESOURCE_CONFLICT",
+      metaId: requestId,
+      headerId: sentinel,
+      expectedCode: "RESOURCE_CONFLICT",
+      expectedId: requestId,
+    },
+    {
+      code: sentinel,
+      metaId: sentinel,
+      headerId: requestId,
+      expectedCode: "UNKNOWN",
+      expectedId: requestId,
+    },
+    {
+      code: { value: sentinel },
+      metaId: requestId + "\n",
+      headerId: sentinel,
+      expectedCode: "UNKNOWN",
+      expectedId: null,
+    },
+  ];
+  let selected;
+  let pending;
+  let evidence;
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      assert.equal(request.headers["x-api-key"], serviceKey);
+      const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+      pending = saved.lastApi;
+      assert.equal(pending.outcome, "unknown", "the attempt must be durable before dispatch");
+      if (request.method === "DELETE") {
+        response.writeHead(204).end();
+        return;
+      }
+      response.writeHead(409, { "x-request-id": selected.headerId, "x-private": sentinel });
+      response.end(
+        JSON.stringify({
+          error: { code: selected.code, message: sentinel, details: [{ value: sentinel }] },
+          meta: { requestId: selected.metaId, private: sentinel },
+          data: sentinel,
+        }),
+      );
+    }),
+  );
+  const progress = {};
+  evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  for (selected of cases) {
+    // A real HTTP rejection is recorded before the caller's expected-status assertion.
+    // Later cleanup must not erase its correlation ID or retain arbitrary response material.
+    progress.stage = "deploy-request";
+    await assert.rejects(evidence.api("POST", route + "/deploy", {}, 202), {
+      code: "ERR_ASSERTION",
+    });
+    const expected = {
+      ...pending,
+      outcome: "received-error-status",
+      status: 409,
+      code: selected.expectedCode,
+      requestId: selected.expectedId,
+    };
+    progress.stage = "cleanup";
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.deepEqual(
+      saved.apiOperations?.at(-2),
+      expected,
+      "the initiating response must remain available after cleanup",
+    );
+    assert.equal(expected.phase, "deploy-request");
+    assert.equal(saved.lastApi.method, "DELETE");
+    assert.equal(saved.lastApi.phase, "cleanup");
+    assert.notEqual(saved.lastApi.operationId, expected.operationId);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(raw.includes(serviceKey), false);
+    assert.equal(raw.includes(route), false);
+  }
+});
+
+test("connected response evidence preserves uncertainty after decoding and transport failures", async (t) => {
+  const requestId = `req_${randomUUID()}`;
+  const sentinel = `private-diagnostic-${randomUUID()}`;
+  let fault;
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      if (request.method === "DELETE") {
+        response.writeHead(204).end();
+      } else if (fault === "disconnected") {
+        request.socket.destroy();
+      } else {
+        if (fault === "malformed-with-ledger-failure") {
+          await mkdir(evidence.directory + "/observations.pending.json");
+        }
+        response.writeHead(202, { "x-request-id": requestId });
+        // This is a faulting HTTP peer, not a substitute for a valid product response.
+        response.end("{malformed:" + sentinel);
+      }
+    }),
+  );
+  const progress = { stage: "deploy-request" };
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey: `fixture-${randomUUID()}` },
+    },
+    progress,
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  for (fault of ["malformed", "disconnected"]) {
+    await assert.rejects(
+      evidence.request("POST", route + "/deploy", {}),
+      fault === "malformed" ? SyntaxError : TypeError,
+    );
+    await evidence.request("DELETE", route, undefined, true);
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    const operation = saved.apiOperations?.at(-2);
+    assert.ok(operation, "the uncertain initiating operation must survive cleanup");
+    assert.equal(operation.outcome, "unknown", "status alone must not settle write custody");
+    assert.equal(operation.status, fault === "malformed" ? 202 : null);
+    assert.equal(operation.requestId, fault === "malformed" ? requestId : null);
+    assert.equal(operation.code, null);
+    assert.equal(raw.includes(sentinel), false);
+    assert.equal(saved.lastApi.outcome, "received-success-status");
+  }
+  // A second failure while saving diagnostics must not replace the original
+  // decoder error or imply that the already-dispatched write can be replayed.
+  fault = "malformed-with-ledger-failure";
+  await assert.rejects(evidence.request("POST", route + "/deploy", {}), SyntaxError);
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(saved.lastApi.outcome, "unknown");
+  assert.equal(saved.lastApi.status, null, "the durable pre-dispatch record must survive");
 });
 
 test("connected database selection rejects missing, remote and redirected observers before effects", () => {
