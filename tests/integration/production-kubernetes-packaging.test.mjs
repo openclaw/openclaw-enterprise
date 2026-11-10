@@ -136,13 +136,13 @@ const sandboxValues = {
   "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
     "public-ingress",
 };
-const githubLoginValues = {
-  "auth.github.enabled": "true",
+const googleLoginValues = {
+  "auth.google.enabled": "true",
   "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
 };
-const githubEgressValues = {
-  "auth.github.egressCidrs[0]": "140.82.112.0/20",
-  "auth.github.egressCidrs[1]": "192.30.252.0/22",
+const googleEgressValues = {
+  "auth.google.egressCidrs[0]": "140.82.112.0/20",
+  "auth.google.egressCidrs[1]": "192.30.252.0/22",
 };
 const trustedProxyValues = {
   "api.trustedProxy.preset": "ingress-nginx",
@@ -924,7 +924,7 @@ test(
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
     for (const [values, secret, role] of [
       [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
-      [githubLoginValues, "occ-github-login", "auth.github.secretName"],
+      [googleLoginValues, "occ-google-login", "auth.google.secretName"],
       [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
       [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
       [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
@@ -1627,7 +1627,7 @@ test("production Helm values example renders the backendless default chart", too
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
-    !objects.some(({ metadata }) => /-api-(github|google)-login-egress$/.test(metadata.name)),
+    !objects.some(({ metadata }) => /-api-(google|oidc)-login-egress$/.test(metadata.name)),
   );
   assert.ok(
     initialization.spec.template.spec.volumes.some(
@@ -2534,7 +2534,12 @@ case "$*" in
 esac
 `,
       occ: `#!/usr/bin/env bash
-printf '{"id":"ins_test"}'
+[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
+case "$4" in
+  get) printf '{"id":"ins_test"}' ;;
+  deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
+  *) exit 94 ;;
+esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
       node: `#!/usr/bin/env bash
@@ -4218,7 +4223,7 @@ test(
   },
 );
 
-const signInEnv = /^OCC_AUTH_(GITHUB_|GOOGLE_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
+const signInEnv = /^OCC_AUTH_(GOOGLE_|OIDC_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
 
 async function signInObjects(overrides) {
   const objects = await resources((await render(overrides)).stdout);
@@ -4236,28 +4241,28 @@ async function signInObjects(overrides) {
   );
   const egress = objects.find(
     ({ kind, metadata }) =>
-      kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-api-github-login-egress",
+      kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-api-google-login-egress",
   );
   return { objects, selected, apiEnv, egress };
 }
 
 test(
-  "optional GitHub sign-in reaches only the API through a dedicated Secret and GitHub egress",
+  "optional Google sign-in reaches only the API through a dedicated Secret and Google egress",
   tooling,
   async () => {
     const { objects, selected, apiEnv, egress } = await signInObjects({
-      ...githubLoginValues,
-      ...githubEgressValues,
+      ...googleLoginValues,
+      ...googleEgressValues,
       ...trustedProxyValues,
     });
     assert.deepEqual(selected("Deployment", "api").spec.strategy, { type: "Recreate" });
-    assert.deepEqual(apiEnv.OCC_AUTH_GITHUB_CLIENT_ID, {
-      valueFrom: { secretKeyRef: { name: "occ-github-login", key: "client-id" } },
+    assert.deepEqual(apiEnv.OCC_AUTH_GOOGLE_CLIENT_ID, {
+      valueFrom: { secretKeyRef: { name: "occ-google-login", key: "client-id" } },
     });
-    assert.deepEqual(apiEnv.OCC_AUTH_GITHUB_CLIENT_SECRET, {
-      valueFrom: { secretKeyRef: { name: "occ-github-login", key: "client-secret" } },
+    assert.deepEqual(apiEnv.OCC_AUTH_GOOGLE_CLIENT_SECRET, {
+      valueFrom: { secretKeyRef: { name: "occ-google-login", key: "client-secret" } },
     });
-    assert.deepEqual(apiEnv.OCC_AUTH_GITHUB_RECOVERY_USER_ID, { value: "Xk3u9pQ2rT7vW1yZ" });
+    assert.deepEqual(apiEnv.OCC_AUTH_RECOVERY_USER_ID, { value: "Xk3u9pQ2rT7vW1yZ" });
     assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, { value: "10.42.0.0/16" });
     assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, { value: "ingress-nginx" });
     assert.equal(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, undefined);
@@ -4288,8 +4293,8 @@ test(
   },
 );
 
-test("GitHub sign-in egress defaults to HTTPS except link-local", tooling, async () => {
-  const { apiEnv, egress } = await signInObjects(githubLoginValues);
+test("Google sign-in egress defaults to HTTPS except link-local", tooling, async () => {
+  const { apiEnv, egress } = await signInObjects(googleLoginValues);
   assert.equal(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, undefined);
   assert.equal(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, undefined);
   assert.equal(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, undefined);
@@ -4361,7 +4366,7 @@ test(
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, { value: cidrs });
       assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, { value: preset });
       assert.deepEqual(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, header);
-      assert.ok(!Object.keys(apiEnv).some((name) => name.startsWith("OCC_AUTH_GITHUB_")));
+      assert.ok(!Object.keys(apiEnv).some((name) => name.startsWith("OCC_AUTH_GOOGLE_")));
       assert.equal(egress, undefined);
       const worker = selected("Deployment", "worker").spec.template.spec.containers[0];
       assert.ok(!worker.env.some(({ name }) => signInEnv.test(name)));
@@ -4375,93 +4380,78 @@ test(
   async () => {
     for (const [description, override, message] of [
       [
-        "GitHub sign-in without a recovery user",
-        { "auth.github.enabled": "true" },
-        /auth\.github\.enabled requires auth\.recoveryUserId/,
+        "Google sign-in without a recovery user",
+        { "auth.google.enabled": "true" },
+        /auth\.google\.enabled requires auth\.recoveryUserId/,
       ],
       [
-        "a recovery user without GitHub, Google or OIDC sign-in",
+        "a recovery user without Google or OIDC sign-in",
         { "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ" },
-        /auth\.recoveryUserId requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
+        /auth\.recoveryUserId requires auth\.google\.enabled or auth\.oidc\.enabled/,
       ],
       [
-        "GitHub sign-in with an invalid recovery user",
-        { ...githubLoginValues, "auth.recoveryUserId": "admin@example.invalid" },
+        "Google sign-in with an invalid recovery user",
+        { ...googleLoginValues, "auth.recoveryUserId": "admin@example.invalid" },
         /auth\.recoveryUserId must be/,
       ],
       [
-        "GitHub sign-in with the retired nested recovery user",
-        { ...githubLoginValues, "auth.github.recoveryUserId": "Xk3u9pQ2rT7vW1yZ" },
-        /set auth\.recoveryUserId/,
+        "Google sign-in with a hostname egress",
+        { ...googleLoginValues, "auth.google.egressCidrs[0]": "github.com" },
+        /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
       ],
       [
-        "GitHub sign-in with a hostname egress",
-        { ...githubLoginValues, "auth.github.egressCidrs[0]": "github.com" },
-        /auth\.github\.egressCidrs requires explicit IPv4 CIDRs/,
-      ],
-      [
-        "GitHub sign-in with an invalid egress address",
-        { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.312.0/20" },
+        "Google sign-in with an invalid egress address",
+        { ...googleLoginValues, "auth.google.egressCidrs[0]": "140.82.312.0/20" },
         /invalid IPv4 address/,
       ],
       [
-        "GitHub sign-in with a leading-zero egress octet",
-        { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.112.08/20" },
+        "Google sign-in with a leading-zero egress octet",
+        { ...googleLoginValues, "auth.google.egressCidrs[0]": "140.82.112.08/20" },
         /explicit IPv4 CIDRs/,
       ],
       [
-        "GitHub sign-in with a /0 egress entry",
-        { ...githubLoginValues, "auth.github.egressCidrs[0]": "0.0.0.0/0" },
+        "Google sign-in with a /0 egress entry",
+        { ...googleLoginValues, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
         /prefixes 1 through 32/,
       ],
       [
-        "GitHub sign-in with an empty-string egress list",
-        { ...githubLoginValues, "auth.github.egressCidrs": "" },
-        /auth\.github\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
+        "Google sign-in with an empty-string egress list",
+        { ...googleLoginValues, "auth.google.egressCidrs": "" },
+        /auth\.google\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
       ],
       [
-        "GitHub sign-in with an empty-string organization allowlist",
-        { ...githubLoginValues, "auth.github.allowedOrgs": "" },
-        /auth\.github\.allowedOrgs must be a list of GitHub organization logins/,
-      ],
-      [
-        "GitHub sign-in with an empty-string team allowlist",
-        { ...githubLoginValues, "auth.github.allowedTeams": "" },
-        /auth\.github\.allowedTeams must be a list of org\/team-slug entries/,
-      ],
-      [
-        "GitHub sign-in sharing the Better Auth Secret",
-        { ...githubLoginValues, "auth.github.secretName": "occ-auth" },
+        "Google sign-in sharing the Better Auth Secret",
+        { ...googleLoginValues, "auth.google.secretName": "occ-auth" },
         /dedicated Secret/,
       ],
       [
-        "GitHub sign-in sharing the database Secret",
-        { ...githubLoginValues, "auth.github.secretName": "occ-database" },
+        "Google sign-in sharing the database Secret",
+        { ...googleLoginValues, "auth.google.secretName": "occ-database" },
         /dedicated Secret/,
       ],
       [
-        "GitHub sign-in sharing the installation Secret",
-        { ...githubLoginValues, "auth.github.secretName": "occ-installation-startup" },
+        "Google sign-in sharing the installation Secret",
+        { ...googleLoginValues, "auth.google.secretName": "occ-installation-startup" },
         /dedicated Secret/,
       ],
       [
-        "GitHub sign-in reusing one Secret key",
-        { ...githubLoginValues, "auth.github.clientSecretKey": "client-id" },
+        "Google sign-in reusing one Secret key",
+        { ...googleLoginValues, "auth.google.clientSecretKey": "client-id" },
         /different Secret keys/,
       ],
       [
-        "GitHub sign-in without a client ID key",
-        { ...githubLoginValues, "auth.github.clientIdKey": "" },
+        "Google sign-in without a client ID key",
+        { ...googleLoginValues, "auth.google.clientIdKey": "" },
         /client ID key/,
       ],
       [
-        "GitHub sign-in over HTTP",
-        { ...githubLoginValues, "auth.baseUrl": "http://occ.example.invalid" },
+        "Google sign-in over HTTP",
+        { ...googleLoginValues, "auth.baseUrl": "http://occ.example.invalid" },
         /HTTPS auth\.baseUrl/,
       ],
       [
-        "GitHub sign-in with shared native admin cookies",
-        { ...githubLoginValues, ...agentNativeAdminValues },
+        "Google sign-in with shared native admin cookies",
+        { ...googleLoginValues, ...agentNativeAdminValues },
         /agentNativeAdmin\.enabled: false/,
       ],
       [
@@ -4684,7 +4674,7 @@ for (const [field, enable = {}] of [
   ["database.secretName"],
   ["auth.secretName"],
   ["database.caSecretName", databaseCaValues],
-  ["auth.github.secretName", githubLoginValues],
+  ["auth.google.secretName", googleLoginValues],
   ["auth.google.secretName", { "auth.google.enabled": "true", "auth.recoveryUserId": "r1" }],
   ["auth.oidc.secretName", oidcLoginValues],
   ["backend.chatgpt.secretName", chatgptValues],
@@ -4792,18 +4782,18 @@ test(
       [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
     ]) {
       await assert.rejects(
-        render({ ...routing, ...githubLoginValues, "auth.github.secretName": secret }),
+        render({ ...routing, ...googleLoginValues, "auth.google.secretName": secret }),
         ({ code, stderr }) =>
           code !== 0 &&
           stderr.includes(
-            `auth.github.secretName must name a dedicated Secret; ${secret} is also ${role}`,
+            `auth.google.secretName must name a dedicated Secret; ${secret} is also ${role}`,
           ),
         secret,
       );
       // Without gateway routing those names are free.
-      await render({ ...githubLoginValues, "auth.github.secretName": secret });
+      await render({ ...googleLoginValues, "auth.google.secretName": secret });
     }
-    await render({ ...externalCa, ...githubLoginValues });
+    await render({ ...externalCa, ...googleLoginValues });
   },
 );
 
@@ -4894,8 +4884,8 @@ test(
     };
     for (const [base, setting, secret, other] of [
       [
-        { ...databaseCaValues, ...githubLoginValues },
-        "auth.github.secretName",
+        { ...databaseCaValues, ...googleLoginValues },
+        "auth.google.secretName",
         "occ-rds-ca",
         "database.caSecretName",
       ],
@@ -4907,8 +4897,8 @@ test(
       ],
       [databaseCaValues, "database.caSecretName", "occ-database", "database.secretName"],
       [
-        { ...sandbox, ...githubLoginValues },
-        "auth.github.secretName",
+        { ...sandbox, ...googleLoginValues },
+        "auth.google.secretName",
         "preview-wildcard",
         "gatewayRouting.sandbox.tlsSecretName",
       ],
@@ -5006,14 +4996,14 @@ test("the chart lets the public CA settings share one trust bundle Secret", tool
   }
   // An external issuer creates no root CA Secret, so its generated name is free.
   const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
-  await render({ ...base, ...githubLoginValues, "auth.github.secretName": gatewayRoot });
+  await render({ ...base, ...googleLoginValues, "auth.google.secretName": gatewayRoot });
   await assert.rejects(
     render({
       ...gatewayRoutingValues,
-      ...githubLoginValues,
-      "auth.github.secretName": gatewayRoot,
+      ...googleLoginValues,
+      "auth.google.secretName": gatewayRoot,
     }),
-    /auth\.github\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
+    /auth\.google\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
   );
 });
 
@@ -5130,13 +5120,13 @@ test(
       ],
       [
         "invalid GitHub client ID Secret key",
-        { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
-        /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
+        { ...googleLoginValues, "auth.google.clientIdKey": "bad/key" },
+        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
       ],
       [
         "reserved GitHub client secret Secret key",
-        { ...githubLoginValues, "auth.github.clientSecretKey": "." },
-        /auth\.github\.clientSecretKey must be a Kubernetes Secret key/,
+        { ...googleLoginValues, "auth.google.clientSecretKey": "." },
+        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
       ],
       [
         "overlong Google client secret Secret key",
@@ -5342,7 +5332,7 @@ test(
       );
     }
     for (const [provider, override] of [
-      ["github", { ...githubLoginValues, "auth.github.clientIdKey": ".hidden" }],
+      ["google", { ...googleLoginValues, "auth.google.clientIdKey": ".hidden" }],
       [
         "oidc",
         {

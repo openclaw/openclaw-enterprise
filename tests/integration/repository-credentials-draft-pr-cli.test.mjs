@@ -15,7 +15,7 @@ import { listen } from "../helpers/listen.mjs";
 // establish the outcome of an earlier attempt.
 const helper = fileURLToPath(
   new URL(
-    "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
+    "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
     import.meta.url,
   ),
 );

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 
 const envoyGateway = Object.freeze({
   name: "Envoy Gateway",
@@ -70,13 +71,6 @@ function assertCluster(cluster) {
     "cluster.context must select the owned k3d context.",
   );
   return { ...cluster, directory, kubeconfig: resolve(cluster.kubeconfig) };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function namespacedKubectlArgs(cluster, args) {

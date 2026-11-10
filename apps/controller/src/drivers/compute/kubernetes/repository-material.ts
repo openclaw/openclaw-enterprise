@@ -6,11 +6,12 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
-import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
+import type { RepositoryCredentialClientConfiguration } from "../../repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
-} from "../../repo/credentials/client-contracts.ts";
+} from "../../repo/access/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -153,17 +154,7 @@ function validateClient(value: unknown): RepositoryCredentialClientConfiguration
     return invalid();
   }
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== client.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    origin.search ||
-    origin.hash ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, client) ||
     !/^\/[A-Za-z0-9._/-]+\.git$/.test(remote.pathname) ||
     remote.pathname.includes("..") ||
     !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||

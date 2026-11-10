@@ -783,6 +783,7 @@ test("relocated preparation entrypoints require and deliver the local shell asse
   await mkdir(join(scripts, "lib"));
   for (const path of [
     "ci/codex-seccomp.mjs",
+    "lib/assert-inside-directory.ts",
     "lib/codex-seccomp-k3d.mjs",
     "lib/private-owned-path.mjs",
     "lib/codex-seccomp-profile.mjs",

@@ -1,0 +1,61 @@
+import type { AttemptContext, Clock } from "../../access/backend-contracts.ts";
+import { sendProviderRequest } from "./provider-transport/request.ts";
+import type { ProviderObservation } from "./provider-diagnostics.ts";
+import type { ProviderScope } from "./provider-transport/request-options.ts";
+
+/** The caller owns admission and dispatch; this transport does not require a repository identity. */
+export type ProviderAttempt = Pick<
+  AttemptContext,
+  "signal" | "deadlineMonoMs" | "assertAdmitted" | "observeDispatch"
+>;
+
+export interface ProviderResponse {
+  readonly status: number;
+  readonly body: Buffer;
+}
+export interface ProviderTransport {
+  issue(
+    authorization: string,
+    attempt: ProviderAttempt,
+    assertMaterialCurrent: () => void,
+    observeResponse: (response: ProviderResponse) => void,
+    observe?: (observation: ProviderObservation) => void,
+  ): Promise<ProviderResponse>;
+  revoke(authorization: string, attempt: ProviderAttempt): Promise<ProviderResponse>;
+}
+
+/** This capability can only mint its original scope or revoke the presented token. */
+export function createProviderTransport(
+  ca: Uint8Array | undefined,
+  clock: Clock,
+  prepared: ProviderScope,
+): ProviderTransport {
+  const trustedCa = ca === undefined ? undefined : Buffer.from(ca);
+  return Object.freeze<ProviderTransport>({
+    issue(authorization, attempt, assertMaterialCurrent, observeResponse, observe) {
+      return sendProviderRequest({
+        endpoint: prepared,
+        ca: trustedCa,
+        clock,
+        operation: "issue",
+        authorization,
+        attempt,
+        assertMaterialCurrent,
+        observeResponse,
+        ...(observe ? { observe } : {}),
+      });
+    },
+    revoke(authorization, attempt) {
+      return sendProviderRequest({
+        endpoint: prepared,
+        ca: trustedCa,
+        clock,
+        operation: "revoke",
+        authorization,
+        attempt,
+        assertMaterialCurrent: () => {},
+        observeResponse: () => {},
+      });
+    },
+  });
+}

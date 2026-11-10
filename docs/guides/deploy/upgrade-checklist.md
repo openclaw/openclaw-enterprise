@@ -48,7 +48,7 @@ command; use this page as its migration inventory.
       one of those paths, or to the OpenClaw commit or Codex version the
       Dockerfile pins, needs the new runtime image. For example, the repository
       credential client in
-      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
+      `apps/controller/src/drivers/repo/github/access/client/` is built into
       the runtime image. Other controller source ships only in the controller
       image. This includes the Agent Pod specs that the controller renders, such
       as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
@@ -57,8 +57,9 @@ command; use this page as its migration inventory.
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
 - [ ] Freeze concurrent Helm changes, disable OCC autoscalers and restart automation,
-      and stop all other database writers through recovery. For runtime releases,
-      also stop Agent deployments and draft edits and resolve existing deployment work.
+      and stop all other database writers through recovery. Freeze Agent deployments
+      and settle existing deployment work for every release; also freeze draft edits
+      for runtime releases.
 
 ### Check ReplicaSet capacity
 

@@ -65,6 +65,7 @@ async function verifyPreparation(env) {
     `prepare / Prepare ${image} (arm64)`,
     `Assemble ${image} OCI image`,
   ]);
+  nativeJobs.push("prepare / Smoke runtime (amd64)", "prepare / Smoke runtime (arm64)");
   const hasLegacyJobs = jobs.some((job) => legacyJobs.includes(job.name));
   if (hasLegacyJobs) {
     assert.ok(

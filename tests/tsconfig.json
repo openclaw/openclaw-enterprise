@@ -31,6 +31,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "conformance/kubernetes-teardown-cases.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
@@ -43,6 +44,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/bounded-teardown.ts",
     "helpers/strands-box-shell-probe.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
@@ -67,7 +69,9 @@
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
     "helpers/protected-static-secret-read.ts",
-    "../scripts/observe-worker-terminations.ts"
+    "../scripts/observe-worker-terminations.ts",
+    "helpers/native-admin-postgres.ts",
+    "conformance/topology-launch-cases.ts"
   ],
   "references": [
     {
