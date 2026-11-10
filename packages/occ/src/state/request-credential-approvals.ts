@@ -14,14 +14,20 @@ export function memoryRequestCredentialApprovals(
   records: Map<string, StoredRequestCredentialApproval>,
 ): RequestCredentialApprovalRepository {
   return {
-    async insert(approval, now) {
+    async insert(approval, now, limits) {
       for (const [key, record] of records) {
-        if (record.deadlineAt <= now) {
+        if (record.replayUntilAt <= now) {
           records.delete(key);
         }
       }
       const key = JSON.stringify([approval.recipientId, approval.requestId]);
-      if (records.has(key) || approval.deadlineAt <= now) {
+      if (
+        records.has(key) ||
+        approval.deadlineAt <= now ||
+        records.size >= limits.requestIds ||
+        [...records.values()].filter((record) => record.recipientId === approval.recipientId)
+          .length >= limits.sandboxRequestIds
+      ) {
         return false;
       }
       records.set(key, immutableCopy({ ...approval, consumed: false }));
@@ -49,14 +55,21 @@ export function postgresRequestCredentialApprovals(
   client: PostgresQueryClient,
 ): RequestCredentialApprovalRepository {
   return {
-    async insert(approval, now) {
-      await client.query("DELETE FROM occ.request_credential_approvals WHERE expires_at <= $1", [
-        now,
-      ]);
+    async insert(approval, now, limits) {
+      // Serialize admission counts across API replicas on this transaction connection.
+      // Callers already hold policy locks; no policy locks are acquired after this quota lock.
+      await client.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+      await client.query(
+        "DELETE FROM occ.request_credential_approvals WHERE replay_until_at <= $1",
+        [now],
+      );
       const result = await client.query(
         `INSERT INTO occ.request_credential_approvals
-          (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz WHERE $9::timestamptz > $10::timestamptz
+          (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at, replay_until_at)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz, $11::timestamptz
+         WHERE $9::timestamptz > $10::timestamptz
+           AND (SELECT count(*) FROM occ.request_credential_approvals) < $12
+           AND (SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id = $1) < $13
          ON CONFLICT DO NOTHING`,
         [
           approval.recipientId,
@@ -69,16 +82,19 @@ export function postgresRequestCredentialApprovals(
           JSON.stringify(approval.driver),
           approval.deadlineAt,
           now,
+          approval.replayUntilAt,
+          limits.requestIds,
+          limits.sandboxRequestIds,
         ],
       );
       return result.rowCount === 1;
     },
     async consume(grant, driver, now) {
-      // Keep the used key until expiry: a repeat policy call cannot re-open a redeemed grant.
+      // Redemption expiry does not remove the authenticated request correlation.
       const { rows } = await client.query(
         `UPDATE occ.request_credential_approvals SET consumed = true
          WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3 AND NOT consumed AND driver_ref = $4::jsonb AND expires_at > $5
-         RETURNING namespace_id, agent_id, revision_id, policy_digest, expires_at`,
+         RETURNING namespace_id, agent_id, revision_id, policy_digest, expires_at, replay_until_at`,
         [grant.recipientId, grant.requestId, grant.bindingId, JSON.stringify(driver), now],
       );
       const row = rows[0] as
@@ -88,6 +104,7 @@ export function postgresRequestCredentialApprovals(
             revision_id: string;
             policy_digest: string;
             expires_at: Date;
+            replay_until_at: Date;
           }
         | undefined;
       return (
@@ -95,6 +112,7 @@ export function postgresRequestCredentialApprovals(
           ...grant,
           driver,
           deadlineAt: row.expires_at.toISOString(),
+          replayUntilAt: row.replay_until_at.toISOString(),
           execution: {
             namespaceId: row.namespace_id,
             agentId: row.agent_id,

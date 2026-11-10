@@ -22,6 +22,18 @@ export interface OpenShellHttpRequestView {
   readonly body: Uint8Array;
 }
 
+/** Model routes and captured requests share this DNS-only destination contract. */
+export function isOpenShellRequestHost(host: unknown): host is string {
+  return (
+    typeof host === "string" &&
+    host.length <= 253 &&
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
+      host,
+    ) &&
+    isIP(host) === 0
+  );
+}
+
 function httpMethod(value: unknown): value is OpenShellHttpRequestView["target"]["method"] {
   return (
     typeof value === "string" && ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(value)
@@ -47,12 +59,7 @@ export function readOpenShellHttpRequest(
     !Number.isInteger(target.port) ||
     Number(target.port) < 1 ||
     Number(target.port) > 65535 ||
-    typeof target.host !== "string" ||
-    target.host.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
-      target.host,
-    ) ||
-    isIP(target.host) !== 0 ||
+    !isOpenShellRequestHost(target.host) ||
     !httpMethod(target.method) ||
     typeof target.path !== "string" ||
     !/^\/[\x21-\x7e]{0,4095}$/.test(target.path) ||

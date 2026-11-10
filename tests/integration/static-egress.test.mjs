@@ -42,6 +42,8 @@ import {
   pluginRuntimeConfigMapData,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
+import { openShellModelRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
+import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   staticEgressFixture,
   loadGatewayDefinition,
@@ -51,6 +53,197 @@ import {
   unary,
   wireTime,
 } from "../helpers/static-egress.mjs";
+
+test("model-only request admission uses the registered request profile without strict capabilities", async (t) => {
+  // The real Proxy Driver reads request-only registration over the TLS gRPC fixture.
+  // API admission must not also demand the strict execution-exchange capabilities.
+  const f = await staticEgressFixture(t, { admitRevision: false, requestCredentials: true });
+  const path = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`;
+  const admitted = await f.request("POST", path);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const revision = await f.controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, admitted.data.id),
+  );
+  assert.deepEqual(revision.executionAdmission, { mode: "protected", version: 8 });
+  assert.equal(revision.egressPlan.authorization, "online-request");
+  assert.equal(revision.egressPlan.repositoryGit, undefined);
+
+  // Selecting request delivery must not make the same registration eligible for strict sources.
+  const strict = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+    body: {
+      name: "strict-still-refused",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  assert.equal(strict.status, 503, JSON.stringify(strict.body));
+
+  // Request admission still requires the live registered middleware.
+  f.observed.available = false;
+  const unavailable = await f.request("POST", path);
+  assert.equal(unavailable.status, 503, JSON.stringify(unavailable.body));
+});
+
+test("model request installation survives a material epoch change but fences policy and recipient drift", async (t) => {
+  const f = await staticEgressFixture(t, { admitRevision: false, requestCredentials: true });
+  const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
+  const revision = await f.controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
+  );
+  const context = {
+    namespace: f.runtimeNamespace,
+    revision,
+    plan: revision.egressPlan,
+    signal: t.signal,
+  };
+  const prepared = await f.credentialProxy.configureRevision(context);
+  const expected = openShellModelRequestPolicy(context.plan, f.egressOptions, revision);
+  const numericOrigin = structuredClone(context.plan);
+  numericOrigin.routes[0].origin = "https://192.0.2.1";
+  assert.throws(
+    () => openShellModelRequestPolicy(numericOrigin, f.egressOptions, revision),
+    /HTTPS DNS origin/,
+    "numeric destinations fail during policy selection instead of producing an unusable route",
+  );
+  const ref = f.sandboxDriver.harnessResource(context);
+  const workspace = f.runtimeNamespace.name;
+  await f.gatewayClient.importProviderProfile(
+    workspace,
+    { ...expected.provider.profile, annotations: {} },
+    t.signal,
+  );
+  await f.gatewayClient.createProvider(
+    {
+      workspace,
+      name: expected.provider.name,
+      type: expected.provider.profile.id,
+      credentials: {},
+      config: {},
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace-id": revision.namespaceId,
+        "openclaw.dev/agent-id": revision.agentId,
+        "openclaw.dev/revision-id": revision.id,
+      },
+    },
+    t.signal,
+  );
+  // These are controlled Gateway protocol observations. The real Driver qualifies
+  // them; this case does not claim installed supervisor or Git renewal execution.
+  f.observed.sandbox = {
+    id: "model-sandbox",
+    name: ref.resourceName,
+    workspace,
+    annotations: {
+      "openclaw.dev/namespace-id": revision.namespaceId,
+      "openclaw.dev/agent-id": revision.agentId,
+      "openclaw.dev/revision-id": revision.id,
+    },
+  };
+  f.observed.sandboxSpec = {
+    providers: [
+      expected.provider.name,
+      "oce-runtime-" + createHash("sha256").update(revision.id).digest("hex").slice(0, 16),
+    ],
+  };
+  const admission = {
+    instance_id: "configuration-instance",
+    state: 2,
+    policy_version: 1,
+    policy_hash: "a".repeat(64),
+    config_revision: "7",
+    provider_env_revision: "10",
+  };
+  f.observed.sandboxStatus = {
+    configuration_activated: true,
+    configuration_admission: admission,
+    main_process_instance_id: "process-instance",
+  };
+  f.observed.policy = prepared.configuration;
+  f.observed.policyHash = admission.policy_hash;
+  const rule = "_provider_" + expected.provider.name.replaceAll("-", "_");
+  f.observed.config = {
+    workspace,
+    version: 1,
+    policy_hash: admission.policy_hash,
+    config_revision: "7",
+    provider_env_revision: "10",
+    configuration_instance_id: admission.instance_id,
+    configuration_admitted: true,
+    provider_attachment_epoch: "original-attachment",
+    policy_source: 1,
+    policy_validation_failure_mode: "fail_closed",
+    extension_authentication_enabled: true,
+    supervisor_middleware_services: [
+      {
+        name: "oce-authority",
+        audience: "oce-authority",
+        grpc_endpoint: "https://authority.example.test:9444",
+        binding_policy: 2,
+        bindings: [1],
+      },
+    ],
+    policy: {
+      ...structuredClone(prepared.configuration),
+      network_policies: {
+        ...prepared.configuration.network_policies,
+        [rule]: {
+          name: rule,
+          binaries: expected.provider.profile.binaries.map((path) => ({ path })),
+          endpoints: expected.provider.profile.endpoints.map((endpoint) => ({
+            ...openShellProfileEndpoint(endpoint),
+            provider_credentialed: true,
+            token_grant_owner: "grant-owner:v1:" + "1".repeat(64),
+          })),
+        },
+      },
+    },
+  };
+  const installation = await f.credentialProxy.wiringStatus(context, prepared);
+  assert.ok(installation, "the Driver must first qualify the observed installation");
+  const verify = () =>
+    f.credentialProxy.requestTimeCredentials.verifyRequestInstallation(context, installation, {
+      id: installation.sandboxId,
+      context: workspace,
+    });
+  assert.equal(await verify(), true);
+  // Protobuf maps have no stable wire order. Repeated real-client decodes must
+  // preserve the installation when only the order of the provider labels changes.
+  const provider = f.providers.get(expected.provider.name);
+  provider.metadata.labels = Object.fromEntries(Object.entries(provider.metadata.labels).reverse());
+  assert.equal(await verify(), true, "label order does not change the model recipient");
+  provider.metadata.labels["openclaw.dev/agent-id"] = "another-agent";
+  assert.equal(await verify(), false, "a different label value still invalidates ownership");
+  provider.metadata.labels["openclaw.dev/agent-id"] = revision.agentId;
+  // A provider material refresh advances both observations without replacing the
+  // process, admitted policy or model profile. Its old epoch is not a policy fence.
+  admission.provider_env_revision = "11";
+  f.observed.config.provider_env_revision = "11";
+  assert.equal(await verify(), true, "a completed material refresh preserves model authorization");
+
+  f.observed.config.provider_env_revision = "12";
+  assert.equal(await verify(), false, "an unacknowledged material epoch still fails closed");
+  f.observed.config.provider_env_revision = "11";
+  f.observed.config.provider_attachment_epoch = "replacement-attachment";
+  assert.equal(await verify(), false);
+  f.observed.config.provider_attachment_epoch = "original-attachment";
+  f.observed.sandboxStatus.main_process_instance_id = "replacement-process";
+  assert.equal(await verify(), false);
+  f.observed.sandboxStatus.main_process_instance_id = "process-instance";
+  admission.instance_id = f.observed.config.configuration_instance_id = "replacement-configuration";
+  assert.equal(await verify(), false);
+  admission.instance_id = f.observed.config.configuration_instance_id = "configuration-instance";
+  admission.policy_hash = f.observed.config.policy_hash = "b".repeat(64);
+  assert.equal(await verify(), false);
+  admission.policy_hash = f.observed.config.policy_hash = "a".repeat(64);
+  f.observed.config.policy.filesystem = { read_write: ["/"] };
+  assert.equal(await verify(), false, "effective policy content remains fenced");
+  delete f.observed.config.policy.filesystem;
+  const profile = f.profiles.get(expected.provider.profile.id);
+  profile.credentials[0].token_grant.audience = "different-binding";
+  await assert.rejects(verify, /zero-cache model token grant/);
+});
 
 test("credential header digest uses ordered UTF-8 bytes and u64 lengths", () => {
   assert.equal(
@@ -507,6 +700,22 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   });
   assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
   assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
+  // A missing online provider is a different authorization profile, not an older
+  // generation of this strict provider. Re-adoption consent must not switch it.
+  await f.controller.transact(async ({ credentialSources: sources }) => {
+    const { egress } = await sources.findCredentialSource(namespaceId, id);
+    await sources.admitEgressSource(namespaceId, id, egress.key.source.generation, {
+      ...egress,
+      key: {
+        ...egress.key,
+        source: { id, generation: egress.key.source.generation + 1 },
+        provider: { id: "openai-online-request", generation: 1 },
+      },
+    });
+  });
+  const reads = f.secretReads;
+  assert.equal((await f.request("PATCH", path, { body: consent })).status, 409);
+  assert.equal(f.secretReads, reads, "profile changes must refuse before reading material");
   const bound = await f.request("PATCH", `${f.path}/${f.source.id}`, {
     body: { adoption: "live" },
   });

@@ -98,6 +98,7 @@ export async function staticEgressFixture(
     inertProviderRule = false,
     serviceTransport,
     admitRevision = true,
+    requestCredentials = false,
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
@@ -253,7 +254,10 @@ export async function staticEgressFixture(
     policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
-  const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
+  const gatewayCapabilities = [
+    "openshell.supervisor-middleware.contract",
+    ...(requestCredentials ? [] : capabilities),
+  ].sort();
   const profiles = new Map();
   const providers = new Map();
   gateway.addService(Gateway.service, {
@@ -263,14 +267,23 @@ export async function staticEgressFixture(
     },
     ImportProviderProfiles(call, callback) {
       for (const item of call.request.profiles) {
-        profiles.set(item.profile.id, { ...item.profile, resource_version: "1" });
+        profiles.set(item.profile.id, {
+          ...item.profile,
+          scope: "workspace",
+          resource_version: "1",
+        });
       }
       callback(null, { imported: true });
     },
     CreateProvider(call, callback) {
       const provider = {
         ...call.request.provider,
-        metadata: { ...call.request.provider.metadata, id: randomUUID(), resource_version: "1" },
+        metadata: {
+          ...call.request.provider.metadata,
+          workspace: call.request.workspace_scope.workspace,
+          id: randomUUID(),
+          resource_version: "1",
+        },
       };
       providers.set(provider.metadata.name, provider);
       callback(null, { provider });
@@ -318,8 +331,17 @@ export async function staticEgressFixture(
       }
       assert.equal(call.request.name, observed.sandbox.name);
       callback(null, {
-        sandbox: { metadata: observed.sandbox, status: { phase: "SANDBOX_PHASE_READY" } },
+        sandbox: {
+          metadata: observed.sandbox,
+          spec: observed.sandboxSpec,
+          status: { phase: "SANDBOX_PHASE_READY", ...observed.sandboxStatus },
+        },
       });
+    },
+    GetSandboxConfig(call, callback) {
+      assert.equal(call.request.name, observed.sandbox?.name);
+      assert.equal(call.request.workspace_scope.workspace, runtimeNamespace.name);
+      callback(null, observed.config);
     },
     GetService(call, callback) {
       if (
@@ -411,7 +433,16 @@ export async function staticEgressFixture(
     { gatewayClient },
   );
   t.after(() => backend.client.close());
-  const egressOptions = { middlewareName: "oce-authority", authorityScope: "execution" };
+  const egressOptions = {
+    middlewareName: "oce-authority",
+    authorityScope: "execution",
+    ...(requestCredentials && {
+      requestCredentials: {
+        audience: "oce-authority",
+        tokenEndpoint: "https://127.0.0.1:9445/token",
+      },
+    }),
+  };
   const sandbox = new OpenShellSandboxDriver(
     {
       egress: egressOptions,
@@ -494,6 +525,25 @@ export async function staticEgressFixture(
         : [],
     backend,
     sandbox,
+    ...(requestCredentials && {
+      // Admission discovers the registered middleware without starting its release listener.
+      exchangeAuthority: {
+        host: "127.0.0.1",
+        port: 9444,
+        certificatePath: certPath,
+        privateKeyPath: generated.keyPath,
+        issuerPublicKeyPath: join(directory, "unstarted-authority-issuer.pem"),
+        issuer: "openshell-fixture",
+        audience: "oce-authority",
+        keyId: "fixture-key",
+      },
+      tokenGrant: {
+        endpoint: egressOptions.requestCredentials.tokenEndpoint,
+        port: 9445,
+        trustDomain: "fixture.test",
+        bundlePath: join(directory, "unstarted-trust-bundle.json"),
+      },
+    }),
   });
   const catalog = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/model-client"] },
@@ -570,6 +620,7 @@ export async function staticEgressFixture(
     : await post("credential-sources", {
         name: "inference",
         type: "openai",
+        ...(requestCredentials && { authorization: "online-request" }),
         config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
@@ -631,6 +682,14 @@ export async function staticEgressFixture(
       grant,
       modelProvider,
       secret,
+      observed,
+      credentialProxy: egress,
+      egressOptions,
+      sandboxDriver: sandbox,
+      gatewayClient,
+      runtimeNamespace,
+      profiles,
+      providers,
       get secretReads() {
         return secretReads;
       },

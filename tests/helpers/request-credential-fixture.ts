@@ -6,15 +6,19 @@ import type {
   Agent,
   Namespace,
   SecretReference,
+  SecretDriver,
   CredentialProxyDriver,
   EgressInstallation,
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
+  resolveCredentialProxyCapacity,
   OpenClawController,
   PostgresPlatformState,
   type PlatformStateStore,
+  type ControllerOptions,
+  type CredentialProxyCapacity,
 } from "../../packages/occ/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -27,13 +31,18 @@ import { postgresApp } from "./postgres-egress-app.mjs";
 
 /** Real API/IAM/PostgreSQL/Secret Driver with controlled external runtime observation.
  * No installed OpenShell or workload execution is represented by this fixture. */
-export async function requestCredentialFixture(t: TestContext) {
+export async function requestCredentialFixture(
+  t: TestContext,
+  configuration: { credentialProxyCapacity?: Partial<CredentialProxyCapacity> } = {},
+) {
   let owner!: InstalledDriver;
   let state!: PlatformStateStore;
   let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
   let live: EgressInstallation | undefined;
+  let nextVerification: { reached: () => void; release: Promise<void> } | undefined;
   const sandboxId = randomUUID();
   const options = {
+    ...configuration,
     admitRevision: false,
     driverConfigurations: [
       {
@@ -88,12 +97,22 @@ export async function requestCredentialFixture(t: TestContext) {
           async assertAvailable(signal) {
             assert.equal(signal.aborted, false);
           },
-          async verifyRecipient(ns, revision, recipient) {
+          async verifyRequestInstallation(
+            { namespace: ns, revision, plan },
+            installation,
+            recipient,
+          ) {
+            const paused = nextVerification;
+            nextVerification = undefined;
+            paused?.reached();
+            await paused?.release;
             return (
               live !== undefined &&
               recipient.id === live.sandboxId &&
               ns.id === live.plan.execution.namespaceId &&
-              revision.id === live.plan.execution.revisionId
+              revision.id === live.plan.execution.revisionId &&
+              isDeepStrictEqual(plan, live.plan) &&
+              isDeepStrictEqual(installation, live)
             );
           },
         },
@@ -167,6 +186,29 @@ export async function requestCredentialFixture(t: TestContext) {
   };
   const f = Object.assign(await staticEgressFixture(t, options), { pool });
   assert.ok("pauseNextSecretRead" in f);
+  let materialPause:
+    | {
+        skip: number;
+        reached: () => void;
+        release: Promise<void>;
+        settled: () => void;
+      }
+    | undefined;
+  const secretDriver: SecretDriver = f.controller.selectedDriver("secret");
+  const readMaterial = secretDriver.readCredentialInput!.bind(secretDriver);
+  // Preserve the real Secret Driver's result while modeling a dependency that ignores
+  // cancellation after its I/O. The controller must still release its policy locks.
+  secretDriver.readCredentialInput = async (input) => {
+    const result = await readMaterial(input);
+    const paused = materialPause;
+    if (paused && paused.skip-- === 0) {
+      materialPause = undefined;
+      paused.reached();
+      await paused.release;
+      paused.settled();
+    }
+    return result;
+  };
   const deployment = await f.deployAgent(f.namespace.id, f.agent.id);
   const revision = await state.read((unit) =>
     unit.revisions.findRevision(f.namespace.id, f.agent.id, deployment.id),
@@ -207,6 +249,7 @@ export async function requestCredentialFixture(t: TestContext) {
     bindingId: route.binding.binding.id,
     recipient: { id: sandboxId },
     deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+    replayUntilAt: new Date(Date.now() + 3_600_000).toISOString(),
     execution: { namespaceId: f.namespace.id, agentId: f.agent.id, revisionId: revision.id },
     http: {
       target: {
@@ -227,11 +270,21 @@ export async function requestCredentialFixture(t: TestContext) {
     bindingId: input.bindingId,
     deadlineAt: input.deadlineAt,
   });
-  const restartController = () => {
+  const restartController = (
+    credentialProxyCapacity = configuration.credentialProxyCapacity,
+    authorize?: ControllerOptions["authorize"],
+  ) => {
+    const capacity = resolveCredentialProxyCapacity(
+      { ...credentialProxyCapacity },
+      "requestCapacity",
+    );
+    assert.ok(capacity.capacity);
     const restartedState = new PostgresPlatformState(f.pool);
     const restarted = new OpenClawController(f.controller.installation, {
       state: restartedState,
+      ...(authorize && { authorize }),
       driverConfigurations: options.driverConfigurations,
+      credentialProxyCapacity: capacity.capacity,
     });
     const iam = new NativeIAMDriver(restartedState, { id: "request-restarted-iam" });
     restarted.registerDriver(iam);
@@ -257,6 +310,24 @@ export async function requestCredentialFixture(t: TestContext) {
     request,
     grant,
     restartController,
+    pauseFinalMaterialRead() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const settled = Promise.withResolvers<void>();
+      materialPause = {
+        skip: 2,
+        reached: reached.resolve,
+        release: release.promise,
+        settled: settled.resolve,
+      };
+      return { reached: reached.promise, release: release.resolve, settled: settled.promise };
+    },
+    pauseNextVerification() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      nextVerification = { reached: reached.resolve, release: release.promise };
+      return { reached: reached.promise, release: release.resolve };
+    },
     get installation() {
       return live!;
     },

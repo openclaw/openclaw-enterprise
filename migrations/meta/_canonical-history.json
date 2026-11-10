@@ -616,7 +616,7 @@
       "when": 1787000000077,
       "tag": "0077_request_credential_approvals",
       "breakpoints": true,
-      "sha256": "2e963f4d9ee4d7fe8c8d750ebf7f3fe76a3414c1dbfd6e886a4d53cb6fe7f405"
+      "sha256": "2eecf64b4368f3f1a9122dfefbbf55ea93b25f98f656bd8c81fb7943688b027d"
     }
   ],
   "initialSchemaStates": {
@@ -630,18 +630,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -710,15 +700,15 @@
       "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
       "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5"
     ],
-    "5ea45717ab950e3013a653754a5f339e1551591019a410e3cca1b257a919f2df": [
-      "25a0041c33ed7ba05653c7c31259547b817f217b5ebc496d413a9489d4e03ef0",
-      "a99e8459e7c999220b606687b5bd5dfee23024842ce5359fa5ce01f84580d0d6",
-      "51651b4cf190b58ab7091ea5d5035058995b66fe8e3afadf80823eb6641d7055",
-      "276d606efca9e0d51522a3fc6fb5ee13b3663911ec40a9f84825a0782bb8b089"
+    "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648": [
+      "d98a2611a67a4c77e4cfcbf522a6730d3b6f9d0ecf2019110bbcb5d5b97005ab",
+      "2b664cf16ff58bcbc37d3d504babc102033ebdad06327ad921aa785a5a18648f",
+      "a1294bd472c1b30dcf0958d5decf2e860fab04c1d85d57438c726d685cc6cf45",
+      "f3814823f60aae5a569d911f2a2d0319b97f04adcf56b5ce005c451621deb372"
     ]
   },
   "catalogs": {
-    "completed": "5ea45717ab950e3013a653754a5f339e1551591019a410e3cca1b257a919f2df",
+    "completed": "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",

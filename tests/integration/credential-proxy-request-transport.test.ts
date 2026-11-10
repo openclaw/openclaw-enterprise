@@ -38,11 +38,15 @@ test(
   "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
   { ...requiresPostgres, timeout: 90_000 },
   async (t) => {
-    const fixture = await requestCredentialFixture(t);
+    const fixture = await requestCredentialFixture(t, {
+      credentialProxyCapacity: { operations: 2, authenticatingOperations: 1, sandboxOperations: 2 },
+    });
     const { f } = fixture;
     const tls = await harnessTlsFixture(t);
     const issuerKeys = generateKeyPairSync("ed25519");
     const svidKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const genericKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const untypedKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
     const bundlePath = join(tls.directory, "jwt-bundle.json");
     await writeFile(
@@ -123,14 +127,19 @@ test(
     });
     const evaluate = (input: RequestCredentialInput, bearer = signed, changes = {}) =>
       invoke(client, "EvaluateHttpRequest", { ...wire(input), ...changes }, bearer);
-    const svid = (recipient = fixture.installation.sandboxId, audience = tokenEndpoint) =>
+    const svid = (
+      recipient = fixture.installation.sandboxId,
+      audience = tokenEndpoint,
+      key = svidKeys.privateKey,
+      kid = "svid-key",
+    ) =>
       new SignJWT({})
-        .setProtectedHeader({ alg: "ES256", kid: "svid-key" })
+        .setProtectedHeader({ alg: "ES256", kid })
         .setSubject(`spiffe://fixture.test/openshell/sandbox/${recipient}`)
         .setAudience(audience)
         .setIssuedAt()
         .setExpirationTime("2m")
-        .sign(svidKeys.privateKey);
+        .sign(key);
     const redeem = async (input: RequestCredentialInput, assertion = svid()) => {
       const body = new URLSearchParams({
         grant_type: "client_credentials",
@@ -251,6 +260,12 @@ test(
     const reads = f.secretReads;
     assert.equal((await evaluate(input, gateway)).decision, 2);
     assert.equal(
+      (await evaluate(input, signed, { target: { ...wire(input).target, host: "192.0.2.1" } }))
+        .decision,
+      2,
+      "the request hook refuses an IPv4 model destination",
+    );
+    assert.equal(
       (
         await evaluate(input, signed, {
           config: { fields: { binding_id: { stringValue: input.bindingId } } },
@@ -268,6 +283,24 @@ test(
     );
     assert.equal((await redeem(input, svid(randomUUID()))).status, 403);
     assert.equal((await redeem(input, svid(undefined, "wrong-audience"))).status, 401);
+    // A mixed SPIFFE bundle does not make generic signing keys workload identity authorities.
+    await writeFile(
+      bundlePath,
+      JSON.stringify({
+        keys: [
+          { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
+          { ...genericKeys.publicKey.export({ format: "jwk" }), kid: "generic-key", use: "sig" },
+          { ...untypedKeys.publicKey.export({ format: "jwk" }), kid: "untyped-key" },
+        ],
+      }),
+    );
+    for (const [key, kid] of [
+      [genericKeys.privateKey, "generic-key"],
+      [untypedKeys.privateKey, "untyped-key"],
+    ] as const) {
+      assert.equal((await redeem(input, svid(undefined, undefined, key, kid))).status, 401);
+      assert.equal(f.secretReads, reads, "non-SVID keys never reach credential resolution");
+    }
     const result = await redeem(input);
     assert.equal(result.status, 200);
     assert.equal(result.body.access_token, "synthetic-key-initial");
@@ -276,6 +309,39 @@ test(
     assert.equal(result.cache, "no-store");
     assert.equal((await redeem(input)).status, 403, "an approval is single use");
     assert.equal((await evaluate(input)).decision, 2, "a consumed ID cannot be approved again");
+
+    // An incomplete request occupies the authentication lease before any bundle or signature
+    // work. The HTTPS and gRPC listeners share that same configured process budget.
+    const pending = httpsRequest(tokenEndpoint, {
+      method: "POST",
+      ca: tls.caBundle,
+      family: 4,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    const pendingClosed = new Promise<void>((resolve) => pending.once("close", resolve));
+    pending.on("error", () => {});
+    t.after(() => pending.destroy());
+    pending.write("client_assertion=");
+    const capacityInput = fixture.request();
+    await waitFor(
+      "shared pre-authentication capacity",
+      async () => (await redeem(capacityInput, Promise.resolve("invalid"))).status === 503,
+      5000,
+      { interval: 20 },
+    );
+    assert.equal((await evaluate(capacityInput)).decision, 2);
+    const beforeCapacityRelease = f.secretReads;
+    pending.destroy();
+    await pendingClosed;
+    await waitFor(
+      "authentication capacity recovery",
+      async () => (await redeem(capacityInput, Promise.resolve("invalid"))).status === 401,
+      5000,
+      { interval: 20 },
+    );
+    assert.equal(f.secretReads, beforeCapacityRelease);
+    assert.equal((await evaluate(capacityInput)).decision, 1);
+    assert.equal((await redeem(capacityInput)).status, 200);
 
     // Key rotation is observed without provider recreation; removing a trust key takes effect
     // on the next HTTPS request and never reaches the Secret reader.

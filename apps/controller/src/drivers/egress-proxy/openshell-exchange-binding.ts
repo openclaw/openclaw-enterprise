@@ -79,7 +79,8 @@ export function bindOpenShellExchange(
       requestCredentials &&
       (!requestCredentials.registrationName ||
         !proxy.authorizeRequestCredential ||
-        !proxy.resolveRequestCredential)
+        !proxy.resolveRequestCredential ||
+        !proxy.acquireRequestAuthentication)
     ) {
       throw new Error("The selected Credential Proxy cannot serve OpenShell token grants.");
     }
@@ -101,6 +102,7 @@ export function bindOpenShellExchange(
         configuration,
         files,
         proxy.resolveRequestCredential!.bind(proxy),
+        proxy.acquireRequestAuthentication!.bind(proxy),
       );
       return {
         close: async () => {

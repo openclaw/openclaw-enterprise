@@ -58,6 +58,7 @@ import {
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
   RequestCredentialInput,
+  CredentialReadLifetime,
   ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
@@ -76,6 +77,7 @@ import {
   CredentialProxy,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
+  type RequestCredentialRelease,
   type ExchangeProvider,
 } from "./credential-proxy.ts";
 import type { EgressExchangeOwner, CapturedEgressUse } from "@openclaw-enterprise/contracts";
@@ -7459,25 +7461,13 @@ export class OpenClawController {
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
-          if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
-            throw new DependencyUnavailableError("Selected credential material is unavailable.");
-          }
-          const driver = this.secretDriver(secret.driverId);
-          if (!driver.readCredentialInput) {
-            throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
-          }
-          if (!isProviderCurrent()) {
-            throw new DependencyUnavailableError("Selected credential provider changed.");
-          }
-          return {
-            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
-            materialId: secret.backendRef.uid,
-          };
+          return this.readEgressMaterial(secret, source, lifetime, isProviderCurrent);
         },
         ...(owner?.require("credential_proxy").requestTimeCredentials && {
           requestCredentials: {
             sender: owner.require("credential_proxy").sourceControl.sender,
-            check: (request, signal) => this.checkRequestCredential(owner, request, signal),
+            check: (request, signal, release) =>
+              this.checkRequestCredential(owner, request, signal, release),
             validate: (source, value) => {
               if (this.selectedProxyOwner() !== owner) {
                 return false;
@@ -7677,11 +7667,36 @@ export class OpenClawController {
     });
   }
 
+  private async readEgressMaterial(
+    secret: Secret | undefined,
+    source: StaticEgressSource,
+    lifetime: CredentialReadLifetime,
+    isProviderCurrent: () => boolean,
+  ) {
+    if (lifetime.signal.aborted || !secret || secret.driverId !== source.secretDriver.id) {
+      throw new DependencyUnavailableError("Selected credential material is unavailable.");
+    }
+    const driver = this.secretDriver(secret.driverId);
+    const read = driver.readCredentialInput;
+    if (!read) {
+      throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
+    }
+    if (!isProviderCurrent()) {
+      throw new DependencyUnavailableError("Selected credential provider changed.");
+    }
+    const material = await Reflect.apply(read, driver, [{ secret, lifetime, retention: "none" }]);
+    if (this.secretDriver(secret.driverId) !== driver || driver.readCredentialInput !== read) {
+      throw new DependencyUnavailableError("Selected credential material changed.");
+    }
+    return { ...material, materialId: secret.backendRef.uid };
+  }
+
   /** Verify the installed recipient before entering a fresh, short policy transaction. */
   private async checkRequestCredential(
     owner: InstalledDriver,
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
+    release?: RequestCredentialRelease,
   ): Promise<StaticEgressSource | undefined> {
     if (
       signal.aborted ||
@@ -7724,21 +7739,9 @@ export class OpenClawController {
     const sourceId = route.binding.source.source.id;
     const deny = (state: PlatformUnitOfWork, code: string) =>
       this.denyRequestCredential(state, request, revision, sourceId, code);
-    const verifyInstallation = proxy.verifyInstallation;
-    const verifyRecipient = credentials.verifyRecipient;
+    const verifyRequestInstallation = credentials.verifyRequestInstallation;
     if (
-      !(await credentials.verifyRecipient(
-        await this.credentialNamespace(namespace),
-        revision,
-        "recipient" in request ? request.recipient : { id: request.recipientId },
-        signal,
-      ))
-    ) {
-      await this.transact((state) => deny(state, "identity"));
-      return undefined;
-    }
-    if (
-      !(await Reflect.apply(verifyInstallation, proxy, [
+      !(await Reflect.apply(verifyRequestInstallation, credentials, [
         {
           namespace: await this.credentialNamespace(namespace),
           revision,
@@ -7746,9 +7749,33 @@ export class OpenClawController {
           signal,
         },
         installed,
+        "recipient" in request ? request.recipient : { id: request.recipientId },
       ]))
     ) {
       await this.transact((state) => deny(state, "stale_configuration"));
+      return undefined;
+    }
+    const authority = this.authorizationAuthority(revision.servicePrincipalId);
+    const authorize = authority.authorize;
+    const decide = () =>
+      this.authorizationDecision(
+        revision.servicePrincipalId,
+        "operate",
+        { kind: "credential_source", namespaceId, id: sourceId },
+        authority,
+        authorize,
+      );
+    // Only the native policy reader participates in this State's transaction. External
+    // decisions must settle before acquiring locks needed by withdrawal and rotation.
+    const native =
+      !this.authorization &&
+      NativeIAMDriver.usesStateForAuthorization(authority, authorize, this.state);
+    const observed = native ? undefined : await decide();
+    if (signal.aborted) {
+      return undefined;
+    }
+    if (observed && !observed.decision.allowed) {
+      await this.transact((state) => deny(state, "unauthorized"));
       return undefined;
     }
     return this.transact(async (state) => {
@@ -7876,21 +7903,37 @@ export class OpenClawController {
       ) {
         return refuse("stale_configuration");
       }
-      const { decision } = await this.authorizationDecision(agent.servicePrincipalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id: sourceId,
-      });
+      const { decision } = observed ?? (await decide());
       if (!decision.allowed) {
         return refuse("unauthorized");
       }
+      if (release) {
+        // updateSecret holds this Namespace lock through the backend write. Reuse the
+        // current unit for metadata so concurrent releases cannot exhaust the pool.
+        const secret = await state.secrets.findSecret(namespaceId, selected.secret.id);
+        if (
+          selected.secret.namespaceId !== namespaceId ||
+          !(await release(selected, () =>
+            this.readEgressMaterial(
+              secret,
+              selected,
+              { signal, deadlineAt: request.deadlineAt },
+              () => this.selectedProxyOwner() === owner,
+            ),
+          ))
+        ) {
+          return refuse("stale_material");
+        }
+      }
       if (
         signal.aborted ||
+        Date.parse(request.deadlineAt) <= this.clock().getTime() ||
         this.selectedProxyOwner() !== owner ||
+        this.authorizationAuthority(revision.servicePrincipalId) !== authority ||
+        authority.authorize !== authorize ||
         proxy.sourceControl !== control ||
         proxy.requestTimeCredentials !== credentials ||
-        proxy.verifyInstallation !== verifyInstallation ||
-        credentials.verifyRecipient !== verifyRecipient ||
+        credentials.verifyRequestInstallation !== verifyRequestInstallation ||
         provider.authorization !== "online-request" ||
         registeredCredentialProvider(control.providers, route.binding.source.provider) !==
           provider ||
@@ -7910,9 +7953,11 @@ export class OpenClawController {
             execution: request.execution,
             driver: owner.ref,
             deadlineAt: request.deadlineAt,
+            replayUntilAt: request.replayUntilAt,
             policyDigest,
           },
           this.timestamp(),
+          this.credentialProxyCapacity,
         ))
       ) {
         return refuse("stale_configuration");
@@ -8675,11 +8720,16 @@ export class OpenClawController {
       // that assertExecutionAdmission then rejects as an internal error.
       throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
     }
-    const gitAuthorization = await repositoryGitAuthorization(
-      driver.sourceControl,
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      gitProfile,
-    );
+    // Model-only request delivery already checked its own capability above. Without
+    // Git, do not negotiate the independent strict execution-exchange profile.
+    const gitAuthorization =
+      online && repositoryGit === undefined
+        ? undefined
+        : await repositoryGitAuthorization(
+            driver.sourceControl,
+            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            gitProfile,
+          );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy did not confirm installation-wide repository access.",
@@ -9178,6 +9228,12 @@ export class OpenClawController {
             "Protected source changes require an unbound source.",
           );
         }
+        // Explicit re-adoption may upgrade a strict provider generation, but cannot
+        // change an existing source's provider identity or authorization profile.
+        const replacement =
+          !admitted && this.selections.has("credential_proxy")
+            ? this.staticEgressProvider(source.type)
+            : undefined;
         const egress = await this.admitStaticEgressSource(
           state,
           principalId,
@@ -9187,7 +9243,10 @@ export class OpenClawController {
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
-          admitted,
+          admitted ??
+            (previous === undefined || previous.id === replacement?.ref.id
+              ? replacement
+              : undefined),
         );
         if (input.secrets !== undefined) {
           await state.credentialSources.replaceCredentialSourceSecrets(

@@ -9,14 +9,16 @@ CREATE TABLE occ.request_credential_approvals (
   policy_digest text NOT NULL,
   driver_ref jsonb NOT NULL,
   expires_at timestamptz NOT NULL,
+  replay_until_at timestamptz NOT NULL,
   consumed boolean NOT NULL DEFAULT false,
   PRIMARY KEY (recipient_id, request_id),
   CONSTRAINT request_credential_approval_revision FOREIGN KEY (namespace_id, agent_id, revision_id)
     REFERENCES occ.agent_revisions(namespace_id, agent_id, id) ON DELETE CASCADE,
-  CONSTRAINT request_credential_approval_digest CHECK (policy_digest ~ '^[a-f0-9]{64}$')
+  CONSTRAINT request_credential_approval_digest CHECK (policy_digest ~ '^[a-f0-9]{64}$'),
+  CONSTRAINT request_credential_approval_horizon CHECK (replay_until_at >= expires_at AND isfinite(replay_until_at))
 );
 --> statement-breakpoint
-CREATE INDEX request_credential_approvals_expiry ON occ.request_credential_approvals(expires_at);
+CREATE INDEX request_credential_approvals_expiry ON occ.request_credential_approvals(replay_until_at);
 --> statement-breakpoint
 GRANT SELECT, INSERT, DELETE, UPDATE (consumed) ON occ.request_credential_approvals TO occ_app;
 --> statement-breakpoint

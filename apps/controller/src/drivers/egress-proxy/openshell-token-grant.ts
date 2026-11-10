@@ -77,7 +77,7 @@ async function loadJwtAuthorities(path: string) {
       const jwk = asRecord(key);
       if (
         jwk &&
-        (jwk.use === "jwt-svid" || jwk.use === "sig" || jwk.use === undefined) &&
+        jwk.use === "jwt-svid" &&
         (jwk.kty === "EC" || jwk.kty === "RSA") &&
         typeof jwk.kid === "string" &&
         jwk.kid &&
@@ -155,6 +155,7 @@ export async function bindOpenShellTokenGrant(
   authority: Pick<EgressAuthorityConfiguration, "host">,
   tls: { cert: Buffer; key: Buffer },
   resolve: Resolve,
+  acquireAuthentication: NonNullable<CredentialProxyExchange["acquireRequestAuthentication"]>,
 ): Promise<CredentialProxyBinding> {
   if (!validTokenGrantConfiguration(config)) {
     throw new Error("Invalid OpenShell token grant configuration.");
@@ -167,73 +168,84 @@ export async function bindOpenShellTokenGrant(
       reply(response, 404, { error: "not_found" });
       return;
     }
-    const startedAt = Date.now();
-    const grant = await readGrant(request);
-    if (!grant) {
-      reply(response, 400, { error: "invalid_request" });
+    const release = acquireAuthentication();
+    if (!release) {
+      reply(response, 503, { error: "temporarily_unavailable" });
       return;
     }
-    const keys = await loadJwtAuthorities(config.bundlePath);
-    const jwt = await jwtVerify(grant.assertion, keys, {
-      algorithms: ["ES256", "ES384", "RS256", "PS256"],
-      audience: config.endpoint,
-      requiredClaims: ["sub", "exp"],
-    }).catch(() => undefined);
-    const aud = jwt?.payload.aud;
-    const exactAudience =
-      aud === config.endpoint ||
-      (Array.isArray(aud) && aud.length === 1 && aud[0] === config.endpoint);
-    const sub = jwt?.payload.sub;
-    const recipientId = sub?.startsWith(prefix) && sub.slice(prefix.length);
-    if (
-      !jwt?.protectedHeader.kid ||
-      !exactAudience ||
-      !recipientId ||
-      !/^[A-Za-z0-9._-]{1,256}$/.test(recipientId)
-    ) {
-      reply(response, 401, { error: "invalid_client" });
-      return;
+    try {
+      const startedAt = Date.now();
+      const grant = await readGrant(request);
+      if (!grant) {
+        reply(response, 400, { error: "invalid_request" });
+        return;
+      }
+      const keys = await loadJwtAuthorities(config.bundlePath);
+      const jwt = await jwtVerify(grant.assertion, keys, {
+        algorithms: ["ES256", "ES384", "RS256", "PS256"],
+        audience: config.endpoint,
+        requiredClaims: ["sub", "exp"],
+      }).catch(() => undefined);
+      const aud = jwt?.payload.aud;
+      const exactAudience =
+        aud === config.endpoint ||
+        (Array.isArray(aud) && aud.length === 1 && aud[0] === config.endpoint);
+      const sub = jwt?.payload.sub;
+      const recipientId = sub?.startsWith(prefix) && sub.slice(prefix.length);
+      if (
+        !jwt?.protectedHeader.kid ||
+        !exactAudience ||
+        !recipientId ||
+        !/^[A-Za-z0-9._-]{1,256}$/.test(recipientId)
+      ) {
+        reply(response, 401, { error: "invalid_client" });
+        return;
+      }
+      const deadline = Math.min(startedAt + 30_000, Number(jwt.payload.exp) * 1_000);
+      if (!Number.isFinite(deadline) || deadline <= Date.now() || response.destroyed) {
+        reply(response, 401, { error: "invalid_client" });
+        return;
+      }
+      const disconnected = new AbortController();
+      response.once("close", () => disconnected.abort());
+      const signal = AbortSignal.any([
+        disconnected.signal,
+        AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      ]);
+      release();
+      const token = await resolve(
+        {
+          recipientId,
+          requestId: grant.requestId,
+          bindingId: grant.bindingId,
+          deadlineAt: new Date(deadline).toISOString(),
+        },
+        signal,
+      );
+      // This TTL limits redemption release; it does not describe the provider key's expiry.
+      // The installed OpenShell token-grant profile must independently require cache_ttl: 0.
+      const lifetime =
+        token &&
+        Math.floor((Math.min(Date.parse(token.usableUntil), deadline) - Date.now()) / 1000);
+      if (
+        !token ||
+        !lifetime ||
+        !(lifetime > 0) ||
+        signal.aborted ||
+        response.destroyed ||
+        Date.now() >= deadline
+      ) {
+        reply(response, 403, { error: "invalid_grant" });
+        return;
+      }
+      reply(response, 200, {
+        access_token: token.value,
+        token_type: "Bearer",
+        expires_in: lifetime,
+      });
+    } finally {
+      release();
     }
-    const deadline = Math.min(startedAt + 30_000, Number(jwt.payload.exp) * 1_000);
-    if (!Number.isFinite(deadline) || deadline <= Date.now() || response.destroyed) {
-      reply(response, 401, { error: "invalid_client" });
-      return;
-    }
-    const disconnected = new AbortController();
-    response.once("close", () => disconnected.abort());
-    const signal = AbortSignal.any([
-      disconnected.signal,
-      AbortSignal.timeout(Math.max(1, deadline - Date.now())),
-    ]);
-    const token = await resolve(
-      {
-        recipientId,
-        requestId: grant.requestId,
-        bindingId: grant.bindingId,
-        deadlineAt: new Date(deadline).toISOString(),
-      },
-      signal,
-    );
-    // This TTL limits redemption release; it does not describe the provider key's expiry.
-    // The installed OpenShell token-grant profile must independently require cache_ttl: 0.
-    const lifetime =
-      token && Math.floor((Math.min(Date.parse(token.usableUntil), deadline) - Date.now()) / 1000);
-    if (
-      !token ||
-      !lifetime ||
-      !(lifetime > 0) ||
-      signal.aborted ||
-      response.destroyed ||
-      Date.now() >= deadline
-    ) {
-      reply(response, 403, { error: "invalid_grant" });
-      return;
-    }
-    reply(response, 200, {
-      access_token: token.value,
-      token_type: "Bearer",
-      expires_in: lifetime,
-    });
   };
   const server = createServer(
     {

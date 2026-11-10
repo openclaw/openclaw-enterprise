@@ -436,8 +436,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (options.requestCredentials) {
       this.requestTimeCredentials = Object.freeze({
         assertAvailable: (signal: AbortSignal) => this.assertRequestCredentialsAvailable(signal),
-        verifyRecipient: (namespace, revision, recipient, signal) =>
-          this.verifyRequestRecipient(namespace, revision, recipient, signal),
+        verifyRequestInstallation: (context, installation, recipient) =>
+          this.verifyRequestInstallation(context, installation, recipient),
       });
     }
     this.sourceControl = Object.freeze({
@@ -533,20 +533,27 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
   }
 
-  private async verifyRequestRecipient(
-    namespace: Readonly<Namespace>,
-    revision: Readonly<AgentRevision>,
+  private async verifyRequestInstallation(
+    context: ProxyRevisionContext,
+    installation: EgressInstallation,
     recipient: RequestCredentialInput["recipient"],
-    signal: AbortSignal,
   ): Promise<boolean> {
+    const { namespace, revision, signal } = context;
     if (
-      recipient.context !== undefined &&
-      recipient.context !== openShellWorkspaceName(namespace)
+      (recipient.context !== undefined &&
+        recipient.context !== openShellWorkspaceName(namespace)) ||
+      installation.sandboxId !== recipient.id ||
+      !isDeepStrictEqual(installation.plan, context.plan) ||
+      !isDeepStrictEqual(installation.sender, this.sourceControl.sender)
     ) {
       return false;
     }
+    const current = await this.requestInstallation(namespace, revision, signal, recipient.id);
+    // The Worker independently qualified Git before persisting this installation. Model
+    // requests recheck the full effective policy, without adopting its private Git custody.
     return (
-      (await this.requestInstallation(namespace, revision, signal, recipient.id)) !== undefined
+      current !== undefined &&
+      current.configurationId === installation.enforcement.requestConfigurationId
     );
   }
 
@@ -622,11 +629,28 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     ) {
       return undefined;
     }
+    // Git credential activation and renewal change this cross-provider material epoch.
+    // Require current admission agreement above, but pin policy and identity independently.
+    // Canonicalize protobuf maps, preserving ordered arrays and explicit default presence.
+    const configurationId = sha256Hex(
+      JSON.stringify(
+        wirePolicy(
+          [
+            sandbox.id,
+            sandbox.mainProcessInstanceId,
+            { ...admission, provider_env_revision: undefined },
+            provider,
+            profile,
+            { ...config, provider_env_revision: undefined },
+          ],
+          true,
+        ),
+      ),
+    );
     return {
       instanceId: sandbox.mainProcessInstanceId,
-      configurationId: sha256Hex(
-        JSON.stringify([sandbox.id, admission, provider, profile, wirePolicy(config)]),
-      ),
+      configurationId,
+      requestConfigurationId: configurationId,
       policyHash: config.policy_hash,
       authorityScope: "execution",
     };
@@ -845,6 +869,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         // Keep Git's independently verified recipient while fencing the model provider too.
         return {
           ...existing,
+          requestConfigurationId: model.configurationId,
           configurationId: sha256Hex(
             JSON.stringify([existing.configurationId, model.configurationId]),
           ),

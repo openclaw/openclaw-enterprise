@@ -207,6 +207,8 @@ export interface EgressInstallation {
   readonly enforcement: {
     readonly instanceId: string;
     readonly configurationId: string;
+    /** Request-profile witness readable without acquiring a Worker-owned credential session. */
+    readonly requestConfigurationId?: string;
     readonly policyHash: string;
     readonly authorityScope: "execution";
     /** Public key bound by the adapter to this installation, never selected by a request. */
@@ -444,11 +446,11 @@ export interface CredentialProxyDriver extends Driver {
   /** Explicitly qualified request authorization and independent material redemption. */
   readonly requestTimeCredentials?: {
     assertAvailable(signal: AbortSignal): Promise<void>;
-    verifyRecipient(
-      namespace: Readonly<Namespace>,
-      revision: Readonly<AgentRevision>,
+    /** Reobserve the recipient and the persisted request-profile fence in the API process. */
+    verifyRequestInstallation(
+      context: ProxyRevisionContext,
+      installation: EgressInstallation,
       recipient: RequestCredentialInput["recipient"],
-      signal: AbortSignal,
     ): Promise<boolean>;
   };
   readonly capability: "credential_proxy";

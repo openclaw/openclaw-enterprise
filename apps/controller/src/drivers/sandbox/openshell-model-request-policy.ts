@@ -3,6 +3,7 @@ import type { AgentRevision, ProxyPlan } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import type { OpenShellProxyOptions } from "../egress-proxy/openshell.ts";
+import { isOpenShellRequestHost } from "../egress-proxy/openshell-http-request.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "./openshell-codex-artifacts.ts";
 import {
@@ -54,10 +55,10 @@ export function openShellModelRequestPolicy(
     origin.pathname !== "/" ||
     origin.search ||
     origin.hash ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(host) ||
+    !isOpenShellRequestHost(host) ||
     /(?:^|\.)github\.com$/.test(host)
   ) {
-    unsupported("The model route must be an exact HTTPS origin disjoint from protected Git.");
+    unsupported("The model route must be an exact HTTPS DNS origin disjoint from protected Git.");
   }
   const bindingId = route.binding.binding.id;
   const fields = {

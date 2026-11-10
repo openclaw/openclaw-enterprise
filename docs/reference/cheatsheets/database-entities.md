@@ -301,12 +301,13 @@ If the installation result is unknown, `state` stays `installing`. The sender mu
 
 ### `request_credential_approvals`
 
-Stores one-use request credential approvals and retains consumed keys until expiry to prevent replay.
+Stores one-use request credential approvals and retains correlation keys through the authenticated replay horizon.
 
 - `recipient_id`, `request_id`, `binding_id`
 - `namespace_id`, `agent_id`, `revision_id`
 - `policy_digest`, `driver_ref`
-- `expires_at`, `consumed`
+- `expires_at` (redemption deadline), `consumed`
+- `replay_until_at` (correlation retention deadline, including consumed approvals)
 
 ### `egress_send_receipts`
 

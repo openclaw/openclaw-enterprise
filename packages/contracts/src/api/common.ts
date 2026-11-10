@@ -435,7 +435,7 @@ export const CreateCredentialSourceBody = Type.Object(
     authorization: Type.Optional(
       Type.Literal("online-request", {
         description:
-          "Explicitly select an offered request-authorization profile. Omission retains exact-dispatch admission. Existing sources retain their original profile.",
+          "Explicitly select an offered request-authorization profile. With a Credential Proxy selected, omission retains exact-dispatch admission for eligible static sources. Existing sources retain their original profile.",
       }),
     ),
     config: Type.Optional(CredentialSourceConfig),

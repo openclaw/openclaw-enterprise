@@ -69,15 +69,20 @@ In the [withdrawal example](../../../tests/integration/credential-proxy-withdraw
 The explicit [online model profile](../drivers/credential-proxy.md#online-model-requests)
 keeps the OpenAI key outside the guest. The supervisor sends the captured request
 to OCC, then redeems a single-use approval with its SPIFFE JWT-SVID. OCC checks
-the current model grant, revision, installation and Secret version before
-release. The approved request ID and binding are correlated with the SVID's
+the current model grant, revision and installation, then makes a final Secret
+observation under the same Namespace lock as OCC rotations. A rotation committed
+before that release decision rejects old material. Direct external Secret writes
+do not share this lock; they are observed only at the final read. The approved request ID and binding are correlated with the SVID's
 Sandbox identity; they are not themselves SVID claims.
 
 The Workload API socket and registration must belong only to the trusted
 supervisor. Verify that the guest cannot access them or obtain the same identity.
 The request middleware uses the existing Gateway-signed extension identity;
-this is a separate authentication check from token redemption. The Driver also
-requires mandatory middleware, an exact provider/token endpoint, zero credential
+this is a separate authentication check from token redemption, whose trust keys
+must explicitly carry `use: "jwt-svid"`. Consumed approval IDs remain reserved
+through the authenticated replay horizon, beyond redemption expiry. See the
+[request flow](../../flows/credential-source-egress/model-requests.md) for retention
+and capacity boundaries. The Driver also requires mandatory middleware, an exact provider/token endpoint, zero credential
 caching, and no overlapping direct model route.
 
 Withdrawal before redemption prevents release even when approval already

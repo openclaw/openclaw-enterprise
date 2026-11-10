@@ -78,6 +78,7 @@ export async function authorizeOpenShellRequest(
         recipient: { id: peer.sandboxId, context: view.workspace },
         requestId: view.requestId,
         deadlineAt: new Date(redeemBy).toISOString(),
+        replayUntilAt: new Date(peer.expiresAt).toISOString(),
         http: { target: view.target, headers: view.headers, body: view.body },
       },
       controller.signal,

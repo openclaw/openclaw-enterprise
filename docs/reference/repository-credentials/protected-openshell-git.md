@@ -1,19 +1,18 @@
 # Protected repository access with OpenShell
 
-Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-OCE matches the held launcher request to an authenticated middleware denial before
-issuing credentials. Installation and signed release precede Agent startup.
-Select repositories sharing explicit permissions. OCE verifies GitHub's returned scope
-against canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
+Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md)
+for authenticated pre-credential checks and signed startup release. OCE verifies
+selected repositories' returned GitHub scope against canonical IDs and explicit
+permissions. GitHub governs refs and REST/GraphQL; grant changes block use.
 
-`git-write` retains exact ref policy. Qualification requires configured capabilities
-and runtime evidence. `git-read` and
-`git-full` keep their existing semantics. Installation preview requires separate
-opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
+`git-write` retains exact ref policy; `git-read` and `git-full` retain existing
+semantics. Installation preview requires opt-in. Exact-dispatch and v7 reduction
+guarantees remain unqualified.
 
-Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
-repository access, while model access uses a Gateway Harness source. For upgrades, see
-[compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
+Keep Credential Gateway selected. The Git-only Proxy profile uses a Gateway
+model source. For combined model/Git v9, follow [per-request model setup](../../guides/credential-proxy/model-requests.md):
+Gateway ownership remains metadata, without a model-key copy. Installed v9
+acceptance remains pending. For upgrades, see [compatibility](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
 

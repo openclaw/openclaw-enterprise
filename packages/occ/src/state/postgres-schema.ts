@@ -1877,6 +1877,7 @@ export const requestCredentialApprovals = occSchema.table(
     policyDigest: text("policy_digest").notNull(),
     driverRef: jsonb("driver_ref").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    replayUntilAt: timestamp("replay_until_at", { withTimezone: true }).notNull(),
     consumed: boolean("consumed").notNull().default(false),
   },
   (table) => [
@@ -1887,7 +1888,11 @@ export const requestCredentialApprovals = occSchema.table(
       foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
     }).onDelete("cascade"),
     check("request_credential_approval_digest", sql`${table.policyDigest} ~ '^[a-f0-9]{64}$'`),
-    index("request_credential_approvals_expiry").on(table.expiresAt),
+    check(
+      "request_credential_approval_horizon",
+      sql`${table.replayUntilAt} >= ${table.expiresAt} AND isfinite(${table.replayUntilAt})`,
+    ),
+    index("request_credential_approvals_expiry").on(table.replayUntilAt),
   ],
 );
 

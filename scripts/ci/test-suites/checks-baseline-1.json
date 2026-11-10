@@ -589,6 +589,8 @@
     {
       "path": "tests/integration/static-egress.test.mjs",
       "expectedTests": [
+        "model-only request admission uses the registered request profile without strict capabilities",
+        "model request installation survives a material epoch change but fences policy and recipient drift",
         "Responses output text assembled across parts and messages cannot reveal selected material",
         "Responses assistant projections protect independent items and seeded deltas",
         "Responses incremental text snapshots cannot reveal selected material",

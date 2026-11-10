@@ -68,6 +68,12 @@ export interface ExchangeProvider {
   readonly isCurrent: () => boolean;
 }
 
+/** Final material observation runs inside the current Namespace policy fence. */
+export type RequestCredentialRelease = (
+  source: StaticEgressSource,
+  read: () => Promise<VersionedSecretValue & { readonly materialId: string }>,
+) => Promise<boolean>;
+
 export interface EgressAuthorityPorts {
   readonly exchangeOwner: EgressExchangeOwner;
   readonly now: () => number;
@@ -95,6 +101,7 @@ export interface EgressAuthorityPorts {
     check(
       request: RequestCredentialInput | RequestCredentialApproval,
       signal: AbortSignal,
+      release?: RequestCredentialRelease,
     ): Promise<StaticEgressSource | undefined>;
     consume(grant: RequestCredentialGrant): Promise<RequestCredentialApproval | undefined>;
     validate(source: StaticEgressSource, value: string): boolean;
@@ -442,6 +449,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     operation: (
       ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
       signal: AbortSignal,
+      retain: <U>(pending: Promise<U>) => Promise<U>,
     ) => Promise<T | undefined>,
   ): Promise<T | undefined> {
     const ports = this.ports.requestCredentials;
@@ -466,7 +474,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         return undefined;
       }
       const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
-      const result = await operation(ports, lifetime);
+      const result = await operation(ports, lifetime, (pending) => {
+        charge.holds += 1;
+        return pending.finally(() => this.releaseCharge(charge));
+      });
       return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
     } catch {
       // Ambiguous authority/read outcomes never grant a credential or retry a consumed approval.
@@ -478,6 +489,9 @@ export class CredentialProxy implements CredentialProxyExchange {
 
   authorizeRequestCredential(input: RequestCredentialInput, signal: AbortSignal) {
     if (
+      !Number.isFinite(Date.parse(input.replayUntilAt)) ||
+      Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
+      Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
       input.http.body.byteLength > 1024 * 1024 ||
       !input.requestId ||
       input.requestId.length > 256 ||
@@ -502,13 +516,33 @@ export class CredentialProxy implements CredentialProxyExchange {
     );
   }
 
+  acquireRequestAuthentication(): (() => void) | undefined {
+    if (
+      !this.ports.requestCredentials ||
+      this.activeOperations >= this.capacity.operations ||
+      this.authenticating >= this.capacity.authenticatingOperations
+    ) {
+      return undefined;
+    }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        this.activeOperations -= 1;
+        this.authenticating -= 1;
+      }
+    };
+  }
+
   resolveRequestCredential(input: RequestCredentialGrant, signal: AbortSignal) {
     const grant = immutableCopy(input);
     return this.withRequestCredential<RequestCredentialMaterial>(
       grant.recipientId,
       grant.deadlineAt,
       signal,
-      async (ports, lifetime) => {
+      async (ports, lifetime, retain) => {
         const approval = await ports.consume(grant);
         if (!approval || lifetime.aborted) {
           return undefined;
@@ -566,7 +600,33 @@ export class CredentialProxy implements CredentialProxyExchange {
           await ports.deny(approval, "invalid_material");
           return undefined;
         }
-        const selected = await ports.check(approval, approvedLifetime);
+        const selected = await ports.check(approval, approvedLifetime, async (selected, read) => {
+          if (!isDeepStrictEqual(selected, source) || approvedLifetime.aborted) {
+            return false;
+          }
+          // OCC rotations use this same Namespace fence. The last read is the material
+          // observation for release; direct external writes have no shared OCC lock.
+          let onAbort!: () => void;
+          const aborted = new Promise<undefined>((resolve) => {
+            onAbort = () => resolve(undefined);
+          });
+          approvedLifetime.addEventListener("abort", onAbort, { once: true });
+          try {
+            // A Driver ignoring cancellation must neither retain policy locks nor escape
+            // capacity accounting while its abandoned read is still pending.
+            const final = await Promise.race([retain(read()), aborted]);
+            return (
+              final !== undefined &&
+              !approvedLifetime.aborted &&
+              Boolean(fresh(final)) &&
+              final.version === current.version &&
+              final.materialId === current.materialId &&
+              sameSecret(final.value, current.value)
+            );
+          } finally {
+            approvedLifetime.removeEventListener("abort", onAbort);
+          }
+        });
         if (
           !isDeepStrictEqual(selected, source) ||
           approvedLifetime.aborted ||

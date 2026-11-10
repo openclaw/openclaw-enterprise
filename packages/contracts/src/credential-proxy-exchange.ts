@@ -29,6 +29,8 @@ export interface RequestCredentialInput {
   readonly recipient: { readonly id: string; readonly context?: unknown };
   readonly requestId: string;
   readonly deadlineAt: string;
+  /** Authenticated replay horizon, at least deadlineAt and at most one hour from admission. */
+  readonly replayUntilAt: string;
   readonly bindingId: string;
   readonly execution: Pick<EgressExecution, "namespaceId" | "agentId" | "revisionId">;
   readonly http: CredentialHttpRequest;
@@ -55,6 +57,8 @@ export interface CredentialProxyBinding {
 
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
+  /** Reserve shared process capacity before transport authentication; release is idempotent. */
+  acquireRequestAuthentication?(): (() => void) | undefined;
   /** Online authorization is distinct from the strict dispatch/response exchange below. */
   authorizeRequestCredential?(
     request: RequestCredentialInput,

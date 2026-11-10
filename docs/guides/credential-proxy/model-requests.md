@@ -107,9 +107,12 @@ SOURCE_ID="$(./bin/occ credential-source create --file model-source.json -o json
 ./bin/occ credential-source get "$SOURCE_ID" -o json
 ```
 
-Require `egress.key.provider.id: openai-online-request`, provider generation `1`,
-`egress.adoption: live` and `egress.retention: none`. The owner remains
-`credential_gateway`; that field does not mean the Gateway holds the key.
+Require `type: openai`, `state: ready`, `egress.adoption: live`,
+`egress.retention: none` and `ownerCapability: credential_gateway`. The public
+response omits the provider ID and authorization profile; these fields alone
+do not distinguish online authorization from strict admission. Retain
+`model-source.json` with its explicit authorization selection, and complete the
+installed-path checks below. Gateway ownership does not mean it holds the key.
 A source update retains its selected provider and cannot change authorization
 profiles.
 
@@ -121,9 +124,9 @@ provider with WebSockets disabled, not the built-in OpenAI provider's WebSocket
 transport. The current profile permits one `/v1/responses` route; it does not
 admit Chat Completions or provider-hosted tools.
 
-Deploy through the normal Agent workflow. Expect admission version `8`, or `9`
-with independently approved mandatory Git delivery. A ready source does not
-prove that the workload passed installation checks or can answer a model turn.
+Deploy through the normal Agent workflow and check the requested deployment
+and runtime status. A ready source does not prove that the workload passed
+installation checks or can answer a model turn.
 
 ## Verify the installed path
 

@@ -238,9 +238,27 @@ export function createOpenShellEgressAuthority(
     EvaluateHttpRequest: unary(async (call) => {
       // Malformed request-bound configuration cannot fall back to the strict identity check.
       if (!emptyMiddlewareConfig(call.request.config)) {
-        return registrationName && authorize
-          ? authorizeOpenShellRequest(call, identity, registrationName, authorize)
-          : { decision: 2, reason_code: "request_credential_denied" };
+        const denied = { decision: 2, reason_code: "request_credential_denied" };
+        if (!registrationName || !authorize) {
+          return denied;
+        }
+        const release = forwarder.acquireRequestAuthentication?.();
+        if (!release) {
+          return denied;
+        }
+        try {
+          return await authorizeOpenShellRequest(
+            call,
+            identity,
+            registrationName,
+            (input, signal) => {
+              release();
+              return authorize(input, signal);
+            },
+          );
+        } finally {
+          release();
+        }
       }
       return {
         decision: identity.supervisor(middlewareBearer(call.metadata)) ? 1 : 2,
