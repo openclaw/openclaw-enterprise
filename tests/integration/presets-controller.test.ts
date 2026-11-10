@@ -63,12 +63,7 @@ import {
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 
-type CleanupRegistrar = { after(cleanup: () => void | Promise<void>): void };
-// temporaryDirectory only uses after; the shared suite registers the same cleanup outside a case.
-const createTemporaryDirectory = temporaryDirectory as (
-  registrar: CleanupRegistrar,
-  prefix: string,
-) => Promise<string>;
+type CleanupRegistrar = Parameters<typeof temporaryDirectory>[0];
 type PresetDocument = Omit<Preset, "template"> & { template: PresetDraftTemplate };
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type HttpResponse = { status: number; headers: Headers; body: unknown; data: unknown };
@@ -105,7 +100,7 @@ function field(value: unknown, ...path: string[]): unknown {
 }
 
 async function createFixture(t: CleanupRegistrar, options: FixtureOptions = {}) {
-  const root = await createTemporaryDirectory(t, "occ-presets-");
+  const root = await temporaryDirectory(t, "occ-presets-");
   const audit = options.auditSink ?? new InMemoryAuditSink();
   const policy: { current?: ConsoleFixture["policy"] } = {};
   const state = new InMemoryPlatformState({
@@ -1930,7 +1925,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const staleStandard = await rollBack(staleOpenClaw);
     const edited = await rollBack(editedStandard);
     const renamed = await createPreset(fixture, upgraded.id, oldName.name, oldName.template);
-    assert.equal(field(stale.template, "gateway"), undefined);
+    assert.equal(field(stale.template, "configuration", "values", "gateway", "auth"), undefined);
     assert.notDeepEqual(stale.template, required(current["default-codex"]).template);
     // A grant on the stale copy must survive the refresh: the ID stays the same.
     const { principal: reader } = await fixture.createAccountWithPolicy("stale-reader", () => {});
