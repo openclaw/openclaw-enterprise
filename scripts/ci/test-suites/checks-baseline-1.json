@@ -52,7 +52,7 @@
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
     "tests/integration/service-api-keys.test.ts",
-    "tests/integration/driver-plugin-installation.test.mjs",
+    "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
@@ -71,22 +71,22 @@
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.ts",
-    "tests/integration/secret-driver-startup.test.mjs",
+    "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.mjs",
     "tests/conformance/occ-read.test.mjs",
-    "tests/integration/controller-lifecycle.test.mjs",
+    "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
-    "tests/conformance/secret-occ.test.mjs",
+    "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
-    "tests/conformance/service-account-driver.test.mjs",
+    "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
@@ -303,7 +303,7 @@
       "path": "tests/conformance/secret-gateway-delivery.test.mjs"
     },
     {
-      "path": "tests/conformance/secret-occ.test.mjs"
+      "path": "tests/conformance/secret-occ.test.ts"
     },
     {
       "path": "tests/conformance/slack-configuration.test.mjs"
@@ -312,7 +312,7 @@
       "path": "tests/conformance/console-gateway-safety.test.ts"
     },
     {
-      "path": "tests/conformance/service-account-driver.test.mjs"
+      "path": "tests/conformance/service-account-driver.test.ts"
     },
     {
       "path": "tests/conformance/test-files.test.mjs"
@@ -392,10 +392,10 @@
       "path": "tests/integration/console-build-metadata.test.ts"
     },
     {
-      "path": "tests/integration/controller-lifecycle.test.mjs"
+      "path": "tests/integration/controller-lifecycle.test.ts"
     },
     {
-      "path": "tests/integration/driver-plugin-installation.test.mjs"
+      "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
       "path": "tests/integration/git-hooks.test.mjs"
@@ -458,7 +458,7 @@
       "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.mjs"
+      "path": "tests/integration/secret-driver-startup.test.ts"
     },
     {
       "path": "tests/integration/service-api-keys.test.ts"

@@ -72,7 +72,7 @@
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.mjs",
-    "tests/integration/plugin-driver-startup.test.mjs",
+    "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.mjs",
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
@@ -366,7 +366,7 @@
       "path": "tests/conformance/plugin-runtime-templates.test.ts"
     },
     {
-      "path": "tests/integration/plugin-driver-startup.test.mjs"
+      "path": "tests/integration/plugin-driver-startup.test.ts"
     },
     {
       "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
