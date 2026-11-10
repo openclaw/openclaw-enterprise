@@ -15,7 +15,6 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
-  settlePageRequests,
 } from "./console-agents-browser-helpers.ts";
 
 test("the Console confirms deletion to its finalizing actor and shows other readers only that the Agent is not visible", async (t) => {
@@ -286,20 +285,39 @@ test("cleanup retry needs a still-failed status, current delete permission and a
   await permitted.promise;
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
-  const settled = page.waitForResponse(permissionUrl);
-  release.resolve();
-  assert.equal((await settled).status(), 200);
-  await settlePageRequests(page);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   // With the same failure and permission, keeping confirmation sends one real DELETE. Its next
-  // status reads come from the controller, no longer through the interception above.
+  // status reads come from the controller, no longer through the interception above. Hold that
+  // DELETE while the cancelled attempt's permission read returns: the cancelled attempt must not
+  // end this attempt's write, so Escape still cannot dismiss its confirmation.
+  const deleting = Promise.withResolvers<void>();
+  const send = Promise.withResolvers<void>();
+  t.after(() => send.resolve());
+  const deleteUrl = fixture.origin + path;
+  await page.route(deleteUrl, async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.fallback();
+      return;
+    }
+    deleting.resolve();
+    await send.promise;
+    await route.continue();
+  });
   await retry.click();
   const acceptedRetry = page.waitForResponse(
-    (response) =>
-      response.url() === fixture.origin + path && response.request().method() === "DELETE",
+    (response) => response.url() === deleteUrl && response.request().method() === "DELETE",
   );
   await confirm.click();
+  await deleting.promise;
+  const settled = page.waitForResponse(permissionUrl);
+  release.resolve();
+  assert.equal((await settled).status(), 200);
+  // Let the cancelled attempt's handler finish after its read resolves.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.isVisible(), true);
+  send.resolve();
   const response = await acceptedRetry;
   assert.equal(response.status(), 202);
   assert.deepEqual(Object.keys((await response.json()).meta), ["requestId"]);

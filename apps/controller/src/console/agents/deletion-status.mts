@@ -118,7 +118,10 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
   );
   let timer: number | undefined;
   let reading = false;
-  let writing = false;
+  // The retry attempt whose DELETE is in flight. Only that attempt clears it: an attempt the
+  // operator cancelled while its reads ran must not end a later attempt's write.
+  let writer: object | undefined;
+  const writing = () => writer !== undefined;
   let canRetry = false;
   let dialog: HTMLDialogElement | undefined;
 
@@ -205,7 +208,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
   }
 
   async function check({ manual = false } = {}) {
-    if (writing || dialog?.open || !isCurrent()) {
+    if (writing() || dialog?.open || !isCurrent()) {
       return;
     }
     if (manual) {
@@ -253,7 +256,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
   }
 
   function openRetry() {
-    if (!canRetry || reading || writing || !isCurrent()) {
+    if (!canRetry || reading || writing() || !isCurrent()) {
       return;
     }
     dialog = element("dialog", {
@@ -268,6 +271,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
       async () => {
         confirm.disabled = true;
         setText(confirm, "Checking status and access…");
+        const attempt = {};
         let sent = false;
         try {
           // The operator can still cancel while these reads run. Never turn an unavailable or
@@ -282,7 +286,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
           if (!isCurrent() || !current.open) {
             return;
           }
-          writing = true;
+          writer = attempt;
           sent = true;
           cancel.disabled = true;
           setText(confirm, "Requesting cleanup…");
@@ -317,7 +321,9 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
           }
           refresh.focus({ preventScroll: true });
         } finally {
-          writing = false;
+          if (writer === attempt) {
+            writer = undefined;
+          }
         }
       },
       { className: "danger" },
@@ -332,7 +338,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     current.addEventListener("cancel", (event) => {
-      if (writing) {
+      if (writing()) {
         event.preventDefault();
       }
     });
@@ -351,7 +357,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
 
   context.setTitle("Agent deletion");
   context.view.replaceChildren(card);
-  context.setWriteInFlight(() => writing);
-  context.setLeaveGuard(() => writing);
+  context.setWriteInFlight(writing);
+  context.setLeaveGuard(writing);
   void check();
 }
