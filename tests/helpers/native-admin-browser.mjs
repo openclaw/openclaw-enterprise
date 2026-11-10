@@ -1278,6 +1278,15 @@ async function assertRevisionDelegationBoundaries(context, topology) {
 async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
   const { secret, key } = await delegationSecret(topology);
   const { applyManifest } = createKubernetesClient({ selection: explicitK3dSelection() });
+  const health = () =>
+    nativePage.evaluate(async () => {
+      const response = await fetch("/healthz");
+      return {
+        status: response.status,
+        error: response.ok ? undefined : (await response.json()).error,
+      };
+    });
+  assert.equal((await health()).status, 200, "the signed-in native health request is authorized");
   // The Pod retains its mounted bytes while lookup is unavailable. Only the
   // exact test-owned immutable Secret is removed; restore the same material.
   try {
@@ -1295,8 +1304,24 @@ async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
         `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/native-admin`,
       );
       assert.equal(access.status, 503, "credential lookup failure must refuse access");
-      const status = await nativePage.evaluate(async () => (await fetch("/healthz")).status);
-      assert.equal(status, 503, "the native proxy must not fall back to machine credentials");
+      assert.equal(access.error?.code, "DEPENDENCY_UNAVAILABLE");
+      // Both public surfaces retain main’s dependency classification. The error
+      // must not disclose the missing Secret or grant machine access.
+      const refused = await health();
+      assert.equal(
+        refused.status,
+        503,
+        "the native proxy must not fall back to machine credentials",
+      );
+      assert.equal(
+        Object.keys(refused.error ?? {})
+          .sort()
+          .join(",") === "code,message" &&
+          refused.error.code === "DEPENDENCY_UNAVAILABLE" &&
+          refused.error.message === "A required platform dependency is unavailable.",
+        true,
+        "Agent-host refusal must contain only the canonical dependency error",
+      );
       const recreated = await kubectl(
         "get",
         "secret",
@@ -1347,6 +1372,7 @@ async function assertDelegationSecretRecovery(topology, nativePage, profileId) {
     profileId,
     "Secret lookup recovery preserves the native person",
   );
+  assert.equal((await health()).status, 200, "the same native health request recovers");
 }
 
 export async function runNativeAdminScenario(context) {
