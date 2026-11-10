@@ -484,6 +484,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       .map((line) => {
         const event = JSON.parse(line);
         assert.ok(event && !Array.isArray(event) && typeof event.event === "string");
+        assert.ok(event.event !== "request" || typeof event.turn === "boolean");
         return event;
       });
   const controlFile = join(modelDirectory, "skipper-command.json");
@@ -504,7 +505,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       // Only counts and booleans leave the private journey log. Diagnostics must not
       // replace the completion assertion if the model log or ledger is unavailable.
       const observations = await modelEvents(AbortSignal.timeout(10_000))
-        .then((events) => events.filter((e) => e.id === marker))
+        .then((events) => (events.length ? events.filter((e) => e.id === marker) : undefined))
         .catch(() => undefined);
       await checkpoint("native-command-completion-mismatch", {
         modelDiagnosticsAvailable: observations !== undefined,
