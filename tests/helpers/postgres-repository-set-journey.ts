@@ -136,7 +136,7 @@ export async function selectedGrantGitJourney(
   t: TestContext,
   testUrl: string,
   exercise: (journey: SelectedGrantJourney) => Promise<void>,
-  scope?: { readonly contents: "read" | "write"; readonly set?: true },
+  scope?: { readonly contents: "read" | "write"; readonly set?: true; readonly onlyB?: true },
 ) {
   await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
     exercise,
@@ -236,7 +236,7 @@ async function repositoryGitJourney(
   startupOptions?: NarrowStartupOptions,
   selectedGrant?: {
     exercise: (journey: SelectedGrantJourney) => Promise<void>;
-    scope?: { readonly contents: "read" | "write"; readonly set?: true };
+    scope?: { readonly contents: "read" | "write"; readonly set?: true; readonly onlyB?: true };
   },
 ) {
   const selectedRead = selectedGrant?.exercise;
@@ -248,7 +248,9 @@ async function repositoryGitJourney(
   const grantProfile = set
     ? "selected-repository-set"
     : selectedGrant?.scope && "selected-repository-write";
-  const selectedRepositories = repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
+  const selectedRepositories = selectedGrant?.scope?.onlyB
+    ? repositorySet.slice(1, 2)
+    : repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
   const selectedPermissions = selectedRead
     ? ({ metadata: "read", contents: selectedGrant?.scope?.contents ?? "read" } as const)
     : repositorySetPermissions;
@@ -720,7 +722,7 @@ async function repositoryGitJourney(
       host: "github.com",
       port: 443,
       method: "GET",
-      path: "/fixture/repository.git/info/refs",
+      path: `/${selectedRepositories[0]!.repository}.git/info/refs`,
       query: "service=git-upload-pack",
     },
     headers: [],

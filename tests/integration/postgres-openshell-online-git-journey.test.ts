@@ -647,16 +647,19 @@ const startOrigin: (
   options: object,
 ) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
 
-for (const [contents, set] of [
-  ["read", false],
-  ["write", false],
-  ["read", true],
-  ["write", true],
+for (const [contents, set, onlyB] of [
+  ["read", false, false],
+  ["write", false, false],
+  ["read", true, false],
+  ["write", true, false],
+  ["write", true, true],
 ] as const) {
   test(
-    set
-      ? `selected repository set authorizes native Git ${contents}`
-      : `selected ${contents} grant bounds ordinary Git push`,
+    onlyB
+      ? "a separately admitted B-only repository set authorizes native Git"
+      : set
+        ? `selected repository set authorizes native Git ${contents}`
+        : `selected ${contents} grant bounds ordinary Git push`,
     { ...requiresPostgres, timeout: 90_000 },
     async (t) => {
       await selectedGrantGitJourney(
@@ -707,14 +710,15 @@ for (const [contents, set] of [
             assert.equal(installed.endpoints.length, 1);
             const [endpoint] = installed.endpoints;
             assert.equal(endpoint?.host, "github.com");
-            const expectedPaths = [fixtureRepository, secondRepository].flatMap((repository) => [
+            const selected = onlyB ? [secondRepository] : [fixtureRepository, secondRepository];
+            const expectedPaths = selected.flatMap((repository) => [
               `/${repository}.git/info/refs`,
               `/${repository}.git/git-upload-pack`,
               ...(contents === "write" ? [`/${repository}.git/git-receive-pack`] : []),
             ]);
             assert.deepEqual(
               endpoint?.rules?.map(({ allow }) => allow.path),
-              [...expectedPaths, `/${fixtureRepository}.git/oce-observe-request/*/info/refs`],
+              [...expectedPaths, `/${selected[0]}.git/oce-observe-request/*/info/refs`],
             );
           }
           const calls = () =>
@@ -850,6 +854,21 @@ for (const [contents, set] of [
             assert.equal(calls(), before);
             assert.equal(peer.gh.issuesOfTokens.length, 0);
           }
+          if (onlyB) {
+            assert.notEqual((await push(fixtureRepository, true)).code, 0);
+            assert.equal(calls(), before);
+            assert.equal(peer.gh.issuesOfTokens.length, 0);
+            await push(secondRepository);
+            assert.equal(await origins.get(secondRepository)!.ref(ref), first);
+            assert.deepEqual(
+              peer.gh.issuesOfTokens.map(({ repositoryIds }) => repositoryIds),
+              [[74]],
+            );
+            assert.equal(origins.get(fixtureRepository)!.traffic().requests, 0);
+            assert.equal(origins.get(outside)!.traffic().requests, 0);
+            assert.deepEqual(errors, []);
+            return;
+          }
           if (contents === "read") {
             assert.notEqual((await push(fixtureRepository, true)).code, 0);
             assert.deepEqual(refusals, [`/${fixtureRepository}.git/info/refs`]);
@@ -960,7 +979,7 @@ for (const [contents, set] of [
           }
           assert.deepEqual(errors, []);
         },
-        { contents, ...(set && { set: true }) },
+        { contents, ...(set && { set: true }), ...(onlyB && { onlyB: true }) },
       );
     },
   );

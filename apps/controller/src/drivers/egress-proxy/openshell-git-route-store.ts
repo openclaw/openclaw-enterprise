@@ -1,3 +1,5 @@
+import type { PreparedGitGrantMode } from "../repo/github/access/prepared-git-redemption.ts";
+import { maxSelectedGitHubRepositories } from "../repo/github/access/repository-grant.ts";
 import {
   openShellGitDeliveryTransport,
   protectedRepositoryGitInstallationSql,
@@ -138,7 +140,7 @@ export interface OpenShellGitRouteStore {
     workspace: string,
     sandbox: string,
     finiteScopeIsCurrent: boolean,
-    usesTokenGrant?: boolean,
+    tokenGrantMode?: PreparedGitGrantMode | false,
   ): Promise<OpenShellGitExpiry | undefined>;
   beginDetach(
     revision: string,
@@ -598,7 +600,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     workspace: string,
     sandbox: string,
     finiteScopeIsCurrent: boolean,
-    usesTokenGrant = false,
+    tokenGrantMode: PreparedGitGrantMode | false = false,
   ): Promise<OpenShellGitExpiry | undefined> {
     const deadline = revision.repositoryCredentials?.deadlineWallMs;
     if (!Number.isSafeInteger(deadline)) {
@@ -617,14 +619,19 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     ) {
       return;
     }
-    // Only the selected pull runtime can retain a grant-ready route without installed
-    // material. The same snapshot and protected installation must still agree below.
+    // Multiple members need the selected-set profile and a current normalized admission.
+    // Keep the original receipt, protected installation and delivery-lock checks below.
+    const bindings = plan?.repositoryGit?.bindings ?? [];
     const grantReady =
       online &&
-      usesTokenGrant &&
+      !!tokenGrantMode &&
       !revision.repositoryCredentials?.standingApprovalId &&
-      plan?.repositoryGit?.bindings.length === 1 &&
-      plan.repositoryGit.bindings[0]?.profile === "github-repository";
+      (bindings.length === 1 ||
+        (tokenGrantMode === "selected-repository-set" &&
+          finiteScopeIsCurrent &&
+          bindings.length > 1 &&
+          bindings.length <= maxSelectedGitHubRepositories)) &&
+      bindings.every((binding) => binding.profile === "github-repository");
     return this.query(async (c) => {
       const key = await this.key(c, revision.id);
       if (!key) {

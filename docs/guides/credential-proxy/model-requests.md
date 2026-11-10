@@ -182,8 +182,9 @@ and give the Agent one explicit `github-repository` binding per repository. The
 bindings must share the same Git permission level, read or write. The Worker
 checks every binding before each redemption and requests one token for the
 exact set. Removing A from A+B invalidates the current execution's Git
-approvals for both repositories. B can resume once a new execution admits
-the B-only set. Other executions keep their own grants.
+approvals for both repositories. A verified mixed online execution can keep
+its required model route. B can resume Git once a new execution admits the
+B-only set. Other executions keep their own grants.
 
 Configure the Worker’s HTTPS `/token` listener on a port separate from its
 middleware authority. Set `assertionSource: openshell_gateway`, the exact

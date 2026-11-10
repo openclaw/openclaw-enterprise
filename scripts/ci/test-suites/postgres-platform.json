@@ -421,13 +421,15 @@
         "selected read grant bounds ordinary Git push",
         "selected write grant bounds ordinary Git push",
         "selected repository set authorizes native Git read",
-        "selected repository set authorizes native Git write"
+        "selected repository set authorizes native Git write",
+        "a separately admitted B-only repository set authorizes native Git"
       ]
     },
     {
       "path": "tests/integration/postgres-openshell-git-routes.test.ts",
       "expectedTests": [
         "v9 Git-only withdrawal retains the exact active grant-ready delivery without material",
+        "v9 Git-only withdrawal retains the original model delivery for a cold selected set",
         "finite Git removal is revision scoped and wins concurrent cold route adoption",
         "OpenShell Git routes persist identity and custody facts under one fenced holder",
         "a replacement lease cannot settle or replay an uncertain rotate installation",

@@ -1305,7 +1305,9 @@ export class OpenShellGitRuntime {
       workspace,
       sandbox,
       finiteScopeIsCurrent,
-      !!(this.configuration.grantRedemption && this.owner.grant),
+      this.configuration.grantRedemption && this.owner.grant
+        ? (this.configuration.grantRedemptionProfile ?? true)
+        : false,
     );
     if (!saved) {
       return "retire-runtime";
