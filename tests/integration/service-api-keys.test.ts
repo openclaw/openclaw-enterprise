@@ -1,4 +1,11 @@
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
+import type {
+  AccessBinding,
+  AgentRuntimeCredentialStatus,
+  ComputeDriver,
+  ServicePrincipal,
+} from "../../packages/contracts/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -11,7 +18,7 @@ import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { jsonRequestInit } from "../helpers/inject-json.mjs";
@@ -25,6 +32,54 @@ import {
   serviceKeyOutsideNamespace,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+type MutableIAMState = { [K in keyof NativeIAMState]: NativeIAMState[K][number][] };
+type RequestOptions = { headers?: Record<string, string>; body?: unknown };
+type HttpResult = Record<string, unknown> & { status: number };
+
+function record(value: unknown): Record<string, unknown> {
+  const result = asRecord(value);
+  assert.ok(result, "expected an object");
+  return result;
+}
+
+function stringField(value: unknown, field: string): string {
+  const result = record(value)[field];
+  assert.ok(typeof result === "string", `expected ${field} to be a string`);
+  return result;
+}
+
+function assertStringFields<K extends string>(
+  value: Record<string, unknown>,
+  ...fields: K[]
+): asserts value is Record<string, unknown> & Record<K, string> {
+  for (const field of fields) {
+    stringField(value, field);
+  }
+}
+
+function jsonValue(text: string): unknown {
+  return JSON.parse(text);
+}
+
+function jsonRecord(text: string): Record<string, unknown> {
+  return record(jsonValue(text));
+}
+
+function jsonRecords(text: string): Record<string, unknown>[] {
+  const value = jsonValue(text);
+  assert.ok(Array.isArray(value));
+  return value.map((item: unknown) => record(item));
+}
+
+function commandError(
+  error: unknown,
+): asserts error is Error & { code: number; stdout: string; stderr: string } {
+  assert.ok(error instanceof Error);
+  assert.equal(typeof record(error).code, "number");
+  assert.equal(typeof record(error).stdout, "string");
+  assert.equal(typeof record(error).stderr, "string");
+}
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -48,7 +103,9 @@ test("service API keys authenticate scoped automation without replacing sessions
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
   const account = await auth.createAccount(credentials);
   const seed = auth.principalSeed(account, { grant: "administrator" });
-  const policy = {
+  const bootstrapBinding = seed.bindings[0];
+  assert.ok(bootstrapBinding);
+  const policy: MutableIAMState = {
     identities: [seed.principal],
     roles: [...seed.roles],
     bindings: [...seed.bindings],
@@ -58,7 +115,7 @@ test("service API keys authenticate scoped automation without replacing sessions
   };
   const iamDriver = new NativeIAMDriver({ loadNativeIAMState: async () => policy });
   const auditSink = new InMemoryAuditSink();
-  const runtimeCredentialStatus = new Map();
+  const runtimeCredentialStatus = new Map<string, AgentRuntimeCredentialStatus>();
   const computeDriver = {
     ...createDevelopmentComputeDriver(),
     async getAgentRuntimeCredentialStatus({ namespace, agent }) {
@@ -73,8 +130,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       runtimeCredentialStatus.set(`${namespace.id}:${agent.id}`, status);
       return status;
     },
-  };
-  let controller;
+  } satisfies ComputeDriver;
+  let controller: OpenClawController | undefined;
   const app = createFastifyApp({
     auth,
     iamDriver,
@@ -92,7 +149,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       return controller;
     },
   });
-  let rotateKeyBeforeResponse;
+  let rotateKeyBeforeResponse: (() => void) | undefined;
   app.addHook("onSend", (_request, reply, payload, done) => {
     if (rotateKeyBeforeResponse && reply.statusCode === 403) {
       rotateKeyBeforeResponse();
@@ -102,23 +159,30 @@ test("service API keys authenticate scoped automation without replacing sessions
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
-  const origin = `http://127.0.0.1:${app.server.address().port}`;
+  const address = app.server.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
   const session = await signInWithEmailPassword({
+    rememberMe: undefined,
     origin,
     headers: { origin: authOptions.baseURL },
     ...credentials,
   });
   async function request(
-    method,
-    path,
-    { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
-  ) {
+    method: string,
+    path: string,
+    {
+      headers = { cookie: session.cookie, origin: authOptions.baseURL },
+      body,
+    }: RequestOptions = {},
+  ): Promise<HttpResult> {
     const response = await fetchLoopback(
       `${origin}${path}`,
       jsonRequestInit(method, body, { host: "console.oce.localhost", ...headers }),
     );
     assert.equal(response.headers.get("cache-control"), "no-store");
-    return { status: response.status, ...(await response.json()) };
+    const envelope = record(await response.json());
+    return { status: response.status, ...envelope };
   }
   assert.equal(
     (await request("POST", "/installation/bootstrap", { body: { name: "Service keys test" } }))
@@ -129,13 +193,20 @@ test("service API keys authenticate scoped automation without replacing sessions
   const tenantB = await request("POST", "/namespaces", { body: { name: "tenant-b" } });
   assert.equal(tenantA.status, 201);
   assert.equal(tenantB.status, 201);
-  const namespaceId = tenantA.data.id;
+  const activeController = controller;
+  assert.ok(activeController);
+  const namespaceId = stringField(tenantA.data, "id");
   const path = `/namespaces/${namespaceId}`;
-  const principal = { kind: "service_principal", id: `sp_${randomUUID()}`, namespaceId };
+  const principal: ServicePrincipal = {
+    kind: "service_principal",
+    id: `sp_${randomUUID()}`,
+    namespaceId,
+  };
   policy.identities.push(principal);
   grantRole(policy, principal.id, {
     id: "tenant-automation",
     bindingId: "service-automation",
+    resource: undefined,
     namespaceId,
     permissions: {
       namespace: ["read"],
@@ -147,25 +218,36 @@ test("service API keys authenticate scoped automation without replacing sessions
   });
   const body = { servicePrincipalId: principal.id, namespaceId, name: "tenant-automation" };
   const issue = () => request("POST", "/api/auth/service-keys", { body });
-  async function assertServiceKeyManagementDenied(headers, keyResponse, status) {
+  async function assertServiceKeyManagementDenied(
+    headers: Record<string, string>,
+    keyResponse: Awaited<ReturnType<typeof request>>,
+    status: number,
+  ) {
     assert.equal(
       (await request("POST", "/api/auth/service-keys", { headers, body })).status,
       status,
     );
     assert.equal(
-      (await request("DELETE", `/api/auth/service-keys/${keyResponse.data.id}`, { headers }))
-        .status,
+      (
+        await request("DELETE", `/api/auth/service-keys/${stringField(keyResponse.data, "id")}`, {
+          headers,
+        })
+      ).status,
       status,
     );
   }
   // A key's expiry is computed from the controller's clock at issuance; allow one second
   // of rounding on either side of the request.
-  function assertIssuedLifetime(response, before, seconds) {
-    const expiresAt = Date.parse(response.data.expiresAt);
+  function assertIssuedLifetime(
+    response: Awaited<ReturnType<typeof request>>,
+    before: number,
+    seconds: number,
+  ) {
+    const expiresAt = Date.parse(stringField(response.data, "expiresAt"));
     assert.ok(
       expiresAt >= before + seconds * 1000 - 1000 &&
         expiresAt <= Date.now() + seconds * 1000 + 1000,
-      `expiresAt ${response.data.expiresAt} is not ${seconds} s after issuance`,
+      `expiresAt ${stringField(response.data, "expiresAt")} is not ${seconds} s after issuance`,
     );
   }
   const issuedBefore = Date.now();
@@ -173,10 +255,10 @@ test("service API keys authenticate scoped automation without replacing sessions
   assert.equal(issued.status, 201);
   // Without expiresIn a key lives the documented 30 days.
   assertIssuedLifetime(issued, issuedBefore, 30 * 24 * 60 * 60);
-  assert.equal(issued.data.servicePrincipalId, principal.id);
-  assert.equal(issued.data.namespaceId, namespaceId);
-  assert.match(issued.data.key, /^occ_/);
-  const headers = { "x-api-key": issued.data.key };
+  assert.equal(stringField(issued.data, "servicePrincipalId"), principal.id);
+  assert.equal(stringField(issued.data, "namespaceId"), namespaceId);
+  assert.match(stringField(issued.data, "key"), /^occ_/);
+  const headers = { "x-api-key": stringField(issued.data, "key") };
 
   await t.test(
     "valid key reads the exact Namespace and never creates a user or session",
@@ -195,19 +277,21 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       const second = await issue();
       assert.equal(second.status, 201);
-      const configurationIds = [];
-      for (const key of [issued.data, second.data]) {
+      const configurationIds: string[] = [];
+      for (const key of [record(issued.data), record(second.data)]) {
+        assertStringFields(key, "key", "id");
         const created = await request("POST", `/namespaces/${namespaceId}/configurations`, {
           headers: { "x-api-key": key.key },
           body: { kind: "agent", values: { model: "gpt-test" } },
         });
         assert.equal(created.status, 201);
-        configurationIds.push(created.data.id);
+        configurationIds.push(stringField(created.data, "id"));
         const mutation = auditSink.events.find(
           (event) =>
             event.action === "openclaw.configurations.create" &&
-            event.resource.id === created.data.id,
+            event.resource.id === stringField(created.data, "id"),
         );
+        assert.ok(mutation);
         assert.equal(mutation.actorId, principal.id);
         assert.equal(mutation.details?.actorServiceKeyId, key.id);
       }
@@ -216,7 +300,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       assert.equal(
         (
           await request("POST", `/namespaces/${namespaceId}/presets`, {
-            headers: { "x-api-key": second.data.key },
+            headers: { "x-api-key": stringField(second.data, "key") },
             body: { name: "denied-preset", template: { agent: { name: "Denied" } } },
           })
         ).status,
@@ -225,10 +309,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       const denial = auditSink.events
         .slice(deniedBefore)
         .find((event) => event.kind === "authorization_denial");
+      assert.ok(denial);
       assert.equal(denial.actorId, principal.id);
-      assert.equal(denial.details?.actorServiceKeyId, second.data.id);
+      assert.equal(denial.details?.actorServiceKeyId, stringField(second.data, "id"));
       // The acting key joins the denial's IAM evidence; it does not replace it.
-      assert.equal(denial.details.iamEvidence.identityId, principal.id);
+      assert.equal(record(denial.details?.iamEvidence).identityId, principal.id);
       // Session requests carry no key; key management names the key acted on and its name.
       for (const id of configurationIds) {
         const deleted = await fetchLoopback(
@@ -245,15 +330,17 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(deleted.status, 204);
       }
       assert.equal(
-        (await request("DELETE", `/api/auth/service-keys/${second.data.id}`)).status,
+        (await request("DELETE", `/api/auth/service-keys/${stringField(second.data, "id")}`))
+          .status,
         200,
       );
       for (const action of ["create", "revoke"]) {
         const managed = auditSink.events.find(
           (event) =>
             event.action === `openclaw.auth.service-keys.${action}` &&
-            event.details.serviceKeyId === second.data.id,
+            event.details?.serviceKeyId === stringField(second.data, "id"),
         );
+        assert.ok(managed?.details);
         assert.equal(managed.actorId, seed.principal.id);
         assert.equal(managed.details.serviceKeyName, "tenant-automation");
         assert.equal(Object.hasOwn(managed.details, "actorServiceKeyId"), false);
@@ -268,8 +355,8 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(event.details?.actorServiceKeyId, undefined);
       }
       const recorded = JSON.stringify(auditSink.events);
-      assert.equal(recorded.includes(issued.data.key), false);
-      assert.equal(recorded.includes(second.data.key), false);
+      assert.equal(recorded.includes(stringField(issued.data, "key")), false);
+      assert.equal(recorded.includes(stringField(second.data, "key")), false);
     },
   );
 
@@ -313,10 +400,14 @@ test("service API keys authenticate scoped automation without replacing sessions
     };
     // IAM policy management requires Installation administer. Grant only that,
     // not the bootstrap administrator Role, so the key cannot reach other data.
-    const installationPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
+    const installationPrincipal: ServicePrincipal = {
+      kind: "service_principal",
+      id: `sp_${randomUUID()}`,
+    };
     policy.identities.push(installationPrincipal);
     grantRole(policy, installationPrincipal.id, {
       id: "cli-installation-iam-administrator",
+      namespaceId: undefined,
       permissions: { installation: ["administer"] },
       resource: { kind: "installation", id: installationId },
     });
@@ -336,7 +427,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     // Reject ambiguous object members before a credentialed mutation can reach OCC.
     await assert.rejects(
       run(occCli, ["configuration", "create", "--file", ambiguousBodyFile], { env }),
-      (error) => {
+      (error: unknown) => {
+        commandError(error);
         assert.equal(error.code, 1);
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /invalid JSON file/);
@@ -350,9 +442,10 @@ test("service API keys authenticate scoped automation without replacing sessions
       ["configuration", "create", "--file", bodyFile, "--output", "json"],
       { env },
     );
-    const configuration = JSON.parse(created.stdout);
+    const configuration = jsonRecord(created.stdout);
+    assertStringFields(configuration, "id");
     const configurationPath = `/namespaces/${namespaceId}/configurations/${configuration.id}`;
-    assert.equal(configuration.values.model, "gpt-test");
+    assert.equal(record(configuration.values).model, "gpt-test");
 
     // A bodyless 204 becomes a stable domain result instead of leaking transport details.
     const deleted = await run(
@@ -360,7 +453,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       ["configuration", "delete", configuration.id, "--output", "json"],
       { env },
     );
-    assert.deepEqual(JSON.parse(deleted.stdout), {
+    assert.deepEqual(jsonValue(deleted.stdout), {
       deleted: true,
       id: configuration.id,
       kind: "configuration",
@@ -368,30 +461,32 @@ test("service API keys authenticate scoped automation without replacing sessions
     assert.equal((await request("GET", configurationPath)).status, 404);
 
     // Secret material and Agent runtime operations require a ready Namespace.
-    const readyNamespace = await controller.handleNamespaceLifecycle(
+    const readyNamespace = await activeController.handleNamespaceLifecycle(
       seed.principal.id,
       namespaceId,
       "ready",
     );
+    assert.ok(readyNamespace);
     assert.equal(readyNamespace.status, "ready");
     const secretCreated = await run(
       occCli,
       ["secret", "create", "--file", secretFile, "--output", "json"],
       { env },
     );
-    const cliSecret = JSON.parse(secretCreated.stdout);
+    const cliSecret = jsonRecord(secretCreated.stdout);
+    assertStringFields(cliSecret, "id");
     assert.equal(cliSecret.name, "cli-secret");
     assert.equal(Object.hasOwn(cliSecret, "value"), false);
     const secretRead = await run(occCli, ["secret", "get", cliSecret.id, "--output", "json"], {
       env,
     });
-    assert.equal(JSON.parse(secretRead.stdout).id, cliSecret.id);
+    assert.equal(jsonRecord(secretRead.stdout).id, cliSecret.id);
     const secretUpdated = await run(
       occCli,
       ["secret", "update", cliSecret.id, "--file", secretUpdateFile, "--output", "json"],
       { env },
     );
-    assert.deepEqual(JSON.parse(secretUpdated.stdout), cliSecret);
+    assert.deepEqual(jsonValue(secretUpdated.stdout), cliSecret);
 
     // Presets: the key may read them but not delete them until it is granted delete.
     const preset = await request("POST", `/namespaces/${namespaceId}/presets`, {
@@ -400,37 +495,53 @@ test("service API keys authenticate scoped automation without replacing sessions
     assert.equal(preset.status, 201);
     const presetList = await run(occCli, ["preset", "list", "-o", "json"], { env });
     assert.deepEqual(
-      JSON.parse(presetList.stdout).map(({ id, name }) => ({ id, name })),
-      [{ id: preset.data.id, name: "cli-preset" }],
+      jsonRecords(presetList.stdout).map(({ id, name }) => ({ id, name })),
+      [{ id: stringField(preset.data, "id"), name: "cli-preset" }],
     );
-    const presetRead = await run(occCli, ["preset", "get", preset.data.id, "-o", "json"], {
-      env,
-    });
-    assert.deepEqual(JSON.parse(presetRead.stdout), preset.data);
-    await assert.rejects(run(occCli, ["preset", "delete", preset.data.id], { env }), (error) => {
-      assert.match(error.stderr, /HTTP 403\)/);
-      return true;
-    });
+    const presetRead = await run(
+      occCli,
+      ["preset", "get", stringField(preset.data, "id"), "-o", "json"],
+      {
+        env,
+      },
+    );
+    assert.deepEqual(jsonValue(presetRead.stdout), preset.data);
+    await assert.rejects(
+      run(occCli, ["preset", "delete", stringField(preset.data, "id")], { env }),
+      (error: unknown) => {
+        commandError(error);
+        assert.match(error.stderr, /HTTP 403\)/);
+        return true;
+      },
+    );
     assert.equal(
-      (await request("GET", `/namespaces/${namespaceId}/presets/${preset.data.id}`)).status,
+      (await request("GET", `/namespaces/${namespaceId}/presets/${stringField(preset.data, "id")}`))
+        .status,
       200,
     );
     // The grant stays on the key's Role for the rest of this test.
-    policy.roles
-      .find((candidate) => candidate.id === "tenant-automation")
-      .permissions.push({ action: "delete", resourceKind: "preset" });
+    const automationRoleIndex = policy.roles.findIndex(
+      (candidate) => candidate.id === "tenant-automation",
+    );
+    const automationRole = policy.roles[automationRoleIndex];
+    assert.ok(automationRole);
+    policy.roles[automationRoleIndex] = {
+      ...automationRole,
+      permissions: [...automationRole.permissions, { action: "delete", resourceKind: "preset" }],
+    };
     const presetDeleted = await run(
       occCli,
-      ["preset", "delete", preset.data.id, "--output", "json"],
+      ["preset", "delete", stringField(preset.data, "id"), "--output", "json"],
       { env },
     );
-    assert.deepEqual(JSON.parse(presetDeleted.stdout), {
+    assert.deepEqual(jsonValue(presetDeleted.stdout), {
       deleted: true,
-      id: preset.data.id,
+      id: stringField(preset.data, "id"),
       kind: "preset",
     });
     assert.equal(
-      (await request("GET", `/namespaces/${namespaceId}/presets/${preset.data.id}`)).status,
+      (await request("GET", `/namespaces/${namespaceId}/presets/${stringField(preset.data, "id")}`))
+        .status,
       404,
     );
 
@@ -441,18 +552,18 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     assert.equal(agentConfiguration.status, 201);
     const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-      body: { name: "cli-stop-agent", configurationId: agentConfiguration.data.id },
+      body: { name: "cli-stop-agent", configurationId: stringField(agentConfiguration.data, "id") },
     });
     assert.equal(agent.status, 201);
-    const source = await controller.createSecret(seed.principal.id, {
+    const source = await activeController.createSecret(seed.principal.id, {
       namespaceId,
       name: "cli-model-key",
       value: "synthetic-cli-model-key",
     });
-    const boundAgent = await controller.updateAgent(seed.principal.id, {
+    const boundAgent = await activeController.updateAgent(seed.principal.id, {
       namespaceId,
-      agentId: agent.data.id,
-      configurationId: agentConfiguration.data.id,
+      agentId: stringField(agent.data, "id"),
+      configurationId: stringField(agentConfiguration.data, "id"),
       harnessAuth: { method: "api_key", source: source.ref },
     });
     policy.identities.push({
@@ -478,17 +589,18 @@ test("service API keys authenticate scoped automation without replacing sessions
         env: adminEnv,
       },
     );
-    const role = JSON.parse(roleCreated.stdout);
+    const role = jsonRecord(roleCreated.stdout);
+    assertStringFields(role, "id");
     assert.equal(role.name, "CLI secret operator");
     assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "secret" }]);
     const roleList = await run(occCli, ["iam", "role", "list", "-o", "json"], {
       env: adminEnv,
     });
-    assert.ok(JSON.parse(roleList.stdout).some((candidate) => candidate.id === role.id));
+    assert.ok(jsonRecords(roleList.stdout).some((candidate) => candidate.id === role.id));
     const roleRead = await run(occCli, ["iam", "role", "get", role.id, "-o", "json"], {
       env: adminEnv,
     });
-    assert.deepEqual(JSON.parse(roleRead.stdout), role);
+    assert.deepEqual(jsonValue(roleRead.stdout), role);
     grantRole(policy, installationPrincipal.id, {
       id: "cli-installation-secret-reader",
       namespaceId,
@@ -512,20 +624,21 @@ test("service API keys authenticate scoped automation without replacing sessions
       ["iam", "access-binding", "create", "--file", bindingFile, "-o", "json"],
       { env: adminEnv },
     );
-    const binding = JSON.parse(bindingCreated.stdout);
+    const binding = jsonRecord(bindingCreated.stdout);
+    assertStringFields(binding, "id");
     assert.equal(binding.subjectId, boundAgent.servicePrincipalId);
     assert.equal(binding.roleId, role.id);
     assert.equal(binding.resourceId, cliSecret.id);
     const bindingList = await run(occCli, ["iam", "access-binding", "list", "-o", "json"], {
       env: adminEnv,
     });
-    assert.ok(JSON.parse(bindingList.stdout).some((candidate) => candidate.id === binding.id));
+    assert.ok(jsonRecords(bindingList.stdout).some((candidate) => candidate.id === binding.id));
     const bindingRead = await run(
       occCli,
       ["iam", "access-binding", "get", binding.id, "-o", "json"],
       { env: adminEnv },
     );
-    assert.deepEqual(JSON.parse(bindingRead.stdout), binding);
+    assert.deepEqual(jsonValue(bindingRead.stdout), binding);
 
     // An Installation administrator creates a Namespace ServicePrincipal for a member's CLI.
     // It holds no grant until an AccessBinding names it (proved with PostgreSQL policy in
@@ -535,19 +648,20 @@ test("service API keys authenticate scoped automation without replacing sessions
       ["iam", "service-principal", "create", "-o", "json"],
       { env: adminEnv },
     );
-    const createdPrincipal = JSON.parse(principalCreated.stdout);
+    const createdPrincipal = jsonRecord(principalCreated.stdout);
+    assertStringFields(createdPrincipal, "id");
     assert.match(createdPrincipal.id, /^spn_/);
     assert.equal(createdPrincipal.namespaceId, namespaceId);
     const principalList = await run(occCli, ["iam", "service-principal", "list", "-o", "json"], {
       env: adminEnv,
     });
-    assert.deepEqual(JSON.parse(principalList.stdout), [createdPrincipal]);
+    assert.deepEqual(jsonValue(principalList.stdout), [createdPrincipal]);
     const principalRead = await run(
       occCli,
       ["iam", "service-principal", "get", createdPrincipal.id, "-o", "json"],
       { env: adminEnv },
     );
-    assert.deepEqual(JSON.parse(principalRead.stdout), createdPrincipal);
+    assert.deepEqual(jsonValue(principalRead.stdout), createdPrincipal);
 
     // occ service-key create writes a private key file that occ itself accepts, and never
     // prints the key. The administrator key covers its own grants, so it may rotate itself.
@@ -571,18 +685,20 @@ test("service API keys authenticate scoped automation without replacing sessions
       ],
       { env: installationEnv },
     );
-    const rotatedDetails = JSON.parse(rotated.stdout);
+    const rotatedDetails = jsonRecord(rotated.stdout);
+    assertStringFields(rotatedDetails, "id");
     assert.equal(rotatedDetails.servicePrincipalId, installationPrincipal.id);
     assert.equal(rotatedDetails.key, undefined);
     // Read mode and content through one handle so both describe the same file.
     const rotatedHandle = await open(rotatedKeyFile);
-    let rotatedKey;
+    let rotatedKey: Record<string, unknown>;
     try {
       assert.equal((await rotatedHandle.stat()).mode & 0o777, 0o600);
-      rotatedKey = JSON.parse(await rotatedHandle.readFile("utf8")).data;
+      rotatedKey = record(jsonRecord(await rotatedHandle.readFile("utf8")).data);
     } finally {
       await rotatedHandle.close();
     }
+    assertStringFields(rotatedKey, "key");
     assert.equal(rotatedKey.id, rotatedDetails.id);
     assert.ok(!rotated.stdout.includes(rotatedKey.key));
     const rotatedEnv = { ...adminEnv, OCC_SERVICE_KEY_FILE: rotatedKeyFile };
@@ -631,7 +747,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
     for (const days of [1, 365]) {
       const before = Date.now();
-      const created = JSON.parse(
+      const created = jsonRecord(
         (
           await run(
             occCli,
@@ -652,13 +768,14 @@ test("service API keys authenticate scoped automation without replacing sessions
           )
         ).stdout,
       );
+      assertStringFields(created, "expiresAt", "id");
       assert.ok(Math.abs(Date.parse(created.expiresAt) - before - days * 86_400_000) < 10_000);
       await run(occCli, ["service-key", "revoke", created.id], { env: adminEnv });
     }
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
     // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
     const emojiKeyFile = join(directory, "emoji-key.json");
-    const emojiCreate = (name, out) =>
+    const emojiCreate = (name: string, out: string) =>
       run(
         occCli,
         [
@@ -675,7 +792,8 @@ test("service API keys authenticate scoped automation without replacing sessions
         ],
         { env: installationEnv },
       );
-    const emoji = JSON.parse((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    const emoji = jsonRecord((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    assertStringFields(emoji, "id");
     assert.equal(emoji.name, "😀".repeat(32));
     await assert.rejects(emojiCreate("😀".repeat(33), join(directory, "emoji-33.json")), {
       stderr: /1 to 32 characters/,
@@ -687,7 +805,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       ["service-key", "revoke", rotatedDetails.id, "-o", "json"],
       { env: adminEnv },
     );
-    assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    assert.deepEqual(jsonValue(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
     // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
     // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
@@ -712,7 +830,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       run(occCli, ["iam", "access-binding", "create", "--file", inapplicableFile], {
         env: adminEnv,
       }),
-      (error) => {
+      (error: unknown) => {
+        commandError(error);
         assert.match(
           error.stderr,
           /HTTP 400\): INVALID_REQUEST: Role \S+ grants nothing on the namespace target: its Permissions \(secret:operate\)/,
@@ -725,6 +844,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     // instead of an opaque dependency failure.
     grantRole(policy, principal.id, {
       id: "cli-credential-source-creator",
+      resource: undefined,
       namespaceId,
       permissions: { credential_source: ["create"] },
     });
@@ -734,7 +854,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     await assert.rejects(
       run(occCli, ["credential-source", "create", "--file", sourceFile], { env }),
-      (error) => {
+      (error: unknown) => {
+        commandError(error);
         assert.match(
           error.stderr,
           /HTTP 409\): CREDENTIAL_GATEWAY_NOT_CONFIGURED: This Installation has no Credential Gateway.*docs-enterprise\.openclaw\.org\/reference\/credential-sources\//,
@@ -744,48 +865,54 @@ test("service API keys authenticate scoped automation without replacing sessions
     );
     const runtimeInitial = await run(
       occCli,
-      ["agent", "runtime-credentials", "get", agent.data.id, "-o", "json"],
+      ["agent", "runtime-credentials", "get", stringField(agent.data, "id"), "-o", "json"],
       { env },
     );
-    assert.deepEqual(JSON.parse(runtimeInitial.stdout), { transportConfigured: false });
+    assert.deepEqual(jsonValue(runtimeInitial.stdout), { transportConfigured: false });
     const runtimeProvisioned = await run(
       occCli,
-      ["agent", "runtime-credentials", "provision", agent.data.id, "-o", "json"],
+      ["agent", "runtime-credentials", "provision", stringField(agent.data, "id"), "-o", "json"],
       { env },
     );
-    const runtimeMetadata = JSON.parse(runtimeProvisioned.stdout);
+    const runtimeMetadata = jsonRecord(runtimeProvisioned.stdout);
     assert.equal(runtimeMetadata.transportConfigured, true);
     const deployed = await request(
       "POST",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
+      `/namespaces/${namespaceId}/agents/${stringField(agent.data, "id")}/deploy`,
     );
     assert.equal(deployed.status, 202);
     assert.equal(
-      (await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`)).data
-        .desiredRuntimeState,
+      record(
+        (await request("GET", `/namespaces/${namespaceId}/agents/${stringField(agent.data, "id")}`))
+          .data,
+      ).desiredRuntimeState,
       "running",
     );
 
-    const stopped = await run(occCli, ["agent", "stop", agent.data.id], { env });
+    const stopped = await run(occCli, ["agent", "stop", stringField(agent.data, "id")], { env });
     assert.match(stopped.stdout, /DESIRED STATE/);
-    assert.match(stopped.stdout, new RegExp(`${agent.data.id}.*stopped`));
-    const current = await run(occCli, ["agent", "get", agent.data.id, "--output", "json"], {
-      env,
-    });
-    const currentAgent = JSON.parse(current.stdout);
+    assert.match(stopped.stdout, new RegExp(`${stringField(agent.data, "id")}.*stopped`));
+    const current = await run(
+      occCli,
+      ["agent", "get", stringField(agent.data, "id"), "--output", "json"],
+      {
+        env,
+      },
+    );
+    const currentAgent = jsonRecord(current.stdout);
     assert.deepEqual(
       {
         id: currentAgent.id,
         desiredRuntimeState: currentAgent.desiredRuntimeState,
       },
-      { id: agent.data.id, desiredRuntimeState: "stopped" },
+      { id: stringField(agent.data, "id"), desiredRuntimeState: "stopped" },
     );
     const bindingDeleted = await run(
       occCli,
       ["iam", "access-binding", "delete", binding.id, "-o", "json"],
       { env: adminEnv },
     );
-    assert.deepEqual(JSON.parse(bindingDeleted.stdout), {
+    assert.deepEqual(jsonValue(bindingDeleted.stdout), {
       deleted: true,
       id: binding.id,
       kind: "iam access-binding",
@@ -793,7 +920,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const roleDeleted = await run(occCli, ["iam", "role", "delete", role.id, "-o", "json"], {
       env: adminEnv,
     });
-    assert.deepEqual(JSON.parse(roleDeleted.stdout), {
+    assert.deepEqual(jsonValue(roleDeleted.stdout), {
       deleted: true,
       id: role.id,
       kind: "iam role",
@@ -801,7 +928,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const secretDeleted = await run(occCli, ["secret", "delete", cliSecret.id, "-o", "json"], {
       env,
     });
-    assert.deepEqual(JSON.parse(secretDeleted.stdout), {
+    assert.deepEqual(jsonValue(secretDeleted.stdout), {
       deleted: true,
       id: cliSecret.id,
       kind: "secret",
@@ -811,19 +938,24 @@ test("service API keys authenticate scoped automation without replacing sessions
       404,
     );
 
-    const deleting = await run(occCli, ["agent", "delete", agent.data.id], { env });
+    const deleting = await run(occCli, ["agent", "delete", stringField(agent.data, "id")], { env });
     assert.match(deleting.stdout, /LIFECYCLE/);
-    assert.match(deleting.stdout, new RegExp(`${agent.data.id}.*deleting`));
-    const deletingAgent = await run(occCli, ["agent", "get", agent.data.id, "--output", "json"], {
-      env,
-    });
-    assert.equal(JSON.parse(deletingAgent.stdout).status, "deleting");
+    assert.match(deleting.stdout, new RegExp(`${stringField(agent.data, "id")}.*deleting`));
+    const deletingAgent = await run(
+      occCli,
+      ["agent", "get", stringField(agent.data, "id"), "--output", "json"],
+      {
+        env,
+      },
+    );
+    assert.equal(jsonRecord(deletingAgent.stdout).status, "deleting");
 
     // Rotate after admission refuses the Namespace key, before the CLI receives that refusal.
     rotateKeyBeforeResponse = () => renameSync(adminKeyFile, keyFile);
     await assert.rejects(
       run(occCli, ["installation", "get", "--output", "json"], { env }),
-      (error) => {
+      (error: unknown) => {
+        commandError(error);
         assert.equal(error.code, 1);
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
@@ -848,36 +980,37 @@ test("service API keys authenticate scoped automation without replacing sessions
   await t.test(
     "invalid credentials fail closed even alongside a valid administrator cookie",
     async () => {
-      for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
+      for (const key of ["", "forged-key", `${stringField(issued.data, "key")}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
         const refused = await request("GET", path, { headers: invalidHeaders });
         assert.equal(refused.status, 401);
         // Only a request that sent an Authorization header gets header advice (finding D762).
-        assert.equal(refused.error.message, CREDENTIAL_REQUIRED);
+        assert.equal(record(refused.error).message, CREDENTIAL_REQUIRED);
         await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
       const anonymous = await request("GET", path, { headers: {} });
       assert.equal(anonymous.status, 401);
-      assert.equal(anonymous.error.message, CREDENTIAL_REQUIRED);
+      assert.equal(record(anonymous.error).message, CREDENTIAL_REQUIRED);
       const bearer = await request("GET", path, {
-        headers: { authorization: `Bearer ${issued.data.key}` },
+        headers: { authorization: `Bearer ${stringField(issued.data, "key")}` },
       });
       assert.equal(bearer.status, 401);
-      assert.equal(bearer.error.message, AUTHORIZATION_HEADER_REFUSED);
+      assert.equal(record(bearer.error).message, AUTHORIZATION_HEADER_REFUSED);
     },
   );
 
   await t.test("Namespace boundaries and exact IAM permissions remain authoritative", async () => {
     // The key's fixed Namespace refuses every other route before IAM is asked, and the
     // refusal is audited against the key's service principal.
-    for (const other of [`/namespaces/${tenantB.data.id}`, "/installation"]) {
+    for (const other of [`/namespaces/${stringField(tenantB.data, "id")}`, "/installation"]) {
       const eventsBefore = auditSink.events.length;
       const denied = await request("GET", other, { headers });
       assert.equal(denied.status, 403);
       // Names the key's own Namespace, never the requested one (finding D763).
-      assert.equal(denied.error.message, serviceKeyOutsideNamespace(namespaceId));
+      assert.equal(record(denied.error).message, serviceKeyOutsideNamespace(namespaceId));
       assert.equal(auditSink.events.length, eventsBefore + 1);
       const audit = auditSink.events.at(-1);
+      assert.ok(audit);
       assert.equal(audit.kind, "authorization_denial");
       assert.equal(audit.actorId, principal.id);
     }
@@ -885,6 +1018,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     // Removing a grant is immediately visible without reissuing the credential.
     const bindingIndex = policy.bindings.findIndex((entry) => entry.id === "service-automation");
     const [binding] = policy.bindings.splice(bindingIndex, 1);
+    assert.ok(binding);
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.bindings.push(binding);
     restrict(policy, "read", "namespace", { namespaceId });
@@ -894,7 +1028,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     // Even an administrative Role cannot widen a credential's fixed Namespace.
     bindRole(policy, principal.id, {
       id: "namespace-service-admin",
-      roleId: seed.bindings[0].roleId,
+      resource: undefined,
+      roleId: bootstrapBinding.roleId,
       namespaceId,
     });
     await assertServiceKeyManagementDenied(headers, issued, 403);
@@ -914,18 +1049,23 @@ test("service API keys authenticate scoped automation without replacing sessions
   await t.test(
     "Installation service administrators issue and rotate keys under current IAM policy",
     async () => {
-      const installationPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
+      const installationPrincipal: ServicePrincipal = {
+        kind: "service_principal",
+        id: `sp_${randomUUID()}`,
+      };
       policy.identities.push(installationPrincipal);
       grantRole(policy, installationPrincipal.id, {
         id: "installation-reader",
         bindingId: "installation-service-reader",
+        namespaceId: undefined,
+        resource: undefined,
         permissions: { installation: ["read"] },
       });
       const created = await request("POST", "/api/auth/service-keys", {
         body: { servicePrincipalId: installationPrincipal.id, name: "installation-reader" },
       });
       assert.equal(created.status, 201);
-      const keyHeaders = { "x-api-key": created.data.key };
+      const keyHeaders = { "x-api-key": stringField(created.data, "key") };
       assert.equal((await request("GET", "/installation", { headers: keyHeaders })).status, 200);
       assert.equal((await request("GET", path, { headers: keyHeaders })).status, 403);
       // A reader key cannot borrow the human cookie's Installation authority.
@@ -933,11 +1073,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       await assertServiceKeyManagementDenied(managementHeaders, created, 403);
       // Installation administer alone cannot issue a key that reaches the
       // Namespace grants the issuer itself lacks.
-      const exactAdminBinding = {
+      const exactAdminBinding: AccessBinding = {
         id: "installation-service-exact-admin",
         subjectKind: "identity",
         subjectId: installationPrincipal.id,
-        roleId: seed.bindings[0].roleId,
+        roleId: bootstrapBinding.roleId,
         resourceKind: "installation",
         resourceId: installationId,
       };
@@ -947,18 +1087,19 @@ test("service API keys authenticate scoped automation without replacing sessions
         403,
       );
       policy.bindings.splice(policy.bindings.indexOf(exactAdminBinding), 1);
-      const adminBinding = {
+      const adminBinding: AccessBinding = {
         id: "installation-service-admin",
         subjectKind: "identity",
         subjectId: installationPrincipal.id,
-        roleId: seed.bindings[0].roleId,
+        roleId: bootstrapBinding.roleId,
       };
       policy.bindings.push(adminBinding);
       const child = await request("POST", "/api/auth/service-keys", { headers: keyHeaders, body });
       assert.equal(child.status, 201);
-      assert.equal(child.data.servicePrincipalId, principal.id);
+      assert.equal(stringField(child.data, "servicePrincipalId"), principal.id);
       assert.equal(
-        (await request("GET", path, { headers: { "x-api-key": child.data.key } })).status,
+        (await request("GET", path, { headers: { "x-api-key": stringField(child.data, "key") } }))
+          .status,
         200,
       );
       // Automated rotation issues a replacement and uses it to revoke the old key.
@@ -967,10 +1108,10 @@ test("service API keys authenticate scoped automation without replacing sessions
         body: { servicePrincipalId: installationPrincipal.id, name: "replacement-admin" },
       });
       assert.equal(replacement.status, 201);
-      const replacementHeaders = { "x-api-key": replacement.data.key };
+      const replacementHeaders = { "x-api-key": stringField(replacement.data, "key") };
       assert.equal(
         (
-          await request("DELETE", `/api/auth/service-keys/${created.data.id}`, {
+          await request("DELETE", `/api/auth/service-keys/${stringField(created.data, "id")}`, {
             headers: replacementHeaders,
           })
         ).status,
@@ -989,12 +1130,13 @@ test("service API keys authenticate scoped automation without replacing sessions
         await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }
       policy.restrictions.pop();
-      for (const key of [child.data, replacement.data]) {
+      for (const key of [record(child.data), record(replacement.data)]) {
+        assertStringFields(key, "id", "key");
         const revoked = await request("DELETE", `/api/auth/service-keys/${key.id}`, {
           headers: replacementHeaders,
         });
         assert.equal(revoked.status, 200);
-        assert.equal(revoked.data.revoked, true);
+        assert.equal(record(revoked.data).revoked, true);
         assert.equal(JSON.stringify(revoked).includes(key.key), false);
         assert.equal(
           (
@@ -1014,20 +1156,24 @@ test("service API keys authenticate scoped automation without replacing sessions
         ["revoke", created.data, replacement.data],
         ["revoke", child.data, replacement.data],
         ["revoke", replacement.data, replacement.data],
-      ]) {
+      ] as const) {
+        const keyData = record(key);
+        const actorKeyData = record(actorKey);
+        assertStringFields(keyData, "id", "key", "name", "servicePrincipalId");
+        assertStringFields(actorKeyData, "id");
         assert.ok(
           auditSink.events.some(
             (event) =>
               event.action === `openclaw.auth.service-keys.${action}` &&
               event.actorId === installationPrincipal.id &&
-              event.details.serviceKeyId === key.id &&
-              event.details.serviceKeyName === key.name &&
-              event.details.actorServiceKeyId === actorKey.id &&
-              event.details.servicePrincipalId === key.servicePrincipalId,
+              event.details?.serviceKeyId === keyData.id &&
+              event.details?.serviceKeyName === keyData.name &&
+              event.details?.actorServiceKeyId === actorKeyData.id &&
+              event.details?.servicePrincipalId === keyData.servicePrincipalId,
           ),
-          `${action} ${key.name}`,
+          `${action} ${keyData.name}`,
         );
-        assert.equal(JSON.stringify(auditSink.events).includes(key.key), false);
+        assert.equal(JSON.stringify(auditSink.events).includes(keyData.key), false);
       }
       assert.equal(memoryDatabase.user.length, 1);
       assert.equal(memoryDatabase.session.length, 1);
@@ -1040,7 +1186,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const candidate of [
         { ...body, servicePrincipalId: "missing" },
         { ...body, servicePrincipalId: seed.principal.id },
-        { ...body, namespaceId: tenantB.data.id },
+        { ...body, namespaceId: stringField(tenantB.data, "id") },
       ]) {
         assert.equal(
           (await request("POST", "/api/auth/service-keys", { body: candidate })).status,
@@ -1054,14 +1200,18 @@ test("service API keys authenticate scoped automation without replacing sessions
       });
       assert.equal(configuration.status, 201);
       const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-        body: { name: "owned-agent", configurationId: configuration.data.id },
+        body: { name: "owned-agent", configurationId: stringField(configuration.data, "id") },
       });
       assert.equal(agent.status, 201);
-      const ownedAgent = await controller.getAgent(seed.principal.id, namespaceId, agent.data.id);
+      const ownedAgent = await activeController.getAgent(
+        seed.principal.id,
+        namespaceId,
+        stringField(agent.data, "id"),
+      );
       policy.identities.push({
         kind: "service_principal",
         id: ownedAgent.servicePrincipalId,
-        agentId: agent.data.id,
+        agentId: stringField(agent.data, "id"),
         namespaceId,
       });
       assert.equal(
@@ -1090,9 +1240,11 @@ test("service API keys authenticate scoped automation without replacing sessions
     "a signed-in human still needs Installation administer to issue or revoke",
     async () => {
       const adminBinding = policy.bindings.shift();
+      assert.ok(adminBinding);
       assert.equal((await issue()).status, 403);
       assert.equal(
-        (await request("DELETE", `/api/auth/service-keys/${issued.data.id}`)).status,
+        (await request("DELETE", `/api/auth/service-keys/${stringField(issued.data, "id")}`))
+          .status,
         403,
       );
       policy.bindings.unshift(adminBinding);
@@ -1107,26 +1259,39 @@ test("service API keys authenticate scoped automation without replacing sessions
     assert.equal(shortLived.status, 201);
     assertIssuedLifetime(shortLived, before, 86400);
     assert.equal(
-      (await request("GET", path, { headers: { "x-api-key": shortLived.data.key } })).status,
+      (
+        await request("GET", path, {
+          headers: { "x-api-key": stringField(shortLived.data, "key") },
+        })
+      ).status,
       200,
     );
     // Revoking takes no body; one is refused with the same wording as OCC's bodyless
     // operations, and the key stays valid.
-    const withBody = await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`, {
-      body: {},
-    });
+    const withBody = await request(
+      "DELETE",
+      `/api/auth/service-keys/${stringField(shortLived.data, "id")}`,
+      {
+        body: {},
+      },
+    );
     assert.equal(withBody.status, 400);
-    assert.equal(withBody.error.code, "INVALID_REQUEST");
+    assert.equal(record(withBody.error).code, "INVALID_REQUEST");
     assert.equal(
-      withBody.error.message,
+      record(withBody.error).message,
       "The request does not match the operation contract: this operation accepts no request body.",
     );
     assert.equal(
-      (await request("GET", path, { headers: { "x-api-key": shortLived.data.key } })).status,
+      (
+        await request("GET", path, {
+          headers: { "x-api-key": stringField(shortLived.data, "key") },
+        })
+      ).status,
       200,
     );
     assert.equal(
-      (await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`)).status,
+      (await request("DELETE", `/api/auth/service-keys/${stringField(shortLived.data, "id")}`))
+        .status,
       200,
     );
   });
@@ -1138,9 +1303,9 @@ test("service API keys authenticate scoped automation without replacing sessions
     for (const name of ["😀".repeat(32), "\u{20000}".repeat(32), `${"a".repeat(31)}😀`]) {
       const named = await request("POST", "/api/auth/service-keys", { body: { ...body, name } });
       assert.equal(named.status, 201, name);
-      assert.equal(named.data.name, name);
+      assert.equal(stringField(named.data, "name"), name);
       assert.equal(
-        (await request("DELETE", `/api/auth/service-keys/${named.data.id}`)).status,
+        (await request("DELETE", `/api/auth/service-keys/${stringField(named.data, "id")}`)).status,
         200,
       );
     }
@@ -1149,8 +1314,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       body: { ...body, name: "😀".repeat(33) },
     });
     assert.equal(over.status, 400);
-    assert.equal(over.error.message, tooLong);
-    assert.deepEqual(over.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    assert.equal(record(over.error).message, tooLong);
+    assert.deepEqual(record(over.error).details, [{ path: "/name", code: "TOO_LONG" }]);
     // Should Better Auth still refuse a name the schema admitted, the caller gets the
     // schema's 400, not a dependency 503, and no key is stored.
     const createServiceKey = auth.createServiceKey;
@@ -1158,9 +1323,9 @@ test("service API keys authenticate scoped automation without replacing sessions
     try {
       const refused = await issue();
       assert.equal(refused.status, 400);
-      assert.equal(refused.error.code, "INVALID_REQUEST");
-      assert.equal(refused.error.message, tooLong);
-      assert.deepEqual(refused.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+      assert.equal(record(refused.error).code, "INVALID_REQUEST");
+      assert.equal(record(refused.error).message, tooLong);
+      assert.deepEqual(record(refused.error).details, [{ path: "/name", code: "TOO_LONG" }]);
     } finally {
       auth.createServiceKey = createServiceKey;
     }
@@ -1175,16 +1340,21 @@ test("service API keys authenticate scoped automation without replacing sessions
       const authContext = await auth.auth.$context;
       await authContext.adapter.update({
         model: "apikey",
-        where: [{ field: "id", value: expiring.data.id }],
+        where: [{ field: "id", value: stringField(expiring.data, "id") }],
         update: { expiresAt: new Date(Date.now() - 1000) },
       });
       assert.equal(
-        (await request("GET", path, { headers: { "x-api-key": expiring.data.key } })).status,
+        (
+          await request("GET", path, {
+            headers: { "x-api-key": stringField(expiring.data, "key") },
+          })
+        ).status,
         401,
       );
       const at = policy.identities.indexOf(principal);
       policy.identities.splice(at, 1);
       const binding = policy.bindings.find((entry) => entry.subjectId === principal.id);
+      assert.ok(binding);
       policy.bindings.splice(policy.bindings.indexOf(binding), 1);
       assert.equal((await request("GET", path, { headers })).status, 403);
       policy.identities.push(principal);
@@ -1195,17 +1365,25 @@ test("service API keys authenticate scoped automation without replacing sessions
   await t.test("a key record altered after issuance fails closed", async () => {
     const altered = await issue();
     assert.equal(altered.status, 201);
-    const keyHeaders = { "x-api-key": altered.data.key };
+    const keyHeaders = { "x-api-key": stringField(altered.data, "key") };
     const read = async () => (await request("GET", path, { headers: keyHeaders })).status;
     assert.equal(await read(), 200);
     const authContext = await auth.auth.$context;
-    const where = [{ field: "id", value: altered.data.id }];
-    const record = await authContext.adapter.findOne({ model: "apikey", where });
-    const { expiresAt, configId } = record;
-    const encoded = typeof record.metadata === "string";
-    const metadata = encoded ? JSON.parse(record.metadata) : record.metadata;
+    const where = [{ field: "id", value: stringField(altered.data, "id") }];
+    const keyRecord = record(await authContext.adapter.findOne({ model: "apikey", where }));
+    const { expiresAt, configId } = keyRecord;
+    const encoded = typeof keyRecord.metadata === "string";
+    const metadata = record(
+      typeof keyRecord.metadata === "string" ? jsonValue(keyRecord.metadata) : keyRecord.metadata,
+    );
     assert.equal(metadata.namespaceId, namespaceId);
-    const alter = ({ referenceId = record.referenceId, ...changes }) =>
+    const alter = ({
+      referenceId = keyRecord.referenceId,
+      ...changes
+    }: {
+      referenceId?: unknown;
+      installationId?: string;
+    }) =>
       authContext.adapter.update({
         model: "apikey",
         where,
@@ -1217,21 +1395,25 @@ test("service API keys authenticate scoped automation without replacing sessions
         },
       });
     // Each altered subject below holds the same Namespace grant as the issued key.
-    const grant = (identity) => {
+    const grant = (identity: ServicePrincipal) => {
       policy.identities.push(identity);
       bindRole(policy, identity.id, {
         id: `altered-${identity.id}`,
+        resource: undefined,
         roleId: "tenant-automation",
         namespaceId,
       });
     };
-    const agentPrincipal = {
+    const agentPrincipal: ServicePrincipal = {
       kind: "service_principal",
       id: `sp_${randomUUID()}`,
       namespaceId,
       agentId: `agt_${randomUUID()}`,
     };
-    const unscopedPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
+    const unscopedPrincipal: ServicePrincipal = {
+      kind: "service_principal",
+      id: `sp_${randomUUID()}`,
+    };
     grant(agentPrincipal);
     grant(unscopedPrincipal);
     try {
@@ -1257,7 +1439,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       await authContext.adapter.update({ model: "apikey", where, update: { configId: "default" } });
       assert.equal(await read(), 401);
       assert.equal(
-        (await request("DELETE", `/api/auth/service-keys/${altered.data.id}`)).status,
+        (await request("DELETE", `/api/auth/service-keys/${stringField(altered.data, "id")}`))
+          .status,
         404,
       );
       await authContext.adapter.update({ model: "apikey", where, update: { configId } });
@@ -1278,17 +1461,20 @@ test("service API keys authenticate scoped automation without replacing sessions
   await t.test(
     "HTTP revocation rejects the key, preserves sessions, and never exposes the credential",
     async () => {
-      const revoked = await request("DELETE", `/api/auth/service-keys/${issued.data.id}`);
+      const revoked = await request(
+        "DELETE",
+        `/api/auth/service-keys/${stringField(issued.data, "id")}`,
+      );
       assert.equal(revoked.status, 200);
-      assert.equal(revoked.data.revoked, true);
-      assert.equal(JSON.stringify(revoked).includes(issued.data.key), false);
+      assert.equal(record(revoked.data).revoked, true);
+      assert.equal(JSON.stringify(revoked).includes(stringField(issued.data, "key")), false);
       assert.equal(
         (await request("GET", path, { headers: { ...headers, cookie: session.cookie } })).status,
         401,
       );
       assert.equal((await request("GET", "/installation")).status, 200);
       const events = auditSink.events;
-      assert.equal(JSON.stringify(events).includes(issued.data.key), false);
+      assert.equal(JSON.stringify(events).includes(stringField(issued.data, "key")), false);
       assert.ok(
         events.some(
           (event) =>
@@ -1332,14 +1518,21 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     grant: "administrator",
   });
   const administratorRole = admin.roles[0];
+  assert.ok(administratorRole);
   // POST /api/auth/accounts with the administrator roleId binds it to the exact Installation.
   const operator = auth.principalSeed(await auth.createAccount(operatorCredentials), {
     roleId: administratorRole.id,
   });
   // Same shape as the bootstrap ServicePrincipal: the administrator Role, unscoped.
-  const bootstrapService = { kind: "service_principal", id: `spn_${randomUUID()}` };
-  const installationService = { kind: "service_principal", id: `spn_${randomUUID()}` };
-  const policy = {
+  const bootstrapService: ServicePrincipal = {
+    kind: "service_principal",
+    id: `spn_${randomUUID()}`,
+  };
+  const installationService: ServicePrincipal = {
+    kind: "service_principal",
+    id: `spn_${randomUUID()}`,
+  };
+  const policy: MutableIAMState = {
     identities: [admin.principal, operator.principal, bootstrapService, installationService],
     roles: [
       ...admin.roles,
@@ -1389,23 +1582,32 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
-  const origin = `http://127.0.0.1:${app.server.address().port}`;
+  const address = app.server.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
   const adminSession = await signInWithEmailPassword({
+    rememberMe: undefined,
     origin,
     headers: { origin: baseURL },
     ...adminCredentials,
   });
   const operatorSession = await signInWithEmailPassword({
+    rememberMe: undefined,
     origin,
     headers: { origin: baseURL },
     ...operatorCredentials,
   });
-  async function request(method, path, { headers, body } = {}) {
+  async function request(
+    method: string,
+    path: string,
+    { headers, body }: RequestOptions = {},
+  ): Promise<HttpResult> {
     const response = await fetchLoopback(
       `${origin}${path}`,
       jsonRequestInit(method, body, { host: "console.oce.localhost", origin: baseURL, ...headers }),
     );
-    return { status: response.status, ...(await response.json()) };
+    const envelope = record(await response.json());
+    return { status: response.status, ...envelope };
   }
   const asAdmin = { cookie: adminSession.cookie };
   const asOperator = { cookie: operatorSession.cookie };
@@ -1419,7 +1621,7 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     body: { name: "tenant" },
   });
   assert.equal(namespace.status, 201);
-  const namespacePath = `/namespaces/${namespace.data.id}`;
+  const namespacePath = `/namespaces/${stringField(namespace.data, "id")}`;
 
   // The operator's grant stops at the exact Installation.
   assert.equal((await request("GET", "/installation", { headers: asOperator })).status, 200);
@@ -1455,8 +1657,11 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   });
   assert.equal(bootstrapKey.status, 201, JSON.stringify(bootstrapKey));
   assert.equal(
-    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
-      .status,
+    (
+      await request("GET", namespacePath, {
+        headers: { "x-api-key": stringField(bootstrapKey.data, "key") },
+      })
+    ).status,
     200,
   );
   const coverageDenial = auditSink.events.find(
@@ -1465,33 +1670,39 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
       event.kind === "authorization_denial" &&
       event.actorId === operator.principal.id,
   );
+  assert.ok(coverageDenial?.details);
+  assert.ok(coverageDenial.decisionReason);
   assert.equal(coverageDenial.reasonCode, "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED");
   assert.match(coverageDenial.decisionReason, /every grant of the target ServicePrincipal/);
   assert.equal(coverageDenial.details.servicePrincipalId, bootstrapService.id);
 
   // The administrator Role grants Agent administer but not read_logs. Administer already
   // admits log reads, so it covers a principal that was delegated read_logs on an Agent.
-  const logReader = {
+  const logReader: ServicePrincipal = {
     kind: "service_principal",
     id: `spn_${randomUUID()}`,
-    namespaceId: namespace.data.id,
+    namespaceId: stringField(namespace.data, "id"),
   };
   policy.identities.push(logReader);
   grantRole(policy, logReader.id, {
     id: "agent-log-reader",
     bindingId: "agent-log-reader-binding",
-    namespaceId: namespace.data.id,
+    namespaceId: stringField(namespace.data, "id"),
     permissions: { agent: ["read", "read_logs"] },
     resource: { kind: "agent", id: `agt_${randomUUID()}` },
   });
   const logReaderKey = await request("POST", "/api/auth/service-keys", {
     headers: asAdmin,
-    body: { servicePrincipalId: logReader.id, namespaceId: namespace.data.id, name: "logs" },
+    body: {
+      servicePrincipalId: logReader.id,
+      namespaceId: stringField(namespace.data, "id"),
+      name: "logs",
+    },
   });
   assert.equal(logReaderKey.status, 201, JSON.stringify(logReaderKey));
   assert.equal(
     (
-      await request("DELETE", `/api/auth/service-keys/${logReaderKey.data.id}`, {
+      await request("DELETE", `/api/auth/service-keys/${stringField(logReaderKey.data, "id")}`, {
         headers: asAdmin,
       })
     ).status,
@@ -1499,12 +1710,15 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   );
 
   // Revocation needs the same authority as issuance.
-  const revokePath = `/api/auth/service-keys/${bootstrapKey.data.id}`;
+  const revokePath = `/api/auth/service-keys/${stringField(bootstrapKey.data, "id")}`;
   const revokeEscalation = await request("DELETE", revokePath, { headers: asOperator });
   assert.equal(revokeEscalation.status, 403, JSON.stringify(revokeEscalation));
   assert.equal(
-    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
-      .status,
+    (
+      await request("GET", namespacePath, {
+        headers: { "x-api-key": stringField(bootstrapKey.data, "key") },
+      })
+    ).status,
     200,
   );
   const revokeDenial = auditSink.events.find(
@@ -1513,19 +1727,26 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
       event.kind === "authorization_denial" &&
       event.actorId === operator.principal.id,
   );
+  assert.ok(revokeDenial?.details);
   assert.equal(revokeDenial.reasonCode, "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED");
   assert.equal(revokeDenial.details.servicePrincipalId, bootstrapService.id);
-  assert.equal(revokeDenial.details.serviceKeyId, bootstrapKey.data.id);
+  assert.equal(revokeDenial.details.serviceKeyId, stringField(bootstrapKey.data, "id"));
   // The operator can still revoke a key whose principal it covers.
   assert.equal(
-    (await request("DELETE", `/api/auth/service-keys/${covered.data.id}`, { headers: asOperator }))
-      .status,
+    (
+      await request("DELETE", `/api/auth/service-keys/${stringField(covered.data, "id")}`, {
+        headers: asOperator,
+      })
+    ).status,
     200,
   );
   assert.equal((await request("DELETE", revokePath, { headers: asAdmin })).status, 200);
   assert.equal(
-    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
-      .status,
+    (
+      await request("GET", namespacePath, {
+        headers: { "x-api-key": stringField(bootstrapKey.data, "key") },
+      })
+    ).status,
     401,
   );
 });
