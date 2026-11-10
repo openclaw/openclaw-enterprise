@@ -20,6 +20,7 @@ import {
   registerCleanupAndStartProvider,
   observeInstalledProtection,
   requestInstalledGatewayTurn,
+  waitForProtectedAgentActivation,
 } from "../helpers/egress-installed-agent.mjs";
 import {
   prepareControllerUpgrade,
@@ -220,25 +221,13 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     sourceId: source.id,
     ownerCapability,
   });
-  const deploymentPath = `${namespacePath}/agents/${agent.id}/deployments/${revision.id}`;
-  await waitFor(
-    "protected Agent activation with genuine installed evidence",
-    async () => {
-      const deployment = await api("GET", deploymentPath);
-      if (deployment.status === "failed") {
-        // The status endpoint owns fixed deployment codes. Keep response text and
-        // evidence out of the ledger, including when the error has no known code.
-        const code = deployment.error?.code;
-        await checkpoint("activation-failed", {
-          code: typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "UNKNOWN",
-        });
-        assert.fail("The protected Agent deployment failed; inspect the safe checkpoint");
-      }
-      const current = await api("GET", `${namespacePath}/agents/${agent.id}`);
-      return current.activeRevisionId === revision.id ? current : undefined;
-    },
-    12 * 60_000,
-  );
+  const agentPath = `${namespacePath}/agents/${agent.id}`;
+  const deploymentPath = `${agentPath}/deployments/${revision.id}`;
+  await waitForProtectedAgentActivation(waitFor, evidence, {
+    agentPath,
+    deploymentPath,
+    revisionId: revision.id,
+  });
   const sandbox = await f.waitForSandbox(placement, revision);
   const sandboxId = await recordSandbox(sandbox);
   return {
@@ -337,12 +326,12 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
       gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0], "gateway"),
-      phase,
+      turnPhase: phase,
       nonce,
       upstreamBefore: provider.observations.length,
     });
     const { custodyTransitions } = installed;
-    const { before, result } = await requestInstalledGatewayTurn(
+    const { before, result, nativeTurnResult } = await requestInstalledGatewayTurn(
       f,
       evidence,
       {
@@ -353,6 +342,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
         gateway: gatewayPods[0],
         phase,
         custodyTransitions,
+        expected,
       },
       {
         providerModel: controller.model,
@@ -361,27 +351,31 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
         timeoutMs: 90_000,
       },
     );
-    await observeConnectedOperation("gateway-turn-verification", () => {
-      excludesCredentials(result, "Codex response/events");
-      assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
-      assert.equal(
-        result.items.some((event) => event.params?.willRetry === true),
-        false,
-        "protected calls must not automatically retry",
-      );
-      if (expected === "completed") {
-        assert.equal(result.assistant, nonce);
-      } else {
-        assertNoConnectedAssistantOutput(result);
-        // The selected supplier returns an empty HTTP 502. Its private, content-free
-        // transitions distinguish refusal before access from a blocked provider response.
-        assert.match(
-          JSON.stringify(result.error),
-          /\b502\b/,
-          "expected the supplier's public refusal",
+    await observeConnectedOperation(
+      "gateway-turn-verification",
+      () => {
+        excludesCredentials(result, "Codex response/events");
+        assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
+        assert.equal(
+          result.items.some((event) => event.params?.willRetry === true),
+          false,
+          "protected calls must not automatically retry",
         );
-      }
-    });
+        if (expected === "completed") {
+          assert.equal(result.assistant, nonce);
+        } else {
+          assertNoConnectedAssistantOutput(result);
+          // The selected supplier returns an empty HTTP 502. Its private, content-free
+          // transitions distinguish refusal before access from a blocked provider response.
+          assert.match(
+            JSON.stringify(result.error),
+            /\b502\b/,
+            "expected the supplier's public refusal",
+          );
+        }
+      },
+      nativeTurnResult,
+    );
     const revoked = phase === "fresh-iam-revoked";
     const transitions = revoked
       ? ["resolve_refused", "no_permit", "response_blocked"]
@@ -393,7 +387,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
     const requestId = await custodyTransitions.expectAfter(before, transitions);
     assert.deepEqual(provider.errors, [], "synthetic provider failed independently of enforcement");
     await checkpoint("turn-complete", {
-      phase,
+      turnPhase: phase,
       status: result.status,
       requestId,
       upstreamAfter: provider.observations.length,

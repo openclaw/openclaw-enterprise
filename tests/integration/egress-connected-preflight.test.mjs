@@ -4,6 +4,12 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import {
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+  deploymentStatusForWork,
+} from "../../packages/occ/src/state/controller-work.ts";
+import { waitFor } from "../helpers/qa-utils.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -23,6 +29,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   requestInstalledGatewayTurn,
   waitForInstalledGateway,
+  waitForProtectedAgentActivation,
 } from "../helpers/egress-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
@@ -1067,10 +1074,71 @@ test("connected gateway exec persists only the generated client's correlated fai
             this.dispatchEvent(new Event("close"));
             return;
           }
+          if (method === "turn/start" && process.env.SCENARIO === "pre-ack-terminal") {
+            notify({ method: "turn/completed", params: {
+              threadId: process.env.SENTINEL, turn: { status: "completed" },
+            } });
+          }
           notify({ id, result });
           if (method !== "turn/start") return;
           const ids = { threadId: process.env.SENTINEL, turnId: process.env.SENTINEL };
-          if (process.env.SCENARIO === "success") {
+          const scenario = process.env.SCENARIO;
+          if (scenario === "request-shaped-terminal") {
+            notify({ id: "server-request", method: "turn/completed", params: {
+              threadId: ids.threadId, turn: { id: ids.turnId, status: "completed" },
+            } });
+          }
+          if (["pre-ack-terminal", "request-shaped-terminal"].includes(scenario)) {
+            // A socket close must remain an exec failure if no bound notification arrived.
+            this.dispatchEvent(new Event("close"));
+            return;
+          }
+          if (scenario.startsWith("terminal-")) {
+            const privateText = process.env.SENTINEL;
+            const notifyError = (binding, willRetry, codexErrorInfo) =>
+              notify({ method: "error", params: {
+                ...binding, willRetry,
+                error: { message: privateText, additionalDetails: privateText, codexErrorInfo },
+              } });
+            if (scenario === "terminal-typed" || scenario === "terminal-write-failure") {
+              // A known cause can precede the terminal retry-exhaustion code.
+              for (let i = 0; i < 4; i++) notifyError(ids, true, "rateLimitExceeded");
+              notifyError(ids, true, { responseStreamConnectionFailed: { httpStatusCode: 503 } });
+              notifyError(ids, false, { httpConnectionFailed: { httpStatusCode: null } });
+              notifyError({ ...ids, turnId: "another-turn" }, false, "unauthorized");
+              notifyError({ ...ids, threadId: "another-thread" }, false, "sandboxError");
+              notifyError(ids, "false", "internalServerError");
+              notify({ method: "item/completed", params: {
+                ...ids, item: { type: "agentMessage", text: privateText, headers: { arbitrary: privateText } },
+              } });
+            }
+            const terminalErrors = {
+              "terminal-typed": {
+                responseTooManyFailedAttempts: { httpStatusCode: 502, headers: { arbitrary: privateText } },
+              },
+              "terminal-malformed": { httpConnectionFailed: { httpStatusCode: "403" } },
+              "terminal-out-of-range": { httpConnectionFailed: { httpStatusCode: 65536 } },
+              "terminal-uint16": { httpConnectionFailed: { httpStatusCode: 65535 } },
+              "terminal-missing-http": { httpConnectionFailed: { headers: { httpStatusCode: 403 } } },
+              "terminal-unknown": { [privateText]: { httpStatusCode: 401 } },
+              "terminal-multiple": { httpConnectionFailed: { httpStatusCode: 502 }, [privateText]: {} },
+              "terminal-null": null,
+              "terminal-expected-failure": { httpConnectionFailed: { httpStatusCode: 502 } },
+            };
+            terminalErrors["terminal-write-failure"] = terminalErrors["terminal-typed"];
+            const completed = scenario === "terminal-success";
+            const turn = { id: ids.turnId, status: completed ? "completed" : "failed" };
+            if (scenario === "terminal-success") turn.error = null;
+            if (Object.hasOwn(terminalErrors, scenario)) {
+              turn.error = {
+                message: "HTTP 401 " + privateText,
+                additionalDetails: privateText,
+                codexErrorInfo: terminalErrors[scenario],
+              };
+            }
+            if (scenario === "terminal-bad-error") turn.error = [privateText];
+            notify({ method: "turn/completed", params: { threadId: ids.threadId, turn } });
+          } else if (scenario === "success") {
             notify({ method: "turn/completed", params: { ...ids, turn: { id: ids.turnId, status: "completed" } } });
           } else {
             if (process.env.SCENARIO === "capacity-after-action") {
@@ -1101,7 +1169,7 @@ test("connected gateway exec persists only the generated client's correlated fai
       process.stderr.write(sentinel + "\n" + script + "\nOCC_NATIVE_FAILURE_V1 00000000-0000-4000-8000-000000000000 " + forged + "\n");
       process.exit(1);
     }
-    const mode = ["success", "initialize", "sandbox", "turn-start", "pending", "capacity", "capacity-after-action", "startup", "malformed-message", "null-message"].includes(scenario)
+    const mode = scenario.startsWith("terminal-") || ["success", "initialize", "sandbox", "turn-start", "pending", "pre-ack-terminal", "request-shaped-terminal", "capacity", "capacity-after-action", "startup", "malformed-message", "null-message"].includes(scenario)
       ? scenario : "initialize";
     const nativeWebSocket = ["missing-url", "malformed-url", "constructor-throw", "loopback-no-token", "loopback-token"].includes(scenario);
     const nodeOptions = nativeWebSocket ? [] : ["--require", ${JSON.stringify(preload)}];
@@ -1175,6 +1243,11 @@ test("connected gateway exec persists only the generated client's correlated fai
     ["initialize", recorded("initialize", null, [], 1)],
     ["sandbox", recorded("thread/start", "thread/start", [], 2)],
     ["pending", recorded("turn/start", "thread/start", ["turn/start"], 2, "websocket-close")],
+    ["pre-ack-terminal", recorded("turn", "turn/start", [], 4, "websocket-close")],
+    [
+      "request-shaped-terminal",
+      { ...recorded("turn", "turn/start", [], 4, "websocket-close"), actionSeen: true },
+    ],
     ["turn-start", recorded("turn/start", "thread/start", [], 3)],
     ["capacity", recorded("turn", "turn/start", [], 4), 75],
     ["capacity-after-action", { ...recorded("turn", "turn/start", [], 5), actionSeen: true }],
@@ -1231,6 +1304,7 @@ test("connected gateway exec persists only the generated client's correlated fai
         gatewayPod: scenario,
         providerModel: sentinel,
         prompt: sentinel,
+        observeFailure: ["pre-ack-terminal", "request-shaped-terminal"].includes(scenario),
       });
       let expected;
       if (scenario === "success") {
@@ -1278,6 +1352,140 @@ test("connected gateway exec persists only the generated client's correlated fai
       const raw = await readFile(observations, "utf8");
       assert.deepEqual(JSON.parse(raw).failure, expected, scenario);
       assert.equal(raw.includes(sentinel), false, scenario);
+    }
+
+    // Use one ledger for successive real client calls to catch stale evidence.
+    const progress = {};
+    const evidence = await createRunEvidence(
+      t,
+      { input: { images: {} }, controller: {} },
+      progress,
+    );
+    t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+    const observations = evidence.directory + "/observations.json";
+    const http = (variant, state, code) => ({
+      state: "known",
+      variant,
+      httpStatus: { state, ...(code !== undefined && { code }) },
+    });
+    const notices = [
+      { willRetry: true, error: { state: "known", variant: "rateLimitExceeded" } },
+      { willRetry: true, error: { state: "known", variant: "rateLimitExceeded" } },
+      { willRetry: true, error: http("responseStreamConnectionFailed", "present", 503) },
+      { willRetry: false, error: http("httpConnectionFailed", "null") },
+    ];
+    const typed = http("responseTooManyFailedAttempts", "present", 502);
+    const terminalCases = [
+      ["typed", typed, notices],
+      ["success", { state: "null" }],
+      ["expected-failure", http("httpConnectionFailed", "present", 502)],
+      ["bad-error", { state: "invalid" }],
+      ["malformed", http("httpConnectionFailed", "invalid")],
+      ["out-of-range", http("httpConnectionFailed", "invalid")],
+      ["uint16", http("httpConnectionFailed", "present", 65535)],
+      ["missing-http", http("httpConnectionFailed", "absent")],
+      ["unknown", { state: "unknown" }],
+      ["multiple", { state: "invalid" }],
+      ["absent", { state: "absent" }],
+      ["null", { state: "null" }],
+      ["write-failure", typed, notices],
+    ];
+    for (const [scenario, terminalError, errorNotifications = []] of terminalCases) {
+      await t.test("terminal " + scenario, async () => {
+        const gateway = gatewayPod("terminal-fixture");
+        gateway.metadata.name = "terminal-" + scenario;
+        const turnPhase = "fixture-" + scenario;
+        const completed = scenario === "success";
+        const writeFailure = scenario === "write-failure";
+        const status = completed ? "completed" : "failed";
+        const expectedStatus = scenario === "expected-failure" ? "failed" : "completed";
+        const summary = {
+          expectedStatus,
+          actualStatus: status,
+          lastAcknowledged: "turn/start",
+          terminalEvent: "turn/completed",
+          terminalError,
+          errorNotifications,
+        };
+        const declaration = describeGatewayAppServerDeclaration(pod);
+        await evidence.checkpoint("turn-start", {
+          turnPhase,
+          gatewayAppServerDeclaration: declaration,
+        });
+        if (writeFailure) {
+          await mkdir(evidence.directory + "/observations.pending.json");
+        }
+        const { result, nativeTurnResult } = await requestInstalledGatewayTurn(
+          { ...f, maybeResource: async () => gateway },
+          evidence,
+          {
+            placement: gatewayPlacement,
+            agentId: gatewayAgent,
+            revisionId: gatewayRevision,
+            image: gatewayImage,
+            gateway,
+            phase: turnPhase,
+            custodyTransitions: { snapshot: async () => {} },
+            expected: expectedStatus,
+          },
+          { providerModel: sentinel, prompt: sentinel, observeFailure: true },
+        );
+        const beforeVerification = JSON.parse(await readFile(observations, "utf8")).phases;
+        const declarationPhase = beforeVerification.find(
+          (entry) => entry.phase === "turn-start" && entry.turnPhase === turnPhase,
+        );
+        assert.deepEqual(declarationPhase?.gatewayAppServerDeclaration, declaration);
+        const retained = (phases) =>
+          phases.find(
+            (entry) => entry.phase === "gateway-turn-result" && entry.turnPhase === turnPhase,
+          );
+        assert.deepEqual(
+          retained(beforeVerification)?.nativeTurnResult,
+          writeFailure ? undefined : summary,
+          "save the closed native result before verification",
+        );
+        const verify = observeConnectedOperation(
+          "gateway-turn-verification",
+          () => {
+            assert.equal(
+              result.status,
+              expectedStatus,
+              "fixture expected the declared terminal status",
+            );
+          },
+          nativeTurnResult,
+        );
+        if (status === expectedStatus) {
+          await verify;
+        } else {
+          await assert.rejects(verify, {
+            code: "ERR_ASSERTION",
+            actual: "failed",
+            expected: "completed",
+          });
+          const safe = await verify.catch((error) =>
+            safeConnectedFailure(error, progress.stage, evidence.recordFailure),
+          );
+          assert.ok(safe.message.includes(`nativeTurnResult=${JSON.stringify(summary)};`));
+          assert.equal(safe.stack.includes(sentinel), false);
+          if (writeFailure) {
+            await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+          }
+        }
+        await evidence.checkpoint("cleanup");
+        const raw = await readFile(observations, "utf8");
+        const ledger = JSON.parse(raw);
+        assert.deepEqual(retained(ledger.phases)?.nativeTurnResult, summary);
+        if (status !== expectedStatus) {
+          assert.deepEqual(ledger.failure, {
+            kind: "assertion",
+            operation: "gateway-turn-verification",
+            kubectl: null,
+            nativeTurnResult: summary,
+          });
+        }
+        assert.equal(raw.includes(sentinel), false);
+      });
     }
   });
 });
@@ -1329,6 +1537,173 @@ function gatewayPod(uid, changes = {}) {
     },
   };
 }
+
+test("protected Agent activation requires successful work and the exact published revision", async () => {
+  const privateValue = "PRIVATE_ACTIVATION_" + randomUUID().replaceAll("-", "").toUpperCase();
+  const revisionId = privateValue;
+  const agentPath = "/agent";
+  const deploymentPath = "/deployment";
+  const selection = { agentPath, deploymentPath, revisionId };
+  const date = new Date(0);
+  const pending = { state: "queued", availableAt: date, attemptCount: 1 };
+  const attempt = { at: date, code: "REVISION_FINALIZATION_INCOMPLETE" };
+  const succeeded = { ...pending, state: "succeeded", reasonCode: "REVISION_ACTIVATED" };
+  const terminal = { ...pending, state: "failed_permanent", reasonCode: "RUNTIME_LOGIN_FAILED" };
+  // Use the same status, error and progress projections the deployment endpoint uses.
+  // Finalization incomplete is currently published as general reconciliation pending.
+  const deployment = (work, lastAttempt) => ({
+    status: deploymentStatusForWork(work, lastAttempt, date),
+    progress: deploymentProgressForWork(work, lastAttempt),
+    error: deploymentErrorForWork(work),
+    deploymentId: privateValue,
+  });
+  const pointer = { activeRevisionId: revisionId };
+  const wrongPointer = { activeRevisionId: "previous" };
+  const running = deployment(pending, attempt);
+  assert.equal(running.status, "running");
+  const ready = deployment(succeeded);
+  assert.equal(ready.status, "succeeded");
+  const checkpoints = [];
+  const checkpoint = async (phase, details) => checkpoints.push({ phase, ...details });
+  const polls = [
+    [running, pointer],
+    [running, pointer],
+    [ready, wrongPointer],
+    [ready, pointer],
+  ];
+  let reads = 0;
+  let continued = 0;
+  let responses;
+  const active = await waitForProtectedAgentActivation(
+    async (_description, observe, timeout) => {
+      assert.equal(timeout, 12 * 60_000);
+      for (const poll of polls) {
+        responses = poll;
+        const result = await observe();
+        if (result) {
+          return result;
+        }
+      }
+      assert.fail("the successfully activated revision must release the wait");
+    },
+    {
+      checkpoint,
+      async api(_method, path) {
+        reads += 1;
+        return responses[path === deploymentPath ? 0 : 1];
+      },
+    },
+    selection,
+  );
+  continued += 1;
+  assert.equal(active, pointer);
+  assert.equal(reads, 8, "hold on running work and a mismatched pointer");
+  assert.equal(continued, 1);
+  assert.deepEqual(checkpoints.splice(0), [
+    {
+      phase: "activation-pending",
+      last: {
+        status: "running",
+        progressCode: "RECONCILIATION_PENDING",
+        activeRevisionMatches: true,
+      },
+    },
+    {
+      phase: "activation-pending",
+      last: { status: "succeeded", progressCode: null, activeRevisionMatches: false },
+    },
+  ]);
+
+  for (const [response, expected, failure, activeReads] of [
+    [
+      running,
+      {
+        outcome: "timeout",
+        last: {
+          status: "running",
+          progressCode: "RECONCILIATION_PENDING",
+          activeRevisionMatches: true,
+        },
+      },
+      /Timed out: protected Agent activation/,
+      1,
+    ],
+    [
+      deployment(terminal),
+      {
+        outcome: "failed",
+        last: {
+          status: "failed",
+          progressCode: null,
+          activeRevisionMatches: null,
+          errorCode: "RUNTIME_LOGIN_FAILED",
+        },
+      },
+      /protected Agent deployment failed/,
+      0,
+    ],
+    [
+      { ...deployment(terminal), error: { code: privateValue, message: privateValue } },
+      {
+        outcome: "failed",
+        last: {
+          status: "failed",
+          progressCode: null,
+          activeRevisionMatches: null,
+          errorCode: "UNKNOWN",
+        },
+      },
+      /protected Agent deployment failed/,
+      0,
+    ],
+    [
+      ready,
+      {
+        outcome: "read-error",
+        reading: "agent",
+        last: { status: "succeeded", progressCode: null, activeRevisionMatches: null },
+      },
+      new Error(privateValue),
+      1,
+    ],
+  ]) {
+    let pointerReads = 0;
+    let now = -1;
+    await assert.rejects(
+      waitForProtectedAgentActivation(
+        (description, observe, timeout) =>
+          waitFor(description, observe, timeout, {
+            now: () => ++now * timeout,
+          }),
+        {
+          checkpoint,
+          async api(_method, path) {
+            if (path === deploymentPath) {
+              return response;
+            }
+            assert.equal(path, agentPath);
+            pointerReads += 1;
+            if (failure instanceof Error) {
+              throw failure;
+            }
+            return pointer;
+          },
+        },
+        selection,
+      ).then(() => {
+        continued += 1;
+      }),
+      (error) => (failure instanceof Error ? error === failure : failure.test(error.message)),
+    );
+    assert.equal(pointerReads, activeReads);
+    assert.deepEqual(checkpoints.pop(), { phase: "activation-failed", ...expected });
+    assert.deepEqual(
+      checkpoints.splice(0),
+      expected.outcome === "timeout" ? [{ phase: "activation-pending", last: expected.last }] : [],
+    );
+  }
+  assert.equal(continued, 1, "a failed or pending deployment must not continue to a turn");
+});
 
 test("installed Gateway selection waits for a unique current ready Pod and retains terminal counts", async (t) => {
   const ready = gatewayPod("ready");

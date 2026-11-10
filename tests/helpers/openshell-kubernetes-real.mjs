@@ -1579,6 +1579,8 @@ export function createOpenShellKubernetesFixture({
       let finished = false;
       let phase = "connect";
       let lastAcknowledged = null;
+      let terminalEventIndex;
+      const errorEventIndexes = [];
       let receivedMessages = 0;
       let completedCommands = 0;
       let failedCommands = 0;
@@ -1702,7 +1704,11 @@ export function createOpenShellKubernetesFixture({
         // Exit once the result is flushed. Through the OpenShell service route the WebSocket
         // close handshake never completes, so waiting for it would hold kubectl exec open.
         process.stdout.write(JSON.stringify({ assistant, items,
-          ...(${observeFailure} ? { status: turnStatus, error: turnError } : {})
+          ...(${observeFailure} ? { status: turnStatus, error: turnError,
+            ...(${gatewayTurn} && terminalEventIndex !== undefined && {
+              terminalObservation: { lastAcknowledged, terminalEventIndex, errorEventIndexes },
+            }),
+          } : {})
         }), () => process.exit(0));
       }
 
@@ -1837,6 +1843,14 @@ export function createOpenShellKubernetesFixture({
         }
         rememberFailureSignals(message);
         items.push(message);
+        if (${gatewayTurn && observeFailure} && method === "error" && message.id === undefined &&
+            typeof threadId === "string" && threadId && turnId && lastAcknowledged === "turn/start" &&
+            params?.threadId === threadId && params?.turnId === turnId &&
+            typeof params.willRetry === "boolean") {
+          // Keep only the last four bound notices. The caller projects their error fields.
+          if (errorEventIndexes.length === 4) errorEventIndexes.shift();
+          errorEventIndexes.push(items.length - 1);
+        }
         if (starting) {
           pendingCommands.set(item.id, item.command);
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
@@ -1872,6 +1886,11 @@ export function createOpenShellKubernetesFixture({
         } else if (method === "item/completed") {
           if (item?.type === "agentMessage") assistant = item.text ?? "";
         } else if (message.method === "turn/completed") {
+          if (${gatewayTurn && observeFailure} &&
+              (message.id !== undefined || typeof threadId !== "string" || !threadId ||
+               !turnId || lastAcknowledged !== "turn/start")) {
+            return;
+          }
           const status = params?.turn?.status;
           if (params?.threadId !== threadId || params?.turn?.id !== turnId) {
             fail(new Error("Codex completed a different turn"));
@@ -1883,6 +1902,9 @@ export function createOpenShellKubernetesFixture({
           }
           turnStatus = status;
           turnError = params?.turn?.error;
+          if (${gatewayTurn && observeFailure}) {
+            terminalEventIndex = items.length - 1;
+          }
           // A command can outlive its turn: Codex returns a long command to the model, which
           // may reply before it ends. Observe only its original socket until its completion
           // event or the fixture's bound; the overall turn deadline still applies. Never extend

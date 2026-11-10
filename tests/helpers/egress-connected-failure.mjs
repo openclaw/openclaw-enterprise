@@ -167,12 +167,157 @@ function readNativeFailure(stderr, tag, clientExit) {
   }
 }
 
-export async function observeConnectedOperation(operation, action) {
+const turnStatuses = new Set(["completed", "failed", "interrupted", "inProgress"]);
+// Codex app-server v2 CodexErrorInfo. Forward-compatible extension keys and strings
+// are admitted by the wire schema but must never reach a diagnostic.
+const codexErrorCodes = new Set([
+  "contextWindowExceeded",
+  "sessionBudgetExceeded",
+  "usageLimitExceeded",
+  "rateLimitExceeded",
+  "flexUnavailable",
+  "serverOverloaded",
+  "cyberPolicy",
+  "misalignmentPolicyViolation",
+  "tooManyDenials",
+  "internalServerError",
+  "unauthorized",
+  "badRequest",
+  "threadRollbackFailed",
+  "sandboxError",
+  "other",
+]);
+const codexHttpErrorCodes = new Set([
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts",
+]);
+
+function jsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function summarizeTurnError(error) {
+  if (error === undefined) {
+    return { state: "absent" };
+  }
+  if (error === null) {
+    return { state: "null" };
+  }
+  if (!jsonObject(error) || typeof error.message !== "string") {
+    return { state: "invalid" };
+  }
+  const info = error.codexErrorInfo;
+  if (info === undefined) {
+    return { state: "absent" };
+  }
+  if (info === null) {
+    return { state: "null" };
+  }
+  if (typeof info === "string") {
+    return codexErrorCodes.has(info) ? { state: "known", variant: info } : { state: "unknown" };
+  }
+  if (!jsonObject(info) || Object.keys(info).length !== 1) {
+    return { state: "invalid" };
+  }
+  const [variant] = Object.keys(info);
+  const payload = info[variant];
+  if (variant === "activeTurnNotSteerable") {
+    const turnKind = payload?.turnKind;
+    return jsonObject(payload) && ["review", "compact"].includes(turnKind)
+      ? { state: "known", variant, turnKind }
+      : { state: "invalid" };
+  }
+  if (!codexHttpErrorCodes.has(variant)) {
+    return { state: "unknown" };
+  }
+  if (!jsonObject(payload)) {
+    return { state: "invalid" };
+  }
+  const code = payload.httpStatusCode;
+  let httpStatus = { state: "invalid" };
+  if (!Object.hasOwn(payload, "httpStatusCode")) {
+    httpStatus = { state: "absent" };
+  } else if (code === null) {
+    httpStatus = { state: "null" };
+  } else if (Number.isInteger(code) && code >= 0 && code <= 65_535) {
+    // Preserve the wire uint16. Its value alone does not establish a response origin.
+    httpStatus = { state: "present", code };
+  }
+  return { state: "known", variant, httpStatus };
+}
+
+export function summarizeGatewayTurnResult(expected, result) {
+  const expectedStatus = turnStatuses.has(expected) ? expected : "unknown";
+  const actualStatus = turnStatuses.has(result?.status) ? result.status : "unknown";
+  const summary = {
+    expectedStatus,
+    actualStatus,
+    lastAcknowledged: null,
+    terminalEvent: null,
+    terminalError: null,
+    errorNotifications: [],
+  };
+  const observation = result?.terminalObservation;
+  if (observation?.lastAcknowledged !== "turn/start" || !Array.isArray(result.items)) {
+    return summary;
+  }
+  const { terminalEventIndex, errorEventIndexes } = observation;
+  if (!Number.isSafeInteger(terminalEventIndex) || terminalEventIndex < 0) {
+    return summary;
+  }
+  const event = result.items[terminalEventIndex];
+  const terminal = event?.params;
+  if (
+    event?.method !== "turn/completed" ||
+    event.id !== undefined ||
+    typeof terminal?.threadId !== "string" ||
+    !terminal.threadId ||
+    typeof terminal.turn?.id !== "string" ||
+    !terminal.turn.id ||
+    actualStatus === "unknown" ||
+    terminal.turn.status !== actualStatus
+  ) {
+    return summary;
+  }
+  summary.lastAcknowledged = "turn/start";
+  summary.terminalEvent = "turn/completed";
+  summary.terminalError = summarizeTurnError(terminal.turn.error);
+  if (!Array.isArray(errorEventIndexes) || errorEventIndexes.length > 4) {
+    return summary;
+  }
+  for (const index of errorEventIndexes) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= terminalEventIndex) {
+      continue;
+    }
+    const notice = result.items[index];
+    const params = notice?.params;
+    if (
+      notice?.method === "error" &&
+      notice.id === undefined &&
+      params?.threadId === terminal.threadId &&
+      params?.turnId === terminal.turn.id &&
+      typeof params.willRetry === "boolean"
+    ) {
+      summary.errorNotifications.push({
+        willRetry: params.willRetry,
+        error: summarizeTurnError(params.error),
+      });
+    }
+  }
+  return summary;
+}
+
+export async function observeConnectedOperation(operation, action, nativeTurnResult) {
   try {
     return await action();
   } catch (error) {
     if (error instanceof Error && operations.has(operation) && !failedOperations.has(error)) {
-      failedOperations.set(error, operation);
+      failedOperations.set(error, {
+        operation,
+        nativeTurnResult: operation === "gateway-turn-verification" ? nativeTurnResult : undefined,
+      });
     }
     throw error;
   }
@@ -208,13 +353,19 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   );
   const location = frame ? `${frame[1]}.mjs:${frame[2]}:${frame[3]}` : "external-operation";
   const kind = error?.code === "ERR_ASSERTION" ? "assertion" : "operation";
-  const operation = failedOperations.get(error) ?? null;
+  const { operation = null, nativeTurnResult } = failedOperations.get(error) ?? {};
   const local = kubectlOutcomes.get(error);
   const kubectl = local?.kubectl ?? null;
   const nativeExec = operation === "gateway-codex-exec" ? local?.nativeExec : undefined;
   if (operation !== null || kubectl !== null) {
     try {
-      await recordFailure?.({ kind, operation, kubectl, ...(nativeExec && { nativeExec }) });
+      await recordFailure?.({
+        kind,
+        operation,
+        kubectl,
+        ...(nativeExec && { nativeExec }),
+        ...(nativeTurnResult && { nativeTurnResult }),
+      });
     } catch {
       // A diagnostic write must not replace the triggering failure or interrupt cleanup.
     }
@@ -222,7 +373,8 @@ export async function safeConnectedFailure(error, stage, recordFailure) {
   const step = operation === null ? "" : ` / ${operation}`;
   const process = kubectl === null ? "" : ` kubectl=${JSON.stringify(kubectl)}`;
   const native = nativeExec === undefined ? "" : ` nativeExec=${JSON.stringify(nativeExec)}`;
+  const turn = nativeTurnResult ? ` nativeTurnResult=${JSON.stringify(nativeTurnResult)}` : "";
   return new Error(
-    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}${native}; inspect the per-run ledger`,
+    `Connected egress ${kind} failed at ${stage}${step} (${location})${process}${native}${turn}; inspect the per-run ledger`,
   );
 }
