@@ -215,6 +215,37 @@ test("Kubernetes Compute defaults to the Compose control plane", async (t) => {
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
+test("dev-down from a fresh shell stops the recorded Kubernetes stack", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  const started = await fixture.start();
+  assert.equal(started.status, 0, started.stderr);
+  const directory = join(fixture.directory, "openclaw-development");
+  assert.ok((await stat(directory)).isDirectory());
+
+  // A new shell exports no profile selectors; the recorded state still decides.
+  const fresh = { ...fixture.env };
+  for (const key of [
+    "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+    "OCC_DEVELOPMENT_CONTROL_PLANE",
+    "OCC_DEVELOPMENT_SANDBOX_DRIVER",
+  ]) {
+    delete fresh[key];
+  }
+  const beforeCleanup = await readJsonLines(fixture.env.SAFETY_LOG);
+  const stopped = await runDevDown(fresh);
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /Stopped Kubernetes development stack occ-dev-owned\./);
+  assert.doesNotMatch(stopped.stdout, /Docker-compatible/);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
+    clusters: ["occ-dev-unrelated"],
+    compose: false,
+  });
+  const commands = (await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length);
+  assert.ok(commands.some((entry) => entry.command === "k3d" && entry.args.includes("delete")));
+});
+
 for (const controlPlane of ["compose", "kubernetes"]) {
   for (const [reason, cluster] of [
     ["33-character name", `occ-dev-${"a".repeat(25)}`],

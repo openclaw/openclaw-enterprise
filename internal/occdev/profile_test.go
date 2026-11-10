@@ -1,6 +1,7 @@
 package occdev
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -71,5 +72,47 @@ func TestProfileRefusals(t *testing.T) {
 	}
 	if err := (Profile{"docker", "compose", "none"}).checkDatabaseNameCompute(false); err != nil {
 		t.Errorf("Docker Compute refused an unset database name: %v", err)
+	}
+}
+
+func TestDownComputeDriver(t *testing.T) {
+	inspectErr := errors.New("cannot inspect development state directory /state: permission denied")
+	for name, test := range map[string]struct {
+		env              map[string]string
+		composeOptions   bool
+		present          bool
+		inspect          error
+		want, wantErr    string
+		consultsRecorded bool
+	}{
+		"explicit docker ignores recorded state":        {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "docker"}, present: true, want: "docker"},
+		"explicit kubernetes without state":             {env: map[string]string{"OCC_DEVELOPMENT_COMPUTE_DRIVER": "kubernetes"}, want: "kubernetes"},
+		"unset with recorded state":                     {present: true, want: "kubernetes", consultsRecorded: true},
+		"unset without recorded state":                  {want: "docker", consultsRecorded: true},
+		"unset with compose control plane":              {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "compose"}, present: true, want: "kubernetes", consultsRecorded: true},
+		"unset with an uninspectable directory":         {inspect: inspectErr, wantErr: inspectErr.Error(), consultsRecorded: true},
+		"compose options keep docker":                   {composeOptions: true, present: true, want: "docker"},
+		"kubernetes control plane selects kubernetes":   {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, want: "kubernetes"},
+		"kubernetes control plane with compose options": {env: map[string]string{"OCC_DEVELOPMENT_CONTROL_PLANE": "kubernetes"}, composeOptions: true, want: "kubernetes"},
+		"openshell selects kubernetes":                  {env: map[string]string{"OCC_DEVELOPMENT_SANDBOX_DRIVER": "openshell"}, want: "kubernetes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			consulted := false
+			profile := resolveProfile(test.env)
+			got, err := profile.downComputeDriver(test.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", test.composeOptions, func() (bool, error) {
+				consulted = true
+				return test.present, test.inspect
+			})
+			if test.wantErr != "" {
+				if err == nil || err.Error() != test.wantErr {
+					t.Fatalf("downComputeDriver error = %v, want %q", err, test.wantErr)
+				}
+			} else if err != nil || got != test.want {
+				t.Fatalf("downComputeDriver = %q, %v; want %q", got, err, test.want)
+			}
+			if consulted != test.consultsRecorded {
+				t.Fatalf("recorded state consulted = %v, want %v", consulted, test.consultsRecorded)
+			}
+		})
 	}
 }

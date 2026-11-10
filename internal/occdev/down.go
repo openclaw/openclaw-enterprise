@@ -4,19 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 // Down stops the selected Docker stack or the recorded Kubernetes stack.
+// Without a Compute Driver selection it follows the state directory; see
+// Profile.downComputeDriver.
 func Down(ctx context.Context, opts Options) error {
 	r := newRunner(opts)
 	profile := resolveProfile(r.env)
 	if err := profile.CheckSandboxDriver(); err != nil {
 		return err
 	}
-	switch profile.ComputeDriver {
+	stateSetting := r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"]
+	recorded := false
+	computeDriver, err := profile.downComputeDriver(r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "", len(opts.ComposeArgs) > 0, func() (bool, error) {
+		_, present, err := recordedStateDirectory(stateSetting)
+		recorded = present
+		return present, err
+	})
+	if err != nil {
+		return err
+	}
+	switch computeDriver {
 	case "docker":
 		if err := profile.CheckDockerCompute(); err != nil {
 			return err
@@ -61,6 +74,12 @@ func Down(ctx context.Context, opts Options) error {
 		if err := r.run(ctx, r.engine, args...); err != nil {
 			return err
 		}
+		if r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] == "" && len(opts.ComposeArgs) == 0 {
+			// Say why down chose Docker when nothing selected it.
+			directory, _ := stateDirectoryPath(stateSetting)
+			fmt.Fprintf(r.opts.Out, "Stopped Docker-compatible development stack (no recorded Kubernetes development state in %s).\n", directory)
+			return nil
+		}
 		fmt.Fprintln(r.opts.Out, "Stopped Docker-compatible development stack.")
 		return nil
 	case "kubernetes":
@@ -70,9 +89,22 @@ func Down(ctx context.Context, opts Options) error {
 		if len(opts.ComposeArgs) > 0 {
 			return fmt.Errorf("Compose options come from recorded Kubernetes development state")
 		}
-		directory, err := stateDirectory(r.env["OCC_DEVELOPMENT_STATE_DIRECTORY"], opts.Repository, true)
+		// When down followed a recorded state directory, never fall back to
+		// Docker: name the directory so the operator can repair or remove it.
+		unusable := func(err error) error {
+			path, _ := stateDirectoryPath(stateSetting)
+			if !recorded {
+				if errors.Is(err, fs.ErrNotExist) && path != "" {
+					return fmt.Errorf("no recorded Kubernetes development state in %s: %w", path, err)
+				}
+				return err
+			}
+			return fmt.Errorf("development state directory %s exists but is not usable Kubernetes development state: %w; "+
+				"occ dev down stopped nothing; repair it and retry, or select OCC_DEVELOPMENT_COMPUTE_DRIVER=docker to stop a Docker-compatible stack", path, err)
+		}
+		directory, err := stateDirectory(stateSetting, opts.Repository, true)
 		if err != nil {
-			return err
+			return unusable(err)
 		}
 		lock, err := lockState(directory)
 		if err != nil {
@@ -81,7 +113,7 @@ func Down(ctx context.Context, opts Options) error {
 		defer lock.Close()
 		state, err := readState(directory)
 		if err != nil {
-			return err
+			return unusable(err)
 		}
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine

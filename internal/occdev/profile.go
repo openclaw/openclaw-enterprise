@@ -42,6 +42,32 @@ func resolveProfile(env map[string]string) Profile {
 	return ResolveProfile(func(key string) string { return env[key] })
 }
 
+// downComputeDriver chooses the stack occ dev down stops. An explicit
+// OCC_DEVELOPMENT_COMPUTE_DRIVER wins. Without one, a selection only
+// Kubernetes Compute serves (the Kubernetes control plane or a Sandbox
+// Driver) selects the Kubernetes path, Compose options keep the Docker path,
+// and otherwise the state directory decides: when it exists, down stops the
+// recorded Kubernetes stack; when it is absent, down stops the Docker stack.
+// recorded is consulted only in that last case.
+func (p Profile) downComputeDriver(computeSelected, composeOptions bool, recorded func() (bool, error)) (string, error) {
+	switch {
+	case computeSelected:
+		return p.ComputeDriver, nil
+	case p.ControlPlane == "kubernetes" || p.SandboxDriver != defaultDevelopmentSandboxDriver:
+		return "kubernetes", nil
+	case composeOptions:
+		return p.ComputeDriver, nil
+	}
+	present, err := recorded()
+	if err != nil {
+		return "", err
+	}
+	if present {
+		return "kubernetes", nil
+	}
+	return p.ComputeDriver, nil
+}
+
 // KubernetesOnly reports the profile whose control plane also runs in
 // Kubernetes: the only one with gateway routing and an HTTPS Console.
 func (p Profile) KubernetesOnly() bool {
