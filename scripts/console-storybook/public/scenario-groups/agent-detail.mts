@@ -972,6 +972,29 @@ export function createAgentDetailScenarios({
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
       },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
+      },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
         name: "Plugin entry key, Compute check in flight",
