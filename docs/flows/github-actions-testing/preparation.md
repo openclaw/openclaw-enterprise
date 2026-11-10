@@ -50,19 +50,22 @@ It rejects a partial pair before creating state, so
 build. Omitting both keeps the source-build path; supplying both keeps their
 selected immutable references.
 
-For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
-selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
-loads it under a run-owned tag. The artifact's index, platform manifest and config
-have distinct digests; Docker's image ID is not assumed to be the config digest.
-The loader checks archive integrity, source commit, workflow run and platform,
-then verifies the loaded image. Preparation records the tag before loading so
-failure cleanup can remove it. A selected artifact cannot be combined with an
-alternate OpenClaw source checkout, and loading failure does not fall back to a
-build. The existing runtime environment aliases refer to that tag; packaging's
-controller build and each lane's Envoy or seccomp preparation remain separate.
-The three runtime startup lanes omit Buildx setup when they select this artifact.
-Packaging retains its builder for the controller and image tests; source builds
-without an artifact retain their existing builder.
+`scripts/ci/prepare.mjs:buildRuntimeImages` loads same-run OCI artifacts for
+ordinary image lanes and Full Integration's Docker Model Runtime. The
+`scripts/ci/runtime-artifact.mjs` loader checks archive integrity, commit, run and
+platform, then verifies the loaded image. The OCI index, platform manifest and
+config have distinct digests. Docker's image ID need not equal the config digest.
+Preparation records the run-owned tag before loading for cleanup. Runtime aliases
+use that tag. Artifact selection excludes alternate OpenClaw source. Import
+failure ends preparation.
+
+Docker Model Runtime waits for the producer. Success requires an artifact ID.
+Failure or skip keeps the standalone build. Import cancellation starts three
+minutes before the lane deadline.
+
+The three startup lanes skip Buildx for imports. Packaging keeps Buildx for the
+controller and image tests. Source builds keep their builder. Envoy and seccomp
+preparation stay separate.
 
 The preparation CLI records run-owned resources in a private state file before creating them. GitHub Actions passes that file under `RUNNER_TEMP`; it is available to later steps in the same job and is not uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role; the Agent revision worker suite also gives each test a copy of a migrated template (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. The CLI-only installed repository lane is temporarily refused in `validateLaneInputsBeforeSideEffects`, before its input checks and before any state or resource is created, until its remote cleanup is safe; its image and seccomp preparation below is unreachable in this source version. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Preparation failures still enter job cleanup. Cluster cleanup reads k3d inventory before and after deletion, then checks for matching Docker containers, networks, and volumes. An invalid inventory or possible surviving resource retains cleanup state.
 
