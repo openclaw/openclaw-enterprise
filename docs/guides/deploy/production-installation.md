@@ -43,8 +43,9 @@ nodes. See [private registry delivery](private-registry-images.md#configure-node
 
 ## Build and publish production images
 
-If building from source, follow [Build and publish production images](production-installation-preparation.md#build-and-publish-production-images),
-then continue through configuration and workspace access in that guide.
+If building from source, follow [Build and publish production images](production-installation-preparation.md#build-and-publish-production-images).
+For a custom Helm installation, continue through configuration and workspace access
+in that guide. Otherwise, return to the guide that directed you to build images.
 
 ### Build through a package registry mirror
 
@@ -53,8 +54,9 @@ For source builds using a mirror, follow [Build through a package registry mirro
 ## Configure the Installation
 
 Complete [Configure the Installation](production-installation-preparation.md#configure-the-installation),
-including the chosen configuration branch, shared checks, and workspace access.
-Then return to [provisioning](#provision-system-secrets-and-install) in the same Bash shell.
+using profiles, manual examples, or verified existing YAML as directed there.
+Complete the shared checks and workspace access, then return to
+[provisioning](#provision-system-secrets-and-install) in the same Bash shell.
 
 ### Recommended: generate profile configuration
 
@@ -70,13 +72,18 @@ only when not using profiles. Continue through the shared checks and workspace a
 
 ### Shared bootstrap PVC and configuration checks
 
-Run the complete [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks),
+First complete the [configuration setup](production-installation-preparation.md#configure-the-installation)
+for the intended protected input directory and prepare or select the YAML as directed there.
+In the same Bash shell, run the complete [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks),
 keep their validated exports, and continue to workspace access.
 
 ## Prepare workspace access
 
-Complete [workspace access](production-installation-preparation.md#prepare-workspace-access),
-including rendering and validating changed inputs, before provisioning below.
+Before [workspace access](production-installation-preparation.md#prepare-workspace-access),
+complete the [configuration setup](production-installation-preparation.md#configure-the-installation)
+and [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks).
+Use the same Bash shell with its reviewed `KUBECONFIG_FILE` and `CONTEXT` and validated exports.
+Render and validate changed inputs before provisioning below.
 
 ## Provision system Secrets and install
 
