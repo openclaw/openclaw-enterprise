@@ -9,7 +9,7 @@ last_verified: "2026-11-04"
 ## Overview
 
 Run setup and real Agent execution tests from the repository root. Setup selects
-official OpenShell `v0.1.6`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
+official OpenShell `v0.1.8`. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for versions and qualification limits.
 
 ## Start a reusable development environment

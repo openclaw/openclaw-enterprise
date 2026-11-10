@@ -5,7 +5,7 @@ Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports dedicated native OpenClaw and Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) and the pinned OCE runtime.
+[`v0.1.8`](https://github.com/NVIDIA/OpenShell/tree/v0.1.8) and the pinned OCE runtime.
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 Agent revision providers supply node enrollment and Codex files. These APIs are
 unqualified for production.

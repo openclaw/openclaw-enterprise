@@ -99,7 +99,7 @@ graph TD
 `internal/occdev/kubernetes.go:writeInstallation`
 
 Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
-independently of launcher architecture, verify 0.1.6 charts and pin
+independently of launcher architecture, verify 0.1.8 charts and pin
 Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
 collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
@@ -214,7 +214,7 @@ selects a named provider and HTTPS Responses transport.
 mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
-[binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
+[binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.8`.
 Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Unsupported enums, inherited keys, `passthrough` TLS, missing executables or
 non-positive/unsafe-integer readiness `timeoutMs` prevent Kubernetes calls.

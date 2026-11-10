@@ -277,7 +277,7 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
   assert.match(
     parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/,
   );
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
@@ -789,7 +789,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
   const charts = (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
-    /^helm-chart-0\.1\.6\.tgz$/.test(name),
+    /^helm-chart-0\.1\.8\.tgz$/.test(name),
   );
   assert.equal(charts.length, 1);
   await command(

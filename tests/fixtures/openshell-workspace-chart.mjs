@@ -1,4 +1,4 @@
-// The stock OpenShell v0.1.6 workspace chart as occ dev puts it into the Sandbox configuration:
+// The stock OpenShell v0.1.8 workspace chart as occ dev puts it into the Sandbox configuration:
 // `helm template` with the values in internal/occdev/openshell.go
 // (renderOpenShellWorkspaceResources), each document decoded with metadata.namespace removed.
 // Returns fresh copies so a test can change them.
@@ -55,7 +55,17 @@ export function openShellWorkspaceChartResources() {
           verbs: ["create", "delete", "get", "list", "patch", "update", "watch"],
         },
         { apiGroups: [""], resources: ["events"], verbs: ["get", "list", "watch"] },
-        { apiGroups: [""], resources: ["pods"], verbs: ["get"] },
+        {
+          apiGroups: [""],
+          resources: ["pods"],
+          verbs: ["create", "delete", "get", "list", "patch", "watch"],
+        },
+        { apiGroups: [""], resources: ["services"], verbs: ["create", "get"] },
+        {
+          apiGroups: ["networking.k8s.io"],
+          resources: ["networkpolicies"],
+          verbs: ["create", "get"],
+        },
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "delete"] },
       ],
     },

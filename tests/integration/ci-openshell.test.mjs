@@ -170,7 +170,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.6 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
