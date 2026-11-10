@@ -2608,7 +2608,7 @@ function controllerCompatibilityResults() {
         counts,
         tests: [
           {
-            name: "Logical restore preserves reviewed canonical and Provider migration histories",
+            name: "Released controller remains usable after configured IAM activation",
             status: "passed",
             file: path,
           },
@@ -2685,6 +2685,8 @@ test("controller compatibility preserves Agent continuity through interrupted up
 
 test("controller compatibility rejects unqualified evidence before changing writers", async (t) => {
   const changes = {
+    "missing IAM activation": (r) => (r.files[0].tests[0].name = "Another passing case"),
+    "IAM result from another file": (r) => (r.files[0].tests[0].file = r.files[1].path),
     "unselected green": (r) => (r.files[0].tests[1].name = "Another migration case"),
     "failed selected case": (r) => (r.files[0].tests[1].status = "failed"),
     "skipped selected case": (r) => (r.files[0].tests[1].status = "skipped"),
