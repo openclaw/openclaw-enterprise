@@ -75,6 +75,9 @@ The Console sends the prefix in a read-only POST to
 `/api/auth/sharing-recipients/search`. The Controller checks the current human
 session, trusted Origin, and Installation administration. Authentication
 matches stored names and verified emails to their Installation Principals.
+On PostgreSQL, the session check, Native IAM decision, and recipient query
+share a read-only snapshot with a statement timeout. A fresh search observes
+committed session and permission changes.
 The Console discards stale answers when the reader edits the search or leaves
 the panel. Selecting a result shows the person's name and email and stores the
 exact Principal ID for submission. Switching entry modes clears the selected

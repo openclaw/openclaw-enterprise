@@ -111,6 +111,13 @@ const CONSOLE_ASSETS = new Map([
     }),
   ),
   [
+    "/console/sharing-recipient-search.mjs",
+    {
+      path: new URL("../../../packages/contracts/src/sharing-recipient-search.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  [
     "/console/workspace-defaults.mjs",
     {
       path: new URL("../../../packages/contracts/src/workspace-defaults.ts", import.meta.url),

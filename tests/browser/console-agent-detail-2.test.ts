@@ -469,7 +469,11 @@ test(
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
-      provisionedPeople: ["Teammate-Avery", "Teammate-Averyson"],
+      provisionedPeople: [
+        "Teammate-Avery",
+        "Teammate-Averyson",
+        ...Array.from({ length: 8 }, (_, i) => `Teammate-Bob${i}`),
+      ],
       nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
       async onSend(
         request: { method: string; url: string; body?: unknown },
@@ -547,14 +551,28 @@ test(
     const matched = await response;
     assert.equal(matched.status(), 200);
     assert.equal(new URL(matched.url()).origin, fixture.origin);
-    const options = panel.getByRole("listbox").getByRole("option");
-    await options.nth(1).waitFor();
+    const listbox = panel.getByRole("listbox");
+    const options = listbox.getByRole("option");
+    await options.nth(9).waitFor();
+    assert.equal(
+      await listbox.evaluate((element) => element.scrollHeight > element.clientHeight),
+      true,
+    );
     assert.deepEqual(
       await options.allTextContents(),
       fixture.provisionedAccounts.map(
         ({ credentials }) => credentials.name + credentials.email.toLowerCase(),
       ),
     );
+    await search.press("ArrowUp");
+    assert.equal(await options.nth(9).getAttribute("aria-selected"), "true");
+    assert.equal(await search.evaluate((element) => element === document.activeElement), true);
+    await search.press("Tab");
+    assert.equal(await manual.evaluate((element) => element === document.activeElement), true);
+    assert.equal(await listbox.isVisible(), false);
+
+    await search.focus();
+    await options.nth(9).waitFor();
     await search.press("ArrowDown");
     await search.press("ArrowDown");
     assert.equal(await options.nth(1).getAttribute("aria-selected"), "true");
@@ -579,8 +597,9 @@ test(
     await searchInstead.click();
     assert.equal(await selectedStatus.isVisible(), false);
     await search.fill("teammate");
-    await options.nth(1).waitFor();
-    await search.press("ArrowUp");
+    await options.nth(9).waitFor();
+    await search.press("ArrowDown");
+    await search.press("ArrowDown");
     await search.press("Enter");
     await selectedStatus.waitFor();
     await acknowledge.check();

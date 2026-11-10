@@ -1,5 +1,10 @@
 import type { Agent, Permission, SharingRecipient } from "@openclaw-enterprise/contracts";
 import {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  SHARING_RECIPIENT_SEARCH_MAX_LENGTH,
+  SHARING_RECIPIENT_SEARCH_MIN_LENGTH,
+} from "../sharing-recipient-search.mjs";
+import {
   INSTALLATION_ADMINISTRATION,
   type RequestOptions,
   requestFailure,
@@ -43,7 +48,7 @@ function recipientSearch(
     id: "share-recipient-search",
     type: "text",
     autocomplete: "off",
-    maxlength: "120",
+    maxlength: String(SHARING_RECIPIENT_SEARCH_MAX_LENGTH),
     role: "combobox",
     "aria-autocomplete": "list",
     "aria-expanded": "false",
@@ -54,6 +59,7 @@ function recipientSearch(
     id: "share-recipient-results",
     className: "share-recipient-results",
     role: "listbox",
+    tabindex: "-1",
     "aria-label": "Matching people",
   });
   const status = element("p", { className: "hint", role: "status" });
@@ -133,7 +139,7 @@ function recipientSearch(
       if (!usable() || request.signal.aborted) {
         return;
       }
-      if (!Array.isArray(value) || value.length > 10) {
+      if (!Array.isArray(value) || value.length > SHARING_RECIPIENT_SEARCH_LIMIT) {
         throw new Error("Invalid sharing recipient results");
       }
       const ids = new Set<string>();
@@ -186,7 +192,7 @@ function recipientSearch(
   function schedule() {
     close();
     const prefix = search.value.trim();
-    if (!composing && [...prefix].length >= 2 && usable()) {
+    if (!composing && [...prefix].length >= SHARING_RECIPIENT_SEARCH_MIN_LENGTH && usable()) {
       const request = new AbortController();
       pending = request;
       status.textContent = "Searching for people…";

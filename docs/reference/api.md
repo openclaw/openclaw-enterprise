@@ -1362,7 +1362,7 @@ Find existing people to share an Agent with
 
 **Operation ID:** `searchAgentSharingRecipients`
 
-**Permissions:** Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix of 2 to 120 characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.
+**Permissions:** Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix. Input is limited to 120 characters and must have at least two characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.
 
 | Action | Resource | Scope |
 | --- | --- | --- |

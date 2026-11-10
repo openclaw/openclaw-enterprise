@@ -1603,6 +1603,17 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
+  /** Run persistence-owned SQL and repository reads on the same read-only snapshot. */
+  async readWithQuery<T>(
+    work: (state: PlatformReadView, query: PostgresQueryClient["query"]) => Promise<T>,
+  ): Promise<T> {
+    return this.execute(true, async (state, context) =>
+      work(createPlatformReadView(state, context.lifetime), (statement, parameters) =>
+        context.lifetime.run(() => context.client.query(statement, parameters)),
+      ),
+    );
+  }
+
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.execute(false, async (state) => work(state));
   }

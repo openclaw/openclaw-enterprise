@@ -3798,7 +3798,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           readonly targetPrincipalId?: string;
           readonly successorPrincipalId?: string;
         }) => {
-          // State invokes this after its locks, on the same transaction as the write.
+          // State invokes this in the same transaction as its account operation.
           // Throw evidence back to the HTTP error handler; auditing here opens another unit.
           const resource: ResourceRef = { kind: "installation", id: installationId };
           let current;
@@ -3891,7 +3891,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recipientSearchOperation.operationId,
           summary: recipientSearchOperation.summary,
           description:
-            "Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix of 2 to 120 characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.",
+            "Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix. Input is limited to 120 characters and must have at least two characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.",
           tags: [...recipientSearchOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [

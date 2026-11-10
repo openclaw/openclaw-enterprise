@@ -67,7 +67,7 @@ New accounts join configured default Groups. As a human Installation administrat
    PRINCIPAL_ID="$(jq -r .data.principalId created.json)"
    ```
 
-   No API lists accounts. With Google or OIDC sign-in enabled,
+   Installation administrators can use [Share Agent](../console/agent-sharing.md) to find eligible accounts by name or verified email through a bounded prefix search. With Google or OIDC sign-in enabled,
    `GET /api/auth/accounts/$USER_ID` returns `principalId` again; a signed-in
    person finds their `USER_ID` as `user.id` in `GET /api/auth/session`.
 
