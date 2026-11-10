@@ -22,7 +22,7 @@
     "tests/integration/cli-release.test.mjs",
     "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
-    "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/repository-credentials-control.test.ts",
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
@@ -75,10 +75,10 @@
     "tests/integration/plugin-driver-startup.test.mjs",
     "tests/integration/repository-credentials-config.test.mjs",
     "tests/integration/kubernetes-peer-status.test.mjs",
-    "tests/conformance/repository-credentials-lifecycle.test.mjs",
+    "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
     "tests/integration/oidc-login-transport.test.mjs",
-    "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
+    "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
@@ -100,7 +100,7 @@
     "tests/conformance/repository-credentials-github-token.test.mjs",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
-    "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
@@ -427,7 +427,7 @@
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+      "path": "tests/conformance/repository-credentials-sessions.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-admission.test.ts"
@@ -436,10 +436,10 @@
       "path": "tests/conformance/repository-credentials-custody.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
+      "path": "tests/conformance/repository-credentials-lifecycle.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.mjs"
+      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
@@ -484,7 +484,7 @@
       "path": "tests/integration/repository-credentials-server-timeout.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-control.test.mjs"
+      "path": "tests/integration/repository-credentials-control.test.ts"
     },
     {
       "path": "tests/integration/repository-credential-operator-recovery.test.ts"

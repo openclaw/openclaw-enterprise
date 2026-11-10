@@ -1,19 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  AttemptContext,
+  FinalizeOutcome,
+  OriginalOutcome,
+  RepositoryBackend,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createProviderQueue } from "../../apps/controller/src/drivers/repo/access/provider-queue.ts";
 import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
 import { createLifecycle } from "../../apps/controller/src/drivers/repo/access/lifecycle.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { custodyLimits } from "../fixtures/repository-credentials/builders.mjs";
 
-const tick = () => new Promise((resolve) => setImmediate(resolve));
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+const unexpected = () => {
+  throw new Error("unexpected backend operation");
+};
+const backendDefaults = {
+  acquire: unexpected,
+  retire: unexpected,
+  finalize: unexpected,
+  plan: unexpected,
+  prepareAuthentication: unexpected,
+} satisfies Partial<RepositoryBackend>;
+
+function originalOutcome<T extends object>(
+  originals: WeakSet<object>,
+  attempt: AttemptContext,
+  outcome: T,
+): Readonly<T & OriginalOutcome> {
+  const original = Object.freeze({ attemptId: attempt.id, ...outcome });
+  originals.add(original);
+  return original as Readonly<T & OriginalOutcome>;
+}
 
 test("cancelled queue entries release capacity while dispatched owner retains its slot until settlement", async () => {
   const queue = createProviderQueue(1);
-  let settle;
-  const settlement = new Promise((resolve) => {
-    settle = resolve;
-  });
+  const { promise: settlement, resolve: settle } = Promise.withResolvers<void>();
   const firstAbort = new AbortController();
   const first = queue.run(firstAbort.signal, () => settlement);
   const queuedAbort = new AbortController();
@@ -45,7 +68,10 @@ test("cancelled queue entries release capacity while dispatched owner retains it
 
 // `failure` makes the Driver fail after dispatch instead: "acquire" throws, "settle"
 // throws while settling a well-formed rejection, "outcome" returns no outcome at all.
-function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
+function uncertainLifecycle({
+  kind = "uncertain",
+  failure,
+}: { kind?: "uncertain" | "not-dispatched"; failure?: string | undefined } = {}) {
   const clock = createControlledClock(1700000000000);
   const authority = Object.freeze({
     sessionId: "session",
@@ -54,7 +80,7 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
     grantId: "fixed-grant",
   });
   let open = true;
-  let lifecycle;
+  let lifecycle: ReturnType<typeof createLifecycle> | undefined = undefined;
   const custody = createCustody({
     clock,
     ...custodyLimits,
@@ -66,7 +92,9 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
   const originals = new WeakSet();
   let acquires = 0;
   let finalizes = 0;
-  const driver = {
+  const driver: RepositoryBackend = {
+    ...backendDefaults,
+    binding: authority,
     replacement: "overlap",
     cleanup: "revocable",
     async acquire(attempt) {
@@ -77,15 +105,14 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
         throw new Error("fixture acquire failed");
       }
       if (failure === "outcome") {
-        return undefined;
+        // Deliberately violate the runtime backend contract to preserve the missing-outcome case.
+        return undefined as never;
       }
-      const result = Object.freeze(
-        failure === "settle"
-          ? { kind: "rejected", code: "scope-mismatch", attemptId: attempt.id }
-          : { kind, attemptId: attempt.id },
+      return originalOutcome(
+        originals,
+        attempt,
+        failure === "settle" ? ({ kind: "rejected", code: "scope-mismatch" } as const) : { kind },
       );
-      originals.add(result);
-      return result;
     },
     async settle(original) {
       assert.ok(originals.has(original));
@@ -110,6 +137,7 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
     admitted: () => open,
     changed() {},
   });
+  const activeLifecycle = lifecycle;
   return {
     lifecycle,
     custody,
@@ -117,7 +145,7 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
     finalizes: () => finalizes,
     close() {
       open = false;
-      lifecycle.close();
+      activeLifecycle.close();
     },
   };
 }
@@ -137,10 +165,10 @@ test("unknown or unsettled issue without captured material occupies its reservat
       message: "ACTION_FAILED",
     });
     await tick();
-    assert.equal(custody.reservations.size, 1, failure);
-    assert.equal([...custody.reservations][0].unknown, true, failure);
-    assert.equal(lifecycle.activeActions, activeActions, failure);
-    assert.equal(lifecycle.blocked, true, failure);
+    assert.equal(custody.reservations.size, 1, failure ?? "");
+    assert.equal([...custody.reservations][0]?.unknown, true, failure ?? "");
+    assert.equal(lifecycle.activeActions, activeActions, failure ?? "");
+    assert.equal(lifecycle.blocked, true, failure ?? "");
     await assert.rejects(lifecycle.acquire(1000, new AbortController().signal), {
       message: "SESSION_UNAVAILABLE",
     });
@@ -175,7 +203,7 @@ test("finalization is incomplete until the original finalized outcome settles", 
     repositoryId: "opaque",
     grantId: "grant",
   });
-  let lifecycle;
+  let lifecycle: ReturnType<typeof createLifecycle> | undefined = undefined;
   const custody = createCustody({
     clock,
     ...custodyLimits,
@@ -184,17 +212,17 @@ test("finalization is incomplete until the original finalized outcome settles", 
       lifecycle?.maintain();
     },
   });
-  let release;
-  const settled = new Promise((resolve) => {
-    release = resolve;
-  });
-  let original;
-  const driver = {
+  const { promise: settled, resolve: release } = Promise.withResolvers<void>();
+  const originals = new WeakSet<object>();
+  let original: FinalizeOutcome | undefined;
+  const driver: RepositoryBackend = {
+    ...backendDefaults,
+    binding: authority,
     cleanup: "revocable",
     replacement: "overlap",
     async finalize(attempt) {
       custody.driver.assertAttempt(attempt, "finalize");
-      original = Object.freeze({ kind: "finalized", attemptId: attempt.id });
+      original = originalOutcome(originals, attempt, { kind: "finalized" } as const);
       return original;
     },
     async settle(outcome) {
@@ -227,12 +255,9 @@ test("finalization is incomplete until the original finalized outcome settles", 
 test("cleanup queue priority keeps bounded foreground progress", async () => {
   const queue = createProviderQueue(8);
   const signal = new AbortController().signal;
-  let release;
-  const hold = new Promise((resolve) => {
-    release = resolve;
-  });
+  const { promise: hold, resolve: release } = Promise.withResolvers<void>();
   const active = queue.run(signal, () => hold);
-  const order = [];
+  const order: string[] = [];
   const foreground = queue.run(signal, async () => {
     order.push("foreground");
   });
@@ -250,12 +275,18 @@ test("cleanup queue priority keeps bounded foreground progress", async () => {
   assert.deepEqual(order, ["cleanup-1", "cleanup-2", "foreground", "cleanup-3"]);
 });
 
-for (const action of ["retire", "finalize"]) {
+for (const action of ["retire", "finalize"] as const) {
   test(`capacity changes never replay an invoked uncertain ${action}`, async () => {
     const clock = createControlledClock(1700000000000);
     const queue = createProviderQueue(1);
+    const authority = Object.freeze({
+      sessionId: "session",
+      providerInstanceId: "instance",
+      repositoryId: "opaque",
+      grantId: "grant",
+    });
     let open = true;
-    let lifecycle;
+    let lifecycle: ReturnType<typeof createLifecycle> | undefined = undefined;
     const custody = createCustody({
       clock,
       ...custodyLimits,
@@ -263,13 +294,12 @@ for (const action of ["retire", "finalize"]) {
       changed: () => lifecycle?.maintain(),
     });
     const originalOutcomes = new WeakSet();
-    const originals = (attempt, outcome) => {
-      const original = Object.freeze({ attemptId: attempt.id, ...outcome });
-      originalOutcomes.add(original);
-      return original;
-    };
+    const originals = <T extends object>(attempt: AttemptContext, outcome: T) =>
+      originalOutcome(originalOutcomes, attempt, outcome);
     let calls = 0;
-    const driver = {
+    const driver: RepositoryBackend = {
+      ...backendDefaults,
+      binding: authority,
       cleanup: "revocable",
       replacement: "overlap",
       async acquire(attempt) {
@@ -283,17 +313,17 @@ for (const action of ["retire", "finalize"]) {
           ...observation,
           expiresAtWallMs: observation.observedWallMs + 120000,
         });
-        return originals(attempt, { kind: "acquired", credential, ...observation });
+        return originals(attempt, { kind: "acquired", credential, ...observation } as const);
       },
-      async [action](attempt) {
+      async [action](attempt: AttemptContext) {
         custody.driver.assertAttempt(attempt, action);
         attempt.observeDispatch();
         calls++;
         return originals(
           attempt,
           action === "retire"
-            ? { kind: "uncertain" }
-            : { kind: "cleanup-pending", reason: "uncertain" },
+            ? ({ kind: "uncertain" } as const)
+            : ({ kind: "cleanup-pending", reason: "uncertain" } as const),
         );
       },
       async settle(original) {
@@ -306,12 +336,7 @@ for (const action of ["retire", "finalize"]) {
     };
     lifecycle = createLifecycle({
       clock,
-      authority: Object.freeze({
-        sessionId: "session",
-        providerInstanceId: "instance",
-        repositoryId: "opaque",
-        grantId: "grant",
-      }),
+      authority,
       deadlineMonoMs: 86400000,
       custody,
       driver,
@@ -346,7 +371,7 @@ for (const action of ["retire", "finalize"]) {
     assert.equal(lifecycle.activeActions, 0);
     if (action === "retire") {
       assert.equal(custody.reservations.size, 1);
-      assert.equal([...custody.records][0].disposition, "uncertain");
+      assert.equal([...custody.records][0]?.disposition, "uncertain");
     }
   });
 }
@@ -358,7 +383,13 @@ for (const action of ["retire", "finalize"]) {
 function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {}) {
   const clock = createControlledClock(1700000000000);
   let open = true;
-  let lifecycle;
+  const authority = Object.freeze({
+    sessionId: "static-session",
+    providerInstanceId: "instance",
+    repositoryId: "opaque",
+    grantId: "static-grant",
+  });
+  let lifecycle: ReturnType<typeof createLifecycle> | undefined = undefined;
   const custody = createCustody({
     clock,
     ...custodyLimits,
@@ -366,14 +397,13 @@ function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {})
     changed: () => lifecycle?.maintain(),
   });
   const originals = new WeakSet();
-  const original = (attempt, outcome) => {
-    const value = Object.freeze({ attemptId: attempt.id, ...outcome });
-    originals.add(value);
-    return value;
-  };
+  const original = <T extends object>(attempt: AttemptContext, outcome: T) =>
+    originalOutcome(originals, attempt, outcome);
   const counts = { acquire: 0, retire: 0, finalize: 0 };
-  const gates = [];
-  const driver = {
+  const gates: Promise<void>[] = [];
+  const driver: RepositoryBackend = {
+    ...backendDefaults,
+    binding: authority,
     cleanup: "expiry-only",
     replacement: "overlap",
     async acquire(attempt) {
@@ -388,16 +418,21 @@ function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {})
         observedWallMs,
         expiresAtWallMs,
       });
-      return original(attempt, { kind: "acquired", credential, observedWallMs, expiresAtWallMs });
+      return original(attempt, {
+        kind: "acquired",
+        credential,
+        observedWallMs,
+        expiresAtWallMs,
+      } as const);
     },
     async retire(attempt) {
       counts.retire++;
-      return original(attempt, { kind: "unsupported" });
+      return original(attempt, { kind: "unsupported" } as const);
     },
     async finalize(attempt) {
       custody.driver.assertAttempt(attempt, "finalize");
       counts.finalize++;
-      return original(attempt, { kind: "finalized" });
+      return original(attempt, { kind: "finalized" } as const);
     },
     async settle(value) {
       assert.ok(originals.has(value));
@@ -405,12 +440,7 @@ function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {})
   };
   lifecycle = createLifecycle({
     clock,
-    authority: Object.freeze({
-      sessionId: "static-session",
-      providerInstanceId: "instance",
-      repositoryId: "opaque",
-      grantId: "static-grant",
-    }),
+    authority,
     deadlineMonoMs: 86400000,
     custody,
     driver,
@@ -420,19 +450,20 @@ function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {})
     admitted: () => open,
     changed() {},
   });
+  const activeLifecycle = lifecycle;
   return {
     clock,
     custody,
     lifecycle,
     counts,
     hold() {
-      let release;
-      gates.push(new Promise((resolve) => (release = resolve)));
-      return () => release();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      gates.push(promise);
+      return resolve;
     },
     close() {
       open = false;
-      lifecycle.close();
+      activeLifecycle.close();
     },
   };
 }

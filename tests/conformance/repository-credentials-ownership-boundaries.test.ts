@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  Clock,
+  CredentialRef,
+  DriverCustody,
+  RepositoryBackend,
+  RequestHead,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type {
+  CredentialServiceOwner,
+  ExchangeSender,
+} from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
+import {
+  type AlternateFixtureFactory,
+  createAlternateFixtureFactory,
+  isBackendFactory,
+  requireFixtureDriver,
+} from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
   fixtureRepository,
   startGitHubFixture,
@@ -14,17 +32,60 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 
 const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
-const completed = { kind: "completed", status: 200 };
+const completed = { kind: "completed", status: 200 } as const;
 const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
-const tick = () => new Promise((resolve) => setImmediate(resolve));
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function reserve(service, opened, clock, rawTarget = "/team/nested/project") {
+type FixtureEvent = { kind: string; sessionId: string };
+function isFixtureEvent(value: unknown): value is FixtureEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof value.kind === "string" &&
+    "sessionId" in value &&
+    typeof value.sessionId === "string"
+  );
+}
+function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
+  return factory.events.map((value) => {
+    assert.ok(isFixtureEvent(value));
+    return value;
+  });
+}
+function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
+  const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
+  assert.equal(result.contentEncoding, "identity");
+  assert.equal(result.framing.kind, "none");
+  return { ...result, contentEncoding: "identity", framing: { ...result.framing, kind: "none" } };
+}
+function requireStatus(service: CredentialServiceOwner, sessionId: string) {
+  const result = service.status(sessionId);
+  assert.ok(result);
+  return result;
+}
+
+type Observed = { driver?: RepositoryBackend; custody?: DriverCustody; credential?: CredentialRef };
+type Instance = {
+  service: CredentialServiceOwner;
+  upstream: Awaited<ReturnType<typeof startGitHubFixture>>;
+  observed: Observed;
+  opened?: RepositoryCredentialSessionResult;
+  send?: ExchangeSender;
+};
+
+function reserve(
+  service: CredentialServiceOwner,
+  opened: RepositoryCredentialSessionResult,
+  clock: Clock,
+  rawTarget = "/team/nested/project",
+) {
   const ref = service.reserve(
     opened.bearer,
-    requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() }),
+    fixtureHead(clock, rawTarget),
     new AbortController().signal,
   );
-  assert.notEqual(ref.kind, "denied");
+  assert.ok(!("kind" in ref));
   return ref;
 }
 
@@ -33,14 +94,14 @@ test(
   { timeout: 15000 },
   async (t) => {
     const clock = createControlledClock();
-    const config = await createServiceConfiguration(t);
-    const instances = [];
+    const config = validateServiceConfig(await createServiceConfiguration(t));
+    const instances: Instance[] = [];
     try {
       for (const providerInstanceId of ["github-first", "github-second"]) {
         const upstream = await startGitHubFixture(t, { clock });
         const token = `gho_${"t".repeat(36)}`;
         upstream.acceptStatic(token);
-        const factory = await createGitHubTokenServiceFactory(t, {
+        const factory: unknown = await createGitHubTokenServiceFactory(t, {
           config,
           token,
           clock,
@@ -51,7 +112,8 @@ test(
             ca: upstream.tls.ca,
           },
         });
-        const observed = {};
+        assert.ok(isBackendFactory(factory));
+        const observed: Observed = {};
         // Observe the actual driver and custody capability at composition. The
         // provider still creates and returns the original captured outcome.
         const service = createCredentialService({
@@ -75,7 +137,7 @@ test(
             },
           },
         });
-        const instance = { service, upstream, observed };
+        const instance: Instance = { service, upstream, observed };
         instances.push(instance);
         instance.opened = service.open({ durationSeconds: 3600, profile: "git-full" });
         instance.send = async ({ headers }, { gate }) =>
@@ -97,6 +159,20 @@ test(
       }
 
       const [first, second] = instances;
+      assert.ok(
+        first?.opened &&
+          first.send &&
+          first.observed.credential &&
+          first.observed.custody &&
+          first.observed.driver,
+      );
+      assert.ok(
+        second?.opened &&
+          second.send &&
+          second.observed.credential &&
+          second.observed.custody &&
+          second.observed.driver,
+      );
       assert.equal(
         first.opened.session.binding.repositoryId,
         second.opened.session.binding.repositoryId,
@@ -115,21 +191,21 @@ test(
       for (const scenario of cases) {
         await t.test(scenario.name, async () => {
           const { source, target } = scenario;
+          assert.ok(source.opened && source.send && source.observed.credential);
+          assert.ok(
+            target.opened && target.send && target.observed.custody && target.observed.driver,
+          );
           assert.deepEqual(
             target.service.reserve(
               source.opened.bearer,
-              requestHead(
-                "GET",
-                `/repos/${fixtureRepository}`,
-                {},
-                {
-                  receivedMonoMs: clock.monotonicNow(),
-                },
-              ),
+              fixtureHead(clock, `/repos/${fixtureRepository}`),
               new AbortController().signal,
             ),
             { kind: "denied", status: 401, code: "session-unavailable" },
           );
+          const targetSend = target.send;
+          const targetDriver = target.observed.driver;
+          const sourceCredential = source.observed.credential;
           const foreignExchange = reserve(
             source.service,
             source.opened,
@@ -145,14 +221,14 @@ test(
           try {
             assert.throws(() => target.service.plan(foreignExchange), /FOREIGN_EXCHANGE/);
             assert.throws(
-              () => target.service.execute(foreignExchange, target.send),
+              () => target.service.execute(foreignExchange, targetSend),
               /FOREIGN_EXCHANGE/,
             );
             assert.equal("withAccess" in target.observed.custody, false);
             assert.throws(
               () =>
-                target.observed.driver.prepareAuthentication(
-                  source.observed.credential,
+                targetDriver.prepareAuthentication(
+                  sourceCredential,
                   target.service.plan(ownExchange),
                 ),
               /invalid-credential/,
@@ -181,15 +257,18 @@ test(
       await eventually(() =>
         instances.every(
           ({ service, opened }) =>
-            !opened || service.status(opened.session.sessionId).state === "DISPOSED",
+            !opened || requireStatus(service, opened.session.sessionId).state === "DISPOSED",
         ),
       );
     }
     for (const { upstream, service, opened } of instances) {
+      assert.ok(opened);
       assert.deepEqual(upstream.errors, []);
       assert.equal(upstream.tokenState().length, 1);
-      assert.equal(upstream.tokenState()[0].revoked, false);
-      assert.equal(service.status(opened.session.sessionId).cleanup.pending, 0);
+      const tokenState: unknown = upstream.tokenState()[0];
+      assert.ok(typeof tokenState === "object" && tokenState !== null && "revoked" in tokenState);
+      assert.equal(tokenState.revoked, false);
+      assert.equal(requireStatus(service, opened.session.sessionId).cleanup.pending, 0);
     }
     assert.equal(clock.pendingTimers(), 0);
   },
@@ -200,9 +279,9 @@ test(
   { timeout: 10000 },
   async (t) => {
     const clock = createControlledClock();
-    const config = await createServiceConfiguration(t);
-    const authenticationEntered = Promise.withResolvers();
-    const authenticationRelease = Promise.withResolvers();
+    const config = validateServiceConfig(await createServiceConfiguration(t));
+    const authenticationEntered = Promise.withResolvers<void>();
+    const authenticationRelease = Promise.withResolvers<void>();
     const scenario = {
       operationMs: 1000,
       advanceMs: 1001,
@@ -210,7 +289,7 @@ test(
       expectedSenderCalls: 0,
       expectedDispatches: 0,
     };
-    const factory = createAlternateDriverFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -227,7 +306,7 @@ test(
     t.after(async () => {
       authenticationRelease.resolve();
       service.close(opened.session.sessionId);
-      await eventually(() => service.status(opened.session.sessionId).state === "DISPOSED");
+      await eventually(() => requireStatus(service, opened.session.sessionId).state === "DISPOSED");
       assert.equal(clock.pendingTimers(), 0);
     });
     let senderCalls = 0;
@@ -243,24 +322,24 @@ test(
       );
     });
     await authenticationEntered.promise;
-    assert.equal(service.status(opened.session.sessionId).activeUses, 1);
+    assert.equal(requireStatus(service, opened.session.sessionId).activeUses, 1);
     // The credential remains valid; only this request's full exchange budget
     // expires while the real provider holds its callback-scoped access bytes.
     await clock.advance(scenario.advanceMs);
     assert.deepEqual(await work, scenario.expectedOutcome);
-    assert.equal(service.status(opened.session.sessionId).state, "OPEN");
-    assert.equal(service.status(opened.session.sessionId).activeUses, 1);
-    assert.equal(factory.events.filter(({ kind }) => kind === "retire").length, 0);
+    assert.equal(requireStatus(service, opened.session.sessionId).state, "OPEN");
+    assert.equal(requireStatus(service, opened.session.sessionId).activeUses, 1);
+    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "retire").length, 0);
     authenticationRelease.resolve();
-    await eventually(() => service.status(opened.session.sessionId).activeUses === 0);
+    await eventually(() => requireStatus(service, opened.session.sessionId).activeUses === 0);
     assert.equal(senderCalls, scenario.expectedSenderCalls);
     assert.equal(dispatches, scenario.expectedDispatches);
-    assert.equal(factory.events.filter(({ kind }) => kind === "rotate").length, 1);
-    assert.equal(factory.events.filter(({ kind }) => kind === "authentication").length, 1);
+    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "rotate").length, 1);
+    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "authentication").length, 1);
     service.close(opened.session.sessionId);
-    await eventually(() => service.status(opened.session.sessionId).state === "DISPOSED");
-    assert.equal(factory.events.filter(({ kind }) => kind === "retire").length, 1);
-    assert.equal(factory.events.filter(({ kind }) => kind === "finalize").length, 1);
+    await eventually(() => requireStatus(service, opened.session.sessionId).state === "DISPOSED");
+    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "retire").length, 1);
+    assert.equal(fixtureEvents(factory).filter(({ kind }) => kind === "finalize").length, 1);
   },
 );
 
@@ -269,8 +348,8 @@ test(
   { timeout: 10000 },
   async (t) => {
     const clock = createControlledClock();
-    const config = await createServiceConfiguration(t, { providerQueue: 1 });
-    const factory = createAlternateDriverFactory({
+    const config = validateServiceConfig(await createServiceConfiguration(t, { providerQueue: 1 }));
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -278,9 +357,9 @@ test(
     const service = createCredentialService({ config, factory, clock });
     const running = service.open({ durationSeconds: 3600, profile: "git-write" });
     const queued = service.open({ durationSeconds: 3600, profile: "git-write" });
-    const settlementEntered = Promise.withResolvers();
-    const settlementRelease = Promise.withResolvers();
-    const firstDriver = factory.drivers[0];
+    const settlementEntered = Promise.withResolvers<void>();
+    const settlementRelease = Promise.withResolvers<void>();
+    const firstDriver = requireFixtureDriver(factory.drivers[0]);
     const settle = firstDriver.settle.bind(firstDriver);
     let acquisitionSettlements = 0;
     // Hold the real captured outcome at the provider boundary. Queue occupancy,
@@ -300,14 +379,14 @@ test(
       }
       await eventually(() =>
         [running, queued].every(
-          ({ session }) => service.status(session.sessionId).state === "DISPOSED",
+          ({ session }) => requireStatus(service, session.sessionId).state === "DISPOSED",
         ),
       );
       assert.equal(clock.pendingTimers(), 0);
     });
     let senderCalls = 0;
     let dispatches = 0;
-    const send = async (_request, { gate }) => {
+    const send: ExchangeSender = async (_request, { gate }) => {
       senderCalls++;
       return gate.dispatch(
         () => {},
@@ -327,7 +406,7 @@ test(
     await tick();
     assert.equal(queuedCompleted, false);
     assert.deepEqual(
-      factory.events.map(({ kind, sessionId }) => ({ kind, sessionId })),
+      fixtureEvents(factory).map(({ kind, sessionId }) => ({ kind, sessionId })),
       [{ kind: "rotate", sessionId: running.session.sessionId }],
     );
 
@@ -337,27 +416,27 @@ test(
     service.close(queued.session.sessionId);
     assert.deepEqual(await queuedWork, unavailable);
     await tick();
-    const queuedStatus = service.status(queued.session.sessionId);
+    const queuedStatus = requireStatus(service, queued.session.sessionId);
     assert.equal(queuedStatus.state, "CLOSED");
     assert.equal(queuedStatus.cleanup.pending, 0);
     assert.equal(queuedStatus.cleanup.auxiliaryPending, true);
     service.close(running.session.sessionId);
     assert.deepEqual(await runningWork, unavailable);
     await tick();
-    const runningStatus = service.status(running.session.sessionId);
+    const runningStatus = requireStatus(service, running.session.sessionId);
     assert.equal(runningStatus.state, "CLOSED");
     assert.equal(runningStatus.cleanup.pending, 1);
     assert.equal(runningStatus.cleanup.auxiliaryPending, true);
     assert.equal(acquisitionSettlements, 0);
     assert.equal(
-      factory.events.filter(({ kind }) => kind === "retire" || kind === "finalize").length,
+      fixtureEvents(factory).filter(({ kind }) => kind === "retire" || kind === "finalize").length,
       0,
     );
 
     settlementRelease.resolve();
     await eventually(() =>
       [running, queued].every(
-        ({ session }) => service.status(session.sessionId).state === "DISPOSED",
+        ({ session }) => requireStatus(service, session.sessionId).state === "DISPOSED",
       ),
     );
     assert.equal(acquisitionSettlements, 1);
@@ -378,7 +457,7 @@ test(
       },
     ];
     for (const scenario of cases) {
-      const events = factory.events.filter(
+      const events = fixtureEvents(factory).filter(
         ({ sessionId }) => sessionId === scenario.opened.session.sessionId,
       );
       assert.equal(
@@ -392,7 +471,7 @@ test(
         scenario.name,
       );
       assert.equal(events.filter(({ kind }) => kind === "finalize").length, 1, scenario.name);
-      assert.deepEqual(service.status(scenario.opened.session.sessionId).cleanup, {
+      assert.deepEqual(requireStatus(service, scenario.opened.session.sessionId).cleanup, {
         active: 0,
         pending: 0,
         revoked: scenario.expectedRetirements,
