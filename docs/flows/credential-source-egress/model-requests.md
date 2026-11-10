@@ -110,6 +110,11 @@ confined to that aggregate epoch can preserve this witness; a mixed observation
 cannot. Model provider/profile and full policy changes remain checked. Missing or changed retained evidence refuses. The API does not recompute
 worker-owned Git custody state.
 
+The provider's closed request schema accepts native `client_metadata.mcp_attribution`
+only as a bounded JSON string containing `{ "status": "none" }`. This records
+that no MCP tools participated; it grants no tool access. Other statuses, extra
+fields, ambiguous JSON, and nonstring values refuse before credential access.
+
 OCC stores a nonsecret approval in PostgreSQL, correlated with recipient,
 request ID, binding, execution, Driver, policy digest and deadline. It stores no
 request body or key. Redemption lasts at most 30 seconds; approval alone does

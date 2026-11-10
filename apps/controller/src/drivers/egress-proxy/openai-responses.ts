@@ -230,6 +230,17 @@ const reasoning = optionalFields({
 const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
 const clientMetadata = optionalFields({
+  mcp_attribution: (value) => {
+    if (!metadataText(value)) {
+      return false;
+    }
+    try {
+      // Native clients report the absence of MCP tools even when tools are disabled.
+      return object({ status: oneOf("none") })(parseUnambiguousJson(String(value)));
+    } catch {
+      return false;
+    }
+  },
   session_id: metadataText,
   thread_id: metadataText,
   turn_id: metadataText,

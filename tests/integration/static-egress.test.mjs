@@ -1405,6 +1405,8 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   const inline = JSON.parse(
     readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
   );
+  // The packaged client's public HTTPS startup request includes this passive attribution.
+  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
   const captured = f.capture(inline.request);
   captured.request.headers.push(
     ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
@@ -1423,6 +1425,19 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   const inlineReads = f.secretReads;
   const inlineSends = f.providerRequests.length;
   const mutations = [
+    ...[
+      { status: "none" },
+      "null",
+      "[]",
+      " ".repeat(8192) + '{"status":"none"}',
+      '{"status":"none","status":"active"}',
+      '{"status":"none","status":"none"}',
+      '{"status":"none",',
+      '{"status":"active"}',
+      '{"status":"none","server":"https://remote.example.test"}',
+    ].map((attribution) => (request) => {
+      request.client_metadata.mcp_attribution = attribution;
+    }),
     ...["system", "user", "assistant"].map((role) => (request) => {
       request.input[0].role = role;
     }),
