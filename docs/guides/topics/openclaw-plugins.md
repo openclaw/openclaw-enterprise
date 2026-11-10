@@ -86,52 +86,26 @@ Managed MCP plugins require the worker Node executable to be allowed in the Cred
 
 ### Set up the credential source
 
-Register the bearer token Secret and credential source using the OCC CLI:
+If the Agent already has the intended Slack source, skip registration. Otherwise, the person registering it needs permission to create Secrets and credential sources in the ready Namespace and to operate the referenced Secret. The Agent service principal does not need those creation permissions.
 
-1. Create a Secret in the Agent's namespace containing the Slack user or bot token using a protected JSON file:
+1. Follow [Create a Namespace-owned Secret](../../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret) with the Slack token in a protected file. Choose a descriptive name such as `slack-mcp-token`. Save the successful HTTP 201 response as `slack-secret-created.json` in a private operator directory. The response contains metadata only. Use its `data.ref`; the display name is not a Secret ID. Keep the token itself out of command arguments.
 
-   ```bash
-   (umask 077; cat <<EOF > secret.json
-   {
-     "name": "slack-mcp-token",
-     "value": "$SLACK_USER_TOKEN"
-   }
-   EOF
-   )
-
-   occ secret create --namespace "$NAMESPACE_ID" --file secret.json --output json > secret-created.json
-   rm secret.json
-   SECRET_ID="$(node -p "require('./secret-created.json').id")"
-   rm secret-created.json
-   ```
-
-2. Register the `bearer-token` credential source referencing the captured Secret ID in `secrets.token`, with endpoint settings placed under `config`:
+2. With `jq` installed and `NAMESPACE_ID` set to the Agent's Namespace, build the registration document from that response and register the source:
 
    ```bash
-   cat <<EOF > slack-source.json
-   {
-     "name": "slack-mcp",
-     "type": "bearer-token",
-     "config": {
-       "protocol": "mcp",
-       "host": "mcp.slack.com",
-       "port": "443",
-       "path": "/mcp",
-       "env_var": "SLACK_MCP_TOKEN"
-     },
-     "secrets": {
-       "token": {
-         "kind": "secret",
-         "namespaceId": "$NAMESPACE_ID",
-         "id": "$SECRET_ID"
-       }
-     }
-   }
-   EOF
-
-   occ credential-source create --namespace "$NAMESPACE_ID" --file slack-source.json --output json > slack-source-created.json
-   SOURCE_ID="$(node -p "require('./slack-source-created.json').id")"
+   jq -e --arg ns "$NAMESPACE_ID" '
+     .data.ref
+     | select(.kind == "secret" and .namespaceId == $ns and (.id | strings | startswith("sec_")))
+     | {kind, namespaceId, id}
+     | {name: "slack-mcp", type: "bearer-token",
+        config: {protocol: "mcp", host: "mcp.slack.com", port: "443",
+                 path: "/mcp", env_var: "SLACK_MCP_TOKEN"},
+        secrets: {token: .}}
+   ' slack-secret-created.json > slack-source.json &&
+     occ credential-source create --namespace "$NAMESPACE_ID" --file slack-source.json --output json
    ```
+
+   Keep the returned source ID for the attachment. If the reference does not match the Namespace, stop and check the Secret receipt.
 
 3. Attach the credential source to your Agent draft and grant both your operator identity and the Agent service principal `credential_source:operate` permission on it. See [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent).
 
