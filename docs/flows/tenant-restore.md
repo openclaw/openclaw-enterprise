@@ -136,7 +136,7 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 
 ## Changelog
 
-- 2026-11-10 17:45: Clarify route ID validation, source isolation and confirmed write responses. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - fe8766253c5c614d856bebe64c59f903687ce949)
+- 2026-11-10 17:23: Clarify route ID validation, source isolation and confirmed write responses. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - fe8766253c5c614d856bebe64c59f903687ce949)
 
 - 2026-11-10 17:03: Document input validation, terminal Namespace states and ambiguous-write recovery. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 6c18c81d754f7c4acead23e5ab41f5a973fe5068)
 
