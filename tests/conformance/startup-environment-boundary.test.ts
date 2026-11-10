@@ -14,20 +14,38 @@ const parameterizedSources = [
   "scripts/lib/bootstrap-configuration.mjs",
 ];
 
-function propertyName(node) {
-  if (!node.computed) {
-    return node.property.name;
+type AstNode = Record<string, unknown> & { type: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isAstNode(value: unknown): value is AstNode {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+function parseSource(source: string): unknown {
+  return Reflect.apply(parsers.typescript.parse, parsers.typescript, [source]);
+}
+
+function propertyName(node: AstNode): string | undefined {
+  const property = node.property;
+  if (!isAstNode(property)) {
+    return undefined;
   }
-  return node.property.type === "Literal" ? String(node.property.value) : undefined;
+  if (!node.computed) {
+    return typeof property.name === "string" ? property.name : undefined;
+  }
+  return property.type === "Literal" ? String(property.value) : undefined;
 }
 
 // An identifier in a property-name position is not a reference to a binding.
-function isReference(parent, key) {
+function isReference(parent: AstNode | undefined, key: string | undefined): boolean {
   if (parent?.type === "MemberExpression" && key === "property" && !parent.computed) {
     return false;
   }
-  if (["Property", "MethodDefinition", "PropertyDefinition"].includes(parent?.type)) {
-    return key !== "key" || parent.computed;
+  if (parent && ["Property", "MethodDefinition", "PropertyDefinition"].includes(parent.type)) {
+    return key !== "key" || Boolean(parent.computed);
   }
   return key !== "id" && key !== "label";
 }
@@ -40,12 +58,18 @@ const globalObjects = new Set(["globalThis", "global"]);
 // computed member that cannot be named), process reached through globalThis, or
 // an import of the process module. process.exitCode, process.once and the like
 // stay allowed.
-function environmentReads(source) {
-  const reads = [];
-  const deny = (node, what) =>
-    reads.push(`${node.loc.start.line}:${node.loc.start.column + 1} ${what}`);
-  function visit(node, parent, key) {
-    if (!node || typeof node.type !== "string") {
+function environmentReads(source: string): string[] {
+  const reads: string[] = [];
+  const deny = (node: AstNode, what: string): void => {
+    const loc = node.loc;
+    assert.ok(isRecord(loc) && isRecord(loc.start));
+    const { line, column } = loc.start;
+    assert.ok(typeof line === "number");
+    assert.ok(typeof column === "number");
+    reads.push(`${line}:${column + 1} ${what}`);
+  };
+  function visit(node: unknown, parent?: AstNode, key?: string): void {
+    if (!isAstNode(node)) {
       return;
     }
     if (
@@ -55,7 +79,9 @@ function environmentReads(source) {
         "ExportNamedDeclaration",
         "ExportAllDeclaration",
       ].includes(node.type) &&
-      processModule.test(node.source?.value)
+      isRecord(node.source) &&
+      typeof node.source.value === "string" &&
+      processModule.test(node.source.value)
     ) {
       deny(node, `import from ${node.source.value}`);
     }
@@ -65,7 +91,11 @@ function environmentReads(source) {
       if (node.name === "process" && (property === undefined || property === "env")) {
         deny(node, property === "env" ? "process.env" : "process used as a value");
       }
-      if (globalObjects.has(node.name) && (property === undefined || property === "process")) {
+      if (
+        typeof node.name === "string" &&
+        globalObjects.has(node.name) &&
+        (property === undefined || property === "process")
+      ) {
         deny(node, `${node.name} used for process`);
       }
     }
@@ -73,12 +103,13 @@ function environmentReads(source) {
       if (["comments", "tokens", "loc", "range"].includes(childKey)) {
         continue;
       }
-      for (const item of Array.isArray(child) ? child : [child]) {
+      const children: readonly unknown[] = Array.isArray(child) ? child : [child];
+      for (const item of children) {
         visit(item, node, childKey);
       }
     }
   }
-  visit(parsers.typescript.parse(source), undefined, undefined);
+  visit(parseSource(source));
   return reads;
 }
 
@@ -101,7 +132,7 @@ test("API startup and bootstrap configuration read settings only from their env 
     ]) {
       const reads = environmentReads(`${source}\n${read}\n`);
       assert.equal(reads.length, 1, `${path} + ${read}: ${reads.join("; ")}`);
-      assert.ok(reads[0].endsWith(` ${expected}`), `${path} + ${read}: ${reads[0]}`);
+      assert.ok(reads[0]?.endsWith(` ${expected}`), `${path} + ${read}: ${reads[0]}`);
     }
     // A property that is merely named process, and other process members, stay allowed.
     const allowed = "const options = { process: 1 }; options.process; process.exitCode = 1;";
@@ -115,25 +146,37 @@ test("API startup and bootstrap configuration read settings only from their env 
 // compositions ignore a hasher in their configuration).
 const compositionArity = { composeProduction: 1, composePostgresDevelopment: 3 };
 
-function compositionCalls(source) {
-  const calls = [];
-  function visit(node) {
-    if (!node || typeof node.type !== "string") {
+type CompositionName = keyof typeof compositionArity;
+
+function isCompositionName(name: unknown): name is CompositionName {
+  return typeof name === "string" && Object.hasOwn(compositionArity, name);
+}
+
+function compositionCalls(source: string): { name: CompositionName; arguments: number }[] {
+  const calls: { name: CompositionName; arguments: number }[] = [];
+  function visit(node: unknown): void {
+    if (!isAstNode(node)) {
       return;
     }
-    if (node.type === "CallExpression" && Object.hasOwn(compositionArity, node.callee?.name)) {
+    if (
+      node.type === "CallExpression" &&
+      isRecord(node.callee) &&
+      isCompositionName(node.callee.name)
+    ) {
+      assert.ok(Array.isArray(node.arguments));
       calls.push({ name: node.callee.name, arguments: node.arguments.length });
     }
     for (const [key, child] of Object.entries(node)) {
       if (["comments", "tokens", "loc", "range"].includes(key)) {
         continue;
       }
-      for (const item of Array.isArray(child) ? child : [child]) {
+      const children: readonly unknown[] = Array.isArray(child) ? child : [child];
+      for (const item of children) {
         visit(item);
       }
     }
   }
-  visit(parsers.typescript.parse(source));
+  visit(parseSource(source));
   return calls;
 }
 
@@ -156,6 +199,6 @@ test("API startup composes without code-only dependencies such as a password has
     "composePostgresDevelopment(settings, drivers, factory, { passwordHasher });",
   ]) {
     const appended = compositionCalls(`${source}\n${extra}\n`).at(-1);
-    assert.ok(appended.arguments > compositionArity[appended.name], extra);
+    assert.ok(appended && appended.arguments > compositionArity[appended.name], extra);
   }
 });
