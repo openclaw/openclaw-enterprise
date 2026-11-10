@@ -83,8 +83,9 @@ Do not use `kubectl port-forward` directly to the production API Pod or Service.
 The API binds the Pod IP, while port-forward connects through Pod loopback, so even
 reads that need no session, such as `GET /api/auth/providers`, cannot connect.
 Use the restricted canonical HTTPS origin above for these reads and sign-in checks.
-Session cookies require HTTPS, the API compares `Origin` exactly, and the identity
-provider returns the browser to its registered redirect URI on the canonical host.
+Session cookies require HTTPS. Starting external sign-in requires an `Origin` that
+exactly matches `OCC_AUTH_BASE_URL`; the identity provider returns the browser to
+its registered redirect URI on the canonical host.
 
 ## Run the command
 
