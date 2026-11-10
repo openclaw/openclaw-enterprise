@@ -2227,6 +2227,46 @@ export function createAgentDetailScenarios({
         ],
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
+      deploymentFailedCodexPolicy: {
+        group: "Pages/Agent detail",
+        name: "New version failed, incompatible Codex policy",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+          message:
+            "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's managed policy refuses the required sandbox mode, profile or reviewer. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
+      deploymentFailedCodexRequirementsSize: {
+        group: "Pages/Agent detail",
+        name: "New version failed, oversized Codex requirements",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+          message:
+            "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's requirements reply exceeds OCE's supported size. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",
         name: "New version failed, stored records inconsistent",
