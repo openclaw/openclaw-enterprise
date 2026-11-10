@@ -57,7 +57,8 @@ Gateway Routing, Slack Live, and Production TUI restore read-only BuildKit cache
 `scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
 `scripts/ci/prepare.mjs:imageCacheObservation` reports numeric counts per phase,
 excluding raw output (`image-cache`; OpenShell: `first-agent-image-cache`).
-`observesImageCache` enables plain progress. Import lines do not prove hits;
+Step counts deduplicate IDs. `observesImageCache` enables plain progress, including
+alternate source builds. Import lines do not prove hits;
 loads may reuse probe work.
 
 For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the

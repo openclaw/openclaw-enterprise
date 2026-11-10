@@ -102,15 +102,19 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
 
 // Exercise the real preparation log projection with controlled command output;
 // these counters do not establish a remote cache hit or live BuildKit behavior.
-function assertImageCacheObservations(stderr, lane) {
+function imageCacheObservations(stderr, lane) {
   const prefix = `[prepare:${lane}] `;
-  const records = stderr.split("\n").flatMap((line) => {
+  return stderr.split("\n").flatMap((line) => {
     if (!line.startsWith(prefix + "{")) {
       return [];
     }
     const record = JSON.parse(line.slice(prefix.length));
     return record.stage === "image-cache" ? [record] : [];
   });
+}
+
+function assertImageCacheObservations(stderr, lane) {
+  const records = imageCacheObservations(stderr, lane);
   assert.equal(records.length, 4, "one summary per image and completed probe/load");
   for (const role of ["controller", "runtime"]) {
     assert.deepEqual(
@@ -120,13 +124,16 @@ function assertImageCacheObservations(stderr, lane) {
         role,
         phase,
         cacheImports: phase === "probe" ? 1 : 0,
-        cachedSteps: phase === "probe" ? 1 : 2,
+        cachedSteps: phase === "probe" ? 2 : 3,
         openclawBuildSteps: 2,
         openclawBuildCached: phase === "probe" ? 1 : 2,
       })),
     );
   }
-  assert.doesNotMatch(stderr, /private-step|synthetic-build-command|synthetic-build-output/);
+  assert.doesNotMatch(
+    stderr,
+    /private-step|synthetic-build-command|synthetic-sibling-command|synthetic-build-output/,
+  );
 }
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
@@ -284,6 +291,59 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         prepared.stdout +
         prepared.stderr,
       /synthetic-cache-credential/,
+    );
+    await commands.cleanupSuccessfully();
+  });
+
+  test("alternate OpenClaw source preparation requests plain progress for runtime cache observations", async (t) => {
+    const source = await fixture(t);
+    await writeFile(join(source, "Dockerfile"), "FROM scratch AS native-build\n");
+    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
+      GITHUB_ACTIONS: "true",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      OCC_K3D_OPENCLAW_SOURCE: source,
+      OCC_K3D_OPENCLAW_COMMIT: "a".repeat(40),
+    });
+    // Stop after the real CLI has built both images, before importing into k3d.
+    // The external command is controlled; no Docker or source build is claimed.
+    await interceptFixtureDocker(t, commands, (args) => {
+      if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
+        return "printf 'synthetic import stop\\n' >&2; exit 1";
+      }
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    assertStderrMatch(prepared.stderr, /synthetic import stop/);
+    const builds = (await commands.commands()).filter(({ args }) =>
+      args.includes("OPENCLAW_DOCKER_BUILD_SKIP_DTS=1"),
+    );
+    assert.equal(builds.length, 1);
+    assert.equal(builds[0].args.at(-1), source);
+    assert.ok(builds[0].args.includes("--progress=plain"));
+    assert.deepEqual(
+      imageCacheObservations(prepared.stderr, "gateway-routing").filter(
+        (record) => record.role === "runtime",
+      ),
+      [
+        {
+          stage: "image-cache",
+          role: "runtime",
+          phase: "load",
+          cacheImports: 0,
+          cachedSteps: 1,
+          openclawBuildSteps: 0,
+          openclawBuildCached: 0,
+        },
+      ],
+    );
+    assert.doesNotMatch(
+      prepared.stdout + prepared.stderr,
+      /synthetic-native-command|synthetic-cache-credential/,
     );
     await commands.cleanupSuccessfully();
   });

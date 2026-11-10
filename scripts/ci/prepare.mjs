@@ -1149,8 +1149,8 @@ function imageCacheObservation(state, role, phase, output) {
   }
   const text = output ?? "";
   const cached = new Set([...text.matchAll(/^#(\d+) CACHED\r?$/gm)].map((match) => match[1]));
-  const sourceBuild = [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map(
-    (match) => match[1],
+  const sourceBuild = new Set(
+    [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map((match) => match[1]),
   );
   progress(
     state.lane,
@@ -1160,8 +1160,8 @@ function imageCacheObservation(state, role, phase, output) {
       phase,
       cacheImports: [...text.matchAll(/^#\d+ importing cache manifest /gm)].length,
       cachedSteps: cached.size,
-      openclawBuildSteps: sourceBuild.length,
-      openclawBuildCached: sourceBuild.filter((id) => cached.has(id)).length,
+      openclawBuildSteps: sourceBuild.size,
+      openclawBuildCached: [...sourceBuild].filter((id) => cached.has(id)).length,
     }),
   );
 }
@@ -1471,6 +1471,7 @@ async function buildRuntimeImages(
                 ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
                   ? ["--builder", "default", "--load"]
                   : []),
+                ...plainProgress,
                 "--build-arg",
                 "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
                 "-t",
