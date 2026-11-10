@@ -12,7 +12,19 @@ import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import { runOpenShellPlaceholderWire } from "../helpers/postgres-openshell-placeholder-wire.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
+
+const openShellWireBinary = process.env.OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY;
+if (openShellWireBinary !== undefined) {
+  test(
+    "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal",
+    {
+      timeout: 90_000,
+    },
+    (t) => runOpenShellPlaceholderWire(t, import.meta.url, openShellWireBinary),
+  );
+}
 
 type GitUseReceipt = {
   exchange_id: string;
@@ -46,6 +58,7 @@ for (const { name, withdrawWhileIssuing } of [
       async ({
         runtime,
         peer,
+        launch,
         pool,
         workspace,
         sandboxId,
@@ -159,6 +172,10 @@ for (const { name, withdrawWhileIssuing } of [
           ).rows.map(({ operation }) => operation);
         const issuance = peer.gh.issuesOfTokens.length;
         assert.equal(issuance, 0, "the selected route starts before any installation token exists");
+        assert.ok(
+          launch.environment.every(({ name }) => name !== "GITHUB_TOKEN"),
+          "OCE supplies no provider token in the Harness launch environment",
+        );
         const foreignRepository = await approve(false, "fixture/unselected");
         assert.equal(foreignRepository.decision, 2);
         assert.equal((await grant(foreignRepository.requestId, assertion())).status, 403);

@@ -111,6 +111,11 @@ type SelectedReadJourney = Pick<
   NarrowJourney,
   "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
 > & {
+  readonly launch: Pick<
+    Awaited<ReturnType<OpenShellGitRuntime["prepare"]>>,
+    "environment" | "grantRepositoryUrl"
+  >;
+  readonly middleware: { readonly endpoint: string; readonly bearer: string };
   readonly grant: {
     readonly endpoint: string;
     readonly port: number;
@@ -751,6 +756,7 @@ async function repositoryGitJourney(
     workload: async () => "controlled-pod-uid/container-id",
   };
   let preparationError: unknown;
+  let selectedReadLaunch: SelectedReadJourney["launch"] | undefined;
   // Only the Kubernetes transport is controlled. The production Sandbox reader owns
   // selectors, Pod readiness and both immutable container/Pod identities.
   const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -921,6 +927,9 @@ async function repositoryGitJourney(
           "/sandbox/enterprise",
           [model],
         );
+        if (selectedRead) {
+          selectedReadLaunch = p;
+        }
         // The controlled Sandbox reports startup only after preview registration.
         // The opt-in native Harness is already waiting for enrollment.
         if (!wire.world.id) {
@@ -1243,7 +1252,8 @@ async function repositoryGitJourney(
     }
     const entry = await readyGit();
     if (selectedRead) {
-      assert.ok(grantPort && grantEndpoint && grantKeys);
+      assert.ok(grantPort && grantEndpoint && grantKeys && selectedReadLaunch);
+      const sandboxId = wire.world.id!;
       try {
         await selectedRead({
           runtime,
@@ -1251,7 +1261,12 @@ async function repositoryGitJourney(
           workspace,
           peer,
           pool: f.observerPool,
-          sandboxId: wire.world.id!,
+          sandboxId,
+          launch: selectedReadLaunch,
+          middleware: {
+            endpoint: `https://localhost:${port}`,
+            bearer: token(keys, "supervisor", sandboxId, "repository-set"),
+          },
           grant: {
             endpoint: grantEndpoint,
             port: grantPort.port,
@@ -1264,7 +1279,7 @@ async function repositoryGitJourney(
               middleware,
               "EvaluateHttpRequest",
               input,
-              token(keys, "supervisor", wire.world.id, "repository-set"),
+              token(keys, "supervisor", sandboxId, "repository-set"),
             ),
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),

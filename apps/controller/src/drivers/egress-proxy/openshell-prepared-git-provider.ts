@@ -268,9 +268,9 @@ export class OpenShellPreparedGitProvider {
         ? [
             {
               name: CREDENTIAL,
-              envVars: [],
+              envVars: [KEY],
               required: false,
-              authStyle: "basic",
+              authStyle: "placeholder",
               headerName: "Authorization",
               tokenGrant: {
                 token_endpoint: grant.endpoint,
@@ -413,9 +413,9 @@ export class OpenShellPreparedGitProvider {
       (Array.isArray(definition.files) && definition.files.length > 0) ||
       credentials.length !== 1 ||
       credential?.name !== CREDENTIAL ||
+      !isDeepStrictEqual(credential.env_vars, [KEY]) ||
       (grant
         ? definition.scope !== "workspace" ||
-          (credential.env_vars !== undefined && !isDeepStrictEqual(credential.env_vars, [])) ||
           credential.required === true ||
           credential.stable_placeholder === true ||
           !matchesOpenShellGatewayAssertionGrant(
@@ -423,11 +423,10 @@ export class OpenShellPreparedGitProvider {
             grant.endpoint,
             grant.audience,
           )
-        : !isDeepStrictEqual(credential.env_vars, [KEY]) ||
-          credential.required !== true ||
+        : credential.required !== true ||
           credential.stable_placeholder !== true ||
           credential.token_grant !== undefined) ||
-      credential.auth_style !== (grant ? "basic" : "bearer") ||
+      credential.auth_style !== (grant ? "placeholder" : "bearer") ||
       credential.header_name !== (grant ? "Authorization" : "authorization") ||
       credential.refresh !== undefined ||
       !isDeepStrictEqual(

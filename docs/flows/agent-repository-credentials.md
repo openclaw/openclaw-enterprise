@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-10"
-last_updated_session: "authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296"
+last_updated_session: "authoring-run/6747e502-bd84-4f67-b64c-007b0de90a6a"
 ---
 
 # Agent repository credential flow
@@ -285,58 +285,74 @@ fresh installation tokens under the same grant until the version deadline.
 ### 6. Maintain, recover and retire ownership
 
 The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepositoryGitAuthority`
-to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-Missing authority or mismatched Drivers prevent binding. Serial `reconcile` runs
-with a 25-second timeout and one-second interval. Close aborts and joins;
-readback cannot restore authority.
+to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts),
+which requires authority and matching Drivers. `reconcile` runs serially every
+second with a 25-second timeout. Close aborts and joins. Readback cannot restore authority.
 
-[The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) checks profile identity before defaulting omitted endpoint/credential lists to empty arrays.
-[Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
+[The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) checks profile identity before filling empty lists.
+[Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles and refuses missing, mismatched or overlapping profiles.
 
-Maintenance uses 30 seconds, the sender interval or shorter Compute interval. Restart invalidates missing sessions without reminting.
+Maintenance uses 30 seconds, the sender interval or a shorter Compute interval. Restart invalidates missing sessions without reminting.
 [Prepared custody](../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts)
 erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
 
 [Standing admission](../../packages/occ/src/index.ts) requires permission and current scope.
 [Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) retains the bound Installation policy or unbound Repo Driver; conflicts prevent startup.
-Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) rejects withdrawal or scope changes with `REPOSITORY_STANDING_POLICY_CHANGED` before release.
-[GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
-After hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
-rechecks renewal policy and recipient. It refuses expiry, unacknowledged launches and observed-only previews.
+Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) refuses
+withdrawal or changed scope with `REPOSITORY_STANDING_POLICY_CHANGED`.
+[GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints permissions
+and repository identity. Issuance and delivery recheck opt-ins and grant. Standing delivery needs one binding.
+The [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+rechecks renewal policy and recipient. Expiry, missing acknowledgement or an observed-only preview blocks renewal.
 [Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and
 [predecessor observation](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
-confirm expired launch identity through fresh Sandbox and main-process readback.
+verify the expired launch against current Sandbox and main-process identity.
 [Freshness limits](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)
 govern subtraction and succession. Installation and post-detach completion require ready credentials.
 
 Prepared delivery [waits for committed material](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token).
-Read-only grant activation verifies the hook. Authenticated redemption starts issuance.
-The broker rechecks live authority before release.
+`OpenShellGitRuntime.prepare` selects the read-only repository. The Sandbox
+launcher scopes Git's placeholder header to it from the first request. Activation
+verifies the hook. Authenticated redemption starts issuance and rechecks release authority.
 
-Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
+Missing standing evidence closes Git. Within five seconds the worker rechecks model authority,
+withdrawal, stop and replacement without preparing or activating ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
-`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports supported
-held/preview execution `original-worker-required`; unsupported legacy routes `unknown`.
-[Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) cannot authorize execution.
+`OpenShellGitRuntime.repositoryWorkerRestartDisposition` reports `original-worker-required`
+for supported held or preview execution and `unknown` for unsupported legacy routes.
+[Preflight](coordinated-production-upgrade.md#1-prepare-the-candidate) grants no execution authority.
 
 `OpenShellGitRuntime.verifyExecution` reports `RepositoryExecutionRequiresRedeployError`
-when persisted v5 owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
-ownership, closes sessions and queues withdrawal atomically.
-Work records `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`; `getDeploymentStatus` projects
-`repositoryAccess`, preserving history ([regression](../../tests/integration/postgres-openshell-standing-selected-repository.test.ts)).
+when the persisted v5 owner, binding and fence prove non-adoptable replacement.
+`ControllerWorker.completeStandingRepositoryWithdrawal` atomically rechecks ownership,
+closes sessions and queues withdrawal. Work records `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`.
+`getDeploymentStatus` projects `repositoryAccess` and preserves history ([test](../../tests/integration/postgres-openshell-standing-selected-repository.test.ts)).
 
-`apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
-owner-bound Work without admission or delivery. Terminal Work closes attempts and calls `stopRevision`, preserving replacements. Compute mismatch or stop failure retries. Completion requires disposal and retirement; missing sessions prove neither. Attempts survive deletion.
+`apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` uses
+owner-bound Work without admission or delivery. Terminal Work closes attempts and
+calls `stopRevision`, preserving replacements. Compute mismatch or stop failure
+retries. Completion requires disposal and retirement. Attempts survive deletion.
 
-`ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version for IAM
-refusal, confirmed actor or Agent-principal absence, required model-source withdrawal,
-or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
-Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original/companion work, preserving manual-replay holds.
+`ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version after IAM
+refusal, confirmed loss of the actor or Agent principal, required model-source withdrawal,
+or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness. Failed
+reads stay pending unless independent evidence proves authority loss.
+`recoverPendingCredentialWithdrawals` recovers exhausted Work and preserves replay holds.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-`updateAgent` commits finite removal under Namespace/Agent locks through `withdrawFinite`: irreversible session closure and cleanup with original deployment authority. The [guard](../../migrations/0074_finite_repository_session_withdrawal.sql) rejects sessions. Re-add, Stop supersession and stale-lease transfer cannot restore Git. Pending or denied Stop permits Git detachment, not retirement or running maintenance. Cleanup waits for running intent; authority loss, replacement and terminal retirement win.
+`updateAgent` uses `withdrawFinite` under Namespace/Agent locks to close sessions
+and queue cleanup under original deployment authority. A [database guard](../../migrations/0074_finite_repository_session_withdrawal.sql)
+rejects new sessions. Re-add, Stop supersession and stale-lease transfer cannot
+restore Git. Pending or denied Stop permits detachment only. Cleanup waits for
+running intent. Authority loss, replacement and terminal retirement take precedence.
 
-`PostgresWorkQueue.repositoryExpiryState` prioritizes retirement. `completeActivatedRevision` preserves active removal supervision; `REPOSITORY_ACCESS_WITHDRAWN` is not activation proof. `PostgresOpenShellGitRouteStore.adopt` blocks removed Git. Its `expire` and V2 `reduceCredentialPolicy` require committed finite removal while stopped. Stopped maintenance defers its claim. Git cleanup may observe pending source effects without replay or completing source withdrawal, then awaits detachment. Other withdrawals remain running-only.
+`PostgresWorkQueue.repositoryExpiryState` prioritizes retirement. `completeActivatedRevision`
+preserves removal supervision. Activation requires separate evidence.
+`PostgresOpenShellGitRouteStore.adopt` blocks removed Git.
+While stopped, `expire` and V2 `reduceCredentialPolicy` require committed finite
+removal, and maintenance defers its claim. Git cleanup can observe pending source
+effects before detachment. It leaves replay and source withdrawal untouched.
+Other withdrawals require running intent.
 
 `ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
 without waiting for sessions. `PostgresWorkQueue.completeAgentDeletion`
@@ -357,10 +373,10 @@ Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
 and `name-one-repository-ref` require explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-[Tests](../testing/repository-credentials.md) distinguish lifecycle, installed-runtime
-and live-provider proof. [Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
-exclude CNI; console fixtures exclude model, Slack and GitHub execution.
-Verify live PR updates, denial before provider contact and continued chat separately.
+[Tests](../testing/repository-credentials.md) cover distinct verification levels.
+[Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
+exclude CNI. Console fixtures exclude model, Slack and GitHub.
+Verify PR updates, pre-send denial and continued chat separately.
 
 ## Related docs
 
@@ -375,6 +391,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 21:39: Trace Git placeholder redemption. (authoring-run/6747e502-bd84-4f67-b64c-007b0de90a6a - f5903e1b195fe0699427e86158180b13d5774083)
 
 - 2026-11-10 07:56: Merge repository flow. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
 

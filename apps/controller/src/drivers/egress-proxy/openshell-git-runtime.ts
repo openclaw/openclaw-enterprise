@@ -678,6 +678,7 @@ export class OpenShellGitRuntime {
     }
     const scope = this.scope(revision);
     const admittedExecutionId = revision.egressPlan!.execution.executionId;
+    const grant = this.grantProfile(scope.delivery, admittedExecutionId);
     const legacyPreview = revision.executionAdmission?.version === 6;
     const mandatory = requiresOriginalLauncher(revision, scope.binding.profile);
     if (!legacyPreview && !mandatory) {
@@ -747,7 +748,7 @@ export class OpenShellGitRuntime {
           revision.id,
           scope.delivery,
           true,
-          this.grantProfile(scope.delivery, admittedExecutionId),
+          grant,
         );
         const bindingId = admittedExecutionId;
         const route = {
@@ -846,6 +847,7 @@ export class OpenShellGitRuntime {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
+      ...(grant && { grantRepositoryUrl: `https://github.com/${grant.repository}.git` }),
       environment: [
         ...(draft ? [{ name: "PATH", value: OPENSHELL_GIT_DRAFT_PATH }] : []),
         ...(scope.repository

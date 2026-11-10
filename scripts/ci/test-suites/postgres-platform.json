@@ -412,6 +412,7 @@
     },
     {
       "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
+      "optionalEnv": ["OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY"],
       "expectedTests": [
         "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
         "cold Git HTTPS grant refuses token release after withdrawal during issuance",

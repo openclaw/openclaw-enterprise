@@ -1,16 +1,19 @@
 # Protected repository access with OpenShell
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md)
-for authenticated pre-credential checks and signed startup release. OCE verifies
-selected repositories' returned GitHub scope against canonical IDs and explicit
-permissions. GitHub governs refs and REST/GraphQL; grant changes block use.
+for authenticated checks and signed startup release. OCE verifies GitHub's
+returned repository IDs and permissions. GitHub governs refs and REST/GraphQL.
+Grant changes block use.
 
-`git-write` retains exact ref policy; `git-read` and `git-full` retain existing
+`git-write` retains exact ref policy; `git-read` and `git-full` retain their
 semantics. Installation preview requires opt-in. Exact-dispatch and v7 reduction
 guarantees remain unqualified.
 
-Keep Credential Gateway selected. The Git-only Proxy profile uses a Gateway
-model source. For combined model/Git v9, follow [per-request model setup](../../guides/credential-proxy/model-requests.md):
+The [Gateway assertion option](../../guides/credential-proxy/model-requests.md#redeem-a-prepared-git-token-with-a-gateway-assertion)
+uses a header placeholder for one selected read-only repository and disables redirects.
+
+The Git-only Proxy profile requires a Credential Gateway model source. For
+combined model/Git v9, follow [per-request model setup](../../guides/credential-proxy/model-requests.md):
 Gateway ownership remains metadata, without a model-key copy. Installed v9
 acceptance remains pending. For upgrades, see [compatibility](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 

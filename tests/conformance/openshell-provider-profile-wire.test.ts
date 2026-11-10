@@ -610,7 +610,7 @@ test("Git grant provider creates an empty attachment for a single repository rea
   assert.equal(binding.credentialState, "bootstrap");
   assert.equal(binding.providerId, providerId);
   const [credential] = imported.credentials as Record<string, unknown>[];
-  assert.equal(credential?.auth_style, "basic");
+  assert.equal(credential?.auth_style, "placeholder");
   assert.equal(credential?.header_name, "Authorization");
   assert.deepEqual(credential?.token_grant, {
     token_endpoint: tokenEndpoint,
@@ -618,7 +618,7 @@ test("Git grant provider creates an empty attachment for a single repository rea
     grant_type: 3,
     cache_ttl: { seconds: "0", nanos: 0 },
   });
-  assert.equal(credential?.env_vars, undefined);
+  assert.deepEqual(credential?.env_vars, ["GITHUB_TOKEN"]);
   assert.equal(credential?.stable_placeholder, undefined);
   const sent = created.provider as Record<string, unknown>;
   assert.equal(sent.credentials, undefined);
