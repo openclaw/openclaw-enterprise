@@ -110,6 +110,11 @@ cases, cancellation, focused runs, and retries cannot qualify. Use the run,
 attempt and tested SHA to bind either receipt. An absent receipt gives no
 execution proof. Use the aggregate for the pass or fail result.
 
+The installed-Skipper lane publishes a sanitized passing receipt only after its
+test and owned-resource cleanup succeed. It retains the runner's full scope,
+empty issue lists, and each file's exercised status, exit code, and signal for
+coverage validation. Raw test output and diagnostics remain private.
+
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
 its assigned files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).

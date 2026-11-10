@@ -23,6 +23,7 @@ import {
   validateResults,
   waitMilliseconds,
 } from "../../scripts/ci/full-integration-reuse.mjs";
+import { skipperPassingReceipt } from "../../scripts/ci/skipper-release.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 
 async function reuseFixture() {
@@ -121,6 +122,8 @@ test("full coverage receipts require real case evidence and retain approved same
     "full-integration",
   );
   const installerPaths = full.lanes["openshell-installers"].files.map(({ path }) => path);
+  const skipperLane = "skipper-prepared-git-installed";
+  const skipperFiles = full.lanes[skipperLane].files;
   const fixtureRoot = await temporaryDirectory(t, "full-coverage-receipts-");
   const policyPath = "tests/integration/coverage-policy.test.mjs";
   const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -173,6 +176,7 @@ test("full coverage receipts require real case evidence and retain approved same
     version: 1,
     lanes: {
       [lane]: { files: reusedFiles },
+      [skipperLane]: { files: skipperFiles },
       openshell: {
         files: [policyPath, ...installerPaths].map((path) => ({
           path,
@@ -180,7 +184,7 @@ test("full coverage receipts require real case evidence and retain approved same
         })),
       },
     },
-    groups: { full: [lane, "openshell"] },
+    groups: { full: [lane, "openshell", skipperLane] },
   });
   for (const { path, expectedTests = [] } of reusedFiles) {
     await generate(path, expectedTests, "assert.equal(1, 1);");
@@ -188,6 +192,36 @@ test("full coverage receipts require real case evidence and retain approved same
   for (const path of installerPaths) {
     await generate(path, ["sentinel"], "assert.equal(1, 1);");
   }
+  // Exercise the installed lane's publication projection with a real runner result.
+  // This local fixture proves accounting and cleanup, not an installed Skipper journey.
+  await mkdir(join(fixtureRoot, "scripts/ci"), { recursive: true });
+  const ownedFile = join(fixtureRoot, "owned-prepare-file");
+  await writeFile(
+    join(fixtureRoot, "scripts/ci/prepare.mjs"),
+    [
+      'import { writeFile, rm } from "node:fs/promises";',
+      "export async function prepareFile({ lane }) {",
+      `  if (lane.name !== ${JSON.stringify(skipperLane)}) return {};`,
+      `  await writeFile(${JSON.stringify(ownedFile)}, "owned");`,
+      `  return { cleanup: () => rm(${JSON.stringify(ownedFile)}) };`,
+      "}",
+    ].join("\n"),
+  );
+  for (const { path, expectedTests } of skipperFiles) {
+    await generate(path, expectedTests, "assert.equal(1, 1);");
+  }
+  const skipperRun = produce(skipperLane);
+  assert.equal(skipperRun.status, 0, skipperRun.stderr);
+  await assert.rejects(readFile(ownedFile), { code: "ENOENT" });
+  const skipperPath = join(fixtureRoot, "results", `${skipperLane}.json`);
+  const privateSkipper = JSON.parse(await readFile(skipperPath, "utf8"));
+  // Unknown diagnostic fields must never widen the published allowlist.
+  privateSkipper.diagnostic = "private-output-canary";
+  privateSkipper.files[0].diagnostic = "private-output-canary";
+  privateSkipper.files[0].tests[0].diagnostic = "private-output-canary";
+  const publicSkipper = skipperPassingReceipt(privateSkipper);
+  assert.doesNotMatch(JSON.stringify(publicSkipper), /private-output-canary/);
+  await json(skipperPath, publicSkipper);
   const installer = produce("openshell-installers");
   assert.equal(installer.status, 0, installer.stderr);
   const ordinary = produce(lane, "download", {
@@ -226,12 +260,59 @@ test("full coverage receipts require real case evidence and retain approved same
   const needs = {
     preflight: { result: "success" },
     [lane]: { result: "success" },
+    [skipperLane]: { result: "success" },
     openshell: { result: "success", lanes: ["openshell-policy", "openshell-installers"] },
   };
   await json(needsPath, needs);
   await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
   assert.equal(produce("openshell-policy").status, 0);
   await verify(0, true);
+  // Never turn absent, unsafe, or unsuccessful private evidence into a passing receipt.
+  for (const damage of [
+    (value) => {
+      delete value.scope;
+    },
+    (value) => {
+      value.scope = "focused";
+    },
+    (value) => {
+      delete value.issues;
+    },
+    (value) => {
+      value.issues = [{ message: "private-output-canary" }];
+    },
+    (value) => {
+      delete value.files[0].exercised;
+    },
+    (value) => {
+      delete value.files[0].signal;
+    },
+    (value) => {
+      value.files[0].signal = "SIGTERM";
+    },
+    (value) => {
+      delete value.files[0].issues;
+    },
+    (value) => {
+      value.files[0].issues = [{ message: "private-output-canary" }];
+    },
+    (value) => {
+      delete value.files[0].nodeExitCode;
+    },
+    (value) => {
+      value.files[0].nodeExitCode = 1;
+    },
+    (value) => {
+      value.files[0].fileFailure = { message: "private-output-canary" };
+    },
+    (value) => {
+      value.files[0].cleanup.status = "failed";
+    },
+  ]) {
+    const damaged = structuredClone(privateSkipper);
+    damage(damaged);
+    assert.throws(() => skipperPassingReceipt(damaged), { code: "ERR_ASSERTION" });
+  }
   const legacy = JSON.parse(reusedReceipt);
   for (const file of legacy.files) {
     delete file.exercised;

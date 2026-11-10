@@ -24,6 +24,54 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** Publish only passing runner fields; raw diagnostics stay in the private result. */
+export function skipperPassingReceipt(value: unknown) {
+  const summary = record(value);
+  const { version, command, lane, sourceSha, status, counts, exitCode, scope, issues } = summary;
+  assert.equal(scope, "full");
+  assert.deepEqual(issues, []);
+  assert.ok(Array.isArray(summary.files) && summary.files.length === 1);
+  const file = record(summary.files[0]);
+  const { path, cleanup, tests, exercised, signal, issues: fileIssues, nodeExitCode } = file;
+  assert.equal(exercised, true);
+  assert.equal(signal, null);
+  assert.deepEqual(fileIssues, []);
+  assert.equal(nodeExitCode, 0);
+  assert.equal(file.fileFailure, undefined);
+  assert.equal(path, "tests/integration/skipper-prepared-git-installed.test.mjs");
+  assert.deepEqual(cleanup, { status: "passed" });
+  assert.ok(Array.isArray(tests));
+  assert.deepEqual(
+    tests.map((test) => record(test).status),
+    ["passed"],
+  );
+  const { name, durationMs } = record(tests[0]);
+  return {
+    version,
+    command,
+    lane,
+    sourceSha,
+    status,
+    counts,
+    exitCode,
+    scope,
+    issues,
+    files: [
+      {
+        path,
+        status,
+        counts,
+        cleanup,
+        exercised,
+        signal,
+        issues: fileIssues,
+        nodeExitCode,
+        tests: [{ name, status, durationMs }],
+      },
+    ],
+  };
+}
+
 /** Keep the selected failure's location and category together, without publishing its text. */
 export function skipperFailureSummary(resultText: string, root: string, fallback: string): string {
   const coordinate = (value: unknown): value is number =>

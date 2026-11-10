@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import {
   skipperFailureSummary,
+  skipperPassingReceipt,
   skipperInstalledProof,
   skipperImageScope,
 } from "./skipper-release.ts";
@@ -406,6 +407,7 @@ try {
   assert.equal(summary.exitCode, 0);
   assert.deepEqual(summary.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
   assert.deepEqual(summary.issues, []);
+  summary = skipperPassingReceipt(summary);
 } catch (error) {
   failed = true;
   // File and line are useful on a failed guard. Never print values, runner or subprocess output.
@@ -440,27 +442,10 @@ if (failed) {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
   const results = join(env.RUNNER_TEMP, "results");
-  const { version, command, sourceSha, status, counts, exitCode } = summary;
-  assert.equal(summary.files.length, 1);
-  const [{ path, cleanup: testCleanup, tests }] = summary.files;
-  assert.equal(path, `tests/integration/${lane}.test.mjs`);
-  assert.deepEqual(testCleanup, { status: "passed" });
-  assert.deepEqual(
-    tests.map((test) => test.status),
-    ["passed"],
-  );
-  const [{ name, durationMs }] = tests;
   const receipt = {
-    version,
-    command,
-    lane,
-    sourceSha,
-    status,
-    counts,
-    exitCode,
+    ...summary,
     imageDigests,
     imageScope: skipperImageScope,
-    files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };
   await mkdir(results, { recursive: true });
