@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with four groups of test jobs:
 
 - **QA matrix:** Console Secret management with Standard Codex Agents on Compose
   and Kubernetes installations.
-- **OpenShell:** fourteen jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
+- **OpenShell:** thirteen jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 - **OIDC Agent chat:** Keycloak sign-in, ordinary-owner setup, a real Agent reply,
@@ -116,7 +116,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the fourteen files in the
+The selection job reads the thirteen files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -132,7 +132,6 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)             | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)        | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
 | [Scratch storage](../../../tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs)    | Real scratch and workspace writes, immutable binding, and missing/wrong-UID claim refusal.                                                                                       |
-| [Namespace bootstrap](../../../tests/integration/namespace-driver-openshell-k3d-real.test.ts)       | Namespace gateways and Workspaces before Agents, followed by deployment and model turns.                                                                                         |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs)  | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)       | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 | [Finite repository retention](../../../tests/integration/openshell-git-retention-real.test.ts)      | Natural expiry and a separate two-Agent withdrawal: B reads before worker replacement; A remains denied afterward.                                                               |
@@ -172,7 +171,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, OIDC Agent chat, all fourteen OpenShell jobs, and three local installation jobs.
+This starts the QA matrix, OIDC Agent chat, all thirteen OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -186,7 +185,7 @@ OpenShell files or the local installation suite. For those suites, follow
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes the explicit `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
+`all` excludes the explicit `sandbox-policy`, `scratch-volume`, `plugin-install`,
 `openshell-linear-read`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
@@ -297,7 +296,7 @@ time. Unknown or malformed records and other stdout remain private. Commands wit
 protected output produce no timing artifact.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all fourteen
+because it runs one file; complete advisory OpenShell coverage requires all thirteen
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the

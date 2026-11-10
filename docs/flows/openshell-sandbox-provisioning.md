@@ -13,8 +13,7 @@ Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
 
 ## Entry Points
 
-- Trigger: worker reconciliation of an Agent revision selecting OpenShell Sandbox
-  and Kubernetes Compute.
+- Trigger: reconcile an Agent revision with OpenShell Sandbox and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
@@ -204,8 +203,7 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes scratch.
 Preparation/activation call `verifyScratchVolume` after predecessor shutdown;
 `sandboxWorkspaceMounts` checks its exact tuple. OpenShell's `workspaceVolumeMounts`
-preserves `/sandbox/scratch`; `filesystemPolicy` permits writes. Native permissions
-stay unchanged. Cleanup retains operator-owned scratch; see [contract](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes).
+preserves `/sandbox/scratch`; `filesystemPolicy` permits writes. Permissions stay unchanged. Cleanup retains operator-owned scratch ([contract](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)).
 
 `sandboxDataMount` rejects scratch selection or overlapping data paths. `OpenShellGitRuntime.prepare` supplies
 process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.
@@ -216,10 +214,9 @@ Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Unsupported enums, inherited keys, `passthrough` TLS, missing executables or
 non-positive/unsafe-integer readiness `timeoutMs` prevent Kubernetes calls.
 Duplicate names and `workspace-node-enrollment` prevent construction.
-Template Pod labels outside `allowed_pod_labels` fail deployment immediately
-with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
+Pod labels outside `allowed_pod_labels` fail deployment with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
-`provisionHarness` creates or adopts the provider. Renewal checks its version
+`provisionHarness` creates/adopts the provider; renewal checks its version
 and updates only `node_setup_json` through `UpdateProvider`.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
 development startup delay. Compute rolls the Gateway before checking enrollment;
@@ -254,18 +251,16 @@ permission failures stop startup. [Writable runtime state](../reference/drivers/
 owns state-child isolation, retained permissions and temporary paths.
 
 `prepareNativeWorkspace` creates missing scratch directories; existing ones must
-be process-owned `0700`. Sibling content stays untouched. Other subpaths use
-managed preparation in a restricted revision Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
+be process-owned `0700`. Sibling content stays untouched. Other subpaths use managed preparation in a restricted revision Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
 completed preparation exits successfully on SIGTERM with normal grace. Sandbox
 creation waits for every writer Pod. Admission requires `userNamespaces: false`,
 one optional operator-mode ServiceAccount and the pinned Gateway's default identity.
 Preparation has no model credentials, ServiceAccount tokens, capabilities or direct
 Pod creation.
 
-After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
-Namespace, Agent and setup identity, then sends initializer/JSON stdin through
-authenticated `ExecSandbox`. Workspace `flock` serializes attempts; the Harness
-awaits completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
+After Sandbox readiness, `initializeWorkspace` validates setup Secret
+Namespace/Agent/setup identity and sends initializer/JSON stdin through
+authenticated `ExecSandbox`. Workspace `flock` serializes attempts; the Harness awaits completion. See [document initialization](workspace-files.md#2-deployment-initializes-storage-before-execution),
 separate from native subpath preparation.
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
