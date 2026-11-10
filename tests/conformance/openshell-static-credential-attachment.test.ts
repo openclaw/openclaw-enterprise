@@ -27,6 +27,7 @@ import type {
   CredentialSource,
   CredentialSourceSnapshot,
 } from "../../packages/contracts/src/index.ts";
+import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellProviderProfile,
@@ -103,7 +104,7 @@ test("startup composes both OpenShell members from one Backend for static source
     | ["createProvider", unknown]
     | ["importProviderProfile" | "updateProviderProfile", string, OpenShellProviderProfile]
   )[] = [];
-  const profiles = new Map<string, OpenShellStoredProviderProfile>();
+  const profiles = new Map<string, OpenShellStoredProviderProfile & OpenShellProviderProfile>();
   let provider: OpenShellProviderResponse = {
     name: providerName,
     type: providerName,
@@ -122,6 +123,7 @@ test("startup composes both OpenShell members from one Backend for static source
   let activePolicyVersion = 1;
   let sourcePolicy: Readonly<Record<string, unknown>>;
   let startupReleases = 0;
+  let overlappingRoute = false;
   // Model only Backend storage and transport responses; the real Drivers choose,
   // authorize, reconcile, and withdraw the attachment. No provider is contacted.
   const unexpected = (): never => {
@@ -140,6 +142,37 @@ test("startup composes both OpenShell members from one Backend for static source
       assert.equal(activePolicyVersion, 2);
       startupReleases++;
       return 0;
+    },
+    async getSandboxConfig(workspace) {
+      const sourceProfiles = Object.fromEntries(
+        [...profiles.values()]
+          .filter((profile) => profile.endpoints.some((endpoint) => endpoint.allowedIps?.length))
+          .map((profile) => [
+            "_provider_" + profile.id.replaceAll("-", "_"),
+            {
+              endpoints: profile.endpoints.map((endpoint) => ({
+                ...openShellProfileEndpoint(endpoint),
+                provider_credentialed: true,
+              })),
+            },
+          ]),
+      );
+      const collision = overlappingRoute
+        ? { shared: { endpoints: [{ host: "**", port: 443 }] } }
+        : {};
+      return {
+        workspace,
+        policy_source: 1,
+        configuration_admitted: true,
+        policy_validation_failure_mode: "fail_closed",
+        policy: {
+          network_policies: {
+            ...(sourcePolicy.network_policies as object),
+            ...sourceProfiles,
+            ...collision,
+          },
+        },
+      };
     },
     async getPolicyStatus() {
       return {
@@ -573,6 +606,13 @@ test("startup composes both OpenShell members from one Backend for static source
   assert.equal(policyVersion, 1);
   assert.equal(startupReleases, 0);
   delegateHostname = false;
+  overlappingRoute = true;
+  await assert.rejects(
+    driver.prepareRevision(revision, context),
+    /overlaps the private inference endpoint/,
+  );
+  assert.equal(policyVersion, 1);
+  overlappingRoute = false;
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(policyVersion, 2);
   // Saving an update is not the supervisor's acknowledgement of that policy.

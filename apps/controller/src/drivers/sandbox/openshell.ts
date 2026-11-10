@@ -15,8 +15,16 @@ import {
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
-import { inferenceKeyDestination, type ErrorDetail } from "@openclaw-enterprise/contracts";
-import { savedModelProvider } from "../compute/model-provider.ts";
+import type { ErrorDetail } from "@openclaw-enterprise/contracts";
+import {
+  PRIVATE_INFERENCE_HOLD,
+  PRIVATE_INFERENCE_READY,
+  privateInferenceHold,
+  privateInferenceReleasedPolicy,
+  verifiedPrivateInferencePolicyBase,
+  verifyEffectivePrivateInferencePolicy,
+  assertExclusiveInferenceEndpoint,
+} from "./openshell-private-inference.ts";
 import { randomUUID } from "node:crypto";
 import {
   requireConfiguration,
@@ -133,7 +141,6 @@ import {
   openShellSandboxObserver,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellPolicyStatus,
   type OpenShellProviderResponse,
   type OpenShellStoredProviderProfile,
   type OpenShellSandboxCreateRequest,
@@ -1301,107 +1308,6 @@ function relocatedWorkspaceMountPath(mount: {
     JSON.stringify([mount.claimName, mount.subPath, mount.mountPath]),
     16,
   )}`;
-}
-
-const PRIVATE_INFERENCE_HOLD = "oce-private-inference-hold";
-const PRIVATE_INFERENCE_READY = "/tmp/.oce-private-inference-ready";
-
-// The source and its placeholder are present at startup. This fail-closed L7 denial spans
-// every binary and matching endpoint, including the source-generated provider profile.
-function privateInferenceHold(revision: Readonly<AgentRevision>) {
-  const peer = revision.harness.privateInferencePeer;
-  if (!peer || revision.egressPlan) {
-    return undefined;
-  }
-  const provider = savedModelProvider(revision.harness.configuration);
-  if (!provider) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The private inference revision has no admitted model endpoint.",
-    );
-  }
-  const { host, port, method, path } = inferenceKeyDestination(provider.baseUrl, provider.protocol);
-  return {
-    name: PRIVATE_INFERENCE_HOLD,
-    binaries: [{ path: "/**" }],
-    endpoints: [
-      {
-        host,
-        ports: [port],
-        protocol: "rest",
-        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        allowed_ips: [peer.address],
-        rules: [{ allow: { method, path } }],
-        deny_rules: [{ method, path }],
-      },
-    ],
-  };
-}
-
-function privateInferenceReleasedPolicy(policy: Readonly<Record<string, unknown>>) {
-  const networks = asRecord(policy.network_policies);
-  if (!networks) {
-    throw new OpenShellSandboxConfigurationFailure("The private inference policy is missing.");
-  }
-  const { [PRIVATE_INFERENCE_HOLD]: _hold, ...released } = networks;
-  return { ...policy, network_policies: released };
-}
-
-function verifiedPrivateInferencePolicyBase(
-  revision: Readonly<AgentRevision>,
-  baseline: Readonly<Record<string, unknown>>,
-  status: OpenShellPolicyStatus,
-) {
-  const expectedHold = privateInferenceHold(revision);
-  if (!expectedHold) {
-    return baseline;
-  }
-  const networks = asRecord(baseline.network_policies);
-  const current = asRecord(status.policy.network_policies);
-  if (
-    !networks ||
-    !current ||
-    !sameOpenShellPolicy(networks[PRIVATE_INFERENCE_HOLD], expectedHold)
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The immutable Sandbox has no matching private inference hold.",
-    );
-  }
-  if (Object.hasOwn(current, PRIVATE_INFERENCE_HOLD)) {
-    if (status.version !== 1 || !sameOpenShellPolicy(status.policy, baseline)) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "The loaded private inference policy differs from the immutable startup policy.",
-      );
-    }
-    return baseline;
-  }
-  const released = privateInferenceReleasedPolicy(baseline);
-  if (
-    status.version === 2 &&
-    status.privateInferenceRevisionId === revision.id &&
-    sameOpenShellPolicy(status.policy, released)
-  ) {
-    return released;
-  }
-  // Later OCE live policy writes can replace only its Agent grants. The native revision
-  // records their OCE revision ID. Every other source-policy field must still match.
-  const fixedPolicy = (policy: Readonly<Record<string, unknown>>) => ({
-    ...policy,
-    network_policies: Object.fromEntries(
-      Object.entries(asRecord(policy.network_policies) ?? {}).filter(
-        ([name]) => !name.startsWith(AGENT_POLICY_PREFIX),
-      ),
-    ),
-  });
-  if (
-    status.version > 2 &&
-    status.privateInferenceRevisionId === revision.id &&
-    sameOpenShellPolicy(fixedPolicy(status.policy), fixedPolicy(released))
-  ) {
-    return released;
-  }
-  throw new OpenShellSandboxConfigurationFailure(
-    "OpenShell did not load the expected private inference policy for this revision.",
-  );
 }
 
 function sandboxCommand(
@@ -4679,6 +4585,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       return false;
     }
     const verifiedBase = verifiedPrivateInferencePolicyBase(context.revision, baseline, status);
+    const config = await client.getSandboxConfig?.(
+      request.workspace,
+      request.sandbox,
+      context.signal,
+    );
+    verifyEffectivePrivateInferencePolicy(
+      context.revision,
+      request.workspace,
+      config,
+      expected,
+      verifiedBase === baseline,
+    );
     if (verifiedBase === baseline) {
       await client.updatePolicy(
         {
@@ -4699,7 +4617,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         command: [
           "/usr/local/bin/node",
           "-e",
-          `const fs=require("node:fs"); const f=fs.openSync(${JSON.stringify(PRIVATE_INFERENCE_READY)},fs.constants.O_CREAT|fs.constants.O_NOFOLLOW|fs.constants.O_WRONLY,0o600); fs.closeSync(f);`,
+          `const fs=require("node:fs"); const f=${JSON.stringify(PRIVATE_INFERENCE_READY)}; try { fs.writeFileSync(f,"",{flag:"wx",mode:0o600}) } catch(e) { if(e.code!=="EEXIST" || !fs.lstatSync(f).isFile()) throw e }`,
         ],
         environment: {},
         stdin: "",
@@ -4769,6 +4687,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     const candidate = openShellPolicyCandidate(verifiedBase, input.snapshot);
+    if (privateInference) {
+      assertExclusiveInferenceEndpoint(
+        candidate.network_policies,
+        privateInference.endpoints[0]!,
+        [],
+      );
+    }
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
