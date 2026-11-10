@@ -60,6 +60,7 @@ try {
 
 function baseInput(overrides = {}) {
   return {
+    networkEgressMode: "restricted",
     controlPlane: {
       releaseName: "oce",
       namespace: "openclaw-system",
@@ -358,6 +359,34 @@ async function assertFieldRefusals(profile, input, field, values, message) {
     }
   }
 }
+
+test("renderer requires and preserves the operator's network egress choice", async () => {
+  for (const [profile, input] of [
+    ["openclaw", baseInput()],
+    ["codex", codexInput()],
+  ]) {
+    const rendered = await render(profile, input);
+    assert.equal(loadYaml(rendered.installation).networkEgressMode, "restricted");
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: join(rendered.directory, "installation.yaml") },
+    });
+    assert.equal(loaded.installation.networkEgressMode, "restricted");
+    await assertPreflightFailure(
+      profile,
+      { ...input, networkEgressMode: "public" },
+      /public.*requires a paired Sandbox and Credential Gateway/,
+    );
+    // Old inputs must require a decision, rather than gain public egress on rerender.
+    for (const mode of [undefined, null, "", "unrestricted"]) {
+      await assertPreflightFailure(
+        profile,
+        { ...input, networkEgressMode: mode },
+        /networkEgressMode is required/,
+      );
+    }
+  }
+});
 
 test("renderer supports exactly the openclaw and codex profiles", () => {
   // A real process: the stdout summary and the files it writes.

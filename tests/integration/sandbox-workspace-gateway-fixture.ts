@@ -92,6 +92,11 @@ export function workspaceGatewayClient(
       }
       workspaces.delete(name);
     },
+    async getPolicyStatus() {
+      // This controlled Gateway starts with stock restricted egress. Readiness
+      // scenarios override its observations to model convergence and refusals.
+      return { state: "POLICY_STATUS_LOADED", version: 1, activeVersion: 1, policy: {} };
+    },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },

@@ -6,6 +6,7 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
+  "public-egress": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -35,6 +36,7 @@ export function selectQaMatrix(env = process.env) {
         "sandbox-policy",
         "plugin-install",
         "openshell-linear-read",
+        "public-egress",
         "codex-search-config",
         "harness-overrides",
       ].includes(name),
@@ -76,6 +78,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "public-egress",
             "harness-overrides",
             "oidc-agent-chat",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
@@ -87,6 +90,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "public-egress",
             "harness-overrides",
             "oidc-agent-chat",
           ].includes(scenario) &&
@@ -100,6 +104,7 @@ export function selectQaMatrix(env = process.env) {
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
+            "public-egress",
             "harness-overrides",
             "oidc-agent-chat",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
@@ -163,6 +168,16 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const publicEgress = scenarios.includes("public-egress");
+  if (publicEgress) {
+    assert.equal(installation, "kubernetes", "public egress requires explicit Kubernetes setup");
+    assert.equal(preset, "Codex", "public egress requires the Codex preset");
+    requiredEnv.push(
+      "OCC_TEST_PUBLIC_EGRESS_INPUTS",
+      "OCC_TEST_PUBLIC_EGRESS_SERVICE_KEY",
+      "OCC_TEST_DATABASE_URL",
+    );
+  }
   const harnessOverrides = scenarios.includes("harness-overrides");
   if (harnessOverrides) {
     assert.notEqual(
@@ -185,7 +200,8 @@ export function selectQaMatrix(env = process.env) {
       sandboxPolicy ||
       pluginInstall ||
       linearRead ||
-      harnessOverrides,
+      harnessOverrides ||
+      publicEgress,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -242,6 +258,7 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    publicEgress,
     harnessOverrides,
     presets,
     cells,

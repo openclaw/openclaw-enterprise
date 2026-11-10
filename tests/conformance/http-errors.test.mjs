@@ -257,7 +257,7 @@ const cases = [
       status: 409,
       code: "SANDBOX_POLICY_PROTECTED_EXECUTION",
       message:
-        "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+        "Protected execution uses the admitted network mode and Credential Proxy policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
     },
   ],
   [

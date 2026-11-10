@@ -174,6 +174,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			for key, value := range map[string]string{
 				"OCC_DEVELOPMENT_STATE_DIRECTORY":                   state,
+				"OCC_DEVELOPMENT_NETWORK_EGRESS_MODE":               "restricted",
 				"OCC_DEVELOPMENT_KUBERNETES_CLUSTER":                "occ-dev-order",
 				"OCC_DEVELOPMENT_KUBERNETES_NAMESPACE":              "oce-system",
 				"OCC_DEVELOPMENT_CONTAINER_ENGINE":                  "docker",
@@ -437,6 +438,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				}
 				if _, err := os.Stat(state); err != nil {
 					t.Fatalf("keep-on-failure discarded state: %v", err)
+				}
+				// The explicit restricted choice must reach durable lifecycle state.
+				saved, readErr := readState(state)
+				if readErr != nil || saved.NetworkEgressMode != "restricted" {
+					t.Fatalf("new installation did not save restricted egress: %v, %v", saved, readErr)
 				}
 				if !strings.Contains(output.String(), "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set") {
 					t.Fatalf("keep-on-failure hid the cleanup hint: %s", &output)

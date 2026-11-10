@@ -26,6 +26,7 @@ try {
 
 function baseInput(overrides = {}) {
   return {
+    networkEgressMode: "restricted",
     controlPlane: {
       releaseName: "oce",
       namespace: "openclaw-system",

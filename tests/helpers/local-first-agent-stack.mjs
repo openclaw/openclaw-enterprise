@@ -562,6 +562,7 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     ...testEnvironment,
     COMPOSE_DISABLE_ENV_FILE: "1",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
     OCC_DEVELOPMENT_COMPOSE_PROJECT: "occ_first_agent_" + suffix,
     OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,

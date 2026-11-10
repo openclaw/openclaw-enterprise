@@ -138,6 +138,33 @@ func TestKubernetesOnlyClusterPinsItsNodeAndKeepsVerifiedImages(t *testing.T) {
 	}
 }
 
+func TestKubernetesOnlyOpenShellInstallationRendersQualifiedPublicEgress(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		qualified bool
+	}{
+		{name: "stock"},
+		{name: "qualified", qualified: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			state.NetworkEgressMode = "public"
+			assets := &openShellDevelopmentAssets{publicEgressQualified: tc.qualified}
+			if err := writeInstallation(state, "runtime@"+profileTestDigest, assets, "10.43.0.50", "", "10.42.0.1/32"); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A public mode request alone cannot mark the rendered pair as qualified.
+			if got := strings.Contains(string(data), "publicNetworkEgress: qualified"); got != tc.qualified {
+				t.Fatalf("public egress capability = %t, want %t", got, tc.qualified)
+			}
+		})
+	}
+}
+
 func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
 	assets := &openShellDevelopmentAssets{workspaceResources: []any{map[string]any{
@@ -931,6 +958,7 @@ func TestOpenShellCandidateSelectionRejectsIncompleteOrInvalidInputs(t *testing.
 }
 
 func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, mode := range []string{"compose", "kubernetes"} {
 		for _, component := range []string{"GATEWAY", "SANDBOX", "SUPERVISOR"} {
 			for _, failure := range []string{"partial", "malformed", "missing", "wrong revision", "missing label"} {

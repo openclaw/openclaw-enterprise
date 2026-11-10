@@ -633,11 +633,11 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 }
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
-  save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  save: "Protected execution applies to this Agent: the admitted network mode and Credential Proxy routes govern its egress, so network policy additions are refused; only an empty policy can be saved.",
   apply:
-    "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
+    "This Agent's active revision runs under protected execution: the admitted network mode and Credential Proxy routes govern its egress, so live network policy application is refused.",
   deploy:
-    "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+    "Protected execution uses the admitted network mode and Credential Proxy policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
 } as const;
 
 /**
@@ -1205,6 +1205,14 @@ export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUn
       "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
       SandboxRepositoryRecipientUnverifiedError.description,
     );
+  }
+}
+
+/** The Sandbox exists and its requested network policy is still converging. */
+export class SandboxPolicyObservationPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPolicyObservationPendingError";
   }
 }
 

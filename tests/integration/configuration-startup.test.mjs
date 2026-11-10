@@ -15,6 +15,7 @@ import test, { before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
+  installationControllerOptions,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import {
@@ -1267,6 +1268,31 @@ test("startup loads singleton Installation YAML and validates Drivers before con
   assert.equal(updated.computeDriver.id, drivers.computeDriver.id);
   assert.equal(updated.computeDriver.implementation, drivers.computeDriver.implementation);
   assert.equal(updated.installation.drivers.compute.configuration.network.gatewayPort, 8081);
+});
+
+test("startup validates public network egress and passes its selection to the controller", async (t) => {
+  for (const mode of [undefined, "restricted", "public"]) {
+    const configuration = installation();
+    if (mode !== undefined) {
+      configuration.networkEgressMode = mode;
+    }
+    const loaded = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+    assert.equal(loaded.installation.networkEgressMode, mode);
+    assert.equal(
+      installationControllerOptions(loaded.installation).networkEgressMode,
+      mode ?? "restricted",
+    );
+  }
+  for (const mode of [true, "all", "", null]) {
+    const path = await fixture(t, { ...installation(), networkEgressMode: mode });
+    await assert.rejects(
+      loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+      /networkEgressMode must be public or restricted/,
+    );
+  }
 });
 
 test("shared startup loads backend metadata without reading the API-only ChatGPT admin Secret", async (t) => {

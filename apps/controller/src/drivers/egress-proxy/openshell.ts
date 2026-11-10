@@ -218,6 +218,7 @@ export function openShellEgressConfiguration(
     // The prepared provider supplies the endpoints for the admitted GitHub scope. No generic exchange
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
+      ...(revision?.networkEgressMode === "public" && { allow_unconfigured_public_tcp: true }),
       network_policies: artifacts,
       network_middlewares: openShellGitMiddleware(
         options.repositoryMiddlewareName,
@@ -226,6 +227,7 @@ export function openShellEgressConfiguration(
     });
   }
   return immutableCopy({
+    ...(revision?.networkEgressMode === "public" && { allow_unconfigured_public_tcp: true }),
     network_policies: Object.fromEntries(
       plan.routes.map((route, index) => {
         const origin = new URL(route.origin);
@@ -493,6 +495,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     };
     if (
       !expectedPolicies ||
+      expected.allow_unconfigured_public_tcp !==
+        protectedConfiguration.allow_unconfigured_public_tcp ||
       !isDeepStrictEqual(
         wirePolicy(expected.network_middlewares),
         wirePolicy(protectedConfiguration.network_middlewares),

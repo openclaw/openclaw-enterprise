@@ -1,17 +1,17 @@
 ---
 created: 2026-10-15
-updated: "2026-10-29"
-last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
+updated: "2026-11-10"
+last_updated_session: "authoring-run/1a7de99b-a5f3-44b1-92df-450db81e2e5d"
 ---
 
 # Agent sandbox policy flow
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
-and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+OCC freezes the Installation egress mode and Agent network additions at
+deployment. It can apply later additions through the Sandbox Driver. A
+different egress mode requires a new revision. Users can review denial logs
+and provider recommendations before changing policy.
 
 ## Entry Points
 
@@ -32,26 +32,29 @@ graph TD
   Preview -->|valid| U2["Review proposal"]
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
-  P --> D["Explicit deployment<br/>immutable snapshot"]
+  Mode["Installation egress mode"] --> Cap["Check selected<br/>Driver capabilities"]
+  Cap -->|Supported| D["Explicit deployment<br/>immutable snapshot"]
+  Cap -->|Unsupported| Refused["Refuse deployment"]
+  P --> D
+  D --> Runtime["Sandbox checks<br/>applied egress mode"]
+  Runtime -->|Applied| Ready["Continue preparation"]
+  Runtime -->|Pending| Wait["Keep Sandbox<br/>and check again"]
+  Runtime -->|Failed| Stop["Run preparation<br/>failure handling"]
   P --> W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
-  S --> V["Confirm matching<br/>loaded version"]
+  S --> V["Check applied mode<br/>and candidate match"]
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
-
-The solid arrows trace source paths, not a claim that all providers are verified.
 
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+`internal/occcli/agent_policy.go:agentPolicyCommand` accepts JSON and YAML.
+`internal/occcli/cli.go:validateOptions` defaults to JSON and refuses other
+formats before any request. `internal/occcli/output.go:printStructured`
+prints the acknowledged result.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -122,9 +125,43 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+`installationControllerOptions` supplies the Installation mode to the API and
+worker, defaulting to restricted. See [egress modes](../reference/configuration/network-egress.md) for profile defaults.
+
+`packages/occ/src/index.ts:admitAgentDeployment` checks Compute and Sandbox
+`publicNetworkEgress` after authorization. Kubernetes Compute forwards the
+OpenShell Driver's operator-declared capability and rechecks the saved
+revision's Sandbox and credential custody before execution. See
+[public-mode credential delivery](../reference/configuration/network-egress.md).
+
+`packages/occ/src/state/postgres-state.ts:createRevision` saves the admitted
+mode in `agent_revisions.network_egress_mode`. `revisionFromRow` omits a null
+mode. OpenShell treats omission as restricted.
+
+`apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
+`apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
+compile `allow_unconfigured_public_tcp`; managed routes and artifact grants stay
+independent. The proxy compares configuration before wiring.
+`apps/controller/src/drivers/sandbox/openshell.ts:observeNetworkEgress` checks
+supervisor admission and source policy status during provisioning and live
+application. Stock restricted revisions use `sandbox:read` for these checks.
+Qualified installations read effective configuration with `config:read`.
+Managed plugin and MCP checks during provisioning use that same read.
+
+A refusal for the observed policy version fails before the Driver waits for
+source policy load. When the Driver reads effective configuration, it matches
+the supervisor report to that configuration's instance, hash, and both
+generation fields. An omitted uint64 generation represents zero. Provider
+composition can change the effective hash. Restricted mode refuses an explicit
+public setting in either report. Public mode requires the applied bit and a
+loaded source policy version with matching effective evidence.
+
+After confirmed creation or adoption, `provisionHarness` reports
+`SandboxPolicyObservationPendingError` for convergence. Compute preserves the
+Sandbox and returns incomplete. The worker checks again within the deployment
+deadline without spending retries. Explicit refusals, conflicting evidence,
+and Gateway outages follow the preparation failure path, including the stop
+hook when preparation started.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
@@ -142,8 +179,11 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
-native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. Transient or unknown outcomes retry within limits;
+native status/UpdateConfig RPCs. The revision's egress mode stays fixed.
+An application is `applied` only when the full candidate matches and
+`observeNetworkEgress` reports applied. A superseded policy version or rejected
+supervisor admission reports failure.
+Transient or unknown outcomes retry within limits;
 terminal stale work becomes an unconfirmed failure. The worker calls
 `failAbandonedSandboxPolicies` inside the same `transactWithQueue` that recovers
 exhausted work, so queue failure, application failure, and audit either all commit
@@ -163,12 +203,10 @@ Driver projects representable native chunks into untrusted suggestions. The
 console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
-`console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
-sections and selects resource-owner controls. `console/configuration-fields.mts`
-renders schema fields and JSON fallback, with safe field/root diagnostics.
-String controls retain the complete draft. Length validation stays with the
-policy owner: JSON Schema counts Unicode code points, while HTML length
-attributes count UTF-16 code units and can truncate a valid executable path.
+`console/driver-configurations.mts:renderAgentDriverConfigurations` selects
+resource-owner controls. `console/configuration-fields.mts` renders schema
+fields, JSON fallback, and diagnostics. The owner validates string length in
+Unicode code points. The UI keeps the full draft.
 `console/agents/sandbox-policy.mts:renderLogs` snapshots the displayed log window,
 filters it, and renders five denials per page initially. Selection spans pages;
 Select page changes only eligible visible rows. Follow retains up to 1,000 new
@@ -182,23 +220,16 @@ metadata disables prefilling. An incomplete existing draft must be corrected
 before staging more grants. `ruleList` searches and pages explicit rules five at
 a time; row controls edit or remove local additions.
 
-`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
-above the log. It shows three suggestions initially and expands the remaining
-candidates on request, independently of mutation authority. `openNetworkLimits`
-uses the policy view's ceiling in a separate read-only dialog. Defaults and
-version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
-through the separately authorized editing operation. Mutation feedback appears in
-the card while the dialog is closed; a failed policy read retains its error and
-read recovery action. `renderEditor` manages rules without an editing toggle and
-keeps proposed rules local until preview. Its footer compares the draft with saved
-additions, including removals and restored values, to offer review, application,
-or Done. Saving a confirmed response closes the dialog and clears the completed
-selection. Review shows additions, updates, and removals from the controller-validated rules,
-with the previously saved policy available for comparison. Save sends the complete
-validated array with the reviewed policy version. Superseded preview and read responses
-cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
-cannot invalidate a newer request. A pending application re-arms polling after
-the latest read, including a response discarded after a draft edit.
+`console/agents/sandbox-policy.mts:renderPolicy` shows status and three suggestions
+above the log. Users can expand suggestions without mutation authority.
+`openNetworkLimits` shows the ceiling read-only. The card shows defaults,
+versions, mutation results, and read errors. It uses a separate authorized
+operation to toggle editing. `renderEditor` keeps additions local until preview.
+Its footer compares the draft with saved rules to offer review, application,
+or Done. Review shows the validated diff. Save sends the complete validated
+array and reviewed version. Confirmed save closes the dialog and clears the
+selection. Superseded previews and reads cannot overwrite a newer draft.
+The latest read re-arms pending polling even if a draft edit discards its response.
 An unreadable preview retains the draft for another review. Save and apply checks
 that the save response names this policy, Agent, Namespace, next version, and
 the rules shown in review before requesting application to the selected revision.
@@ -237,9 +268,10 @@ the policy read, only the network policy card states it; the suggestions card is
   `pending` or `failed` never establishes a successful retry.
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
-- [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
-  owns real enforcement proof. Storybook proves simulated presentation only.
+- [PostgreSQL integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
+  exercises HTTP/IAM/storage. [OpenShell](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  and [public egress](../testing/public-egress.md) lanes own enforcement proof.
+  Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
   rules, and ceiling rejection through real controller routes. They use in-memory
@@ -257,6 +289,16 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 22:37: Check current configuration refusals during policy load and preserve scoped stock Sandbox reads. (authoring-run/1a7de99b-a5f3-44b1-92df-450db81e2e5d - 88f7d233b3)
+
+- 2026-11-10 22:09: Trace the public capability check and shared applied-policy decisions. (authoring-run/062d67f8-0c28-45c5-b686-8f803c523eec - a16f9c65decd6f3b24f52514a9e1040dfc08096b)
+
+- 2026-11-10 22:07: Trace PostgreSQL mode persistence. (authoring-run/f50beefe-4df9-48e1-a254-5760d911d8f7 - a16f9c65decd6f3b24f52514a9e1040dfc08096b)
+
+- 2026-11-05 22:38: Separate source/effective policy identities. (authoring-run/05c80cbe-653c-4d0b-9ff8-d32ceee19711 - 2d0558130154d1a7420f5c04ba88da31537a24cc)
+
+- 2026-11-05 20:34: Trace the accompanying revision-bound public egress mode through Installation selection, admission, storage and Driver compilation. (authoring-run/2b54c1e7-77a6-45ab-9919-fbe2b81bfa21 - a1c1f0cbd82b151d88442370feba0ce95ea9a6d9)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

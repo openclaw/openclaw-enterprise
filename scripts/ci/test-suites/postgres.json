@@ -30,6 +30,10 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-network-egress-migration.test.ts",
+      "expectedTests": ["Canonical network egress migration preserves admitted revisions"]
+    },
+    {
       "path": "tests/integration/postgres-migration-version.test.ts",
       "expectedTests": [
         "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials"

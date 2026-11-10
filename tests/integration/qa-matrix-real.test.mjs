@@ -113,6 +113,22 @@ test(
         "openshell-linear-read",
       );
     }
+    if (selection.publicEgress) {
+      const { verifyQaPublicEgress } = await import("../helpers/public-egress-qa.ts");
+      const { runPublicEgressConnected } = await import("../helpers/public-egress-workflow.ts");
+      const { publicEgressWatchdogMs } = await import("../helpers/public-egress-deadline.ts");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "public TCP egress retains managed credentials and restricted-mode denial",
+        () =>
+          verifyQaPublicEgress(artifacts, (diagnostic) =>
+            runPublicEgressConnected({ signal: context.signal, diagnostic }),
+          ),
+        "public-egress",
+        { timeout: publicEgressWatchdogMs },
+      );
+    }
     for (const installation of selection.installations.filter((value) =>
       selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
     )) {

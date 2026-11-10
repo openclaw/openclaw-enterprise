@@ -70,6 +70,7 @@ import {
   CredentialSourceRevisionError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
+  SandboxPolicyObservationPendingError,
   SandboxRevisionUnsupportedError,
   SandboxWorkspaceSetupRefusedError,
   ScopeViolationError,
@@ -1069,6 +1070,7 @@ test("a selected Google account keeps its request guard alongside an independent
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   let created;
   let observedGuard = true;
+  let effectivePublic = false;
   const credentialedHosts = new Set();
   let endpoint = configuration.gateway.managedPluginMiddleware;
   const provider = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
@@ -1112,6 +1114,9 @@ test("a selected Google account keeps its request guard alongside an independent
     routes[independentProvider.name] = independentProvider;
     if (!observedGuard) {
       policy.network_middlewares = {};
+    }
+    if (effectivePublic) {
+      policy.allow_unconfigured_public_tcp = true;
     }
     return {
       workspace,
@@ -1159,6 +1164,11 @@ test("a selected Google account keeps its request guard alongside an independent
   await assert.rejects(provision, /bypass the managed plugin/);
   delete revision.sandboxPolicy;
   await provision();
+  // The same effective configuration used for the managed policies must keep
+  // a restricted revision from accepting an explicit public override.
+  effectivePublic = true;
+  await assert.rejects(provision, /public network egress for a restricted Agent revision/);
+  effectivePublic = false;
   assert.ok(created.spec.providers.includes(openShellProviderName(sourceId)));
   assert.ok(created.spec.providers.includes(slack.ref));
   const slackNetwork = created.spec.policy.network_policies["oce-slack-mcp"];
@@ -1329,6 +1339,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   requirements.environment.push({ name: "SLACK_MCP_TOKEN", value: "arbitrary-unbound-value" });
   let created;
   let broadenEffective = false;
+  let effectivePublic = false;
   let updateCount = 0;
   client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
     created = {
@@ -1348,9 +1359,14 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   };
   client.getSandboxConfig = async (workspace) => {
     const policy = structuredClone(created.spec.policy);
-    admitSlackProvider(policy, ref);
+    if (created.spec.providers.includes(ref)) {
+      admitSlackProvider(policy, ref);
+    }
     if (broadenEffective) {
       policy.network_policies.unexpected = { endpoints: [{ host: "mcp.slack.com", port: 443 }] };
+    }
+    if (effectivePublic) {
+      policy.allow_unconfigured_public_tcp = true;
     }
     return {
       workspace,
@@ -1385,6 +1401,9 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   assert.equal(created, undefined);
   requestScope.port = 443;
   await provision();
+  effectivePublic = true;
+  await assert.rejects(provision, /public network egress for a restricted Agent revision/);
+  effectivePublic = false;
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
   assert.deepEqual(route.endpoints[0].ports, [443]);
@@ -2351,6 +2370,408 @@ test("OpenShell native startup creates private temporary state without changing 
   }
 });
 
+// The Gateway transport is a controlled peer. This proves the production Driver's readiness
+// gate and replay behavior, not that an installed supervisor enforces public network access.
+test("OpenShell requires matching applied network egress evidence before accepting a Sandbox", async (t) => {
+  const grpc = controllerRequire("@grpc/grpc-js");
+  const loader = controllerRequire("@grpc/proto-loader");
+  const proto = await loader.load(
+    join(
+      import.meta.dirname,
+      "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    ),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const generationCases = [
+    ["both omitted", undefined, undefined, true],
+    ["effective zero omitted", undefined, "0", true],
+    ["admitted zero omitted", "0", undefined, true],
+    ["maximum uint64", "18446744073709551615", "18446744073709551615", true],
+    ["effective zero versus admitted nonzero", undefined, "1", false],
+    ["effective nonzero versus admitted zero", "1", undefined, false],
+    // These adjacent generations collide if converted to JavaScript Number.
+    ["distinct large generations", "9007199254740992", "9007199254740993", false],
+  ];
+  for (const [label, mode, qualified] of [
+    ["qualified public", "public", true],
+    ["qualified restricted", "restricted", true],
+    ["stock restricted", "restricted", false],
+  ]) {
+    await t.test(label, async (t) => {
+      const gateway = workspaceGatewayClient();
+      let creates = 0;
+      let sandbox;
+      let activated = true;
+      let configReads = 0;
+      const startupAdmission = {
+        instance_id: "supervisor-one",
+        state: 2,
+        policy_version: 3,
+        policy_hash: "policy-one",
+        config_revision: "4",
+        provider_env_revision: "5",
+        applied_allow_unconfigured_public_tcp: mode === "public",
+      };
+      let admission = startupAdmission;
+      const startupConfiguration = {
+        configuration_admitted: true,
+        policy_source: 1,
+        configuration_instance_id: "supervisor-one",
+        version: 3,
+        policy_hash: "policy-one",
+        config_revision: "4",
+        provider_env_revision: "5",
+        policy: { allow_unconfigured_public_tcp: mode === "public" },
+      };
+      let effective = startupConfiguration;
+      let status = {
+        state: "POLICY_STATUS_LOADED",
+        version: 3,
+        activeVersion: 3,
+        // Provider composition gives the effective policy a different hash from its source.
+        policyHash: "source-policy",
+        policy: { allow_unconfigured_public_tcp: mode === "public" },
+      };
+      gateway.createSandbox = async (request) => {
+        creates += 1;
+        sandbox = storedSandbox(request, { serviceUrls: {}, resourceVersion: "1" });
+        return sandbox;
+      };
+      // Decode readiness through the production gRPC client. Proto3 scalar zero can
+      // be absent on the wire even when the other response explicitly encodes it.
+      const server = new grpc.Server();
+      server.addService(OpenShell.service, {
+        GetSandbox(_call, callback) {
+          if (sandbox === undefined) {
+            callback({ code: grpc.status.NOT_FOUND });
+            return;
+          }
+          callback(null, {
+            sandbox: {
+              metadata: {
+                name: sandbox.name,
+                workspace: sandbox.workspace,
+                labels: sandbox.labels,
+                annotations: sandbox.annotations,
+                resource_version: sandbox.resourceVersion,
+              },
+              spec: sandbox.spec,
+              status: { configuration_activated: activated, configuration_admission: admission },
+            },
+          });
+        },
+        GetSandboxConfig(_call, callback) {
+          configReads++;
+          if (!qualified) {
+            // Stock Sandbox access needs sandbox:read. GetSandboxConfig needs config:read.
+            callback({ code: grpc.status.PERMISSION_DENIED, details: "config:read is required" });
+            return;
+          }
+          callback(null, effective);
+        },
+        GetSandboxPolicyStatus(_call, callback) {
+          callback(null, {
+            revision: {
+              status: status.state,
+              version: status.version,
+              policy_hash: status.policyHash,
+              policy: status.policy,
+            },
+            active_version: status.activeVersion,
+          });
+        },
+      });
+      const port = await new Promise((resolve, reject) =>
+        server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+          error ? reject(error) : resolve(value),
+        ),
+      );
+      const wireClient = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+      t.after(async () => {
+        wireClient.close();
+        await new Promise((resolve) => server.tryShutdown(resolve));
+      });
+      gateway.getSandbox = wireClient.getSandbox.bind(wireClient);
+      gateway.getSandboxConfig = wireClient.getSandboxConfig.bind(wireClient);
+      gateway.getPolicyStatus = wireClient.getPolicyStatus.bind(wireClient);
+      const options = sandboxInstallation().drivers.sandbox.configuration;
+      if (qualified) {
+        options.gateway.publicNetworkEgress = "qualified";
+      }
+      const driver = openShellDriver(gateway, options);
+      const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+        harnessId: "openclaw",
+      });
+      revision.networkEgressMode = mode;
+      const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+
+      if (mode === "public") {
+        const stock = openShellDriver(gateway);
+        await assert.rejects(
+          stock.provisionHarness({ ...context, revision, requirements }),
+          /requires a qualified OpenShell Gateway and supervisor/,
+        );
+        assert.equal(creates, 0);
+
+        // Acceptance precedes networking startup. Reconciliation must keep the confirmed
+        // Sandbox while the supervisor publishes its applied policy.
+        admission = { ...startupAdmission, applied_allow_unconfigured_public_tcp: undefined };
+        await assert.rejects(provision(), SandboxPolicyObservationPendingError);
+        const created = sandbox;
+        await assert.rejects(provision(), SandboxPolicyObservationPendingError);
+        assert.equal(sandbox, created);
+        assert.equal(creates, 1);
+        admission = startupAdmission;
+      }
+      const first = await provision();
+      assert.equal(sandbox.spec.policy.allow_unconfigured_public_tcp ?? false, mode === "public");
+      assert.deepEqual(await provision(), first);
+
+      // Ordinary revisions can apply live additions. The update must preserve the admitted mode.
+      revision.executionAdmission = { mode: "standard" };
+      const snapshot = driver.admitNetworkPolicy(
+        [
+          {
+            id: "docs",
+            host: "docs.example.test",
+            ports: [{ from: 443, to: 443 }],
+            binary: "/usr/bin/curl",
+          },
+        ],
+        1,
+      );
+      let candidate;
+      gateway.updatePolicy = async (request) => {
+        candidate = structuredClone(request.policy);
+      };
+      await driver.applyNetworkPolicy(
+        { ...context, revision },
+        { snapshot, expectedProviderVersion: "1", operationId: "policy-update" },
+      );
+      assert.equal(candidate.allow_unconfigured_public_tcp, mode === "public");
+      assert.ok(
+        Object.values(candidate.network_policies).some((rule) =>
+          rule.endpoints.some((endpoint) => endpoint.host === "docs.example.test"),
+        ),
+      );
+      const loaded = {
+        ...status,
+        version: 4,
+        activeVersion: 4,
+        policyHash: "source-policy-two",
+        policy: candidate,
+      };
+      const accepted = { ...startupAdmission, policy_version: 4, policy_hash: "policy-two" };
+      const configuration = {
+        ...startupConfiguration,
+        version: 4,
+        policy_hash: "policy-two",
+        policy: candidate,
+      };
+      admission = accepted;
+      effective = configuration;
+      const observe = () => driver.observeNetworkPolicy({ ...context, revision }, snapshot);
+
+      const expectEvidence = async (state, message, matches = true) => {
+        assert.deepEqual(await observe(), {
+          resourceVersion: "1",
+          policyVersion: String(status.version),
+          matches,
+          state,
+        });
+        if (state === "applied") {
+          assert.deepEqual(await provision(), first);
+        } else if (state === "pending") {
+          await assert.rejects(provision(), SandboxPolicyObservationPendingError);
+        } else {
+          await assert.rejects(provision(), (error) => {
+            assert.ok(!(error instanceof SandboxPolicyObservationPendingError));
+            assert.match(error.message, message);
+            return true;
+          });
+        }
+      };
+
+      // The same provider evidence must lead to the same decision during rollout and live apply.
+      for (const [label, evidence, expected] of [
+        ["loaded", loaded, "applied"],
+        ["loading", { ...loaded, state: "POLICY_STATUS_PENDING" }, "pending"],
+        ["different active version", { ...loaded, activeVersion: 3 }, "pending"],
+      ]) {
+        await t.test(label, async () => {
+          status = evidence;
+          await expectEvidence(expected);
+        });
+      }
+      for (const terminal of ["POLICY_STATUS_FAILED", "POLICY_STATUS_SUPERSEDED"]) {
+        status = { ...loaded, state: terminal };
+        await expectEvidence("failed", /failed to load/);
+      }
+      const pending = { ...loaded, state: "POLICY_STATUS_PENDING", activeVersion: 3 };
+      status = pending;
+      // Startup refusal can be recorded before the supervisor activates configuration
+      // or reports the source policy loaded.
+      activated = false;
+      admission = {
+        ...accepted,
+        state: 3,
+        error: "configuration rejected",
+        applied_allow_unconfigured_public_tcp: undefined,
+      };
+      await t.test("refused configuration while source is pending", async () => {
+        await expectEvidence("failed", /refused/);
+      });
+      await t.test("refusal from an older policy version", async () => {
+        admission = { ...admission, policy_version: 3 };
+        await expectEvidence("pending");
+      });
+      if (qualified) {
+        await t.test("refusal from an older configuration of the same policy", async () => {
+          admission = { ...admission, policy_version: 4, provider_env_revision: "3" };
+          await expectEvidence("pending");
+        });
+        await t.test(
+          "current effective configuration refusal while source is pending",
+          async () => {
+            admission = undefined;
+            effective = {
+              ...configuration,
+              configuration_error: "invalid effective configuration",
+            };
+            await expectEvidence("failed", /refused/);
+          },
+        );
+        await t.test(
+          "effective configuration refusal from a different policy version",
+          async () => {
+            effective = { ...effective, version: 3 };
+            await expectEvidence("pending");
+          },
+        );
+      }
+      activated = true;
+      admission = accepted;
+      effective = configuration;
+      status = {
+        ...loaded,
+        policy: { ...candidate, allow_unconfigured_public_tcp: mode !== "public" },
+      };
+      await expectEvidence("failed", /different network egress mode/, false);
+      status = loaded;
+
+      if (mode === "public") {
+        for (const field of ["config_revision", "provider_env_revision"]) {
+          for (const [label, effectiveValue, admittedValue, matches] of generationCases) {
+            await t.test(`${field}: ${label}`, async () => {
+              effective = { ...configuration, [field]: effectiveValue };
+              admission = { ...accepted, [field]: admittedValue };
+              await expectEvidence(matches ? "applied" : "failed", /conflicting evidence/);
+            });
+          }
+        }
+        effective = configuration;
+        for (const [label, change, state, message] of [
+          ["absent applied mode", { applied_allow_unconfigured_public_tcp: undefined }, "pending"],
+          [
+            "false applied mode",
+            { applied_allow_unconfigured_public_tcp: false },
+            "failed",
+            /inactive/,
+          ],
+          ["pending admission", { state: 1 }, "pending"],
+          ["rejected admission", { state: 3 }, "failed", /refused/],
+          ["admission error", { error: "policy rejected" }, "failed", /refused/],
+          [
+            "different instance",
+            { instance_id: "supervisor-two" },
+            "failed",
+            /conflicting evidence/,
+          ],
+          [
+            "different policy hash",
+            { policy_hash: "policy-one" },
+            "failed",
+            /conflicting evidence/,
+          ],
+          ["different policy version", { policy_version: 3 }, "pending"],
+        ]) {
+          await t.test(label, async () => {
+            admission = { ...accepted, ...change };
+            await expectEvidence(state, message);
+          });
+        }
+        admission = accepted;
+        for (const [label, change, state, message] of [
+          ["configuration not admitted yet", { configuration_admitted: false }, "pending"],
+          [
+            "effective configuration refusal",
+            { configuration_admitted: false, configuration_error: "policy refused" },
+            "failed",
+            /refused/,
+          ],
+          [
+            "different effective mode",
+            { policy: { allow_unconfigured_public_tcp: false } },
+            "failed",
+            /conflicting evidence/,
+          ],
+          ["effective global override", { policy_source: 2 }, "failed", /conflicting evidence/],
+        ]) {
+          await t.test(label, async () => {
+            effective = { ...configuration, ...change };
+            await expectEvidence(state, message);
+          });
+        }
+        // Matching empty hashes cannot attest any effective policy.
+        admission = { ...accepted, policy_hash: "" };
+        effective = { ...configuration, policy_hash: "" };
+        await expectEvidence("failed", /conflicting evidence/);
+        admission = accepted;
+        effective = configuration;
+        status = { ...loaded, version: 3, activeVersion: 3 };
+        await expectEvidence("pending");
+        status = { ...loaded, policyHash: "" };
+        await expectEvidence("failed", /conflicting evidence/);
+        status = loaded;
+      } else {
+        // Stock pairs and old Agent revisions can lack the applied bit. A Gateway that
+        // explicitly reports an effective public override must still block release.
+        const { allow_unconfigured_public_tcp: _mode, ...stockPolicy } = candidate;
+        status = { ...loaded, policy: stockPolicy };
+        admission = { ...accepted, applied_allow_unconfigured_public_tcp: undefined };
+        effective = { ...configuration, policy: stockPolicy };
+        await expectEvidence("applied");
+        if (qualified) {
+          effective = {
+            ...configuration,
+            policy_source: 2,
+            policy: { allow_unconfigured_public_tcp: true },
+          };
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+          status = { ...pending, policy: stockPolicy };
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+          status = { ...loaded, policy: stockPolicy };
+        }
+        delete revision.networkEgressMode;
+        if (qualified) {
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+        }
+        effective = { ...configuration, policy: stockPolicy };
+        await expectEvidence("applied");
+        admission = { ...accepted, applied_allow_unconfigured_public_tcp: true };
+        await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+        admission = accepted;
+      }
+      await expectEvidence("applied");
+      assert.equal(creates, 1, "pending or failed evidence never creates a replacement Sandbox");
+      if (!qualified) {
+        assert.equal(configReads, 0, "stock restricted readiness uses the scoped Sandbox reads");
+      }
+    });
+  }
+});
+
 test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
   // The gateway's request_id replay refuses a changed spec and forgets a create after
   // 24 h, so a reconcile pass must find the existing Sandbox rather than create again.
@@ -2396,7 +2817,7 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   const name = first.resourceName;
   assert.deepEqual(
     calls.map(([call]) => call),
-    ["getSandbox", "createSandbox"],
+    ["getSandbox", "createSandbox", "getSandbox"],
   );
   // A later pass with a different spec rejects the stale Sandbox and never creates.
   calls.length = 0;
@@ -2414,7 +2835,7 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   assert.deepEqual(await provision(), first);
   assert.deepEqual(
     calls.map(([call]) => call),
-    ["getSandbox", "createSandbox", "getSandbox", "getService"],
+    ["getSandbox", "createSandbox", "getSandbox", "getService", "getSandbox"],
   );
   createError = undefined;
 
@@ -2630,13 +3051,14 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     `createSandbox:${id2}`,
     "getSandbox",
     recreated[7],
+    "getSandbox",
   ]);
   assert.equal(sandboxes.size, 1);
   assert.equal(new Set(recreated.filter((call) => call.startsWith("createSandbox"))).size, 4);
 
   // The live Sandbox is adopted without any create.
   assert.deepEqual(await provision(), first);
-  assert.deepEqual(trace(), ["getSandbox", "getService"]);
+  assert.deepEqual(trace(), ["getSandbox", "getService", "getSandbox"]);
 
   // A refused request_id whose earlier call creates the Sandbox meanwhile is adopted;
   // no further request_id is tried.
@@ -2645,7 +3067,13 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     sandboxes.set(request.name, storedSandbox(request, { id: "sandbox-late" }));
   };
   assert.deepEqual(await provision(), first);
-  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`, "getSandbox", "getService"]);
+  assert.deepEqual(trace(), [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    "getService",
+    "getSandbox",
+  ]);
 
   // Two concurrent passes: the later one is refused the held request_id, advances, and
   // creates; the held create then loses the name and adopts the same Sandbox.
@@ -6138,6 +6566,27 @@ test("stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence", asy
       "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
     ),
     options,
+  );
+  // Fixed wire tags protect interoperability independently of a same-codec round trip.
+  const policy = "openshell.v1.SandboxPolicy";
+  const publicMode = Buffer.from([0x38, 0x01]); // bool field 7
+  assert.equal(product[policy].deserialize(publicMode).allow_unconfigured_public_tcp, true);
+  assert.deepEqual(stock[policy].deserialize(publicMode), {});
+  const admission = "openshell.v1.SandboxConfigurationAdmission";
+  for (const applied of [false, true]) {
+    const wire = Buffer.from([0x40, Number(applied)]); // optional bool field 8
+    assert.equal(
+      product[admission].deserialize(wire).applied_allow_unconfigured_public_tcp,
+      applied,
+    );
+    assert.deepEqual(
+      product[admission].serialize({ applied_allow_unconfigured_public_tcp: applied }),
+      wire,
+    );
+  }
+  assert.equal(
+    product[admission].deserialize(Buffer.alloc(0)).applied_allow_unconfigured_public_tcp,
+    undefined,
   );
   const message = "openshell.v1.ProviderReadinessStatus";
   const evidence = {

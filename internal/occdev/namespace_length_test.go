@@ -9,6 +9,7 @@ import (
 )
 
 func TestDevelopmentNamespaceLengthPreflight(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, driver := range []string{"none", "openshell"} {
 		t.Run(driver, func(t *testing.T) {
 			for _, length := range []int{63, 64, 200} {

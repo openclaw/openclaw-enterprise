@@ -12,17 +12,19 @@ const (
 )
 
 // Profile is the selected local development profile: the Compute Driver, the
-// control plane, and the Sandbox Driver. Values are as selected (or the
+// control plane, Sandbox Driver, and network egress mode. Values are as selected (or the
 // defaults), not yet validated; the Check methods refuse unsupported values
 // and combinations.
 type Profile struct {
-	ComputeDriver string
-	ControlPlane  string
-	SandboxDriver string
+	ComputeDriver     string
+	ControlPlane      string
+	SandboxDriver     string
+	NetworkEgressMode string
 }
 
 // ResolveProfile reads OCC_DEVELOPMENT_COMPUTE_DRIVER,
-// OCC_DEVELOPMENT_CONTROL_PLANE and OCC_DEVELOPMENT_SANDBOX_DRIVER through
+// OCC_DEVELOPMENT_CONTROL_PLANE, OCC_DEVELOPMENT_SANDBOX_DRIVER, and
+// OCC_DEVELOPMENT_NETWORK_EGRESS_MODE through
 // getenv. An unset or empty selector takes its default.
 func ResolveProfile(getenv func(string) string) Profile {
 	setting := func(key, fallback string) string {
@@ -31,10 +33,17 @@ func ResolveProfile(getenv func(string) string) Profile {
 		}
 		return fallback
 	}
+	// TODO(public-egress-images): Change the protected default after bundled images qualify.
+	mode := setting("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
+	controlPlane, sandboxDriver := defaultDevelopmentControlPlane, defaultDevelopmentSandboxDriver
+	if mode == "public" {
+		controlPlane, sandboxDriver = "kubernetes", "openshell"
+	}
 	return Profile{
-		ComputeDriver: setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", defaultDevelopmentComputeDriver),
-		ControlPlane:  setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultDevelopmentControlPlane),
-		SandboxDriver: setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", defaultDevelopmentSandboxDriver),
+		NetworkEgressMode: mode,
+		ComputeDriver:     setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", defaultDevelopmentComputeDriver),
+		ControlPlane:      setting("OCC_DEVELOPMENT_CONTROL_PLANE", controlPlane),
+		SandboxDriver:     setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", sandboxDriver),
 	}
 }
 
@@ -46,6 +55,20 @@ func resolveProfile(env map[string]string) Profile {
 // Kubernetes: the only one with gateway routing and an HTTPS Console.
 func (p Profile) KubernetesOnly() bool {
 	return p.ComputeDriver == "kubernetes" && p.ControlPlane == "kubernetes"
+}
+
+func (p Profile) checkNetworkEgress() error {
+	switch p.NetworkEgressMode {
+	case "restricted":
+		return nil
+	case "public":
+		if !p.KubernetesOnly() || p.SandboxDriver != "openshell" {
+			return fmt.Errorf("public network egress requires Kubernetes Compute, OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes for authenticated Credential Gateway delivery; otherwise set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted")
+		}
+		return nil
+	default:
+		return fmt.Errorf("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE must be public or restricted")
+	}
 }
 
 // CheckComputeDriver refuses an unknown Compute Driver.

@@ -43,7 +43,7 @@ func (r *runner) loadSandboxNetworkPolicies(ctx context.Context, sandboxDriver s
 		return nil, fmt.Errorf("Sandbox network policy file requires one document with a nonempty networkPolicies list")
 	}
 	state := &developmentState{SandboxNetworkPolicies: document.NetworkPolicies}
-	configuration := openShellInstallationConfiguration(state, nil, nil)["configuration"]
+	configuration := openShellInstallationConfiguration(state, &openShellDevelopmentAssets{}, nil)["configuration"]
 	input, err := json.Marshal(configuration)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Sandbox network policy values: %w", err)

@@ -27,6 +27,7 @@ func validateClusterName(name string) error {
 }
 
 type developmentState struct {
+	NetworkEgressMode           string `json:"networkEgressMode,omitempty"`
 	Version                     int    `json:"version"`
 	Repository                  string `json:"repository"`
 	ComputeDriver               string `json:"computeDriver"`
@@ -186,6 +187,9 @@ func readState(directory string) (*developmentState, error) {
 	}
 	if !filepath.IsAbs(state.Repository) || state.Version != 3 || state.ComputeDriver != "kubernetes" || (state.SandboxDriver != "none" && state.SandboxDriver != "openshell") || (state.ContainerEngine != "docker" && state.ContainerEngine != "podman") || !clusterName.MatchString(state.Cluster) || !strings.HasPrefix(state.DockerHost, "unix:///") || !filepath.IsAbs(state.KeyPath) {
 		return nil, fmt.Errorf("unsupported development state")
+	}
+	if state.NetworkEgressMode != "" && state.NetworkEgressMode != "public" && state.NetworkEgressMode != "restricted" {
+		return nil, fmt.Errorf("unsupported development network egress mode")
 	}
 	switch state.DeploymentMode {
 	case "":

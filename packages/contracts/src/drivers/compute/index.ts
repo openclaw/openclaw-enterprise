@@ -203,6 +203,8 @@ export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
 export interface ComputeDriver extends Driver {
+  /** Enforces the admitted public TCP mode without bypassing provider-owned networking. */
+  readonly publicNetworkEgress?: true | undefined;
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
     revision: Readonly<AgentRevision>,

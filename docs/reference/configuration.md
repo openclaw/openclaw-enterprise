@@ -7,7 +7,7 @@ that should use it. Platform operators set Installation and Driver options in
 trusted startup YAML, not in Agent Configurations.
 
 - To reuse launch settings when creating Agents, use [Presets](presets.md).
-- To change a model or other Agent settings and put them into use, follow
+- To deploy model or other Agent settings, follow
   [Agent revisions](../guides/topics/agent-revisions.md).
 - To choose Agent credentials or enable a channel, see
   [Configuration secrets and channels](configuration/secrets.md).
@@ -33,7 +33,7 @@ or Agent configuration.
 
 ## Installation startup configuration
 
-Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
+Set `OCC_CONFIG_PATH` to a trusted YAML file’s absolute path. Production
 requires this setting; development can omit it to retain its existing local
 defaults. When provided, both API and worker processes must read the same file.
 The [production Kubernetes deployment guide](../guides/deploy/production-installation.md#configure-the-installation)
@@ -61,6 +61,7 @@ none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
 
+[Network egress modes](configuration/network-egress.md) defines `networkEgressMode` defaults and Driver requirements.
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)
 Roles, Groups, and bindings.

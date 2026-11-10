@@ -14,6 +14,9 @@ var developmentDatabaseName = regexp.MustCompile(`^openclaw_k8s_[a-z0-9_]+$`)
 func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
 	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
+		return err
+	}
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}

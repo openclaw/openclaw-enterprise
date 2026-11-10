@@ -6,17 +6,17 @@ last_verified: "2026-11-02"
 
 # Set up OCE on Kubernetes
 
-Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes cluster for development and evaluation. [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+Evaluate OpenClaw Enterprise with OpenShell. See [production qualification limits](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 ## Before you start
 
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
-Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.
-
-Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
-
-Use a fresh application database.
+Use control and Agent pools (`oce-role=control`, `oce-role=agents`), encrypted
+RWO storage with `WaitForFirstConsumer`, and a fresh database.
+Install the matching Agent Sandbox controller and `openshell-sandbox` `runc`
+RuntimeClass. Verify [kernel requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract)
+and restricted tenant Pod Security.
 
 ## 1. Prepare the cluster and images
 
@@ -39,9 +39,8 @@ export CLUSTER_NAME='<lowercase cluster name>'
 export STORAGE_CLASS='<encrypted RWO StorageClass>'
 export KUBECONFIG="$RUN_DIR/kubeconfig"
 export CONTEXT='<approved cluster context>'
-# Copy your administrator-provided kubeconfig, not the default kubeconfig.
+# Administrator-provided kubeconfig.
 install -m 600 /secure/oce/kubeconfig "$KUBECONFIG"
-# Select the context only in this private copy.
 kubectl --kubeconfig "$KUBECONFIG" config use-context "$CONTEXT"
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get nodes -L oce-role
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORAGE_CLASS"
@@ -50,15 +49,15 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORA
 | Input                                    | Value                                                                          |
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
-| `OPENSHELL_CHART`                        | Stock 0.1.6.                                                                   |
+| `OPENSHELL_CHART`                        | Stock 0.1.6 for restricted mode, or the qualified pair's chart.                |
 | `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
 | `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
 | `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
 | `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Match templates: OpenShell 0.1.6, Codex 0.164.0.
+Use Codex 0.164.0.
 
-Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
+Create `oce-system` and allow system Pod DNS, control and Service VIP traffic. Prepare GatewayClass.
 
 ```bash
 class_json=$(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get gatewayclass eg --ignore-not-found -o json)

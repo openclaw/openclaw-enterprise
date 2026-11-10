@@ -1,7 +1,6 @@
 # Local Kubernetes development
 
-Run OpenClaw Enterprise (OCE) in a disposable, loopback-only k3d cluster. The
-Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and Agents.
+Run OpenClaw Enterprise (OCE), PostgreSQL, and Agents in a disposable, loopback-only k3d cluster.
 
 ## Start the profile
 
@@ -45,12 +44,13 @@ Startup resolves the engine's host API socket. Do not export
 `DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
 machine-backed installation that path exists only inside the virtual machine.
 
-Build the CLI and start the Kubernetes profile:
+For public egress, use the [OpenShell quickstart](local-setup.md). Start the restricted profile:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
@@ -60,8 +60,7 @@ The launcher installs PostgreSQL and OCE, without OpenShell, on pinned K3s in
 It prepares [routing prerequisites](workspace-routing.md#requirements)
 and matching Helm/Installation settings before bootstrap.
 
-Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
-its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
+Startup checks the Codex `0.164.0` sandbox against its imported runtime image. If the node's `RuntimeDefault` blocks it, the
 launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
 policy and installs it only on the owned k3d node. Only dedicated Codex
 containers select it. Startup verifies workspace-write and outside-write
@@ -104,6 +103,7 @@ To select the hybrid profile on a fresh state directory:
 ```bash
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=compose
+export OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
@@ -128,6 +128,7 @@ For OpenShell, use the owned launcher:
 go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```

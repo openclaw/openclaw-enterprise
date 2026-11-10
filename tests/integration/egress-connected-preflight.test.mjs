@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
@@ -35,7 +38,14 @@ import {
   takeConnectedControllerBinding,
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
+  validatePublicEgressObserver,
 } from "../helpers/egress-connected-inputs.mjs";
+import {
+  assertPublicNetworkReceipt,
+  publicNetworkProgram,
+} from "../helpers/public-egress-programs.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { publicEgressResources } from "../helpers/public-egress-resources.ts";
 import { listen } from "../helpers/listen.mjs";
 
 import {
@@ -951,6 +961,342 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+test("public egress probe checks the mock receiver's streamed body without a listener", async (t) => {
+  const directory = await temporaryDirectory(t, "public-egress-probe-");
+  const publicTcp = {
+    url: "https://receiver.invalid:8443/check",
+    expectedBodySha256: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+  };
+  // Execute the Agent probe and the connected runner's receipt checks. Only the
+  // HTTPS responses are simulated. No DNS lookup or socket is needed.
+  for (const suffix of ["world", "changed"]) {
+    const nonce = randomUUID();
+    const receipt = join(directory, nonce);
+    const https = {
+      get(url, options, onResponse) {
+        assert.deepEqual(Object.keys(options), ["signal"]);
+        const response = Readable.from(url === publicTcp.url ? ["hello ", suffix] : ["registry"]);
+        response.statusCode = 200;
+        onResponse(response);
+        return response;
+      },
+    };
+    await runInNewContext(publicNetworkProgram({ nonce, receipt, publicTcp, managedHosts: [] }), {
+      require: (name) => (name === "node:https" ? https : process.getBuiltinModule(name)),
+      AbortSignal,
+    });
+    const report = JSON.parse(await readFile(receipt, "utf8"));
+    const verify = () =>
+      assertPublicNetworkReceipt(report, { nonce, publicTcp, hosts: [], allowed: true });
+    if (suffix === "world") {
+      verify();
+    } else {
+      assert.throws(verify, {
+        code: "ERR_ASSERTION",
+        actual: report.publicReads[2].bodySha256,
+        expected: publicTcp.expectedBodySha256,
+      });
+    }
+  }
+});
+
+test("public egress observer requires the local mTLS profile before forwarding", () => {
+  const valid = {
+    endpoint: "https://127.0.0.1:18443",
+    rootCertificatePath: "/fixture/ca.crt",
+    auth: {
+      mode: "mtls",
+      certificatePath: "/fixture/client.crt",
+      privateKeyPath: "/fixture/client.key",
+    },
+  };
+  assert.equal(validatePublicEgressObserver(valid).origin, valid.endpoint);
+  for (const changed of [
+    { auth: undefined },
+    { auth: { mode: "bearerTokenFile", path: "/fixture/token" } },
+    { rootCertificatePath: undefined },
+    { rootCertificatePath: "relative.crt" },
+    { auth: { ...valid.auth, certificatePath: undefined } },
+    { auth: { ...valid.auth, privateKeyPath: "relative.key" } },
+    { insecureTransport: true },
+  ]) {
+    assert.throws(() => validatePublicEgressObserver({ ...valid, ...changed }), {
+      code: "ERR_ASSERTION",
+    });
+  }
+});
+
+test("public egress cleanup retains independent Configuration cleanup after admission or Role failures", async (t) => {
+  // Actual Fastify, OCC and Native IAM enforce admission and mutate the in-memory
+  // store. Transport uncertainty and a cluster guard failure are injected at
+  // their boundaries; no installed Kubernetes or supplier behavior is claimed.
+  for (const scenario of [
+    "agent-refused",
+    "agent-name-taken",
+    "agent-repository-unconfigured",
+    "cluster-identity-changed",
+    "cluster-receipt-write-fails",
+    "role-refused",
+    "role-delete-refused",
+    "role-delete-response-lost",
+    "agent-create-response-unknown",
+    "agent-conflict-unknown",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const clusterFailure = scenario.startsWith("cluster-");
+      const receiptFailure = scenario === "cluster-receipt-write-fails";
+      const f = await createConsoleAppFixture(t, {
+        backends: [],
+        computeDriver: createReadyComputeDriver("cleanup-proof"),
+      });
+      await f.bootstrap("Public egress cleanup");
+      const admin = await f.signIn();
+      const namespace = await f.createNamespace(scenario, { ready: true });
+      const prefix = "/namespaces/" + namespace.id;
+      const member = await f.createNamespaceMember(scenario, namespace.id, [
+        ["read", "namespace"],
+        ["create", "configuration"],
+        ["delete", "configuration"],
+        ["read", "configuration"],
+        ["read", "agent"],
+      ]);
+      const limited = await f.signIn(member.credentials);
+      let session = scenario === "agent-refused" || scenario === "role-refused" ? limited : admin;
+      const observed = [];
+      const request = async (method, path, body) => {
+        if (
+          (scenario === "agent-create-response-unknown" || clusterFailure) &&
+          method === "POST" &&
+          path.endsWith("/agents")
+        ) {
+          // The sender cannot tell whether a create reached the controller. An
+          // empty read must not be promoted into proof that it can never commit.
+          throw new Error("transport outcome unknown");
+        }
+        if (
+          scenario === "agent-conflict-unknown" &&
+          method === "POST" &&
+          path.endsWith("/agents")
+        ) {
+          // An unfamiliar conflict envelope is not proof of a pre-insertion refusal.
+          return {
+            status: 409,
+            body: {
+              error: { code: "RESOURCE_CONFLICT", message: "Unclassified conflict" },
+              meta: { requestId: "unknown-conflict" },
+            },
+          };
+        }
+        const wire = serializeConnectedRequest(method, path, body);
+        const injected = await f.app.inject({
+          method: wire.method,
+          url: wire.path,
+          headers: {
+            host: new URL(session.origin).host,
+            ...authenticatedHeaders(session, wire.headers),
+          },
+          payload: wire.body,
+        });
+        const response = {
+          status: injected.statusCode,
+          body: injected.statusCode === 204 ? undefined : injected.json(),
+        };
+        observed.push({ method, path, status: response.status });
+        if (
+          scenario === "role-delete-response-lost" &&
+          method === "DELETE" &&
+          path.includes("/iam/roles/")
+        ) {
+          assert.equal(
+            response.status,
+            204,
+            "the real deletion committed before its response was lost",
+          );
+          throw new Error("delete response lost");
+        }
+        return {
+          status: response.status,
+          body: response.status === 204 ? undefined : response.body,
+        };
+      };
+      const receipts = new Map();
+      const clusterGuardError = new Error("cluster UID changed");
+      const receiptWriteError = new Error("cleanup receipt write failed");
+      let attemptedCleanup;
+      let clusterGuardReached = false;
+      const resources = publicEgressResources({
+        request,
+        namespacePath: prefix,
+        checkCluster: async () => {
+          clusterGuardReached = true;
+          if (clusterFailure) {
+            throw clusterGuardError;
+          }
+        },
+        retireAgent: async () => assert.fail("these scenarios never admit an Agent"),
+        record: async (name, value) => {
+          if (name === "cleanup" && receiptFailure) {
+            attemptedCleanup = value;
+            throw receiptWriteError;
+          }
+          receipts.set(name, value);
+        },
+      });
+      const config = await resources.create(
+        "configuration",
+        scenario === "agent-name-taken" || scenario === "agent-repository-unconfigured"
+          ? { kind: "agent", values: {} }
+          : protectedConfigurationBody("gpt-6"),
+      );
+      let role;
+      // The colliding Agent belongs to an earlier caller, with its own Configuration.
+      // A definitive name refusal must never recover or retire it by name.
+      const existing =
+        scenario === "agent-name-taken"
+          ? await f.createAgent(namespace.id, scenario, {}, { harnessAuth: null })
+          : undefined;
+      const existingBefore = existing
+        ? await f.request("GET", prefix + "/agents/" + existing.id)
+        : undefined;
+      if (scenario.startsWith("agent-") || clusterFailure) {
+        let expectedError = {
+          code: "ERR_ASSERTION",
+          message: /HTTP 409; error code RESOURCE_CONFLICT/,
+        };
+        if (scenario === "agent-refused") {
+          expectedError = { code: "ERR_ASSERTION", message: /HTTP 403; error code FORBIDDEN/ };
+        } else if (scenario === "agent-create-response-unknown" || clusterFailure) {
+          expectedError = { message: "transport outcome unknown" };
+        }
+        await assert.rejects(
+          resources.create("agent", {
+            name: scenario,
+            configurationId: config.id,
+            ...(scenario === "agent-repository-unconfigured"
+              ? {
+                  repositoryBindings: [
+                    { repositoryRef: "fixture-repository", profile: "github-repository" },
+                  ],
+                }
+              : {}),
+          }),
+          expectedError,
+        );
+        if (scenario === "agent-refused") {
+          assert.equal(observed.at(-1).status, 403, "real IAM admission refused Agent creation");
+        }
+      } else if (!clusterFailure) {
+        const createRole = () =>
+          resources.create("role", {
+            name: scenario,
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          });
+        if (scenario === "role-refused") {
+          await assert.rejects(createRole(), {
+            code: "ERR_ASSERTION",
+            message: /HTTP 403; error code FORBIDDEN/,
+          });
+          assert.equal(observed.at(-1).status, 403, "real IAM admission refused Role creation");
+        } else {
+          role = await createRole();
+          if (scenario === "role-delete-refused") {
+            session = limited;
+          }
+        }
+      }
+      const unsettled =
+        scenario.includes("delete-") ||
+        scenario === "agent-create-response-unknown" ||
+        scenario === "agent-conflict-unknown" ||
+        clusterFailure;
+      const requestsBeforeCleanup = observed.length;
+      let cleanupError;
+      try {
+        await resources.cleanup();
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (clusterFailure) {
+        assert.equal(clusterGuardReached, true);
+        if (receiptFailure) {
+          assert.ok(cleanupError instanceof AggregateError);
+          assert.equal(cleanupError.cause, clusterGuardError);
+          assert.deepEqual(cleanupError.errors, [clusterGuardError, receiptWriteError]);
+          assert.equal(receipts.has("cleanup"), false, "failed local write is not a saved receipt");
+        } else {
+          assert.equal(cleanupError, clusterGuardError);
+        }
+        assert.equal(
+          observed.length,
+          requestsBeforeCleanup,
+          "failed cluster guard makes no API request",
+        );
+      }
+      const remaining = await f.request("GET", prefix + "/configurations/" + config.id);
+      const unknown =
+        scenario === "agent-create-response-unknown" ||
+        scenario === "agent-conflict-unknown" ||
+        clusterFailure;
+      assert.equal(
+        remaining.status,
+        unknown ? 200 : 404,
+        "only unresolved Agent admission blocks Configuration deletion",
+      );
+      if (unsettled && !clusterFailure) {
+        assert.match(cleanupError?.message ?? "", /cleanup is unsettled/);
+      } else if (!unsettled) {
+        assert.equal(cleanupError, undefined);
+      }
+      const receipt = receipts.get("cleanup") ?? attemptedCleanup;
+      if (clusterFailure) {
+        assert.equal(receipt.clusterVerified, false);
+        assert.deepEqual(receipt.resources.configuration, {
+          id: config.id,
+          name: undefined,
+          state: "unsettled",
+          createState: "created",
+        });
+        assert.deepEqual(receipt.resources.agent, {
+          id: undefined,
+          name: scenario,
+          state: "unsettled",
+          createState: "unconfirmed",
+        });
+      }
+      assert.equal(receipt.settled, !unsettled);
+      assert.equal(receipt.resources.configuration.state, unknown ? "unsettled" : "deleted");
+      if (role) {
+        assert.equal(
+          receipt.resources.role.state,
+          "unsettled",
+          "a missing or refused delete response is retained honestly",
+        );
+        const actual = await f.request("GET", prefix + "/iam/roles/" + role.id);
+        assert.equal(actual.status, scenario === "role-delete-refused" ? 200 : 404);
+        if (actual.status === 200) {
+          assert.equal((await f.request("DELETE", prefix + "/iam/roles/" + role.id)).status, 204);
+        }
+      }
+      if (unknown) {
+        assert.equal(
+          (await f.request("DELETE", prefix + "/configurations/" + config.id)).status,
+          204,
+        );
+      }
+      if (existing) {
+        const after = await f.request("GET", prefix + "/agents/" + existing.id);
+        assert.equal(after.status, 200);
+        assert.deepEqual(after.data, existingBefore.data, "pre-existing Agent is untouched");
+        assert.equal(
+          (await f.request("GET", prefix + "/configurations/" + existing.configurationId)).status,
+          200,
+        );
+      }
+      assert.equal((await f.request("GET", prefix + "/agents")).data.length, existing ? 1 : 0);
+    });
   }
 });
 

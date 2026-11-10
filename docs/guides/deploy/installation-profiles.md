@@ -89,7 +89,7 @@ then rerender with `repository.enabled: true`.
 ## Prepare inputs
 
 Create a JSON file outside the repository or under an ignored local output
-directory. The renderer rejects any field it does not consume.
+directory.
 `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
@@ -101,6 +101,7 @@ one `@` and a dotted domain.
 
 ```json
 {
+  "networkEgressMode": "restricted",
   "controlPlane": {
     "releaseName": "oce",
     "namespace": "openclaw-system",
@@ -132,6 +133,10 @@ one `@` and a dotted domain.
   }
 }
 ```
+
+These profiles require `networkEgressMode: "restricted"`. For public access with
+Credential Gateway, use the [OpenShell quickstart](kubernetes-setup.md) and its
+qualified image set.
 
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at

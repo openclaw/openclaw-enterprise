@@ -1,0 +1,18 @@
+{
+  "env": {
+    "OCC_TEST_PUBLIC_EGRESS": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_PUBLIC_EGRESS_INPUTS",
+    "OCC_TEST_PUBLIC_EGRESS_SERVICE_KEY",
+    "OCC_TEST_DATABASE_URL"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/public-egress-connected.test.ts",
+      "expectedTests": ["a protected Agent admits public TCP only in its frozen public egress mode"]
+    }
+  ],
+  "optionalEnv": ["NODE_EXTRA_CA_CERTS"]
+}

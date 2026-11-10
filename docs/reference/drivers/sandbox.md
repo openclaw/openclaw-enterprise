@@ -168,19 +168,19 @@ For Harness provisioning it also supplies the Agent revision and
 [`HarnessWorkloadRequirements`](../../../packages/contracts/src/drivers/sandbox/index.ts).
 Use the identity, mounts, login mode, and credential references Compute selected.
 
-If `workspaceSetup` is present, read only the specified key of the Agent-owned
-Secret in the same Namespace. Initialize the approved workspace and verify its
-completion marker before starting the Harness. If OCC recorded completion but
-the marker is missing or mismatched, refuse startup with
-`SandboxWorkspaceSetupRefusedError` to preserve later edits. See the
+Initialize the workspace from the exact Agent-owned Secret key in `workspaceSetup`.
+Verify the marker before starting the Harness. If OCC recorded completion and the
+marker is missing or mismatched, throw `SandboxWorkspaceSetupRefusedError`. See the
 [workspace setup sequence](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution).
 
 The paired [Credential Gateway](credential-gateway.md#lifecycle) issues one opaque
-`{ sourceId, ref }` attachment per bound credential source. Compute passes them
-in `credentialAttachments`, which is empty when the revision uses no sources.
-The Sandbox must consume every attachment and reject references from any other
-provider. Compute waits for the gateway to report every attachment
-`ready` before activation.
+`{ sourceId, ref }` per bound source. Consume every entry in
+`credentialAttachments` and reject foreign references. Compute waits for
+every attachment to be `ready` before activation.
+
+After creation, throw `SandboxPolicyObservationPendingError` for policy
+convergence. Compute preserves the Sandbox until the deployment deadline.
+Dependency errors follow preparation failure handling.
 
 ### Sandbox resource identity
 

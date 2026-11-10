@@ -1126,9 +1126,14 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
   readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
+/** Public TCP access or the selected Driver's restricted destination policy. */
+export type NetworkEgressMode = "public" | "restricted";
+
 export interface AgentRevision extends Scope {
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
+  /** Frozen at admission; omission retains the Driver's restricted behavior. */
+  readonly networkEgressMode?: NetworkEgressMode;
   readonly id: string;
   readonly namespaceId: string;
   readonly agentId: string;

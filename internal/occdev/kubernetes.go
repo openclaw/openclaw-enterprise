@@ -420,7 +420,12 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	// reached a 4Gi limit.
 	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "2560Mi"}, "limits": map[string]string{"cpu": "2", "memory": "4Gi"}}
 	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
+	networkEgressMode := s.NetworkEgressMode
+	if networkEgressMode == "" {
+		networkEgressMode = "restricted"
+	}
 	config := map[string]any{
+		"networkEgressMode":           networkEgressMode,
 		"sandboxNetworkPolicyCeiling": s.SandboxNetworkPolicyCeiling,
 		"occ":                         map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
@@ -471,7 +476,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"address": openShellGatewayAddress,
 			"port":    8080,
 		}
-		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
+		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell, harnessResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
 			"id": openShellCredentialGatewayID,
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
@@ -533,7 +538,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 	}
 }
 
-func openShellInstallationConfiguration(s *developmentState, workspaceResources []any, harnessResources map[string]any) map[string]any {
+func openShellInstallationConfiguration(s *developmentState, assets *openShellDevelopmentAssets, harnessResources map[string]any) map[string]any {
 	gatewayNamespace := openShellGatewayNamespace
 	if s.DeploymentMode == "k3d" {
 		gatewayNamespace = s.PlatformNamespace
@@ -542,7 +547,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 		"app.kubernetes.io/name":     "openshell",
 		"app.kubernetes.io/instance": openShellGatewayService,
 	}
-	return map[string]any{
+	sandbox := map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
 			"gateway": map[string]any{
@@ -550,7 +555,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},
-				"operatorWorkspaceResources": workspaceResources,
+				"operatorWorkspaceResources": assets.workspaceResources,
 				"networkPolicyResources": []any{
 					map[string]any{
 						"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
@@ -589,6 +594,11 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			"sandboxNamePrefix": "os",
 		},
 	}
+	if assets.publicEgressQualified {
+		gateway := sandbox["configuration"].(map[string]any)["gateway"].(map[string]any)
+		gateway["publicNetworkEgress"] = "qualified"
+	}
+	return sandbox
 }
 
 // prepareDevelopmentCodexSandbox verifies the owned node before either local

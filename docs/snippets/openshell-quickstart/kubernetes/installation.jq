@@ -1,4 +1,12 @@
+($ARGS.named.networkEgressMode // "restricted") as $networkEgressMode |
+($ARGS.named.qualifiedPublicEgress // false) as $qualifiedPublicEgress |
+if $networkEgressMode != "public" and $networkEgressMode != "restricted" then
+  error("networkEgressMode must be public or restricted")
+elif $networkEgressMode == "public" and $qualifiedPublicEgress != true then
+  error("public network egress requires an explicitly qualified OpenShell Gateway and supervisor")
+else
 {
+  "networkEgressMode": $networkEgressMode,
   "occ": {
     "cluster": $cluster
   },
@@ -484,3 +492,8 @@
     }
   }
 }
+| if $qualifiedPublicEgress == true then
+    .drivers.sandbox.configuration.gateway.publicNetworkEgress = "qualified"
+  else . end
+
+end

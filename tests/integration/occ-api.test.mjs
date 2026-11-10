@@ -9061,8 +9061,10 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "harnessAuth",
     "id",
     "namespaceId",
+    "networkEgressMode",
     "revision",
   ]);
+  assert.equal(readyDeployment.data.networkEgressMode, "restricted");
   assert.equal(readyDeployment.data.configurationId, firstConfiguration.id);
   assert.equal(readyDeployment.data.configurationKind, "agent");
   assert.equal(readyDeployment.data.configurationGeneration, 1);

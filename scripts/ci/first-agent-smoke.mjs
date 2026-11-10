@@ -2378,6 +2378,7 @@ async function smoke() {
   const environment = {
     ...process.env,
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
     OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
     OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
@@ -2398,6 +2399,7 @@ async function smoke() {
   let stack;
   try {
     stack = await smokeStep("local-setup", () => startLocalSetup(environment));
+    assert.equal(stack.state.networkEgressMode, "restricted");
     stack.agents = [];
     const namespaces = await stack.api("GET", "/namespaces");
     stack.namespaceId = namespaces.find(({ name }) => name === "default")?.id;

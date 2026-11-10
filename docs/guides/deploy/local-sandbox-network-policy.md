@@ -8,6 +8,7 @@ OpenShell; either Compose or Kubernetes can hold OCC. Follow the
 ```bash
 OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes \
 OCC_DEVELOPMENT_CONTROL_PLANE=compose \
+OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted \
 OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell \
 ./scripts/dev-up --sandbox-network-policy-file ./network-policy.yaml
 ```

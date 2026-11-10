@@ -175,6 +175,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxPolicyObservationPendingError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -3609,6 +3610,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   readonly id: string;
   readonly capability = "compute" as const;
+  get publicNetworkEgress(): true | undefined {
+    return this.sandboxDriver?.publicNetworkEgress;
+  }
   readonly implementation: string;
   // Declared only with a Gateway runtime, which managed revisions require (validateGatewayManagedMode).
   readonly supportsGatewayManagedMode?: true;
@@ -6307,10 +6311,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private validatePublicEgressCredentials(revision: Readonly<AgentRevision>): void {
+    if (revision.networkEgressMode !== "public") {
+      return;
+    }
+    if (
+      revision.harness.mode === "embedded" &&
+      Object.keys(revision.secretBindings ?? {}).length > 0
+    ) {
+      throw new ConfigurationHarnessError(
+        "Public network egress cannot expose Configuration Secret bindings to an embedded Harness; use restricted network egress.",
+      );
+    }
+    if (revision.harnessAuth.method === "api_key" || revision.harnessAuth.method === "codex_pat") {
+      throw new ConfigurationHarnessError(
+        "Public network egress requires isolated credential-source delivery; use a paired CredentialGateway and Sandbox or restricted network egress.",
+      );
+    }
+    if (this.publicNetworkEgress !== true || revision.sandboxDriverId !== this.sandboxDriver?.id) {
+      throw new ConfigurationHarnessError(
+        "Public network egress requires a selected Sandbox Driver that supports public access.",
+      );
+    }
+  }
+
   private validateRevisionExecution(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): void {
+    this.validatePublicEgressCredentials(revision);
     const provider = this.providerAdmission(revision);
     const admission = revision.compute.admission;
     if (admission?.startsWith("model-provider:v1:")) {
@@ -7431,6 +7460,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
               checkedAt: new Date().toISOString(),
             };
             return { ...result, runtimeFailure };
+          }
+          if (error instanceof SandboxPolicyObservationPendingError) {
+            // The Sandbox exists. Keep it while the next pass observes its policy.
+            return incomplete();
           }
           if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {
             throw error;
@@ -14685,6 +14718,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
+    this.validatePublicEgressCredentials(revision);
     let runtime: string | undefined;
     if (this.protectedCodexInference(revision)) {
       runtime = PROTECTED_CODEX_NO_CONNECTION_RETRY;

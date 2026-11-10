@@ -5,6 +5,10 @@ namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md
 
 ## Networking
 
+Ordinary Kubernetes workloads support restricted egress. Public mode requires a
+selected supporting Sandbox and external model credential custody; see
+[network egress modes](../../configuration/network-egress.md).
+
 Configure cluster DNS namespace/Pod labels and gateway port. Peer namespaces
 must be DNS labels of at most 63 characters. `network.gatewayTrustedProxyCidrs`
 requires nonempty proxy socket-source CIDRs; it has no production default and

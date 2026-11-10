@@ -54,6 +54,8 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 
 func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
+	r.env["OCC_DEVELOPMENT_SANDBOX_DRIVER"] = sandboxDriver
+	r.env["OCC_DEVELOPMENT_CONTROL_PLANE"] = "kubernetes"
 	defer func() {
 		if result != nil {
 			stage, cleanupFailed := startupFailureDetails(result)
@@ -66,6 +68,14 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
+	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
+		return err
+	}
+	networkEgressMode := profile.NetworkEgressMode
+	if networkEgressMode == "public" && sandboxDriver != "openshell" {
+		return fmt.Errorf("public network egress requires OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell; otherwise set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted")
+	}
 	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
 	if err != nil {
 		return err
@@ -76,6 +86,10 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	openShellImages, err := r.selectOpenShellImages(sandboxDriver)
 	if err != nil {
 		return err
+	}
+	// TODO(public-egress-images): Allow bundled images after their applied-policy support is qualified.
+	if networkEgressMode == "public" && !openShellImages.publicEgressCandidate() {
+		return fmt.Errorf("bundled OpenShell 0.1.6 does not support public network egress: select reviewed OCC_DEVELOPMENT_OPENSHELL_{GATEWAY,SANDBOX,SUPERVISOR}_IMAGE values and OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION, or set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted; see docs/guides/deploy/local-openshell-images.md")
 	}
 	repositoryInputs, err := r.loadDevelopmentRepositoryInputs(sandboxDriver)
 	if err != nil {
@@ -119,6 +133,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	state := &developmentState{
+		NetworkEgressMode:           networkEgressMode,
 		SandboxNetworkPolicies:      networkPolicies,
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,

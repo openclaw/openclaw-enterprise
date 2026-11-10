@@ -3501,7 +3501,7 @@ test("protected admission refuses an Agent's network policy additions instead of
   assert.equal(refused.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.match(
     refused.body.error.message,
-    /^Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused\./,
+    /^Protected execution uses the admitted network mode and Credential Proxy policy, so this Agent's network policy additions are refused\./,
   );
   assert.deepEqual(
     await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
@@ -3572,7 +3572,7 @@ test("the policy endpoint refuses additions before an Agent's first protected de
   assert.equal(refused.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
   assert.equal(
     refused.body.error.message,
-    "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+    "Protected execution applies to this Agent: the admitted network mode and Credential Proxy routes govern its egress, so network policy additions are refused; only an empty policy can be saved.",
   );
   const unchanged = (await f.request("GET", base)).body.data.policy;
   assert.equal(unchanged.version, version);

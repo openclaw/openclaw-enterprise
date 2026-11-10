@@ -23705,3 +23705,42 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
   );
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
 });
+
+test("public revisions refuse raw credentials before admission or workload replay", async () => {
+  for (const embedded of [true, false]) {
+    for (const method of ["api_key", "codex_pat"]) {
+      const { driver, revision, context, records } = workspaceSetupFixture(embedded);
+      revision.networkEgressMode = "public";
+      revision.harnessAuth = { ...revision.harnessAuth, method };
+      context.harnessAuth = { ...context.harnessAuth, method };
+      // Keep the saved provider settings consistent with the selected authentication method.
+      revision.harness.configuration = driver.resolveHarnessConfiguration(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+      );
+      const refused = /Public network egress requires isolated credential-source delivery/;
+      assert.throws(() => driver.admitRevision(revision), refused);
+      // A persisted revision cannot bypass admission and project its credential on replay.
+      await assert.rejects(driver.prepareRevision(revision, context), refused);
+      await assert.rejects(driver.activateRevision(revision, context), refused);
+      assert.equal(records.length, 0, "refusal must precede any Kubernetes resource write");
+      assert.doesNotThrow(() =>
+        driver.admitRevision({ ...revision, networkEgressMode: "restricted" }),
+      );
+    }
+  }
+});
+
+test("public embedded revisions refuse Configuration Secrets before workload replay", async () => {
+  const { driver, revision, context, records } = workspaceSetupFixture(true);
+  revision.networkEgressMode = "public";
+  revision.secretBindings = {
+    SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: tenant.id, id: "sec_channel" } },
+  };
+  const refused = /Public network egress cannot expose Configuration Secret bindings/;
+  assert.throws(() => driver.admitRevision(revision), refused);
+  await assert.rejects(driver.prepareRevision(revision, context), refused);
+  await assert.rejects(driver.activateRevision(revision, context), refused);
+  assert.equal(records.length, 0);
+});

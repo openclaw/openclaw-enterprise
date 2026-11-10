@@ -47,6 +47,7 @@ export function registerInstallationRefusals() {
       const environment = {
         ...process.env,
         OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+        OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
         OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
         OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
         OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
@@ -135,6 +136,7 @@ process.exit(result.status ?? 1);
         OPENCLAW_DEV_PORT: String(apiPort),
         OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
         OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+        OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
         OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
         OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
         OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,

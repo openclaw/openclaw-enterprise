@@ -1394,6 +1394,12 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
+    networkEgressMode: Type.Optional(
+      Type.Union([Type.Literal("public"), Type.Literal("restricted")], {
+        description:
+          "Outbound network policy frozen for this revision. Public selects the Driver's public TCP mode while retaining managed credential routes. Restricted, including omission, retains the selected Driver's restricted behavior.",
+      }),
+    ),
     harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },

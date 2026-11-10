@@ -34,6 +34,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}
 	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
+		return err
+	}
 	if err := profile.CheckSandboxDriver(); err != nil {
 		return err
 	}
@@ -93,6 +96,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
+	state.NetworkEgressMode = profile.NetworkEgressMode
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
 	{

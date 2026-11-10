@@ -39,6 +39,7 @@ export async function keycloakLauncher(t) {
     ...process.env,
     OCC_DEVELOPMENT_SIGN_IN: "keycloak",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
     OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
     OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
     OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
