@@ -1870,6 +1870,22 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   );
 }
 
+function requireModelProviderGrant(
+  provider: Readonly<ModelProvider>,
+  grant: CredentialSource["staticKeyGrant"],
+) {
+  if (
+    !grant ||
+    grant.connectionTemplateId !== provider.connectionTemplateId ||
+    grant.protocol !== provider.protocol ||
+    grant.baseUrl !== provider.baseUrl
+  ) {
+    throw new ResourceStateConflictError(
+      "The selected credential does not approve this Model Provider's Connection Template, destination, and API format.",
+    );
+  }
+}
+
 function resolveNamedModelProvider(
   compute: ComputeDriver,
   provider: Readonly<ModelProvider> | undefined,
@@ -13546,6 +13562,11 @@ export class OpenClawController {
           "A named Model Provider cannot be combined with an inline Harness override.",
         );
       }
+      if (provider && lockedAgent.harnessAuth?.method !== "credential_source") {
+        throw new ConfigurationHarnessError(
+          "A named Model Provider requires a credential created from its Connection Template.",
+        );
+      }
       const requestedHarness = Object.freeze({
         ...approvedHarness,
         ...(provider ? { modelProviderId: provider.id } : {}),
@@ -13577,11 +13598,6 @@ export class OpenClawController {
         configuration.values,
       );
       const runtimeValues = named?.values ?? configuration.values;
-      if (provider && harnessAuth.method !== "credential_source") {
-        throw new ConfigurationHarnessError(
-          "A named Model Provider requires a credential created from its Connection Template.",
-        );
-      }
       const revisionHarness = immutableCopy({
         ...requestedHarness,
         configuration:
@@ -15405,6 +15421,17 @@ export class OpenClawController {
     modelProvider?: Readonly<ModelProvider>,
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
+    if (modelProvider) {
+      const auth = agent.harnessAuth;
+      if (
+        auth?.method !== "credential_source" ||
+        !bindings.some(({ sourceId }) => sourceId === auth.sourceId)
+      ) {
+        throw new ConfigurationHarnessError(
+          "Bind the provider's credential source as Harness authentication.",
+        );
+      }
+    }
     if (bindings.length === 0) {
       this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
       return [];
@@ -15442,17 +15469,7 @@ export class OpenClawController {
         agent.harnessAuth?.method === "credential_source" &&
         sourceId === agent.harnessAuth.sourceId
       ) {
-        const grant = source.staticKeyGrant;
-        if (
-          !grant ||
-          grant.connectionTemplateId !== modelProvider.connectionTemplateId ||
-          grant.protocol !== modelProvider.protocol ||
-          grant.baseUrl !== modelProvider.baseUrl
-        ) {
-          throw new ResourceStateConflictError(
-            "The selected credential does not approve this Model Provider's Connection Template, destination, and API format.",
-          );
-        }
+        requireModelProviderGrant(modelProvider, source.staticKeyGrant);
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
       const owner = this.credentialSourceOwner(source);
@@ -15633,6 +15650,19 @@ export class OpenClawController {
     const provider = statusRead
       ? undefined
       : await this.selectedModelProvider(state, plan.modelProviderId);
+    if (provider) {
+      if (binding.method !== "credential_source") {
+        throw new ConfigurationHarnessError(
+          "A named Model Provider requires a credential created from its Connection Template.",
+        );
+      }
+      // authorizeProvisioningSources already locked and authorized this exact source.
+      const source = await state.credentialSources.findCredentialSource(
+        namespaceId,
+        binding.sourceId,
+      );
+      requireModelProviderGrant(provider, source?.staticKeyGrant);
+    }
     const named = resolveNamedModelProvider(compute, provider, harness, plan.configuration.values);
     const values = named?.values ?? plan.configuration.values;
     const configuration = statusRead
@@ -17991,12 +18021,6 @@ export class OpenClawController {
     };
   }
 
-  // Agent save runs deploy admission's checks of the Agent against its Configuration and the
-  // Installation's Drivers, with the same messages, so a pair every deployment would refuse is
-  // refused where it is written. A stored Agent that newly fails still reads, and deployment
-  // refuses it as before; its next update must fix the pair. Checks that read live state stay
-  // with deployment: an unapproved Harness runtime, and Harness authentication through a
-  // ServiceAccount (issued credential) or a credential source (its state and type).
   // Callers have authorized the exact Agent operation. Any Installation provider may be selected
   // in this Namespace; deployment checks the caller's and Agent's grants on the bound source.
   private async selectedModelProvider(
@@ -18013,6 +18037,12 @@ export class OpenClawController {
     return provider;
   }
 
+  // Agent save runs deploy admission's checks of the Agent against its Configuration and the
+  // Installation's Drivers, with the same messages, so a pair every deployment would refuse is
+  // refused where it is written. A stored Agent that newly fails still reads, and deployment
+  // refuses it as before; its next update must fix the pair. Checks that read live state stay
+  // with deployment: an unapproved Harness runtime, and Harness authentication through a
+  // ServiceAccount (issued credential) or a credential source (its state and type).
   private async validateSavedAgentTopology(
     state: PlatformReadView,
     resolveHarness: HarnessResolver | undefined,

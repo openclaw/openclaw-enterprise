@@ -145,6 +145,8 @@ export function resolveKubernetesModelProvider(
       providers: {
         ...providers,
         [primary.provider]: {
+          // The draft may have selected its Harness on the provider or one of the replaced rows.
+          agentRuntime: { id: harness.id },
           ...(harness.id === "openclaw"
             ? { baseUrl: provider.baseUrl, api: provider.protocol }
             : {}),

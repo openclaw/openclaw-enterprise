@@ -654,6 +654,43 @@ test("startup composes both OpenShell members from one Backend for static source
       }
     },
   );
+  await t.test("a templated inference key registers one exact POST endpoint", async () => {
+    const baseUrl = "https://inference.example.test/team/v1";
+    const scoped: CredentialSource = {
+      ...source,
+      id: "cs_00000000-0000-4000-8000-000000000003",
+      state: "registering",
+      config: { authorized_base_url: baseUrl },
+      staticKeyGrant: {
+        connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000001",
+        connectionTemplateVersion: 1,
+        baseUrl,
+        protocol: "openai-completions",
+      },
+    };
+    await gateway.registerSource(
+      {
+        source: scoped,
+        namespace: { ...tenant, name: namespace, status: "ready" },
+        signal: AbortSignal.timeout(2_000),
+      },
+      { type: scoped.type, config: scoped.config, secrets: { api_key: "fixture-inference-key" } },
+    );
+    const path = "/team/v1/chat/completions";
+    const imported = writes.find(
+      ([action, , profile]) =>
+        action === "importProviderProfile" && profile?.id === openShellProviderName(scoped.id),
+    );
+    assert.deepEqual(imported?.[2]?.endpoints, [
+      {
+        host: "inference.example.test",
+        port: 443,
+        protocol: "rest",
+        path,
+        rules: [{ allow: { method: "POST", path } }],
+      },
+    ]);
+  });
   await t.test(
     "selected handler refuses a provider without source ownership without fallback",
     async () => {

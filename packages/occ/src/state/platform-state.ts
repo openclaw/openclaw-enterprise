@@ -1057,7 +1057,12 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     typeof revision.harness !== "object" ||
     revision.harness === null ||
     Array.isArray(revision.harness) ||
-    Object.keys(revision.harness).length !== 5 ||
+    Object.keys(revision.harness).length !==
+      (revision.harness.modelProviderId === undefined ? 5 : 6) ||
+    (revision.harness.modelProviderId !== undefined &&
+      !/^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        revision.harness.modelProviderId,
+      )) ||
     !Object.hasOwn(revision.harness, "id") ||
     !Object.hasOwn(revision.harness, "version") ||
     !Object.hasOwn(revision.harness, "mode") ||
