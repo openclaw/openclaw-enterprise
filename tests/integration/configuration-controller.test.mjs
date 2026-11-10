@@ -7,22 +7,16 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import test from "node:test";
-import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  createConfigurationControllerFixture,
+  request,
+} from "../helpers/configuration-controller-fixture.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -107,150 +101,8 @@ function createConfigurationBackend() {
   };
 }
 
-// Building a controller app and signing in to it cost more than most cases, so the cases share
-// one administrator and one session, and one app per Driver shape: with or without a Compute
-// Driver and a Configuration Driver. Cases run one at a time. Each gets a new Namespace and its
-// own Drivers, audit sink and IAM grants: the app's Drivers and sink forward to the running
-// case's. A forwarding Driver keeps one identity, because OCC rechecks it on every selection,
-// so a case Driver's own id and implementation never reach OCC.
-const running = {};
-const apps = new Map();
-let administrator;
-let session;
-
-function forwarder(identity, target) {
-  return new Proxy(identity, {
-    get(pinned, key) {
-      if (Object.hasOwn(pinned, key)) {
-        return pinned[key];
-      }
-      const value = target()[key];
-      return typeof value === "function" ? value.bind(target()) : value;
-    },
-    has: (pinned, key) => Object.hasOwn(pinned, key) || key in target(),
-  });
-}
-
-async function sharedApp(withCompute, withConfiguration, computeImplementation) {
-  const authFixture = await (administrator ??= createTestAuthPrincipal({
-    name: "Configuration Integration Administrator",
-  }));
-  const principal = authFixture.seed.principal;
-  const identities = [];
-  const roles = [];
-  const bindings = [];
-  const iam = new NativeIAMDriver({
-    loadNativeIAMState: async () => ({
-      identities,
-      groups: [],
-      memberships: [],
-      roles,
-      bindings,
-      restrictions: [],
-    }),
-  });
-  const auditSink = forwarder({}, () => running.auditSink);
-  let controller;
-  const app = createControllerApp({
-    createController(installation) {
-      controller = new OpenClawController(installation, {
-        state: new InMemoryPlatformState({ auditSink }),
-        recordOperations: false,
-      });
-      return controller;
-    },
-    iamDriver: iam,
-    secretDriver: createTestSecretDriver(),
-    ...(withConfiguration
-      ? {
-          configurationDriver: forwarder(
-            {
-              id: "configuration-integration",
-              capability: "configuration",
-              implementation: "integration-memory-substrate",
-            },
-            () => running.configurationDriver,
-          ),
-        }
-      : {}),
-    ...(withCompute
-      ? {
-          computeDriver: forwarder(
-            {
-              id: "compute-configuration-integration",
-              capability: "compute",
-              implementation: computeImplementation,
-            },
-            () => running.computeDriver,
-          ),
-        }
-      : {}),
-    resolveHarness: resolveApprovedDevelopmentHarness,
-    auditSink,
-    development: {
-      enabled: true,
-      browserOrigin: "https://console.oce.localhost",
-      issuer: principal.issuer,
-      subject: principal.subject,
-      principalId: principal.id,
-      installationId: authFixture.installationId,
-    },
-    auth: authFixture.auth,
-  });
-  // Each case starts from the administrator's grants alone, or the permissions it names.
-  const grant = (permissions = authFixture.seed.roles[0].permissions) => {
-    identities.splice(0, Infinity, principal);
-    roles.splice(0, Infinity, { id: "role-configuration-integration", permissions });
-    bindings.splice(0, Infinity, {
-      id: "binding-configuration-integration",
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-configuration-integration",
-    });
-  };
-  grant();
-  session ??= await signInToControllerApp(app, authFixture);
-  app.defaultSession = session;
-  const installed = await request(app, "POST", "/installation/bootstrap", {
-    body: { name: "Configuration integration" },
-  });
-  assert.equal(installed.status, 201);
-  return { app, principal, identities, roles, bindings, controller, grant };
-}
-
-let namespaces = 0;
-
-async function fixture({
-  permissions,
-  configurationDriver = createConfigurationBackend(),
-  computeDriver,
-  // The Compute identity OCC sees. OCC applies the bundled Kubernetes Compute's channel binding
-  // rule only for its implementations (finding 2319).
-  computeImplementation = "integration-compute-substrate",
-  auditSink = new InMemoryAuditSink(),
-} = {}) {
-  Object.assign(running, { configurationDriver, computeDriver, auditSink });
-  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}/${computeImplementation}`;
-  if (!apps.has(shape)) {
-    apps.set(
-      shape,
-      sharedApp(computeDriver !== undefined, configurationDriver !== null, computeImplementation),
-    );
-  }
-  const { grant, ...context } = await apps.get(shape);
-  grant(permissions);
-  namespaces += 1;
-  const namespace = await request(context.app, "POST", "/namespaces", {
-    body: { name: `Configuration tenant ${namespaces}` },
-  });
-  assert.equal(namespace.status, 201);
-  return {
-    ...context,
-    auditSink,
-    namespace: namespace.body.data,
-    collection: `/namespaces/${namespace.body.data.id}/configurations`,
-    presets: `/namespaces/${namespace.body.data.id}/presets`,
-  };
+function fixture({ configurationDriver = createConfigurationBackend(), ...options } = {}) {
+  return createConfigurationControllerFixture({ ...options, configurationDriver });
 }
 
 // A ready Namespace on the Filesystem Configuration Driver, for Configuration and Preset saves.
@@ -264,29 +116,6 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
     state.namespaces.transitionNamespaceStatus(id, "provisioning", "ready"),
   );
   return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
-}
-
-async function request(
-  app,
-  method,
-  pathname,
-  { body, authorization = true, session = app.defaultSession } = {},
-) {
-  const headers = authorization ? authenticatedHeaders(session) : {};
-  if (body !== undefined) {
-    headers["content-type"] = "application/json";
-  }
-  const response = await app.fetch(
-    new Request(`https://console.oce.localhost${pathname}`, {
-      method,
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }),
-  );
-  return {
-    status: response.status,
-    body: response.status === 204 ? undefined : await response.json(),
-  };
 }
 
 function createOpenClawConfiguration() {
@@ -4663,13 +4492,10 @@ test("Deploy rejects Configuration content that selects no supported Harness run
 });
 
 test("Configuration operations fail closed when no ConfigurationDriver is selected", async () => {
-  const { namespace, ...context } = await fixture({ configurationDriver: null });
-  const unavailable = await request(
-    context.app,
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    { body: { kind: "agent", values: { model: "gpt-test" } } },
-  );
+  const { app, collection } = await fixture({ configurationDriver: null });
+  const unavailable = await request(app, "POST", collection, {
+    body: { kind: "agent", values: { model: "gpt-test" } },
+  });
   assert.equal(unavailable.status, 503);
   assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
@@ -4687,19 +4513,19 @@ test("Configuration creation rolls back its external substrate when its required
 
   const configurationDriver = createConfigurationBackend();
   const auditSink = new FailingConfigurationAuditSink();
-  const { namespace, ...context } = await fixture({ configurationDriver, auditSink });
+  const { app, collection, controller, namespace } = await fixture({
+    configurationDriver,
+    auditSink,
+  });
 
   // The genuine Fastify/OCC transaction must compensate the external write after audit failure.
-  const rejected = await request(
-    context.app,
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    { body: { kind: "agent", values: { model: "gpt-never-admitted" } } },
-  );
+  const rejected = await request(app, "POST", collection, {
+    body: { kind: "agent", values: { model: "gpt-never-admitted" } },
+  });
   assert.equal(rejected.status, 503, JSON.stringify(rejected.body));
   assert.equal(rejected.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.deepEqual(configurationDriver.storedConfigurations(), []);
-  const persisted = await context.controller.transact((state) =>
+  const persisted = await controller.transact((state) =>
     state.configurations.findConfiguration(namespace.id, auditSink.rejectedConfigurationId),
   );
   assert.equal(persisted, undefined);
