@@ -432,7 +432,7 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
         },
       },
     };
-    const failure = vm.runInNewContext(
+    vm.runInNewContext(
       helper +
         "\nthis.result = probeOpenClawAuthenticationFailure();" +
         '\nthis.preload = OPENCLAW_PROBE_CPU_WINDOW("/owned/cpu-window.json");',
@@ -468,7 +468,11 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
   const starved = 3_600_000_000;
   // Preload samples: [ms, pressure ms, throttled ms, throttled periods ms]; JSON
   // writes an unreadable counter as null.
-  const window = (waitMs) => JSON.stringify([[1000, 50, 0, 0], [16200, 50 + waitMs, null, null]]);
+  const window = (waitMs) =>
+    JSON.stringify([
+      [1000, 50, 0, 0],
+      [16200, 50 + waitMs, null, null],
+    ]);
   // The cap is still judged on the whole run.
   assert.equal(classify(cap, starved).code, "MODEL_PROBE_CPU_STARVED");
   assert.equal(classify(cap, 0).code, "MODEL_PROBE_TIMEOUT");
@@ -484,17 +488,17 @@ test("an OpenClaw probe timeout is classified by CPU wait inside its window (fin
   ]) {
     const probe = classify(openclawTimeout, wholeRun, window(windowWaitMs));
     assert.equal(probe.code, code);
-    assert.deepEqual(
-      [probe.timeoutWindowMs, probe.timeoutWindowCpuWaitMs],
-      [15200, windowWaitMs],
-    );
+    assert.deepEqual([probe.timeoutWindowMs, probe.timeoutWindowCpuWaitMs], [15200, windowWaitMs]);
   }
   // Without a usable window reading the CLI's timeout stays a timeout.
   for (const reading of [
     undefined,
     "not json",
     JSON.stringify([null, [16200, 50, 0, 0]]),
-    JSON.stringify([[1000, null, null, null], [16200, null, null, null]]),
+    JSON.stringify([
+      [1000, null, null, null],
+      [16200, null, null, null],
+    ]),
   ]) {
     const probe = classify(openclawTimeout, starved, reading);
     assert.equal(probe.code, "MODEL_PROBE_TIMEOUT");
@@ -521,9 +525,15 @@ test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", 
   const writes = new Map();
   const fs = {
     readFileSync(path) {
-      if (path === "/sys/fs/cgroup/cpu.max") return "50000 100000\n";
-      if (path === "/sys/fs/cgroup/cpu.pressure") return `some avg10=0.00 total=${pressureUs}\n`;
-      if (path === "/sys/fs/cgroup/cpu.stat") return "nr_throttled 7\nthrottled_usec 900000\n";
+      if (path === "/sys/fs/cgroup/cpu.max") {
+        return "50000 100000\n";
+      }
+      if (path === "/sys/fs/cgroup/cpu.pressure") {
+        return `some avg10=0.00 total=${pressureUs}\n`;
+      }
+      if (path === "/sys/fs/cgroup/cpu.stat") {
+        return "nr_throttled 7\nthrottled_usec 900000\n";
+      }
       throw new Error(`unexpected path ${path}`);
     },
     writeFileSync(path, value) {
@@ -533,7 +543,10 @@ test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", 
   vm.runInNewContext(context.preload, {
     JSON,
     Date: { now: () => now },
-    require: (name) => (assert.equal(name, "node:fs"), fs),
+    require(name) {
+      assert.equal(name, "node:fs");
+      return fs;
+    },
     setInterval(callback, delay) {
       assert.equal(delay, 1000);
       tick = callback;
@@ -549,7 +562,9 @@ test("the probe CLI preload records the CPU wait of OpenClaw's timeout window", 
   // A 9 s boot waiting 1 s in every 2, then an idle 15.5 s window.
   for (let second = 1; second <= 24; second += 1) {
     now = second * 1000;
-    if (second <= 9) pressureUs += 500_000;
+    if (second <= 9) {
+      pressureUs += 500_000;
+    }
     tick();
   }
   now = 24_500;
