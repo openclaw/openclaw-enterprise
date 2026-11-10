@@ -107,10 +107,11 @@ type NarrowPreparation = Pick<
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
 >;
 
-type SelectedReadJourney = Pick<
+type SelectedGrantJourney = Pick<
   NarrowJourney,
-  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
+  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision"
 > & {
+  removeBinding(repositoryRef?: string): Promise<unknown>;
   readonly grant: {
     readonly endpoint: string;
     readonly port: number;
@@ -126,21 +127,24 @@ type SelectedReadJourney = Pick<
 export async function selectedReadGitJourney(
   t: TestContext,
   testUrl: string,
-  exercise: (journey: SelectedReadJourney) => Promise<void>,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
   sharedGitIssuance?: true,
 ) {
-  await repositoryGitJourney(
-    t,
-    testUrl,
-    undefined,
-    {},
-    undefined,
-    false,
-    undefined,
-    undefined,
+  await selectedGrantGitJourney(t, testUrl, exercise, undefined, sharedGitIssuance);
+}
+
+export async function selectedGrantGitJourney(
+  t: TestContext,
+  testUrl: string,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
+  scope?: { readonly contents: "read" | "write"; readonly set?: true; readonly pullPreview?: true },
+  sharedGitIssuance?: true,
+) {
+  await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
     exercise,
-    sharedGitIssuance,
-  );
+    ...(scope === undefined ? {} : { scope }),
+    ...(sharedGitIssuance && { sharedGitIssuance }),
+  });
 }
 
 export async function beforeNarrowGitPreparation(
@@ -233,16 +237,35 @@ async function repositoryGitJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
-  selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
-  sharedGitIssuance?: true,
+  selectedGrant?: {
+    exercise: (journey: SelectedGrantJourney) => Promise<void>;
+    sharedGitIssuance?: true;
+    scope?: {
+      readonly contents: "read" | "write";
+      readonly set?: true;
+      readonly pullPreview?: true;
+    };
+  },
 ) {
+  const selectedRead = selectedGrant?.exercise;
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
-  const selectedRepositories = repositorySet.slice(0, standing || selectedRead ? 1 : 2);
+  const set = selectedGrant?.scope?.set;
+  const pullPreview = selectedGrant?.scope?.pullPreview;
+  const grantProfile = pullPreview
+    ? "selected-repository-pull-preview"
+    : set
+      ? "selected-repository-set"
+      : selectedGrant?.scope && "selected-repository-write";
+  const selectedRepositories = repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
   const selectedPermissions = selectedRead
-    ? ({ metadata: "read", contents: "read" } as const)
+    ? ({
+        metadata: "read",
+        contents: selectedGrant?.scope?.contents ?? "read",
+        ...(pullPreview && { pull_requests: "write" as const }),
+      } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -261,6 +284,7 @@ async function repositoryGitJourney(
     sandbox: "selected",
     policy: {} as object,
     gitRule: {} as { name: string },
+    pullApiRule: undefined as { name: string } | undefined,
     installed: undefined as string | undefined,
     started: { seconds: Math.floor(Date.now() / 1000) },
     runtimeProvider: "oce-runtime-" + "a".repeat(16),
@@ -359,6 +383,7 @@ async function repositoryGitJourney(
           privateKeyPath: tls.keyPath,
           issuerPublicKeyPath,
         },
+        ...(grantProfile && { grantRedemptionProfile: grantProfile }),
         ...(grantEndpoint &&
           grantPort && {
             grantRedemption: {
@@ -456,8 +481,9 @@ async function repositoryGitJourney(
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    prepareGitOnDemand: !!selectedRead,
-    ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+    prepareGitOnDemand: grantProfile ?? !!selectedRead,
+    ...(selectedGrant?.sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+    ...(pullPreview && { pullPreview }),
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
@@ -640,7 +666,7 @@ async function repositoryGitJourney(
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(
     revision.repositoryCredentials!.bindings.length,
-    narrowProfile || standing || selectedRead ? 1 : 2,
+    narrowProfile ? 1 : selectedRepositories.length,
   );
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.executionAdmission.mode, "protected");
@@ -933,6 +959,7 @@ async function repositoryGitJourney(
         }
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
+        state.pullApiRule = entry.pullApi?.provider.previewNetworkRule();
         stage = "recipient-bind";
         await runtime.bind(
           r.id,
@@ -954,12 +981,22 @@ async function repositoryGitJourney(
               await reconcile();
             }
             retry = true;
-            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
-              startupId,
-              probePath: path,
-              reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
-                .reason_code,
-            }));
+            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => {
+              const target = path.startsWith("/graphql?")
+                ? {
+                    ...probe.target,
+                    host: "api.github.com",
+                    method: "POST",
+                    path: "/graphql",
+                    query: path.slice("/graphql?".length),
+                  }
+                : { ...probe.target, path };
+              return {
+                startupId,
+                probePath: path,
+                reasonCode: (await evaluate({ ...probe, target })).reason_code,
+              };
+            });
           },
           { timeoutMs: 20_000 },
         );
@@ -1273,12 +1310,16 @@ async function repositoryGitJourney(
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),
           finishIssuance: () => issuanceRelease.resolve(),
-          removeBinding: () =>
+          removeBinding: (repositoryRef) =>
             f.controller.updateAgent(f.actor.id, {
               namespaceId: f.namespace.id,
               agentId: agent.id,
               configurationId: configuration.id,
-              repositoryBindings: [],
+              repositoryBindings: repositoryRef
+                ? selectedRepositories
+                    .filter((member) => member.repositoryRef !== repositoryRef)
+                    .map((member) => ({ repositoryRef: member.repositoryRef }))
+                : [],
             }),
         });
       } finally {

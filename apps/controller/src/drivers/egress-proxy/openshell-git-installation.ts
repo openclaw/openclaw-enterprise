@@ -59,6 +59,11 @@ export interface OpenShellGitObservationEntry {
   readonly client: OpenShellGatewayClient;
   readonly provider: OpenShellPreparedGitProvider;
   readonly otherProviders: readonly string[];
+  readonly pullApi?: {
+    readonly provider: OpenShellPreparedGitProvider;
+    readonly preview: ObservedHookPreview;
+    binding: OpenShellPreparedGitBinding;
+  };
   binding: OpenShellPreparedGitBinding;
   readonly preview?: ObservedHookPreview;
   verify?: (sandbox: OpenShellSandboxResponse) => void;
@@ -357,7 +362,19 @@ export async function observeOpenShellGitInstallation(
   ) {
     // Identity only. Lookup and the post-rotation installation check never take this path.
     const last = entry.supervisor;
-    if (await entry.provider.observePredecessor(entry.binding, last, signal)) {
+    const companion = entry.pullApi;
+    const pullApi = last.pullApi;
+    if (
+      (await entry.provider.observePredecessor(entry.binding, last, signal)) &&
+      (!companion
+        ? !pullApi
+        : pullApi &&
+          (await companion.provider.observePredecessor(
+            companion.binding,
+            { ...last, ...pullApi },
+            signal,
+          )))
+    ) {
       if (entry.preview) {
         // Expiry removes credentials, not the released launch's mandatory request hook.
         // Recheck its policy and exact recipient before authorizing another session.
@@ -372,6 +389,7 @@ export async function observeOpenShellGitInstallation(
             registration: configuration.registrationName,
             audience: configuration.authority.audience,
             gitRule: entry.provider.previewNetworkRule(),
+            ...(entry.pullApi && { pullApiRule: entry.pullApi.provider.previewNetworkRule() }),
             modelProvider: entry.continuity.model,
             workload: entry.continuity.workload,
             signal,
@@ -399,6 +417,36 @@ export async function observeOpenShellGitInstallation(
     signal,
     entry.preview ? undefined : admitted,
   );
+  if (observed && entry.pullApi) {
+    const { provider, binding } = entry.pullApi;
+    if (adopt && !(await provider.settlePreviewReceipt(binding, signal))) {
+      return;
+    }
+    const api = await provider.observe(binding, sandbox.id, signal);
+    if (
+      !api ||
+      api.attachmentEpoch !== observed.attachmentEpoch ||
+      api.policyHash !== observed.policyHash ||
+      api.configRevision !== observed.configRevision ||
+      api.providerEnvRevision !== observed.providerEnvRevision ||
+      api.supervisorSessionId !== observed.supervisorSessionId ||
+      api.processInstanceId !== observed.processInstanceId ||
+      api.networkInstanceId !== observed.networkInstanceId ||
+      api.credentialState !== observed.credentialState ||
+      api.providerId === observed.providerId
+    ) {
+      return;
+    }
+    observed = Object.freeze({
+      ...observed,
+      pullApi: {
+        provider: api.provider,
+        providerId: api.providerId,
+        profileVersion: api.profileVersion,
+        providerResourceVersion: api.providerResourceVersion,
+      },
+    });
+  }
   if (entry.preview && observed) {
     const preview = entry.preview;
     // The original worker may advance its fence by reserving a rotation. Recheck
@@ -421,6 +469,7 @@ export async function observeOpenShellGitInstallation(
       registration: configuration.registrationName,
       audience: configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
+      ...(entry.pullApi && { pullApiRule: entry.pullApi.provider.previewNetworkRule() }),
       modelProvider: entry.continuity.model,
       workload: entry.continuity.workload,
       signal,
@@ -431,11 +480,16 @@ export async function observeOpenShellGitInstallation(
     if (!preview.recipient && observed.credentialState === "bootstrap" && adopt) {
       preview.recipient = recipient;
       preview.bootstrapRevision = observed.providerEnvRevision;
+      if (entry.pullApi) {
+        entry.pullApi.preview.recipient = recipient;
+        entry.pullApi.preview.bootstrapRevision = observed.providerEnvRevision;
+      }
     }
     if (
       preview.recipient !== recipient ||
       (observed.credentialState === "active"
         ? !preview.hook ||
+          (entry.pullApi && !entry.pullApi.preview.hook) ||
           (configuration.grantRedemption
             ? observed.providerEnvRevision !== preview.bootstrapRevision
             : observed.providerEnvRevision === preview.bootstrapRevision)

@@ -7,6 +7,7 @@ export function createRepositoryResources({
   repository = fixtureRepository,
   repositoryId = fixtureRepositoryId,
   description = null,
+  pullPreview = false,
 } = {}) {
   const [owner, name] = repository.split("/");
   const issues = new Map();
@@ -96,7 +97,7 @@ export function createRepositoryResources({
       __typename: pull ? "PullRequest" : "Issue",
       url: item.html_url,
       state: item.state.toUpperCase(),
-      author: { login: "fixture-bot", __typename: "User" },
+      author: { login: item.fixtureAuthor ?? "fixture-bot", __typename: "User" },
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z",
       closed: item.state === "closed",
@@ -119,7 +120,7 @@ export function createRepositoryResources({
         ? {
             headRefName: item.head.ref,
             baseRefName: item.base.ref,
-            isDraft: false,
+            isDraft: pullPreview && item.draft === true,
             merged: false,
             headRepositoryOwner: { login: owner },
             headRepository: { name, nameWithOwner: repository },
@@ -157,8 +158,50 @@ export function createRepositoryResources({
         json(200, {
           errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }],
         });
+      if (pullPreview && query.startsWith("query RepositoryWriteTarget")) {
+        return json(200, {
+          data: {
+            node:
+              input.id === repo.node_id
+                ? {
+                    __typename: "Repository",
+                    id: repo.node_id,
+                    databaseId: repo.id,
+                    nameWithOwner: repository,
+                  }
+                : null,
+          },
+        });
+      }
+      if (pullPreview && query.startsWith("query PullRequestWriteTarget")) {
+        const pull = [...pulls.values()].find((value) => value.node_id === input.id);
+        const selected = { databaseId: repo.id, nameWithOwner: repository };
+        const wrongRepository = { databaseId: repo.id + 1, nameWithOwner: repository };
+        return json(200, {
+          data: {
+            node: pull
+              ? { __typename: "PullRequest", id: pull.node_id, repository: selected }
+              : input.id === "PR_OTHER_REPOSITORY"
+                ? { __typename: "PullRequest", id: input.id, repository: wrongRepository }
+                : null,
+          },
+        });
+      }
+      if (pullPreview && query.includes("updatePullRequest")) {
+        const pull = [...pulls.values()].find((value) => value.node_id === input.pullRequestId);
+        if (!pull || permissions.pull_requests !== "write" || Object.keys(input).length !== 2) {
+          return denied();
+        }
+        pull.title = input.title;
+        return json(200, {
+          data: { updatePullRequest: { __typename: "UpdatePullRequestPayload" } },
+        });
+      }
       if (query.includes("createPullRequest")) {
-        if (permissions.pull_requests !== "write") {
+        if (
+          permissions.pull_requests !== "write" ||
+          (pullPreview && (input.repositoryId !== repo.node_id || input.draft !== true))
+        ) {
           return denied();
         }
         const pull = issuePull(input, true);
@@ -197,6 +240,9 @@ export function createRepositoryResources({
         return json(200, { data: { repository: { issue: { projectItems: connection([]) } } } });
       }
       if (query.includes("PullRequestProjectItems")) {
+        if (pullPreview) {
+          return denied();
+        }
         return json(200, {
           data: { repository: { pullRequest: { projectItems: connection([]) } } },
         });
@@ -226,6 +272,7 @@ export function createRepositoryResources({
       );
       const graphRepository = {
         id: repo.node_id,
+        ...(pullPreview && { databaseId: repo.id }),
         name: repo.name,
         nameWithOwner: repository,
         description: "Fixture repository",
@@ -241,7 +288,13 @@ export function createRepositoryResources({
         mergeCommitAllowed: true,
         squashMergeAllowed: true,
         rebaseMergeAllowed: true,
-        pullRequests: connection([...pulls.values()].map((value) => graphItem(value, true))),
+        pullRequests: connection(
+          [...pulls.values()]
+            .filter(
+              (value) => !pullPreview || !input.headRefName || value.head.ref === input.headRefName,
+            )
+            .map((value) => graphItem(value, true)),
+        ),
         issues: connection([...issues.values()].map((value) => graphItem(value))),
         pullRequest: graphItem(pulls.get(number), true),
         issue: graphItem(issues.get(number)),
@@ -389,5 +442,16 @@ export function createRepositoryResources({
     }
     return json(404, { message: "Fixture endpoint not implemented" });
   }
-  return { repo, issues, pulls, comments, dispatch };
+  return {
+    repo,
+    issues,
+    pulls,
+    comments,
+    dispatch,
+    seedPull(title, author) {
+      const pull = issuePull({ title, draft: true });
+      pull.fixtureAuthor = author;
+      return pull;
+    },
+  };
 }

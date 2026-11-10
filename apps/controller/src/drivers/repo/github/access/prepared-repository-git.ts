@@ -33,10 +33,13 @@ import { SharedPreparedRepositoryGit } from "./shared-prepared-git.ts";
 import type { InstalledTokenVersion } from "../../../../backends/token-service/material.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
-  allowsPreparedGitGrantRead,
+  preparedGitGrantContents,
+  projectPreparedGitGrant,
+  gitGrantOperationAllowed,
   preparedGitRedemption,
   type PreparedGitGrantApproval,
   type PreparedGitGrantApprovals,
+  type PreparedGitGrantMode,
   type PreparedGitGrantBinding,
   type PreparedGitGrantRequest,
   type PreparedGitRedemption,
@@ -56,6 +59,8 @@ import {
   selectedRepositoryGrantSql,
   validRecipient,
 } from "../../access/protected-repository-git-installation.ts";
+
+import type { createGitHubPullTargetReader } from "./provider-transport/pull-request-target.ts";
 
 const pulls = "occ.prepared_repository_draft_pulls";
 type PullRow = {
@@ -103,6 +108,20 @@ type Recipient = Exclude<RepositoryGitCustody, { kind: "native-broker" }> | unde
 
 function installationRecipient(proxy: Recipient) {
   return proxy?.kind === "selected";
+}
+
+function hasPullApiObservation(value: unknown): boolean {
+  if (!value || typeof value !== "object" || !("pullApi" in value)) {
+    return false;
+  }
+  const { pullApi } = value;
+  return (
+    !!pullApi &&
+    typeof pullApi === "object" &&
+    "providerId" in pullApi &&
+    typeof pullApi.providerId === "string" &&
+    pullApi.providerId.length > 0
+  );
 }
 
 const families = "occ.prepared_github_families";
@@ -289,7 +308,7 @@ async function lockLiveSession(
     // An open admission with missing or foreign recipient evidence is unavailable, not withdrawn.
     // Report withdrawal only when this owner's recorded admission has positively ended.
     const ended = await c.query(
-      `SELECT FROM ${families} f WHERE f.source_id='repository-git:' || $1
+      `SELECT FROM ${families} f WHERE f.source_id IN ('repository-git:' || $1, 'repository-git:' || $1 || ':pull-api')
         AND ${repositoryGitOwnerPredicate} AND ${repositoryGitAdmissionEnded}`,
       [admission_id],
     );
@@ -329,7 +348,12 @@ type PrepareApprovedGit = (
 ) => Promise<void | InstalledTokenVersion>;
 
 type GitGrantDecision =
-  | { readonly kind: "approve"; readonly approval: PreparedGitGrantApproval }
+  | { readonly kind: "target"; readonly approval: PreparedGitGrantApproval }
+  | {
+      readonly kind: "approve";
+      readonly approval: PreparedGitGrantApproval;
+      readonly witness?: GitTargetWitness;
+    }
   | { readonly kind: "redeem"; readonly grant: RequestCredentialGrant }
   | {
       readonly kind: "release";
@@ -337,6 +361,9 @@ type GitGrantDecision =
       readonly source: PreparedRepositoryGitSource;
       readonly sharedVersion?: InstalledTokenVersion;
     };
+type GitTargetWitness = Pick<GitUse, "preparationAttemptId" | "materialVersion"> & {
+  readonly source: PreparedRepositoryGitSource;
+};
 type GitUse = Pick<
   RepositoryGitSendPermit,
   "exchangeId" | "requestDigestSha256" | "preparationAttemptId" | "materialVersion"
@@ -348,6 +375,12 @@ type GitUseDecision =
     })
   | OperationReceipt
   | { readonly kind: "approved"; readonly decisionBy: string }
+  | {
+      readonly kind: "target";
+      readonly witness: GitTargetWitness;
+      readonly open: () => Buffer;
+      readonly decisionBy: string;
+    }
   | {
       readonly kind: "redeemed";
       readonly source: PreparedRepositoryGitSource;
@@ -401,6 +434,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
   private readonly grantApprovals: PreparedGitGrantApprovals | undefined;
+  private readonly grantMode: PreparedGitGrantMode | undefined;
   readonly shared?: SharedPreparedRepositoryGit;
 
   constructor(
@@ -410,6 +444,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     policy: Policy,
     custody: RepositoryGitCustody,
     grantApprovals?: PreparedGitGrantApprovals,
+    grantMode?: PreparedGitGrantMode,
     sharedOwner?: Readonly<{
       apiOrigin: string;
       repositoryBackendId: string;
@@ -447,6 +482,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.authority = authority;
     this.policy = policy;
     this.grantApprovals = grantApprovals;
+    this.grantMode = grantMode;
     if (sharedOwner) {
       if (!driver || !installationRecipient(proxy)) {
         throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_SELECTED_DRIVER");
@@ -492,9 +528,15 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       );
       const { rows } = await c.query(sessions);
       return {
-        sources: (rows as { session: PreparedRepositorySession }[]).flatMap(
-          ({ session }) => this.policy(session) ?? [],
-        ),
+        sources: (rows as { session: PreparedRepositorySession }[]).flatMap(({ session }) => {
+          const source = this.policy(session);
+          if (!source) {
+            return [];
+          }
+          const git = projectPreparedGitGrant(source, this.grantMode, false)!;
+          const api = projectPreparedGitGrant(source, this.grantMode, true);
+          return api ? [git, api] : [git];
+        }),
         foreign: retired as { session: PreparedRepositorySession; provider_expires_at: Date }[],
       };
     });
@@ -636,6 +678,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       (input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
     },
     prepareApproved?: PrepareApprovedGit,
+    readPullTarget?: ReturnType<typeof createGitHubPullTargetReader>,
   ):
     | (ProtectedRepositoryGitAuthority & {
         readonly [preparedGitRedemption]?: PreparedGitRedemption;
@@ -708,11 +751,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           false,
         ),
       approve: (request, installed, approval, signal) => {
-        checkRequest(request, "github-repository");
-        return this.approveGitGrant(request, installed, approval, lifetime(signal));
+        const { stockPullRequest: _action, ...wireRequest } = request;
+        checkRequest(wireRequest, "github-repository");
+        return this.approveGitGrant(request, installed, approval, lifetime(signal), readPullTarget);
       },
       redeem: (request, installed, grant, signal) => {
-        checkRequest(request, "github-repository");
+        const { stockPullRequest: _action, ...wireRequest } = request;
+        checkRequest(wireRequest, "github-repository");
         return this.redeemGitGrant(request, installed, grant, lifetime(signal), prepareApproved);
       },
     };
@@ -915,7 +960,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           (wide && grant.profile !== scope) ||
           (wide && !installationRecipient(this.proxy)) ||
           (!includeValue &&
-            (grant.profile !== "github-repository" || !allowsPreparedGitGrantRead(grant)))
+            (grant.profile !== "github-repository" ||
+              !preparedGitGrantContents(grant, this.grantMode)))
         ) {
           return unprepared;
         }
@@ -998,9 +1044,42 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     installed: InstalledGitRoute,
     approval: PreparedGitGrantApproval,
     signal: AbortSignal,
+    readPullTarget: ReturnType<typeof createGitHubPullTargetReader> | undefined,
   ): Promise<string | undefined> {
+    const action = q.stockPullRequest;
+    let witness: GitTargetWitness | undefined;
+    if (action && "nodeId" in action) {
+      const selected = q.repositories[0];
+      if (!readPullTarget || !selected) {
+        return;
+      }
+      const candidate = await this.transaction((c) =>
+        this.recordUse(c, q, signal, installed, "online-request", { kind: "target", approval }),
+      );
+      if (!("kind" in candidate) || candidate.kind !== "target" || signal.aborted) {
+        return;
+      }
+      const remaining = Date.parse(candidate.decisionBy) - Date.now();
+      if (remaining <= 0) {
+        return;
+      }
+      const material = candidate.open();
+      try {
+        const readSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+        if (!(await readPullTarget(material.toString("utf8"), selected, action, readSignal))) {
+          return;
+        }
+      } finally {
+        material.fill(0);
+      }
+      witness = candidate.witness;
+    }
     const result = await this.transaction((c) =>
-      this.recordUse(c, q, signal, installed, "online-request", { kind: "approve", approval }),
+      this.recordUse(c, q, signal, installed, "online-request", {
+        kind: "approve",
+        approval,
+        ...(witness && { witness }),
+      }),
     );
     if (
       "kind" in result &&
@@ -1169,7 +1248,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         return receipt;
       });
       if ("kind" in result) {
-        if (result.kind === "approved" || result.kind === "redeemed") {
+        if (result.kind !== "recorded") {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
         }
         return result;
@@ -1191,7 +1270,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     q:
       | PreparedGitHubUseRequest
       | PreparedGitHubInstallationUseRequest
-      | PreparedGitHubRepositoryUseRequest,
+      | PreparedGitHubRepositoryUseRequest
+      | PreparedGitGrantRequest,
     signal: AbortSignal,
     installed?: InstalledGitMaterial | InstalledGitRoute,
     mode: Authorization = null,
@@ -1218,21 +1298,29 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     const { grant } = source;
+    const action = "stockPullRequest" in q ? q.stockPullRequest : undefined;
+    const api = action !== undefined;
+    const projected = grantDecision ? projectPreparedGitGrant(source, this.grantMode, api) : source;
     const materialWitness = installed?.materialVersion !== undefined ? installed : undefined;
     if (
       (!grantDecision && installed && !materialWitness) ||
-      (grantDecision?.kind === "release" && !isDeepStrictEqual(source, grantDecision.source))
+      !projected ||
+      (grantDecision?.kind === "release" && !isDeepStrictEqual(projected, grantDecision.source))
     ) {
       return fail();
     }
-    if (
-      grantDecision &&
-      (!installed?.route ||
-        grant.profile !== "github-repository" ||
-        !allowsPreparedGitGrantRead(grant) ||
-        (q.operation !== "advertise-upload-pack" && q.operation !== "upload-pack"))
-    ) {
-      return fail();
+    if (grantDecision) {
+      const contents =
+        grant.profile === "github-repository" && preparedGitGrantContents(grant, this.grantMode);
+      if (
+        !installed?.route ||
+        !contents ||
+        (api
+          ? q.operation !== "github-graphql" || !hasPullApiObservation(installed.route.observed)
+          : !gitGrantOperationAllowed(q.operation, contents === "write"))
+      ) {
+        return fail();
+      }
     }
     const installation = "installationId" in q;
     let repositoryId;
@@ -1342,7 +1430,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const session = current.session;
       const execution = session.credentialProxyExecution;
       const identity =
-        grantDecision.kind === "approve" ? grantDecision.approval : grantDecision.grant;
+        grantDecision.kind === "redeem" ? grantDecision.grant : grantDecision.approval;
       const driver = this.proxy?.driver;
       const approvals = this.grantApprovals?.(c);
       if (
@@ -1354,13 +1442,54 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       ) {
         return fail();
       }
-      const until = Math.min(Date.now() + 5000, deadline, Number(current.end_ms));
+      let until = Math.min(Date.now() + 5000, deadline, Number(current.end_ms));
       if (!valid(until)) {
         return fail();
       }
-      const decisionBy = new Date(until).toISOString();
+      let decisionBy = new Date(until).toISOString();
       const now = new Date().toISOString();
+      if (grantDecision.kind === "target") {
+        if (!action || !("nodeId" in action)) {
+          return fail();
+        }
+        const material = await this.tokens.readWarm(c, projected);
+        if (!material || !valid(Math.min(until, material.usableUntil))) {
+          return fail();
+        }
+        return {
+          kind: "target",
+          witness: {
+            source: projected,
+            preparationAttemptId: material.preparationAttemptId,
+            materialVersion: material.materialVersion,
+          },
+          open: material.open,
+          decisionBy: new Date(Math.min(until, material.usableUntil)).toISOString(),
+        };
+      }
       if (grantDecision.kind === "approve") {
+        if (action && "nodeId" in action) {
+          const witness = grantDecision.witness;
+          const currentMaterial =
+            witness && isDeepStrictEqual(projected, witness.source)
+              ? await this.tokens.current(c, projected, witness)
+              : undefined;
+          if (!currentMaterial || !valid(Math.min(until, currentMaterial.usableUntil))) {
+            return fail();
+          }
+          // A warm sender may skip token redemption. Commit its possible use at Call 1.
+          until = Math.min(until, currentMaterial.usableUntil);
+          decisionBy = new Date(until).toISOString();
+          await this.recordGitUse(
+            c,
+            q,
+            current.session.admissionId,
+            currentMaterial,
+            "authorization_reply_by",
+            decisionBy,
+            installed!.route!.fence,
+          );
+        }
         if (
           !(await approvals.insert(
             {
@@ -1400,9 +1529,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       }
       return {
         kind: "redeemed",
-        source,
+        source: projected,
         decisionBy,
-        needsPreparation: this.shared !== undefined || !(await this.tokens.readWarm(c, source)),
+        needsPreparation: this.shared !== undefined || !(await this.tokens.readWarm(c, projected)),
         releaseLifetimeMs: approval.remainingLifetimeMs,
       };
     }
@@ -1415,8 +1544,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         : undefined;
     } else {
       material = materialWitness
-        ? await this.tokens.current(c, source, materialWitness)
-        : await this.tokens.readWarm(c, source);
+        ? await this.tokens.current(c, projected, materialWitness)
+        : await this.tokens.readWarm(c, projected);
     }
     if (!material) {
       return fail();
@@ -1455,21 +1584,35 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         return fail();
       }
     }
-    await c.query(
-      `INSERT INTO occ.prepared_repository_git_uses
-    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,${deadlineColumn},recipient_fence)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [
-        exchangeId,
+    if (action && "nodeId" in action) {
+      const prior = await c.query(
+        `SELECT FROM occ.prepared_repository_git_uses
+        WHERE exchange_id=$1 AND admission_id=$2 AND attempt_id=$3 AND material_version=$4
+          AND operation='github-graphql' AND request_digest_sha256=$5 AND recipient_fence=$6
+          AND authorization_reply_by > clock_timestamp()`,
+        [
+          exchangeId,
+          current.session.admissionId,
+          preparationAttemptId,
+          materialVersion,
+          requestDigestSha256,
+          installed!.route!.fence,
+        ],
+      );
+      if (!prior.rowCount) {
+        return fail();
+      }
+    } else {
+      await this.recordGitUse(
+        c,
+        q,
         current.session.admissionId,
-        preparationAttemptId,
-        materialVersion,
-        q.operation,
-        requestDigestSha256,
+        material,
+        deadlineColumn,
         decisionBy,
         installation ? installed!.route!.fence : null,
-      ],
-    );
+      );
+    }
     if (!valid(until)) {
       return fail();
     }
@@ -1481,6 +1624,34 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       materialVersion,
       open: material.open,
     };
+  }
+
+  private async recordGitUse(
+    c: PostgresClient,
+    q:
+      | Pick<PreparedGitHubRepositoryUseRequest, "exchangeId" | "operation" | "requestDigestSha256">
+      | Pick<PreparedGitHubUseRequest, "exchangeId" | "operation" | "requestDigestSha256">,
+    admissionId: string,
+    material: Pick<GitUse, "preparationAttemptId" | "materialVersion">,
+    deadlineColumn: "send_start_by" | "authorization_reply_by",
+    decisionBy: string,
+    fence: number | null,
+  ) {
+    await c.query(
+      `INSERT INTO occ.prepared_repository_git_uses
+      (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,${deadlineColumn},recipient_fence)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        q.exchangeId,
+        admissionId,
+        material.preparationAttemptId,
+        material.materialVersion,
+        q.operation,
+        q.requestDigestSha256,
+        decisionBy,
+        fence,
+      ],
+    );
   }
 
   /** The original sender may settle once, including after withdrawal; no authority is released here. */

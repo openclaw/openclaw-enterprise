@@ -2,6 +2,10 @@ export const HARNESS_EGRESS_ENROLLMENT_PATH = "/openclaw/runtime/egress-enrollme
 // Reserve the whole probe subtree for denials. Only the exact discovery path may leave the launcher.
 export const HARNESS_GIT_PROBE_PREFIX =
   /^\/(?:[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git\/)?oce-observe-request\//;
+export const HARNESS_GITHUB_API_PROBE_QUERY = /^oce-observe=[0-9a-f]{32}$/;
+const gitHubApiProbePath = new RegExp(
+  "^/graphql\\?" + HARNESS_GITHUB_API_PROBE_QUERY.source.slice(1),
+);
 const gitProbePath = new RegExp(
   HARNESS_GIT_PROBE_PREFIX.source + /[0-9a-f]{32}\.git\/info\/refs$/.source,
 );
@@ -54,7 +58,8 @@ function waitForHarnessEgressEnrollment(enrollment) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let released = false;
-    let probeSent = false, observed = false;
+    const sentProbes = new Set(), observedProbes = new Set();
+    const pullPreview = process.env.GH_TOKEN === "openclaw-github-cli-placeholder";
     const finish = (enrolled) => {
       if (settled) {
         return;
@@ -112,14 +117,16 @@ function waitForHarnessEgressEnrollment(enrollment) {
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (onlineGit && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
-          if (probeSent || startupId !== challenge.startupId ||
-              typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {
+          const apiProbe = typeof probePath === "string" && ${gitHubApiProbePath}.test(probePath);
+          const kind = apiProbe ? "api" : "git";
+          if (sentProbes.has(kind) || startupId !== challenge.startupId ||
+              typeof probePath !== "string" || (apiProbe ? !pullPreview : !${gitProbePath}.test(probePath))) {
             answer(409, {error: "stale_probe"});
             return;
           }
           // One ordinary verified HTTPS request from this held process. No credential, redirect,
           // URL supplied by a caller, or allow path. The refusal secret is known only to OCE.
-          probeSent = true;
+          sentProbes.add(kind);
           const env = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
             ["https_proxy","http_proxy","all_proxy","no_proxy","ssl_cert_file","ssl_cert_dir",
               "curl_ca_bundle"].includes(k.toLowerCase())));
@@ -127,8 +134,10 @@ function waitForHarnessEgressEnrollment(enrollment) {
           try {
             ({stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
               "/usr/bin/curl", ["--disable", "--silent", "--proto", "=https", "--max-time", "10",
-                "--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
-                "https://github.com" + probePath + "?service=git-upload-pack"],
+                "--max-filesize", "4096", "--write-out", "\n%{http_code}",
+                ...(apiProbe ? ["--request", "POST", "--data", ""] : []), "--url",
+                apiProbe ? "https://api.github.com" + probePath :
+                  "https://github.com" + probePath + "?service=git-upload-pack"],
               {env, timeout: 12000, maxBuffer: 8192, encoding: "utf8"}));
           } catch (failure) {
             // Process output can contain proxy credentials or response content. Only a curl
@@ -151,7 +160,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
             answer(409, {error: "preview_not_observed"});
             return;
           }
-          observed = true;
+          observedProbes.add(kind);
           answer(200, {startupId, probePath, reasonCode});
           return;
         }
@@ -161,8 +170,9 @@ function waitForHarnessEgressEnrollment(enrollment) {
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
             (onlineGit && installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization) ||
             (online && Object.hasOwn(installation, "peerKeyId")) ||
-            (probeSent && !observed) ||
-            (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
+            (sentProbes.size !== observedProbes.size) ||
+            (pullPreview && (!observedProbes.has("git") || !observedProbes.has("api"))) ||
+            (preview && (!observedProbes.has("git") || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
               typeof installation[k] === "string" && installation[k].length > 0) ||
             !Number.isSafeInteger(expiresAt) || expiresAt < now || expiresAt > now + 60000 ||

@@ -193,6 +193,33 @@ approval for the next operation. Rotation or withdrawal after the final release
 cannot recall material already released. Such a request may finish, including
 its streamed response.
 
+## Selected repository pull request preview
+
+The same admitted repository entitlement owns the Git Basic and GitHub API
+Bearer attachments. The held launcher proves both mandatory request hooks.
+The Worker verifies the effective endpoint rules, each installed provider and
+their common Sandbox and supervisor. The API and Git tokens use separate
+permission scopes and custody records. [Provider observation](../../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+· [Token projection](../../../apps/controller/src/drivers/repo/github/access/prepared-git-redemption.ts)
+
+For selected-repository discovery, OCC checks the concrete request and live
+grant. The first authenticated redemption for each scope mints that token.
+For a draft create or title edit, OCC first opens already usable API material
+inside the Worker and makes a fixed read for the opaque GitHub target. The
+Worker checks the same repository, live grant, installed recipient and
+material again before committing possible use. A sender with cached material
+must still pass this check. A fresh write with no eligible API material must
+start with discovery. [Request selection](../../../apps/controller/src/drivers/repo/github/access/routes/stock-gh-pull-request.ts)
+· [Possible-use authority](../../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts)
+
+Expiry or committed removal closes both paths to new approvals in OCC. The
+original issuer settles each custody record independently and quarantines an
+unconfirmed issuance. The cold grant route has no stored material version, so
+current expiry and removal cleanup can retire the execution before any provider
+detach. Keeping the required model running needs a durable OCC withdrawal that
+checks both original GitHub attachments and the original execution fence,
+then confirms current model authorization.
+
 ## Debugging and Verification
 
 Inspect the selected source's provider ID/generation and the saved revision's

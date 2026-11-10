@@ -327,6 +327,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
+  private readonly repositoryPullPreview: boolean;
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
@@ -397,6 +398,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly tokenGrant?: OpenShellTokenGrantConfiguration;
       readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
+      readonly repositoryPullPreview?: true;
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
@@ -440,6 +442,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.id = selection.id;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
+    this.repositoryPullPreview = selection.repositoryPullPreview === true;
     this.options = immutableCopy(options);
     if (options.requestCredentials) {
       this.requestTimeCredentials = Object.freeze({
@@ -610,7 +613,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       provider.type !== expected.provider.profile.id ||
       provider.profileWorkspace !== workspace ||
       !Array.isArray(sandbox.spec?.providers) ||
-      sandbox.spec.providers.length !== (plan.repositoryGit ? 3 : 2) ||
+      (sandbox.spec.providers.length !== (plan.repositoryGit ? 3 : 2) &&
+        !(
+          this.repositoryPullPreview &&
+          plan.repositoryGit &&
+          sandbox.spec.providers.length === 4 &&
+          sandbox.spec.providers[2] !== sandbox.spec.providers[3] &&
+          sandbox.spec.providers
+            .slice(2)
+            .every(
+              (name) =>
+                typeof name === "string" && /^oce-github-installation-[a-f0-9]{32}$/.test(name),
+            )
+        )) ||
       sandbox.spec.providers[0] !== provider.name ||
       sandbox.spec.providers[1] !== `oce-runtime-${sha256Hex(revision.id, 16)}`
     ) {

@@ -27,6 +27,7 @@ interface Selection {
   readonly audience: string;
   readonly modelProvider: string;
   readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
+  readonly pullApiRule?: Selection["gitRule"];
   readonly usesTokenGrant?: boolean;
   readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly signal: AbortSignal;
@@ -38,6 +39,7 @@ function expectedPolicy(
   source: Record<string, unknown>,
   effective: Record<string, unknown>,
   git: Selection["gitRule"],
+  pullApi: Selection["pullApiRule"],
   modelProvider: string,
   runtimeProvider: string,
 ) {
@@ -46,7 +48,15 @@ function expectedPolicy(
   if (!isDeepStrictEqual(wirePolicy(staticPolicy), wirePolicy(applied))) {
     return false;
   }
-  const { [git.name]: rule, ...others } = asRecord(network) ?? {};
+  const { [git.name]: rule, ...remaining } = asRecord(network) ?? {};
+  const others = { ...remaining };
+  if (pullApi) {
+    const api = others[pullApi.name];
+    if (!api || !isDeepStrictEqual(wirePolicy(api), wirePolicy(pullApi))) {
+      return false;
+    }
+    delete others[pullApi.name];
+  }
   // Stock 0.1.5 retains the imported port and marks each endpoint provider_credentialed.
   // Compare the entire rule; accepting another rule because it names port 443 is not enough.
   if (!rule || !isDeepStrictEqual(wirePolicy(rule), wirePolicy(git))) {
@@ -96,6 +106,7 @@ export async function previewPolicyAndRecipient({
   registration,
   audience,
   gitRule,
+  pullApiRule,
   modelProvider,
   workload,
   signal,
@@ -123,23 +134,32 @@ export async function previewPolicyAndRecipient({
     return;
   }
   const c = await client.getSandboxConfig?.(o.workspace, sandbox.name, signal);
-  const grantOwners = asRecord(c?.tokenGrantOwners)?.[gitRule.name];
-  if (
-    usesTokenGrant &&
-    (!Array.isArray(grantOwners) ||
-      grantOwners.length !== gitRule.endpoints.length ||
-      grantOwners.some(
-        (owner) => typeof owner !== "string" || !/^grant-owner:v1:[a-f0-9]{64}$/.test(owner),
-      ))
-  ) {
-    return;
+  if (usesTokenGrant) {
+    const owners = asRecord(c?.tokenGrantOwners);
+    for (const rule of [gitRule, ...(pullApiRule ? [pullApiRule] : [])]) {
+      const grantOwners = owners?.[rule.name];
+      if (
+        !Array.isArray(grantOwners) ||
+        grantOwners.length !== rule.endpoints.length ||
+        grantOwners.some(
+          (owner) => typeof owner !== "string" || !/^grant-owner:v1:[a-f0-9]{64}$/.test(owner),
+        )
+      ) {
+        return;
+      }
+    }
   }
   const policy = asRecord(c?.policy);
   const source = asRecord(sandbox.spec?.policy);
   // The paired Sandbox already verified this entire spec. Select only its actual model,
   // endpointless runtime files, and revision-private Git provider, in their emitted order.
   const providers = sandbox.spec?.providers;
-  if (!Array.isArray(providers) || providers.length !== 3) {
+  if (
+    !Array.isArray(providers) ||
+    providers.length !== (pullApiRule ? 4 : 3) ||
+    !!pullApiRule !== !!o.pullApi ||
+    (pullApiRule && providers[3] !== o.pullApi?.provider)
+  ) {
     return;
   }
   const [modelProviderName, runtimeProvider, gitProvider] = providers;
@@ -151,7 +171,7 @@ export async function previewPolicyAndRecipient({
     !c ||
     !policy ||
     !source ||
-    !expectedPolicy(source, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(source, policy, gitRule, pullApiRule, modelProvider, runtimeProvider) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||
@@ -239,6 +259,7 @@ export class ObservedHookPreview {
   private armed?: {
     startupId: string;
     path: string;
+    api?: true;
     reason: string;
     until: number;
     requestId?: string;
@@ -296,17 +317,21 @@ export class ObservedHookPreview {
     this.workspace = workspace;
     this.bindingId = bindingId;
   }
-  arm(startupId: string, repository?: string) {
+  arm(startupId: string, repository?: string, api?: true) {
     if (this.armed || !this.recipient || !this.bootstrapRevision) {
       throw new Error("Preview challenge is not fresh.");
     }
     // git-write has an exact repository endpoint; installation-shaped providers
     // admit the root discovery probe. Both check policy before invoking the hook.
     const prefix = repository === undefined ? "" : `/${repository}.git`;
-    const path = prefix + observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
+    const nonce = randomBytes(16).toString("hex");
+    const path = api
+      ? "/graphql?oce-observe=" + nonce
+      : prefix + observedHookPath + nonce + ".git/info/refs";
     this.armed = {
       startupId,
       path,
+      ...(api && { api }),
       reason: "oce_hook_" + randomBytes(18).toString("hex"),
       until: Date.now() + 30_000,
     };
@@ -323,11 +348,13 @@ export class ObservedHookPreview {
       q.workspace !== this.workspace ||
       q.bindingId !== this.bindingId ||
       t.reportedScheme !== "https" ||
-      t.host !== "github.com" ||
       t.port !== 443 ||
-      t.method !== "GET" ||
-      t.path !== a.path ||
-      t.query !== "service=git-upload-pack" ||
+      (a.api
+        ? t.host !== "api.github.com" || t.method !== "POST" || t.path + "?" + t.query !== a.path
+        : t.host !== "github.com" ||
+          t.method !== "GET" ||
+          t.path !== a.path ||
+          t.query !== "service=git-upload-pack") ||
       q.body.length ||
       q.headers.some(([k]) =>
         ["authorization", "proxy-authorization", "cookie"].includes(k.toLowerCase()),

@@ -49,6 +49,8 @@ export function isGitHubRepositoryPermissions(
   );
 }
 
+export const maxSelectedGitHubRepositories = 16;
+
 const numericIdPattern = /^[1-9][0-9]{0,15}$/;
 const repositorySlugPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
@@ -77,7 +79,11 @@ function isValidRepository(repository: GitHubRepositoryGrant["repositories"][num
 }
 
 function hasValidRepositories(repositories: GitHubRepositoryGrant["repositories"]): boolean {
-  if (!Array.isArray(repositories) || repositories.length < 1 || repositories.length > 16) {
+  if (
+    !Array.isArray(repositories) ||
+    repositories.length < 1 ||
+    repositories.length > maxSelectedGitHubRepositories
+  ) {
     return false;
   }
   if (repositories.some((repository) => !isValidRepository(repository))) {

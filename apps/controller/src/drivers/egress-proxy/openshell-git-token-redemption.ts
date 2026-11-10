@@ -72,7 +72,11 @@ export class OpenShellGitGrantExchange {
     identity: OpenShellOnlineGitIdentity,
     signal: AbortSignal,
   ): Promise<string | undefined> {
-    if (!binding.grantCredentialIdentity || !binding.installed.route) {
+    const credentialIdentity =
+      request.operation === "github-graphql"
+        ? binding.pullApiCredentialIdentity
+        : binding.grantCredentialIdentity;
+    if (!credentialIdentity || !binding.installed.route) {
       return;
     }
     const now = Date.now();
@@ -85,7 +89,7 @@ export class OpenShellGitGrantExchange {
       recipientId: identity.sandboxId,
       bindingId: identity.bindingId,
       requestId: identity.requestId,
-      credentialIdentity: binding.grantCredentialIdentity,
+      credentialIdentity,
     };
     const key = pendingKey(approval);
     const deadline = Date.parse(request.deadlineAt);

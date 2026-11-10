@@ -14,6 +14,7 @@ import type { Clock } from "../../apps/controller/src/drivers/repo/access/backen
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import type { PreparedGitGrantMode } from "../../apps/controller/src/drivers/repo/github/access/prepared-git-redemption.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   startGitHubFixture,
@@ -48,6 +49,7 @@ export async function standingGitOrigin(
   selection?: SelectedRepositories,
   draftPull = false,
   pushRef = "refs/heads/review",
+  pullPreview = false,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
@@ -64,7 +66,16 @@ export async function standingGitOrigin(
     ...(selection && {
       expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
       additionalRepositories: selection.entries.slice(1),
-      additionalPermissions: [selection.permissions],
+      additionalPermissions: [
+        selection.permissions,
+        ...(pullPreview
+          ? [
+              { metadata: "read", contents: "write" },
+              { metadata: "read", pull_requests: "write" },
+            ]
+          : []),
+      ],
+      ...(pullPreview && { pullPreview }),
     }),
   });
   const tls = gh.tls;
@@ -152,8 +163,9 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
-    prepareGitOnDemand?: boolean;
+    prepareGitOnDemand?: false | PreparedGitGrantMode;
     sharedGitIssuanceGeneration?: number;
+    pullPreview?: true;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
@@ -185,6 +197,7 @@ export async function preparedStandingGitPeer(
     options.selection,
     options.draftPull,
     options.pushRef,
+    options.pullPreview,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
