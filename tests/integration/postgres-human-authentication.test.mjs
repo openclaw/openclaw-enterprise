@@ -58,7 +58,7 @@ test(
       password,
       authSecret: secret,
       installationName: "Human authentication persistence",
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
     });
     const installation = await state.loadInstallation();
     assert.ok(installation);
@@ -66,7 +66,8 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret,
       pool,
     });

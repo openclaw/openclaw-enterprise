@@ -11,7 +11,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { injectLocalhost as injectRequest } from "../helpers/inject-json.mjs";
 import {
   assertProviderAttached,
   authRowCounts,
@@ -29,13 +29,17 @@ test(
     const email = "commit-recovery@example.test";
     const password = "commit-recovery-long-password";
     const authSecret = "commit-cookie-test-secret-at-least-32-bytes";
-    const origin = "http://127.0.0.1";
+    const origin = "https://console.oce.localhost";
+    function injectLocalhost(target, method, path, options = {}) {
+      return injectRequest(target, method, path, { host: new URL(origin).host, ...options });
+    }
     await ensureDevelopmentBootstrap(t, {
       databaseUrl,
       email,
       password,
       authSecret,
       authBaseURL: origin,
+      agentDomain: "agents.oce.localhost",
       installationName: "Cookie commit proof",
     });
     const observer = new pg.Pool({ connectionString: databaseUrl });
@@ -60,6 +64,7 @@ test(
       host: "127.0.0.1",
       authSecret,
       authBaseURL: origin,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
       github: { clientId: "commit-client", clientSecret: "commit-secret", recoveryUserId },
     };
     const drivers = () => ({
@@ -322,7 +327,7 @@ test(
         const started = await callbackApp.inject({
           method: "POST",
           url: "/api/auth/providers/github/start",
-          headers: { origin },
+          headers: { host: new URL(origin).host, origin },
         });
         assert.equal(started.statusCode, 200, started.body);
         const state = new URL(started.json().data.url).searchParams.get("state");

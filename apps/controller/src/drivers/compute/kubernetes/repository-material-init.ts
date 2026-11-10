@@ -228,7 +228,7 @@ function writePrivate(filename, contents) {
 
 async function materialize(descriptor) {
   ({ normalizePushRefAllowlist } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/credentials/client-contracts.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/access/client-contracts.js"
   ));
   validateDescriptor(descriptor);
   const { sourceRoot, targetRoot, manifest } = descriptor;
@@ -290,10 +290,10 @@ Promise.resolve().then(async () => {
   process.umask(0o077);
   const root = process.argv[1];
   const { readPrivateFile } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/private-files.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/private-files.js"
   );
   const { prepareNativeGitConfiguration } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/native-git.js"
   );
   const config = path.join(root, "gitconfig");
   // An interrupted init may have left a partial file. Only this init can write

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import test from "node:test";
-import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
 import type {
   GitHubPreparationAdmission,
   GitHubPreparationStore,
-} from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
-import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/credentials/provider-diagnostics.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
+import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";

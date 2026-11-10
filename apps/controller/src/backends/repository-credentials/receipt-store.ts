@@ -6,8 +6,8 @@ import type {
 import type {
   RepositoryCredentialBoundSessionInput,
   SessionStatus,
-} from "../../drivers/repo/credentials/service-contracts.ts";
-import { sameBinding } from "../../drivers/repo/credentials/grant-identity.ts";
+} from "../../drivers/repo/access/service-contracts.ts";
+import { sameBinding } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Only the worker owns State; the detached broker receives this narrow journal. */
 export class RepositoryReceiptStore {

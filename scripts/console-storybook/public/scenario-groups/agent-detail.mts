@@ -1883,13 +1883,13 @@ export function createAgentDetailScenarios({
       agentHeader: {
         group: "Pages/Agent detail",
         name: "Page header with a long name",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         agentName: "Quarterly release review and signoff bot",
         description:
-          "The Agent page header: ← Agents, the name with Refresh and Open draft at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+          "The Agent page header: ← Agents, the name, then the Agent ID, Copy Agent ID and Namespace. Refresh and Open draft sit beside the name above 1100 px and beside the back link at narrower widths.",
         steps: [
-          "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Open draft stay on its first line and nothing overlaps.",
+          "At 1440 and 1101 px, Refresh and Open draft stay beside the name. At 1100 and 1024 px, they share the back-link row above the name. Nothing overlaps.",
           "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
           "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
           "Select Open draft; the draft opens and its header shows Refresh only.",
@@ -1899,7 +1899,7 @@ export function createAgentDetailScenarios({
       agentHeaderMobile: {
         group: "Pages/Agent detail",
         name: "Page header at 390px",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         mobile: true,
         description:
@@ -1912,7 +1912,7 @@ export function createAgentDetailScenarios({
       agentHeaderNoClipboard: {
         group: "Pages/Agent detail",
         name: "Copy Agent ID without clipboard access",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],

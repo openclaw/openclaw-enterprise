@@ -132,7 +132,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
+Keep `--values` and `--installation` as the live baseline. Review owner-only candidate copies:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -140,20 +140,21 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidate values may also select a [staged immutable Installation Secret](immutable-installation-upgrade.md).
+Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
+Remove obsolete `agentNativeAdmin.sharedCookieDomain` only if empty; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
 The helper does not convert the baseline automatically. Other configuration
 changes are not supported by this upgrade command.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
-The command does not change IAM, authentication, Installation identity, database,
+Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings through these candidate files. Repository settings include the GitHub
-Backend and registry path, Repo Driver, and Compute credential-service peer.
+settings through these candidate files. This includes the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
 Select controller and runtime images with their image flags; do not edit those
 image fields or the managed Installation checksum in the copies.
 
@@ -240,14 +241,13 @@ Shared-namespace releases refuse this single-cluster layout.
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before startup Jobs or writer changes, the selected case and cleanup must pass
-for the recorded incumbent release image and selected candidate image digests.
-Index, platform-manifest and configuration digests are not interchangeable.
+Before shutdown, both the database-write and configured IAM activation cases must
+pass, including cleanup, for the exact image digests. Index, manifest and config
+digests are distinct.
 
-The receipt stays [frozen through recovery](production-upgrade-recovery.md).
-Operators must establish authenticity. `sourceSha` identifies the runner checkout,
-not image revisions or worktree cleanliness. This proves neither IAM startup
-compatibility nor online or rollback safety; writers still stop.
+[Recovery retains the receipt](production-upgrade-recovery.md). Verify its provenance:
+`sourceSha` identifies the test checkout, not image revisions or worktree cleanliness.
+These checks do not qualify online migration or rollback; writers still stop.
 
 Omit `--runtime-image`:
 
@@ -282,7 +282,7 @@ or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
-Helm migrates, bootstraps and restores Deployments. The helper verifies rollout and OCC access.
+Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.
 
 ```text
 Upgraded controller image; no Agent deployments were requested.
