@@ -242,24 +242,26 @@ cluster or model runtime and supplies no installation receipt.
 ## Select the prepared connected lane
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the `egress-connected` CLI lane. CI, GitHub dispatch and the generic `openshell`
-HTTP fixture do not run it. This retained lane is for existing qualified
-installations. It requires a prepared, authenticated controller, worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
+with manual `egress-connected`, outside CI/GitHub dispatch and generic `openshell`
+fixtures. Existing qualified installations require authenticated controllers and
+a supplier gateway. Missing inputs fail; discovery skips prove nothing.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
-NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).
-[Migrate a dedicated](postgresql.md) `openclaw_k8s_*` database, then run the controller
-and observer as `occ_app`. The test compares the database Installation with the controller's.
+NetworkPolicies and the [OpenShell prerequisites](openshell.md).
+[Migrate](postgresql.md) a dedicated `openclaw_k8s_*` database; run controller and observer as
+`occ_app` with matching Installations.
 
-The protected product and supplier source must agree on physical namespace
-mapping, loaded-enforcement receipt readiness, finite Responses protection and
-zero automatic retries, including the startup authentication probe. Build and
-select the corresponding immutable images before running. This test cannot
-qualify a checkout that lacks those contracts or a legacy gateway-copy setup.
+Select immutable product and supplier images agreeing on physical namespace
+mapping, loaded-enforcement readiness, finite Responses protection and zero
+automatic retries, including the startup probe. Missing contracts and legacy
+gateway-copy setups cannot qualify.
 
-Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
-The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
-exact contract:
+Bind supplier source implementing [custody events](../../tests/helpers/egress-supplier-custody-transitions.mjs)
+to its image receipt. Reject missing producer code; source presence,
+enforcement capabilities and native replies cannot prove installed delivery.
+
+Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute private JSON path.
+The [validator](../../tests/helpers/egress-connected-inputs.mjs) rejects missing inputs:
 
 | Input                                                                                                | Required preparation                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -334,6 +336,9 @@ canonical request IDs checked for known credentials. Bodies, messages and other
 headers are excluded. Interrupted or undecodable responses remain `unknown`.
 Cleanup preserves earlier entries and requires its own successful checkpoint.
 `lastApi` identifies the latest attempt.
+`failure.custody` retains bounded read/ring counts, fixed failure categories and
+known transition labels without payloads/IDs. Failed reads preserve prior ring/sequence.
+Missing events are not `no_permit`.
 The deployed checkpoint identifies the public owner capability of the source selected
 by the admitted Harness, while sender evidence independently shows protected sends.
 

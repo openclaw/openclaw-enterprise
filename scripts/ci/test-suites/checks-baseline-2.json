@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.mjs",
@@ -227,6 +228,9 @@
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
+    },
+    {
+      "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
     },
     {
       "path": "tests/integration/ci-impact-gate.test.ts"

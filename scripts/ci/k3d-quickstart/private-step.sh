@@ -8,8 +8,14 @@ case "${1:-}" in
   *) exit 2 ;;
 esac
 log="$RUNNER_TEMP/oce-credentials/$phase.log"
+# Return through the diagnostic path before the runner's 105-minute setup limit.
+# Kill the setup process group before teardown can acquire its installation lock.
+limit=()
+if [[ $phase == setup ]]; then
+  limit=(timeout --signal=TERM --kill-after=15s 104m)
+fi
 # Record source locations without tracing command arguments or variable values.
-if bash -E -c '
+if "${limit[@]}" bash -E -c '
   location() { printf "quickstart-location %s:%d\n" "${1##*/}" "$2" >&2; }
   trap "location \"\${BASH_SOURCE[0]}\" \"\$LINENO\"" ERR
   source "$0"
@@ -18,7 +24,8 @@ if bash -E -c '
 else
   status=$?
   printf '::error::%s failed (exit %s).\n' "$phase" "$status"
-  for diagnostic in 'no space left on device' 'ImagePullBackOff' 'CrashLoopBackOff' 'connection refused' 'context deadline exceeded' 'too many open files'; do
+  grep -Ex '\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=[0-9]{1,16} failed=(true|false)' "$log" | tail -12 || true
+  for diagnostic in 'no space left on device' 'ImagePullBackOff' 'CrashLoopBackOff' 'connection refused' 'context deadline exceeded' 'too many open files' 'development lifecycle is already using' 'must be private and owned by the current user'; do
     if grep -Fqi -- "$diagnostic" "$log"; then printf 'Detected: %s\n' "$diagnostic"; fi
   done
   # Accept only known script names, numeric locations and fixed browser stage names.
