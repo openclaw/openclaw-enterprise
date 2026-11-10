@@ -127,7 +127,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assertStderrMatch(prepared.stderr, /synthetic import stop/);
     assert.equal(imports, 1);
     const calls = await commands.commands();
-    const builds = calls.filter(({ args }) => args[0] === "buildx");
+    const builds = calls.filter(
+      ({ command, args }) => command === "docker" && args[0] === "buildx" && args[1] === "build",
+    );
+    assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/);
+    assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/);
     for (const target of [true, false]) {
       const roleBuilds = builds.filter(({ args }) => args.includes("--target") === target);
       assert.equal(roleBuilds.length, 2, "probe and load each checkout image");
