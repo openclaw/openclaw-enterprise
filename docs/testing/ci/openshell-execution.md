@@ -90,14 +90,15 @@ and added files, including ignored files, are rejected. Each image's
 These checks establish source consistency; retain the image builder's provenance
 and smoke-test receipts separately.
 
-Preparation rejects an incomplete or mismatched selection before changing the
-cluster. It copies the verified chart files into the run's private cluster
-directory. Prepared scenarios and Helm use these copies, and lane cleanup
-removes them. The prepared environment records the source revision and the
-gateway chart copy's `appVersion`. The gateway scenario uses that version to
-verify the installed StatefulSet's version label. Scenarios that run their own
-installer prepare their own inputs. Without a candidate selection, preparation
-uses the pinned release charts and images.
+Preflight reads the gateway chart with Helm from a temporary copy of the
+verified files. It removes that copy and rejects an incomplete or mismatched
+selection before creating cluster resources. Preparation retains verified
+copies in the run's private cluster directory for Helm and the prepared
+scenarios. Lane cleanup removes them. The prepared environment records the
+source revision and the gateway chart copy's `appVersion`. The gateway scenario
+uses that version to verify the installed StatefulSet's version label.
+Scenarios that run their own installer prepare their own inputs. Without a
+candidate selection, preparation uses the pinned release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 

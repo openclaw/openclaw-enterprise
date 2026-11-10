@@ -11,6 +11,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 
 const imageRoles = ["gateway", "sandbox", "supervisor"] as const;
@@ -105,7 +106,7 @@ async function verifyChart(
   revision: string,
   chartPath: string,
   relativePath: string,
-  snapshotPath?: string,
+  snapshotPath: string,
 ): Promise<void> {
   const output = await readCommand(
     execFile,
@@ -149,9 +150,7 @@ async function verifyChart(
 
   // Compare physical files, including ignored extras and executable bits. Git status
   // alone can omit files that Helm reads or tracked files marked assume-unchanged.
-  if (snapshotPath) {
-    await mkdir(snapshotPath, { mode: 0o700 });
-  }
+  await mkdir(snapshotPath, { mode: 0o700 });
   const visit = async (directory: string, relative: string): Promise<void> => {
     for (const name of await readdir(directory)) {
       const path = join(directory, name);
@@ -161,14 +160,12 @@ async function verifyChart(
         throw new Error("OpenShell candidate chart contains files outside the selected commit.");
       }
       expected.delete(key);
-      const destination = snapshotPath ? join(snapshotPath, key) : undefined;
+      const destination = join(snapshotPath, key);
       if (entry.mode === "040000") {
         if (!(await lstat(path)).isDirectory()) {
           throw new Error("OpenShell candidate chart contains a symlink or unsupported file type.");
         }
-        if (destination) {
-          await mkdir(destination, { mode: 0o700 });
-        }
+        await mkdir(destination, { mode: 0o700 });
         await visit(path, key);
         continue;
       }
@@ -192,12 +189,10 @@ async function verifyChart(
         if (oid !== entry.oid || ((info.mode & 0o100) !== 0) !== (entry.mode === "100755")) {
           throw new Error("OpenShell candidate chart files differ from the selected commit.");
         }
-        if (destination) {
-          // Publish the checked buffer into the private snapshot without reopening the source.
-          const mode = entry.mode === "100755" ? 0o700 : 0o600;
-          await writeFile(destination, content, { flag: "wx", mode });
-          await chmod(destination, mode);
-        }
+        // Publish the checked buffer into the private snapshot without reopening the source.
+        const mode = entry.mode === "100755" ? 0o700 : 0o600;
+        await writeFile(destination, content, { flag: "wx", mode });
+        await chmod(destination, mode);
       } finally {
         await file.close();
       }
@@ -212,7 +207,7 @@ async function verifyChart(
 export async function verifyOpenShellCandidate(
   candidate: OpenShellCandidate,
   { execFile, docker, helm, snapshotParent }: CandidateCommands,
-): Promise<OpenShellCandidate & { gatewayAppVersion: string }> {
+): Promise<(OpenShellCandidate & { gatewayAppVersion: string }) | null> {
   const { sourceRevision, gatewayChart, workspaceChart, images } = candidate;
   const root = dirname(dirname(dirname(gatewayChart)));
   try {
@@ -250,11 +245,10 @@ export async function verifyOpenShellCandidate(
       "OpenShell candidate chart checkout does not match the selected source revision.",
     );
   }
-  const snapshot = snapshotParent
-    ? await mkdtemp(join(snapshotParent, "openshell-candidate-charts-"))
-    : undefined;
-  const preparedGateway = snapshot ? join(snapshot, "openshell") : gatewayChart;
-  const preparedWorkspace = snapshot ? join(snapshot, "openshell-workspace") : workspaceChart;
+  const snapshot = await mkdtemp(join(snapshotParent ?? tmpdir(), "openshell-candidate-charts-"));
+  const preparedGateway = join(snapshot, "openshell");
+  const preparedWorkspace = join(snapshot, "openshell-workspace");
+  let retainSnapshot = false;
   try {
     for (const [path, name, preparedPath] of [
       [gatewayChart, "openshell", preparedGateway],
@@ -267,7 +261,7 @@ export async function verifyOpenShellCandidate(
           sourceRevision,
           path,
           `deploy/helm/${name}`,
-          snapshot ? preparedPath : undefined,
+          preparedPath,
         );
       } catch {
         throw new Error(
@@ -310,16 +304,20 @@ export async function verifyOpenShellCandidate(
     if (!gatewayAppVersion) {
       throw new Error("OpenShell candidate gateway chart must set a label-safe appVersion.");
     }
+    // The pre-state caller validates the inputs without keeping any prepared files.
+    if (snapshotParent === undefined) {
+      return null;
+    }
+    retainSnapshot = true;
     return {
       ...candidate,
       gatewayChart: preparedGateway,
       workspaceChart: preparedWorkspace,
       gatewayAppVersion,
     };
-  } catch (error) {
-    if (snapshot) {
+  } finally {
+    if (!retainSnapshot) {
       await rm(snapshot, { recursive: true, force: true });
     }
-    throw error;
   }
 }
