@@ -31,6 +31,7 @@
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
+    "tests/integration/model-discovery-shipped-api.test.mjs",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.mjs",
@@ -430,6 +431,9 @@
     },
     {
       "path": "tests/integration/secret-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/model-discovery-shipped-api.test.mjs"
     },
     {
       "path": "tests/integration/credential-source-api.test.mjs",
