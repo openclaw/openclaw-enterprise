@@ -48,6 +48,27 @@ claim. The operator also accounts for the filesystem permissions Kubernetes
 or the storage driver may change through `fsGroup`, and for claim deletion
 if the backing Kubernetes namespace is deleted.
 
+### Agent CPU and memory
+
+An installation operator can use OpenShell Sandbox Driver
+`kubernetes.agentResourceOverrides` to assign CPU and memory to a selected
+Agent. Each entry names an exact `namespaceId` and `agentId`, and supplies
+`requests` and `limits` maps for `cpu` and `memory`. Each value must be a
+valid non-negative Kubernetes quantity. The override replaces the specified
+keys in `kubernetes.agentResources`. Startup rejects duplicate Agent bindings
+and any effective request that exceeds its limit, including inherited values.
+
+The driver uses the effective values in the selected Agent container's
+OpenShell Sandbox specification. OpenShell uses that specification when it
+replaces the Pod. The installation defaults continue to apply to other
+Agents. The supervisor and Gateway keep their own sizing. The existing
+ephemeral-storage request of `256Mi` and limit of `1Gi` continue to apply.
+
+The setting belongs to the trusted installation configuration. A change that
+makes an existing Sandbox differ from its expected specification causes the
+driver to refuse that Sandbox. The operator deploys a new revision to apply
+new values. An Agent revision does not store a copy of this resource setting.
+
 ## Rationale
 
 A separate claim lets operators choose node-local storage and keep large
@@ -71,6 +92,13 @@ on node replacement.
   UID fails and leaves the good claims in place.
 - **AC-3** An Agent without a scratch binding keeps its existing mounts. Agent
   cleanup preserves the operator-owned claim.
+
+- **AC-4** An exact Agent binding changes the CPU and memory in its Agent
+  container specification. A different Agent keeps the installation defaults.
+  The existing ephemeral-storage values and separate supervisor sizing remain
+  in effect. Verify duplicate and invalid entries, request/limit comparisons
+  after inheritance, and refusal when an existing Sandbox has a different
+  specification.
 
 ## Delivery and verification
 
