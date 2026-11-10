@@ -159,8 +159,8 @@ stateDiagram-v2
 - **`succeeded`:** The operation completed. Namespace transitions commit with
   their audit; Agent activation enables the version's route, then commits audit
   and queue completion together. These records remain for idempotency. Deletion
-  rechecks the actor's `delete` while finalizing, records success and that
-  recheck, then removes its work rows. [Status](../agents/deletion.md#follow-deletion)
+  rechecks the actor's `delete` while finalizing; one statement then records
+  success and that recheck and removes its work rows. [Status](../agents/deletion.md#follow-deletion)
   reports `deleted` from those records, never from missing rows.
 - **`failed_permanent`:** Authorization failed, an unrecoverable error occurred,
   or the retry limit was exhausted. The failure

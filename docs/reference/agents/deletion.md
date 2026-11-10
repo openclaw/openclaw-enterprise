@@ -21,8 +21,8 @@ never existed. Before completion, removing someone's Agent `read` ends their sta
 visibility, and removing the actor's `delete` during teardown fails the work. After
 completion, the principal under whose verified authority the deletion was finalized
 can still see that it completed while they hold Namespace read; `delete` is the
-Agent grant the worker rechecks when it finalizes. Deletions finalized before that
-recheck existed show completion only to Namespace-wide Agent readers.
+Agent grant the worker rechecks when it finalizes. Deletions finalized by a
+controller without the recheck show completion only to Namespace-wide Agent readers.
 
 A `403` or `404` never establishes that deletion finished. After an uncertain
 DELETE, check status before deciding whether to send a new request.
