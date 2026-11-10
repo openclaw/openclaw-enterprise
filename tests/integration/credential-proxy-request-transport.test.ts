@@ -429,7 +429,12 @@ function exerciseRequestTransport(gatewayGrant: boolean) {
       .setJti(randomUUID())
       .sign(issuerKeys.privateKey);
     assert.equal((await evaluate(shortLease, `Bearer ${shortPeer}`)).decision, 1);
-    const assertion = await svid();
+    const clockOffsetMs = 10_000;
+    // Authenticate against the skewed wall clock before exercising the database lease.
+    const issuedAt = Math.floor((Date.now() - clockOffsetMs) / 1000);
+    const assertion = gatewayGrant
+      ? await providerAssertion({ iat: issuedAt, exp: issuedAt + 60 })
+      : await svid();
     const lease = await f.pool.query(
       "SELECT extract(epoch FROM (expires_at - clock_timestamp())) * 1000 AS remaining FROM occ.request_credential_approvals WHERE recipient_id = $1 AND request_id = $2",
       [shortLease.recipient.id, shortLease.requestId],
@@ -437,10 +442,15 @@ function exerciseRequestTransport(gatewayGrant: boolean) {
     const pausedRead = f.pauseNextSecretRead();
     const wallClock = Date.now;
     const started = performance.now();
-    const skewedClock = t.mock.method(Date, "now", () => wallClock() - 10_000);
+    const skewedClock = t.mock.method(Date, "now", () => wallClock() - clockOffsetMs);
     try {
       const pendingGrant = redeem(shortLease, Promise.resolve(assertion));
-      await pausedRead.reached;
+      await Promise.race([
+        pausedRead.reached,
+        pendingGrant.then(({ status }) =>
+          assert.fail(`grant returned HTTP ${status} before reading the Secret`),
+        ),
+      ]);
       await delay(2200);
       pausedRead.release();
       const grant = await pendingGrant;
@@ -464,6 +474,7 @@ function exerciseRequestTransport(gatewayGrant: boolean) {
     // work. The HTTPS and gRPC listeners share that same configured process budget.
     const pending = httpsRequest(tokenEndpoint, {
       method: "POST",
+      agent: false,
       ca: tls.caBundle,
       family: 4,
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -471,7 +482,12 @@ function exerciseRequestTransport(gatewayGrant: boolean) {
     const pendingClosed = new Promise<void>((resolve) => pending.once("close", resolve));
     pending.on("error", () => {});
     t.after(() => pending.destroy());
-    pending.write("client_assertion=");
+    await new Promise<void>((resolve, reject) => {
+      pending.write("client_assertion=", (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
     const capacityInput = fixture.request();
     await waitFor(
       "shared pre-authentication capacity",

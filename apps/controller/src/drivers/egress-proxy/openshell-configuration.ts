@@ -47,17 +47,24 @@ export function openShellRepositoryConfiguration(
   }
   const value = object(input, "repository.openShell");
   closed(value, ["registrationName", "authority", "grantRedemption"], "repository.openShell");
-  const authority = egressAuthorityConfiguration(value.authority, mode, "repository.openShell.authority");
+  const authority = egressAuthorityConfiguration(
+    value.authority,
+    mode,
+    "repository.openShell.authority",
+  );
   const grant = value.grantRedemption;
-  if (grant !== undefined && (
-    !validTokenGrantConfiguration(grant) ||
-    grant.assertionSource !== "openshell_gateway" ||
-    new URL(grant.endpoint).pathname !== "/token" ||
-    !authority ||
-    authority.port === grant.port ||
-    authority.issuer !== grant.issuer
-  )) {
-    throw new Error("OpenShell Git grant redemption requires its own HTTPS token listener and the selected Gateway issuer.");
+  if (
+    grant !== undefined &&
+    (!validTokenGrantConfiguration(grant) ||
+      grant.assertionSource !== "openshell_gateway" ||
+      new URL(grant.endpoint).pathname !== "/token" ||
+      !authority ||
+      authority.port === grant.port ||
+      authority.issuer !== grant.issuer)
+  ) {
+    throw new Error(
+      "OpenShell Git grant redemption requires its own HTTPS token listener and the selected Gateway issuer.",
+    );
   }
   return {
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
@@ -112,7 +119,9 @@ export function openShellProxyConfiguration(
       throw new Error("Model and repository requests require distinct middleware registrations.");
     }
     if (repository.grantRedemption && egress.observedHookPreviewWorkspace !== undefined) {
-      throw new Error("OpenShell Git grant redemption cannot be enabled for observed preview access.");
+      throw new Error(
+        "OpenShell Git grant redemption cannot be enabled for observed preview access.",
+      );
     }
     const preview =
       egress.observedHookPreviewWorkspace === undefined
