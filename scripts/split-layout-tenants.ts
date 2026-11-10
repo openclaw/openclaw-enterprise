@@ -7,6 +7,75 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, realpathSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+type Resource = Record<string, unknown>;
+type Tenant = {
+  id: string;
+  name: string;
+  secrets: { id: string; name: string }[];
+  credentialSources: Resource[];
+  configurations: Resource[];
+  presets: Resource[];
+  roles: Resource[];
+  accessBindings: Resource[];
+  serviceAccounts: { id: string; name: string }[];
+  agents: (Resource & { workspaceFiles: Record<string, string>; unreadWorkspaceFiles: string[] })[];
+};
+type Bundle = { format: string; namespaces: unknown[] };
+type ExportBundle = { format: string; exportedAt: string; namespaces: Tenant[] };
+type LogOptions = { log?: (line: string) => void };
+type WaitOptions = {
+  timeoutMs: number;
+  intervalMs: number;
+  sleep: (ms: number) => Promise<unknown>;
+};
+type DiscardOptions = LogOptions & Partial<WaitOptions> & { allowUnreadWorkspaceFiles?: boolean };
+type ImportOptions = LogOptions &
+  Partial<WaitOptions> & {
+    state?: unknown;
+    save?: (state: unknown) => void;
+    deploy?: boolean;
+    names?: Record<string, string>;
+    skip?: unknown[];
+    readyTimeoutMs?: number;
+  };
+type CliOptions = {
+  command: string | undefined;
+  names: Record<string, string>;
+  skip: string[];
+  out?: string;
+  bundle?: string;
+  "secret-values"?: string;
+  map?: string;
+  yes?: boolean;
+  "no-deploy"?: boolean;
+  "allow-unread-workspace-files"?: boolean;
+};
+type ApiResult = {
+  status: number;
+  data: unknown;
+  error: { code?: unknown; message?: unknown } | undefined;
+};
+type Api = ReturnType<typeof createOccApi>;
+type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+// These views leave values untyped until the operation that uses them, preserving its
+// existing runtime checks and errors for unvalidated bundle and API data.
+function resource(value: unknown): Resource {
+  return value as Resource;
+}
+
+function array(value: unknown): unknown[] {
+  return value as unknown[];
+}
+
+function isBundle(value: unknown): value is Bundle {
+  return isRecord(value) && value.format === BUNDLE_FORMAT && Array.isArray(value.namespaces);
+}
+
 export const BUNDLE_FORMAT = "oce-split-layout-tenants/v1";
 export const WORKSPACE_FILE_NAMES = Object.freeze([
   "AGENTS.md",
@@ -15,7 +84,7 @@ export const WORKSPACE_FILE_NAMES = Object.freeze([
   "USER.md",
 ]);
 // Access-binding resource kinds the current API accepts (Agent revisions are not carried over).
-const BINDING_RESOURCE_KINDS = Object.freeze([
+const BINDING_RESOURCE_KINDS: readonly unknown[] = Object.freeze([
   "namespace",
   "agent",
   "configuration",
@@ -39,44 +108,57 @@ const AGENT_FIELDS = Object.freeze([
  * The release's managed ChatGPT method became `codex_pat` with a service-account source
  * (#1648). Other bindings pass through unchanged.
  */
-export function currentHarnessAuth(harnessAuth, namespaceId) {
-  if (harnessAuth?.method !== "chatgpt_service_account") {
+export function currentHarnessAuth(harnessAuth: unknown, namespaceId: unknown) {
+  if (resource(harnessAuth)?.method !== "chatgpt_service_account") {
     return harnessAuth;
   }
   return {
     method: "codex_pat",
-    source: { kind: "service_account", namespaceId, id: harnessAuth.serviceAccountId },
+    source: { kind: "service_account", namespaceId, id: resource(harnessAuth).serviceAccountId },
   };
 }
 
 const usage = `Usage:
-  node scripts/split-layout-tenants.mjs export --out FILE
-  node scripts/split-layout-tenants.mjs discard --bundle FILE --yes [--allow-unread-workspace-files]
-  node scripts/split-layout-tenants.mjs import --bundle FILE --secret-values FILE --map FILE
+  node scripts/split-layout-tenants.ts export --out FILE
+  node scripts/split-layout-tenants.ts discard --bundle FILE --yes [--allow-unread-workspace-files]
+  node scripts/split-layout-tenants.ts import --bundle FILE --secret-values FILE --map FILE
       [--rename OLD=NEW]... [--skip NAME]... [--no-deploy]
 Environment: OCC_URL, OCC_SERVICE_KEY_FILE, optional OCC_CA_BUNDLE.`;
 
 export class SplitLayoutError extends Error {}
 
 /** An OCC API client over a fetch function. `fetchImpl(url, init)` returns a Response. */
-export function createOccApi({ baseUrl, headers = {}, fetchImpl = fetch }) {
-  async function call(method, path, body) {
-    const init = { method, headers: { ...headers } };
+export function createOccApi({
+  baseUrl,
+  headers = {},
+  fetchImpl = fetch,
+}: {
+  baseUrl: string | URL;
+  headers?: Record<string, string>;
+  fetchImpl?: Fetch;
+}) {
+  async function call(method: string, path: string, body?: unknown): Promise<ApiResult> {
+    const init: RequestInit & { headers: Record<string, string> } = {
+      method,
+      headers: { ...headers },
+    };
     if (body !== undefined) {
       init.headers["content-type"] = "application/json";
       init.body = JSON.stringify(body);
     }
     const response = await fetchImpl(new URL(path, baseUrl).toString(), init);
     const text = await response.text();
-    let payload;
+    let payload: unknown;
     try {
       payload = text === "" ? {} : JSON.parse(text);
     } catch {
       payload = {};
     }
-    return { status: response.status, data: payload.data, error: payload.error };
+    const envelope = resource(payload);
+    const error = resource(envelope.error);
+    return { status: response.status, data: envelope.data, error };
   }
-  async function expect(method, path, body, accepted = [200, 201, 202]) {
+  async function expect(method: string, path: string, body?: unknown, accepted = [200, 201, 202]) {
     const result = await call(method, path, body);
     if (!accepted.includes(result.status)) {
       const code = result.error?.code ?? "UNKNOWN";
@@ -100,33 +182,37 @@ export function createOccApi({ baseUrl, headers = {}, fetchImpl = fetch }) {
   return { call, expect };
 }
 
-const ns = (id) => `/namespaces/${encodeURIComponent(id)}`;
-const list = async (api, path) => {
+const ns = (id: unknown) => `/namespaces/${encodeURIComponent(id as string)}`;
+const list = async (api: Api, path: string): Promise<Resource[]> => {
   const { data } = await api.expect("GET", path);
   if (!Array.isArray(data)) {
     throw new SplitLayoutError(
       `GET ${path.slice(0, 240)}: invalid OCC collection response; expected an array in data. Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile any earlier writes before resuming the original operation.`,
     );
   }
-  return data;
+  return data.map(resource);
 };
 
 /** Reads every Namespace's tenant resources into a bundle. Read-only. */
-export async function exportTenants(api, { log = () => {} } = {}) {
-  const namespaces = [];
+export async function exportTenants(
+  api: Api,
+  { log = () => {} }: LogOptions = {},
+): Promise<ExportBundle> {
+  const namespaces: Tenant[] = [];
   for (const namespace of await list(api, "/namespaces")) {
     const base = ns(namespace.id);
     const agents = [];
-    const configurationIds = new Set();
+    const configurationIds = new Set<unknown>();
     for (const listed of await list(api, `${base}/agents`)) {
-      const agent = (await api.expect("GET", `${base}/agents/${listed.id}`)).data;
+      const agent = resource((await api.expect("GET", `${base}/agents/${listed.id}`)).data);
       configurationIds.add(agent.configurationId);
-      const workspaceFiles = {};
+      const workspaceFiles: Record<string, string> = {};
       const unreadWorkspaceFiles = [];
       for (const name of WORKSPACE_FILE_NAMES) {
         const file = await api.call("GET", `${base}/agents/${agent.id}/workspace/files/${name}`);
-        if (file.status === 200 && typeof file.data?.content === "string") {
-          workspaceFiles[name] = file.data.content;
+        const content = resource(file.data)?.content;
+        if (file.status === 200 && typeof content === "string") {
+          workspaceFiles[name] = content;
         } else if (file.status !== 404) {
           unreadWorkspaceFiles.push(
             `${name} (HTTP ${file.status} ${file.error?.code ?? ""})`.trim(),
@@ -144,46 +230,56 @@ export async function exportTenants(api, { log = () => {} } = {}) {
     const configurations = [];
     for (const id of configurationIds) {
       const { data } = await api.expect("GET", `${base}/configurations/${id}`);
-      configurations.push(data);
+      configurations.push(resource(data));
     }
     // The Preset list carries summaries; each template is on the exact Preset read.
     const presets = [];
     for (const { id } of await list(api, `${base}/presets`)) {
-      const { data } = await api.expect("GET", `${base}/presets/${encodeURIComponent(id)}`);
-      presets.push(data);
+      const { data } = await api.expect(
+        "GET",
+        `${base}/presets/${encodeURIComponent(id as string)}`,
+      );
+      presets.push(resource(data));
     }
-    namespaces.push({
-      id: namespace.id,
-      name: namespace.name,
-      secrets: (await list(api, `${base}/secrets`)).map(({ id, name }) => ({ id, name })),
+    const tenant: Tenant = {
+      id: namespace.id as string,
+      name: namespace.name as string,
+      secrets: (await list(api, `${base}/secrets`)).map(({ id, name }) => ({
+        id: id as string,
+        name: name as string,
+      })),
       credentialSources: await list(api, `${base}/credential-sources`),
       configurations,
       presets,
       roles: await list(api, `${base}/iam/roles`),
       accessBindings: await list(api, `${base}/iam/access-bindings`),
       serviceAccounts: (await list(api, `${base}/service-accounts`)).map(({ id, name }) => ({
-        id,
-        name,
+        id: id as string,
+        name: name as string,
       })),
       agents,
-    });
+    };
+    namespaces.push(tenant);
     log(
       `exported ${namespace.name} (${namespace.id}): ${agents.length} Agents, ` +
-        `${configurations.length} Configurations, ${namespaces.at(-1).secrets.length} Secrets`,
+        `${configurations.length} Configurations, ${tenant.secrets.length} Secrets`,
     );
   }
   return { format: BUNDLE_FORMAT, exportedAt: new Date().toISOString(), namespaces };
 }
 
-function readBundle(path) {
-  const bundle = JSON.parse(readFileSync(path, "utf8"));
-  if (bundle?.format !== BUNDLE_FORMAT || !Array.isArray(bundle.namespaces)) {
+function readBundle(path: string): Bundle {
+  const bundle: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isBundle(bundle)) {
     throw new SplitLayoutError(`${path} is not a ${BUNDLE_FORMAT} bundle`);
   }
   return bundle;
 }
 
-async function waitUntil(check, { timeoutMs, intervalMs, sleep }) {
+async function waitUntil(
+  check: () => Promise<boolean>,
+  { timeoutMs, intervalMs, sleep }: WaitOptions,
+) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await check()) {
@@ -196,27 +292,28 @@ async function waitUntil(check, { timeoutMs, intervalMs, sleep }) {
   }
 }
 
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const defaultSleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Deletes the bundle's tenants on the old release: Agents first, then the Namespace children,
  * then the Namespaces. Refuses when a Namespace holds an Agent or Secret the bundle lacks.
  */
 export async function discardTenants(
-  api,
-  bundle,
+  api: Api,
+  bundle: Bundle,
   {
     log = () => {},
     allowUnreadWorkspaceFiles = false,
     timeoutMs = 600_000,
     intervalMs = 5_000,
     sleep = defaultSleep,
-  } = {},
+  }: DiscardOptions = {},
 ) {
-  const unread = bundle.namespaces.flatMap((namespace) =>
-    namespace.agents
-      .filter((agent) => (agent.unreadWorkspaceFiles ?? []).length > 0)
-      .map((agent) => `${namespace.name}/${agent.name}`),
+  const namespaces = bundle.namespaces.map(resource);
+  const unread = namespaces.flatMap((namespace) =>
+    array(namespace.agents)
+      .filter((agent) => array(resource(agent).unreadWorkspaceFiles ?? []).length > 0)
+      .map((agent) => `${namespace.name}/${resource(agent).name}`),
   );
   if (unread.length > 0 && !allowUnreadWorkspaceFiles) {
     throw new SplitLayoutError(
@@ -224,9 +321,11 @@ export async function discardTenants(
         "again, or add --allow-unread-workspace-files to discard them",
     );
   }
-  for (const namespace of bundle.namespaces) {
+  for (const namespace of namespaces) {
     const base = ns(namespace.id);
-    const exported = new Set([...namespace.agents, ...namespace.secrets].map(({ id }) => id));
+    const exported = new Set(
+      [...array(namespace.agents), ...array(namespace.secrets)].map((item) => resource(item).id),
+    );
     const live = [...(await list(api, `${base}/agents`)), ...(await list(api, `${base}/secrets`))];
     const missing = live.filter(({ id }) => !exported.has(id)).map(({ id }) => id);
     if (missing.length > 0) {
@@ -235,9 +334,10 @@ export async function discardTenants(
       );
     }
   }
-  for (const namespace of bundle.namespaces) {
+  for (const namespace of namespaces) {
     const base = ns(namespace.id);
-    for (const agent of namespace.agents) {
+    for (const item of array(namespace.agents)) {
+      const agent = resource(item);
       await api.expect("DELETE", `${base}/agents/${agent.id}`, undefined, [200, 202, 204, 404]);
       log(`deleting Agent ${agent.name} (${agent.id})`);
     }
@@ -249,7 +349,7 @@ export async function discardTenants(
     if (!gone) {
       throw new SplitLayoutError(`${namespace.name}: Agents still present after ${timeoutMs} ms`);
     }
-    const children = [
+    const children: [string, unknown][] = [
       ["iam/access-bindings", namespace.accessBindings],
       ["service-accounts", namespace.serviceAccounts],
       ["presets", namespace.presets],
@@ -259,8 +359,13 @@ export async function discardTenants(
       ["iam/roles", namespace.roles],
     ];
     for (const [kind, items] of children) {
-      for (const item of items) {
-        await api.expect("DELETE", `${base}/${kind}/${item.id}`, undefined, [200, 202, 204, 404]);
+      for (const item of array(items)) {
+        await api.expect(
+          "DELETE",
+          `${base}/${kind}/${resource(item).id}`,
+          undefined,
+          [200, 202, 204, 404],
+        );
       }
     }
     const deleted = await api.call("DELETE", base);
@@ -280,7 +385,7 @@ export async function discardTenants(
     }
     log(`deleting Namespace ${namespace.name} (${namespace.id})`);
   }
-  const ids = new Set(bundle.namespaces.map(({ id }) => id));
+  const ids = new Set(namespaces.map(({ id }) => id));
   const cleared = await waitUntil(
     async () => (await list(api, "/namespaces")).every(({ id }) => !ids.has(id)),
     { timeoutMs, intervalMs, sleep },
@@ -291,20 +396,25 @@ export async function discardTenants(
 }
 
 /** Replaces every string equal to a mapped old ID, at any depth. */
-export function remap(value, ids) {
+export function remap(value: unknown, ids: ReadonlyMap<unknown, unknown>): unknown {
   if (typeof value === "string") {
     return ids.get(value) ?? value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => remap(item, ids));
+    return value.map((item: unknown) => remap(item, ids));
   }
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, remap(item, ids)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        remap(item, ids),
+      ]),
+    );
   }
   return value;
 }
 
-function pick(source, fields) {
+function pick(source: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(
     fields
       .filter((field) => source[field] !== undefined && source[field] !== null)
@@ -312,7 +422,7 @@ function pick(source, fields) {
   );
 }
 
-function bindingKey(binding) {
+function bindingKey(binding: Record<string, unknown>) {
   return [
     binding.subjectKind,
     binding.subjectId,
@@ -322,24 +432,26 @@ function bindingKey(binding) {
   ].join("\u0000");
 }
 
-function ownValue(mapping, key) {
+function ownValue(mapping: unknown, key: unknown): unknown {
   return mapping !== null &&
     typeof mapping === "object" &&
     !Array.isArray(mapping) &&
-    Object.hasOwn(mapping, key)
-    ? mapping[key]
+    Object.hasOwn(mapping, key as PropertyKey)
+    ? resource(mapping)[key as string]
     : undefined;
 }
 
-function secretValue(secretValues, namespaceName, secretName) {
+function secretValue(secretValues: unknown, namespaceName: unknown, secretName: unknown) {
   return ownValue(ownValue(secretValues, namespaceName), secretName);
 }
 
 /** Checks a bundle and its Secret values before anything is created. Returns the problems. */
-export function checkImport(bundle, secretValues) {
+export function checkImport(bundle: Bundle, secretValues: unknown) {
   const problems = [];
-  for (const namespace of bundle.namespaces) {
-    for (const secret of namespace.secrets) {
+  for (const namespaceValue of bundle.namespaces) {
+    const namespace = resource(namespaceValue);
+    for (const secretValueEntry of array(namespace.secrets)) {
+      const secret = resource(secretValueEntry);
       if (typeof secretValue(secretValues, namespace.name, secret.name) !== "string") {
         problems.push(`no value for Secret ${namespace.name}/${secret.name}`);
       }
@@ -353,9 +465,9 @@ export function checkImport(bundle, secretValues) {
  * saved after every create through `save`, so a rerun with the same state resumes.
  */
 export async function importTenants(
-  api,
-  bundle,
-  secretValues,
+  api: Api,
+  bundle: Bundle,
+  secretValues: unknown,
   {
     state = { ids: {}, deployed: [] },
     save = () => {},
@@ -366,16 +478,17 @@ export async function importTenants(
     readyTimeoutMs = 20_000,
     intervalMs = 3_000,
     sleep = defaultSleep,
-  } = {},
+  }: ImportOptions = {},
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
-  const namespaces = bundle.namespaces.filter(({ name }) => !skip.includes(name));
-  const targetName = (namespace) => ownValue(names, namespace.name) ?? namespace.name;
+  const allNamespaces = bundle.namespaces.map(resource);
+  const namespaces = allNamespaces.filter(({ name }) => !skip.includes(name));
+  const targetName = (namespace: Resource) => ownValue(names, namespace.name) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
   if (problems.length > 0) {
     throw new SplitLayoutError(problems.join("\n"));
   }
-  const ids = new Map(Object.entries(state.ids));
+  const ids = new Map<unknown, unknown>(Object.entries(resource(resource(state).ids)));
   // Each source tenant must keep a separate destination, including on a resumed import.
   // Otherwise adopting an empty Namespace can silently merge tenants before any API conflict.
   const targets = new Map();
@@ -389,24 +502,24 @@ export async function importTenants(
     }
     targets.set(name, namespace.name);
   }
-  const record = (oldId, newId) => {
+  const record = (oldId: unknown, newId: unknown) => {
     ids.set(oldId, newId);
-    state.ids = Object.fromEntries(ids);
+    resource(state).ids = Object.fromEntries(ids);
     save(state);
   };
   const pending = [];
-  const failedDeploys = [];
-  const skippedBindings = [];
+  const failedDeploys: string[] = [];
+  const skippedBindings: string[] = [];
 
   // Namespaces first: each needs its tenant RoleBindings before it becomes ready.
   const existing = await list(api, "/namespaces");
   const destinations = new Map();
-  const resolved = [
+  const resolved: [Resource, unknown][] = [
     // A saved destination remains owned even when its source is skipped on this run.
-    ...bundle.namespaces.map((namespace) => [namespace, ids.get(namespace.id)]),
+    ...allNamespaces.map((namespace): [Resource, unknown] => [namespace, ids.get(namespace.id)]),
     ...namespaces
       .filter((namespace) => !ids.has(namespace.id))
-      .map((namespace) => [
+      .map((namespace): [Resource, unknown] => [
         namespace,
         existing.find(({ name }) => name === targetName(namespace))?.id,
       ]),
@@ -431,7 +544,7 @@ export async function importTenants(
     }
     const name = targetName(namespace);
     const same = existing.find((live) => live.name === name);
-    if (same !== undefined && !Object.values(state.ids).includes(same.id)) {
+    if (same !== undefined && !Object.values(resource(resource(state).ids)).includes(same.id)) {
       // Only an empty live Namespace is safe to fill: adopting a populated one would merge
       // the bundle into someone else's Secrets and Agents.
       const base = ns(same.id);
@@ -458,7 +571,7 @@ export async function importTenants(
           `POST /namespaces: HTTP ${result.status} ${result.error?.code ?? "UNKNOWN"}`,
         );
       }
-      created = result.data;
+      created = resource(result.data);
     }
     record(namespace.id, created.id);
     log(`${same ? "reusing" : "created"} Namespace ${name}: ${created.id}`);
@@ -468,7 +581,7 @@ export async function importTenants(
     const waiting = [];
     for (const namespace of namespaces) {
       const id = ids.get(namespace.id);
-      if ((await api.expect("GET", ns(id))).data?.status !== "ready") {
+      if (resource((await api.expect("GET", ns(id))).data)?.status !== "ready") {
         waiting.push(`${targetName(namespace)} (${id})`);
       }
     }
@@ -488,7 +601,13 @@ export async function importTenants(
     const base = ns(ids.get(namespace.id));
     // A named item that already exists here was created by an interrupted earlier run
     // (or lives in a reused Namespace): adopt it rather than fail on its name.
-    const create = async (oldId, kind, body, label, name) => {
+    const create = async (
+      oldId: unknown,
+      kind: string,
+      body: unknown,
+      label: string,
+      name?: unknown,
+    ) => {
       if (ids.has(oldId)) {
         return ids.get(oldId);
       }
@@ -501,12 +620,13 @@ export async function importTenants(
         log(`reusing existing ${label}: ${same.id} (left unchanged)`);
         return same.id;
       }
-      const { data } = await api.expect("POST", `${base}/${kind}`, body);
+      const data = resource((await api.expect("POST", `${base}/${kind}`, body)).data);
       record(oldId, data.id);
       log(`created ${label}: ${data.id}`);
       return data.id;
     };
-    for (const secret of namespace.secrets) {
+    for (const item of array(namespace.secrets)) {
+      const secret = resource(item);
       await create(
         secret.id,
         "secrets",
@@ -515,7 +635,8 @@ export async function importTenants(
         secret.name,
       );
     }
-    for (const source of namespace.credentialSources) {
+    for (const item of array(namespace.credentialSources)) {
+      const source = resource(item);
       await create(
         source.id,
         "credential-sources",
@@ -526,7 +647,8 @@ export async function importTenants(
     }
     // Configurations have no name to adopt by: a run interrupted between creating one and
     // saving its ID leaves an unused copy behind, which is harmless.
-    for (const configuration of namespace.configurations) {
+    for (const item of array(namespace.configurations)) {
+      const configuration = resource(item);
       await create(
         configuration.id,
         "configurations",
@@ -535,7 +657,8 @@ export async function importTenants(
       );
     }
     // Preset Harness authentication can refer to these accounts; map them before templates.
-    for (const account of namespace.serviceAccounts) {
+    for (const item of array(namespace.serviceAccounts)) {
+      const account = resource(item);
       await create(
         account.id,
         "service-accounts",
@@ -544,10 +667,12 @@ export async function importTenants(
         account.name,
       );
     }
-    for (const preset of namespace.presets) {
+    for (const item of array(namespace.presets)) {
+      const preset = resource(item);
       const template = structuredClone(preset.template);
-      if (template?.agent?.harnessAuth !== undefined) {
-        template.agent.harnessAuth = currentHarnessAuth(template.agent.harnessAuth, namespace.id);
+      const templateAgent = resource(resource(template)?.agent);
+      if (templateAgent?.harnessAuth !== undefined) {
+        templateAgent.harnessAuth = currentHarnessAuth(templateAgent.harnessAuth, namespace.id);
       }
       await create(
         preset.id,
@@ -558,7 +683,8 @@ export async function importTenants(
       );
     }
     const liveRoles = await list(api, `${base}/iam/roles`);
-    for (const role of namespace.roles) {
+    for (const item of array(namespace.roles)) {
+      const role = resource(item);
       if (ids.has(role.id)) {
         continue;
       }
@@ -575,36 +701,43 @@ export async function importTenants(
         `Role ${namespace.name}/${role.name ?? role.id}`,
       );
     }
-    for (const agent of namespace.agents) {
+    for (const item of array(namespace.agents)) {
+      const agent = resource(item);
       if (ids.has(agent.id)) {
         if (agent.servicePrincipalId && !ids.has(agent.servicePrincipalId)) {
-          const { data } = await api.expect("GET", `${base}/agents/${ids.get(agent.id)}`);
+          const data = resource(
+            (await api.expect("GET", `${base}/agents/${ids.get(agent.id)}`)).data,
+          );
           record(agent.servicePrincipalId, data.servicePrincipalId);
         }
         continue;
       }
-      const body = remap(
-        {
-          ...pick(agent, AGENT_FIELDS),
-          harnessAuth: currentHarnessAuth(agent.harnessAuth, namespace.id),
-        },
-        ids,
+      const body = resource(
+        remap(
+          {
+            ...pick(agent, AGENT_FIELDS),
+            harnessAuth: currentHarnessAuth(agent.harnessAuth, namespace.id),
+          },
+          ids,
+        ),
       );
       if (body.harnessAuth === undefined || body.harnessAuth === null) {
         delete body.harnessAuth;
       }
       if (Array.isArray(agent.repositoryBindings) && agent.repositoryBindings.length > 0) {
-        body.repositoryBindings = agent.repositoryBindings.map((binding) =>
-          pick(binding, ["repositoryRef", "profile"]),
+        body.repositoryBindings = agent.repositoryBindings.map((binding: unknown) =>
+          pick(resource(binding), ["repositoryRef", "profile"]),
         );
       }
-      if (Object.keys(agent.workspaceFiles ?? {}).length > 0) {
+      if (Object.keys((agent.workspaceFiles ?? {}) as object).length > 0) {
         body.initialWorkspaceFiles = agent.workspaceFiles;
       }
       const same = (await list(api, `${base}/agents`)).find(({ name }) => name === agent.name);
-      const data = same
-        ? (await api.expect("GET", `${base}/agents/${same.id}`)).data
-        : (await api.expect("POST", `${base}/agents`, body)).data;
+      const data = resource(
+        same
+          ? (await api.expect("GET", `${base}/agents/${same.id}`)).data
+          : (await api.expect("POST", `${base}/agents`, body)).data,
+      );
       if (same && data.configurationId !== body.configurationId) {
         throw new SplitLayoutError(
           `Agent ${namespace.name}/${agent.name} already exists here with another Configuration; ` +
@@ -625,7 +758,8 @@ export async function importTenants(
         binding,
       ]),
     );
-    for (const binding of namespace.accessBindings) {
+    for (const item of array(namespace.accessBindings)) {
+      const binding = resource(item);
       if (ids.has(binding.id)) {
         continue;
       }
@@ -647,7 +781,7 @@ export async function importTenants(
         pick(binding, ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"]),
         ids,
       );
-      const live = liveBindings.get(bindingKey(body));
+      const live = liveBindings.get(bindingKey(resource(body)));
       if (live) {
         record(binding.id, live.id);
         continue;
@@ -668,8 +802,12 @@ export async function importTenants(
       }
     }
     if (deploy) {
-      for (const agent of namespace.agents) {
-        if (agent.desiredRuntimeState !== "running" || state.deployed.includes(agent.id)) {
+      for (const item of array(namespace.agents)) {
+        const agent = resource(item);
+        if (
+          agent.desiredRuntimeState !== "running" ||
+          array(resource(state).deployed).includes(agent.id)
+        ) {
           continue;
         }
         try {
@@ -681,7 +819,7 @@ export async function importTenants(
           failedDeploys.push(`${namespace.name}/${agent.name}: ${error.message}`);
           continue;
         }
-        state.deployed.push(agent.id);
+        array(resource(state).deployed).push(agent.id);
         save(state);
         log(`deploying Agent ${namespace.name}/${agent.name}`);
       }
@@ -690,25 +828,29 @@ export async function importTenants(
   return { complete: true, pendingNamespaces: [], failedDeploys, skippedBindings };
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]) {
   const [command, ...rest] = argv;
-  const options = { command, names: Object.create(null), skip: [] };
+  const options: CliOptions = {
+    command,
+    names: Object.create(null) as Record<string, string>,
+    skip: [],
+  };
   for (let index = 0; index < rest.length; index += 1) {
-    const flag = rest[index];
+    const flag = rest[index]!;
     if (["--yes", "--no-deploy", "--allow-unread-workspace-files"].includes(flag)) {
-      options[flag.slice(2)] = true;
+      options[flag.slice(2) as "yes" | "no-deploy" | "allow-unread-workspace-files"] = true;
     } else if (flag === "--rename" && /^[^=]+=[^=]+$/u.test(rest[index + 1] ?? "")) {
-      const [from, to] = rest[index + 1].split("=");
-      options.names[from] = to;
+      const [from, to] = rest[index + 1]!.split("=");
+      options.names[from!] = to!;
       index += 1;
     } else if (flag === "--skip" && rest[index + 1] !== undefined) {
-      options.skip.push(rest[index + 1]);
+      options.skip.push(rest[index + 1]!);
       index += 1;
     } else if (
       ["--out", "--bundle", "--secret-values", "--map"].includes(flag) &&
       rest[index + 1] !== undefined
     ) {
-      options[flag.slice(2)] = rest[index + 1];
+      options[flag.slice(2) as "out" | "bundle" | "secret-values" | "map"] = rest[index + 1]!;
       index += 1;
     } else {
       throw new SplitLayoutError(`unknown argument ${flag}\n${usage}`);
@@ -717,7 +859,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function writePrivateJson(path, value) {
+function writePrivateJson(path: string, value: unknown) {
   const partial = `${path}.partial`;
   writeFileSync(partial, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(partial, path);
@@ -733,16 +875,18 @@ function cliApi() {
   if (base.protocol !== "https:" && !(base.protocol === "http:" && loopback)) {
     throw new SplitLayoutError("OCC_URL must use https (http only on loopback)");
   }
-  const key = JSON.parse(readFileSync(keyFile, "utf8"))?.data?.key;
+  const keyFileData: unknown = JSON.parse(readFileSync(keyFile, "utf8"));
+  const key =
+    isRecord(keyFileData) && isRecord(keyFileData.data) ? keyFileData.data.key : undefined;
   if (typeof key !== "string" || key.trim() === "" || /[\r\n]/u.test(key)) {
     throw new SplitLayoutError(`invalid service-key file ${keyFile}`);
   }
   return createOccApi({ baseUrl: base, headers: { "x-api-key": key } });
 }
 
-export async function main(argv) {
+export async function main(argv: string[]) {
   const options = parseArgs(argv);
-  const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
+  const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
   if (options.command === "export" && options.out) {
     if (existsSync(options.out)) {
       throw new SplitLayoutError(`${options.out} exists; choose a new file`);
@@ -766,14 +910,15 @@ export async function main(argv) {
     options["secret-values"] &&
     options.map
   ) {
+    const mapPath = options.map;
     const bundle = readBundle(options.bundle);
-    const secretValues = JSON.parse(readFileSync(options["secret-values"], "utf8"));
-    const state = existsSync(options.map)
+    const secretValues: unknown = JSON.parse(readFileSync(options["secret-values"], "utf8"));
+    const state: unknown = existsSync(options.map)
       ? JSON.parse(readFileSync(options.map, "utf8"))
       : { ids: {}, deployed: [] };
     const result = await importTenants(cliApi(), bundle, secretValues, {
       state,
-      save: (value) => writePrivateJson(options.map, value),
+      save: (value) => writePrivateJson(mapPath, value),
       deploy: !options["no-deploy"],
       names: options.names,
       skip: options.skip,
@@ -821,7 +966,7 @@ if (
   }
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
-    (error) => {
+    (error: unknown) => {
       console.error(error instanceof SplitLayoutError ? error.message : error);
       process.exit(1);
     },

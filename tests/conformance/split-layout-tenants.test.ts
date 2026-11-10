@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { OpenClawController, type PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { join } from "node:path";
 import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
@@ -23,7 +24,44 @@ import {
   importTenants,
   main,
   remap,
-} from "../../scripts/split-layout-tenants.mjs";
+} from "../../scripts/split-layout-tenants.ts";
+
+type BaseFixture = Awaited<ReturnType<typeof createTenantReaderFixture>>;
+type Fixture = BaseFixture & {
+  api: ReturnType<typeof createOccApi>;
+  controller: OpenClawController;
+};
+type SavedState = { ids: Record<string, string>; deployed: string[] };
+type CreatedResource = Record<string, unknown> & { id: string };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function object(value: unknown): Record<string, unknown> {
+  assert.ok(isObject(value));
+  return value;
+}
+
+function hasStringId(value: Record<string, unknown>): value is CreatedResource {
+  return typeof value.id === "string";
+}
+
+function createdResource(value: unknown): CreatedResource {
+  const result = object(value);
+  assert.ok(hasStringId(result));
+  return result;
+}
+
+function resources(value: unknown): CreatedResource[] {
+  assert.ok(Array.isArray(value));
+  return value.map((item: unknown) => createdResource(item));
+}
+
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
 
 const installationId = "ins_5633697e-6397-4cc6-9b04-8ec17af78cf1";
 const noSleep = async () => {};
@@ -45,37 +83,43 @@ async function createFixture() {
   });
   assert.equal(bootstrap.response.status, 201);
   // The script's own transport, sent to the real app as the signed-in administrator.
-  fixture.api = createOccApi({
+  const api = createOccApi({
     baseUrl: "https://console.oce.localhost",
     fetchImpl: asAdministrator(fixture),
   });
-  return fixture;
+  const controller: unknown = fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
+  return { ...fixture, api, controller };
 }
 
 /** A fetch function that sends each request to the fixture's real app as its administrator. */
-function asAdministrator(fixture) {
-  return (url, init) =>
+function asAdministrator(fixture: BaseFixture) {
+  return (url: string, init: RequestInit) =>
     fixture.app.fetch(
       new Request(url, {
         ...init,
-        headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
+        headers: authenticatedHeaders(fixture.session(fixture.administrator), init.headers),
       }),
     );
 }
 
-async function created(fixture, pathname, body) {
+async function created(
+  fixture: Fixture,
+  pathname: string,
+  body: unknown,
+): Promise<CreatedResource> {
   const result = await request(fixture.app, pathname, { body });
   assert.equal(result.response.status, 201, JSON.stringify(result.payload.error));
-  return result.payload.data;
+  return createdResource(result.payload.data);
 }
 
-async function markReady(fixture, namespaceId) {
-  await fixture.controller.transact((unit) =>
+async function markReady(fixture: Fixture, namespaceId: string) {
+  await fixture.controller.transact((unit: PlatformUnitOfWork) =>
     unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
   );
 }
 
-async function seedTenant(fixture) {
+async function seedTenant(fixture: Fixture) {
   const namespace = await created(fixture, "/namespaces", { name: "team-a" });
   await markReady(fixture, namespace.id);
   const base = `/namespaces/${namespace.id}`;
@@ -90,10 +134,11 @@ async function seedTenant(fixture) {
       MODEL_API_KEY: { source: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
     },
   });
-  const agent = await created(fixture, `${base}/agents`, {
+  const createdAgent = await created(fixture, `${base}/agents`, {
     name: "a1",
     configurationId: configuration.id,
   });
+  const agent = { ...createdAgent, servicePrincipalId: string(createdAgent.servicePrincipalId) };
   const role = await created(fixture, `${base}/iam/roles`, {
     name: "agent readers",
     permissions: [{ action: "read", resourceKind: "configuration" }],
@@ -115,6 +160,7 @@ test("export reads every tenant resource the import needs, without Secret values
   const bundle = await exportTenants(fixture.api);
   assert.equal(bundle.format, BUNDLE_FORMAT);
   const tenant = bundle.namespaces.find(({ name }) => name === "team-a");
+  assert.ok(tenant);
   assert.equal(tenant.id, seeded.namespace.id);
   assert.deepEqual(tenant.secrets, [{ id: seeded.secret.id, name: "model-key" }]);
   assert.doesNotMatch(JSON.stringify(bundle), /old-value/u);
@@ -141,8 +187,8 @@ test("export reads every tenant resource the import needs, without Secret values
         const response = await asAdministrator(fixture)(url, init);
         assert.equal(response.status, 200);
         const text = await response.text();
-        const payload = JSON.parse(text);
-        assert.ok(payload.data.some(({ id }) => id === seeded.namespace.id));
+        const payload = object(JSON.parse(text) as unknown);
+        assert.ok(resources(payload.data).some(({ id }) => id === seeded.namespace.id));
         delete payload.data;
         const damaged =
           damage === "malformed"
@@ -209,9 +255,12 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   });
   const bundle = await exportTenants(fixture.api);
   // The released bundle used this retired spelling; the importer upgrades it to codex_pat.
-  bundle.namespaces
+  const legacyPresetResource = bundle.namespaces
     .find(({ id }) => id === seeded.namespace.id)
-    .presets.find(({ id }) => id === legacyPreset.id).template.agent.harnessAuth = {
+    ?.presets.find(({ id }) => id === legacyPreset.id);
+  assert.ok(legacyPresetResource);
+  const legacyTemplate = object(object(legacyPresetResource.template).agent);
+  legacyTemplate.harnessAuth = {
     method: "chatgpt_service_account",
     serviceAccountId: account.id,
   };
@@ -223,10 +272,17 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.deepEqual(checkImport(bundle, {}), ["no value for Secret team-a/model-key"]);
   await assert.rejects(importTenants(fixture.api, bundle, {}, scope), /no value for Secret/u);
   const values = { "team-a": { "model-key": "new-value" } };
-  let saved;
+  let saved: SavedState = { ids: {}, deployed: [] };
   const options = {
     ...scope,
-    save: (state) => (saved = structuredClone(state)),
+    save: (state: unknown) => {
+      const snapshot = object(structuredClone(state));
+      const ids = Object.fromEntries(
+        Object.entries(object(snapshot.ids)).map(([id, value]) => [id, string(value)]),
+      );
+      assert.ok(Array.isArray(snapshot.deployed));
+      saved = { ids, deployed: snapshot.deployed.map((value: unknown) => string(value)) };
+    },
     sleep: noSleep,
     intervalMs: 0,
     readyTimeoutMs: 0,
@@ -234,6 +290,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   const first = await importTenants(fixture.api, bundle, values, options);
   assert.equal(first.complete, false);
   const namespaceId = saved.ids[seeded.namespace.id];
+  assert.ok(namespaceId);
   assert.match(namespaceId, /^ns_/u);
   assert.notEqual(namespaceId, seeded.namespace.id);
   assert.deepEqual(first.pendingNamespaces, [`team-a restored (${namespaceId})`]);
@@ -246,30 +303,34 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   });
   const second = await importTenants(fixture.api, bundle, values, { ...options, state: saved });
   assert.equal(second.complete, true);
-  const namespaces = (await request(fixture.app, "/namespaces")).payload.data;
+  const namespaces = resources((await request(fixture.app, "/namespaces")).payload.data);
   assert.equal(namespaces.filter(({ name }) => name === "team-a restored").length, 1);
 
   const base = `/namespaces/${namespaceId}`;
-  const secrets = (await request(fixture.app, `${base}/secrets`)).payload.data;
+  const secrets = resources((await request(fixture.app, `${base}/secrets`)).payload.data);
   assert.deepEqual(
     secrets.map(({ id, name }) => ({ id, name })),
     [{ id: interrupted.id, name: "model-key" }],
   );
-  const configuration = (
-    await request(fixture.app, `${base}/configurations/${saved.ids[seeded.configuration.id]}`)
-  ).payload.data;
+  const configuration = createdResource(
+    (await request(fixture.app, `${base}/configurations/${saved.ids[seeded.configuration.id]}`))
+      .payload.data,
+  );
   assert.deepEqual(configuration.values, { model: "example-model" });
-  assert.deepEqual(configuration.secretBindings.MODEL_API_KEY.source, {
+  assert.deepEqual(object(object(configuration.secretBindings).MODEL_API_KEY).source, {
     kind: "secret",
     namespaceId,
     id: saved.ids[seeded.secret.id],
   });
-  const agent = (await request(fixture.app, `${base}/agents/${saved.ids[seeded.agent.id]}`)).payload
-    .data;
+  const agent = createdResource(
+    (await request(fixture.app, `${base}/agents/${saved.ids[seeded.agent.id]}`)).payload.data,
+  );
   assert.equal(agent.name, "a1");
   assert.equal(agent.configurationId, configuration.id);
   assert.notEqual(agent.servicePrincipalId, seeded.agent.servicePrincipalId);
-  const bindings = (await request(fixture.app, `${base}/iam/access-bindings`)).payload.data;
+  const bindings = resources(
+    (await request(fixture.app, `${base}/iam/access-bindings`)).payload.data,
+  );
   assert.ok(
     bindings.some(
       (binding) =>
@@ -280,9 +341,10 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   );
 
   for (const original of [preset, legacyPreset]) {
-    const restored = (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`))
-      .payload.data;
-    assert.deepEqual(restored.template.agent.harnessAuth, {
+    const restored = createdResource(
+      (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`)).payload.data,
+    );
+    assert.deepEqual(object(object(restored.template).agent).harnessAuth, {
       method: "codex_pat",
       source: { kind: "service_account", namespaceId, id: saved.ids[account.id] },
     });
@@ -307,9 +369,13 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
 
   assert.equal((await request(fixture.app, `${base}/service-accounts`)).payload.data.length, 1);
   for (const original of [preset, legacyPreset]) {
-    const restored = (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`))
-      .payload.data;
-    assert.equal(restored.template.agent.harnessAuth.source.id, saved.ids[account.id]);
+    const restored = createdResource(
+      (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`)).payload.data,
+    );
+    assert.equal(
+      object(object(object(object(restored.template).agent).harnessAuth).source).id,
+      saved.ids[account.id],
+    );
   }
 
   // A run that stopped after creating the Agent, before saving its principal or binding.
@@ -327,7 +393,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   );
 
   // Released forms belong only in the bundle; the live grant inventory must not grow.
-  const resourceLess = { ...seeded.binding, id: "legacy-resource-less" };
+  const resourceLess: CreatedResource = { ...seeded.binding, id: "legacy-resource-less" };
   delete resourceLess.resourceKind;
   delete resourceLess.resourceId;
   const manual = [
@@ -348,14 +414,14 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     resourceId: "old-revision",
   }));
   const legacy = structuredClone(bundle);
-  legacy.namespaces.find(({ id }) => id === seeded.namespace.id).accessBindings = [
-    seeded.binding,
-    ...manual,
-    ...revisions,
-  ];
+  const legacyTenant = legacy.namespaces.find(({ id }) => id === seeded.namespace.id);
+  assert.ok(legacyTenant);
+  legacyTenant.accessBindings = [seeded.binding, ...manual, ...revisions];
   const state = structuredClone(saved);
-  const messages = [];
-  const beforeLegacy = (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data;
+  const messages: string[] = [];
+  const beforeLegacy = resources(
+    (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data,
+  );
   const result = await importTenants(fixture.api, legacy, values, {
     ...options,
     state,
@@ -406,8 +472,9 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   // the service key from OCC_SERVICE_KEY_FILE, then forwards the request to the real app as
   // the signed-in administrator. It proves the command's exit codes and saved map only.
   const server = createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of request as AsyncIterable<unknown>) {
+      assert.ok(chunk instanceof Uint8Array);
       chunks.push(chunk);
     }
     if (request.headers["x-api-key"] !== key) {
@@ -415,18 +482,20 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       return;
     }
     const answer = await asAdministrator(fixture)(`https://console.oce.localhost${request.url}`, {
-      method: request.method,
+      ...(request.method === undefined ? {} : { method: request.method }),
       headers: request.headers["content-type"]
         ? { "content-type": request.headers["content-type"] }
         : {},
-      body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
+      ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
     });
     response.writeHead(answer.status, { "content-type": "application/json" });
     response.end(await answer.text());
   });
   await listen(t, server);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
   for (const [name, value] of Object.entries({
-    OCC_URL: `http://127.0.0.1:${server.address().port}`,
+    OCC_URL: `http://127.0.0.1:${address.port}`,
     OCC_SERVICE_KEY_FILE: join(directory, "key.json"),
   })) {
     const previous = process.env[name];
@@ -435,8 +504,8 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       previous === undefined ? delete process.env[name] : (process.env[name] = previous),
     );
   }
-  const lines = [];
-  t.mock.method(console, "log", (line) => lines.push(line));
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => lines.push(line));
 
   const extras = {
     // Old Agent revisions are intentionally not carried over: logged, not reported.
@@ -450,9 +519,11 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       resourceId: "cfg_00000000-0000-4000-8000-0000000000ff",
     },
   };
-  const run = async (name, extra) => {
+  type ExtraKind = keyof typeof extras;
+  const run = async (name: string, extra: ExtraKind[]) => {
     const bundle = structuredClone(exported);
     bundle.namespaces = bundle.namespaces.filter(({ id }) => id === seeded.namespace.id);
+    assert.ok(bundle.namespaces[0]);
     bundle.namespaces[0].accessBindings = [seeded.binding, ...extra.map((kind) => extras[kind])];
     writeFileSync(join(directory, `${name}.json`), JSON.stringify(bundle));
     lines.length = 0;
@@ -465,16 +536,19 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       "--no-deploy",
     ]);
   };
-  const savedIds = (name) =>
-    JSON.parse(readFileSync(join(directory, `${name}-map.json`), "utf8")).ids;
+  const savedIds = (name: string) =>
+    object(
+      object(JSON.parse(readFileSync(join(directory, `${name}-map.json`), "utf8")) as unknown).ids,
+    );
 
-  for (const [name, extra, code] of [
+  const cases: [string, ExtraKind[], number][] = [
     ["clean", [], 0],
     // Exit 0 can still omit old Agent revision bindings; the guide says so.
     ["revision-only", ["revision"], 0],
     ["group", ["group"], 4],
     ["refused", ["refused"], 4],
-  ]) {
+  ];
+  for (const [name, extra, code] of cases) {
     // An empty, ready destination stands in for one whose tenant RoleBindings were granted.
     await markReady(fixture, (await created(fixture, "/namespaces", { name })).id);
     assert.equal(await run(name, extra), code, `${name}: ${lines.join("\n")}`);
@@ -495,7 +569,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
 
 test("import refuses overlapping tenant destinations before changing the map or target", async () => {
   const fixture = await createFixture();
-  const sources = [];
+  const sources: CreatedResource[] = [];
   for (const name of ["source-a", "source-b"]) {
     const namespace = await created(fixture, "/namespaces", { name });
     await markReady(fixture, namespace.id);
@@ -511,7 +585,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
   bundle.namespaces = bundle.namespaces.filter(({ id }) =>
     sources.some((source) => source.id === id),
   );
-  const state = { ids: {}, deployed: [] };
+  const state: SavedState = { ids: {}, deployed: [] };
   let saves = 0;
   const options = {
     state,
@@ -544,7 +618,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
     /Namespaces source-a and source-b both target not-created/u,
   );
   assert.equal(
-    (await fixture.api.expect("GET", "/namespaces")).data.some(
+    resources((await fixture.api.expect("GET", "/namespaces")).data).some(
       ({ name }) => name === "not-created",
     ),
     false,
@@ -572,10 +646,10 @@ test("import refuses overlapping tenant destinations before changing the map or 
   // A skipped source without a saved destination does not prevent a normal one-tenant import.
   const imported = await importTenants(fixture.api, bundle, {}, { ...options, skip: ["source-b"] });
   assert.equal(imported.complete, true);
-  assert.equal(state.ids[sources[0].id], target.id);
-  assert.equal(state.ids[sources[1].id], undefined);
+  assert.equal(Object.entries(state.ids).find(([id]) => id === sources[0]?.id)?.[1], target.id);
+  assert.equal(Object.entries(state.ids).find(([id]) => id === sources[1]?.id)?.[1], undefined);
   assert.deepEqual(
-    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data.map(
+    resources((await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data).map(
       ({ name }) => name,
     ),
     ["source-a readers"],
@@ -599,7 +673,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
   assert.deepEqual(state, partial);
   assert.equal(saves, savesBeforeResume);
   assert.deepEqual(
-    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data.map(
+    resources((await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data).map(
       ({ name }) => name,
     ),
     ["source-a readers"],
@@ -608,7 +682,7 @@ test("import refuses overlapping tenant destinations before changing the map or 
   // A previously imported source retains its destination when the skip selection changes.
   const swappedTarget = await created(fixture, "/namespaces", { name: "swapped" });
   await markReady(fixture, swappedTarget.id);
-  const swappedState = { ids: {}, deployed: [] };
+  const swappedState: SavedState = { ids: {}, deployed: [] };
   const firstPass = await importTenants(
     fixture.api,
     bundle,
@@ -640,9 +714,9 @@ test("import refuses overlapping tenant destinations before changing the map or 
   assert.deepEqual(swappedState, swappedBefore);
   assert.equal(saves, savedBeforeSwap);
   assert.deepEqual(
-    (await fixture.api.expect("GET", `/namespaces/${swappedTarget.id}/iam/roles`)).data.map(
-      ({ name }) => name,
-    ),
+    resources(
+      (await fixture.api.expect("GET", `/namespaces/${swappedTarget.id}/iam/roles`)).data,
+    ).map(({ name }) => name),
     ["source-b readers"],
   );
 });
@@ -656,23 +730,25 @@ test("import requires own object mappings and restores literal names or explicit
   }
   const bundle = await exportTenants(source.api);
   bundle.namespaces = bundle.namespaces.filter(({ id }) => id === namespace.id);
-  const values = JSON.parse('{"__proto__":{"constructor":"restored","0":"indexed"}}');
+  const values = object(
+    JSON.parse('{"__proto__":{"constructor":"restored","0":"indexed"}}') as unknown,
+  );
   const destination = await createFixture();
-  const state = { ids: {}, deployed: [] };
+  const state: SavedState = { ids: {}, deployed: [] };
   let saves = 0;
   const options = { state, save: () => saves++, deploy: false };
   const before = (await destination.api.expect("GET", "/namespaces")).data;
   // An inherited tenant map and an inherited string inside an own tenant map are distinct gaps.
-  for (const [invalid, missing] of [
+  const invalidCases: [unknown, string[]][] = [
     [Object.create(values), ["constructor", "0"]],
-    [{ ["__proto__"]: Object.create(values.__proto__) }, ["constructor", "0"]],
+    [{ ["__proto__"]: Object.create(object(values.__proto__)) }, ["constructor", "0"]],
     [{ ["__proto__"]: "abc" }, ["constructor", "0"]],
     [{ ["__proto__"]: ["indexed"] }, ["constructor", "0"]],
     [{ ["__proto__"]: { constructor: "restored" } }, ["0"]],
-  ]) {
+  ];
+  for (const [invalid, missing] of invalidCases) {
     await assert.rejects(importTenants(destination.api, bundle, invalid, options), {
-      message: bundle.namespaces[0].secrets
-        .filter(({ name }) => missing.includes(name))
+      message: bundle.namespaces[0]!.secrets.filter(({ name }) => missing.includes(name))
         .map(({ name }) => `no value for Secret __proto__/${name}`)
         .join("\n"),
     });
@@ -686,13 +762,14 @@ test("import requires own object mappings and restores literal names or explicit
   );
 
   // Ignore inherited renames; an explicit own __proto__ rename must still work.
-  for (const [name, names] of [
+  const renameCases: [string, Record<string, string>][] = [
     ["__proto__", Object.create(JSON.parse('{"__proto__":"wrong destination"}'))],
     ["constructor", JSON.parse('{"__proto__":"constructor"}')],
-  ]) {
+  ];
+  for (const [name, names] of renameCases) {
     const target = await created(destination, "/namespaces", { name });
     await markReady(destination, target.id);
-    const restored = { ids: {}, deployed: [] };
+    const restored: SavedState = { ids: {}, deployed: [] };
     const result = await importTenants(destination.api, bundle, values, {
       ...options,
       state: restored,
@@ -700,10 +777,12 @@ test("import requires own object mappings and restores literal names or explicit
     });
     assert.equal(result.complete, true);
     assert.equal(restored.ids[namespace.id], target.id);
-    const secrets = (await destination.api.expect("GET", `/namespaces/${target.id}/secrets`)).data;
+    const secrets = resources(
+      (await destination.api.expect("GET", `/namespaces/${target.id}/secrets`)).data,
+    );
     assert.deepEqual(
       secrets.map(({ id, name }) => ({ id, name })),
-      bundle.namespaces[0].secrets.map((secret) => ({
+      bundle.namespaces[0]!.secrets.map((secret) => ({
         id: restored.ids[secret.id],
         name: secret.name,
       })),
@@ -717,7 +796,7 @@ test("discard refuses a stale bundle or one missing workspace files, before dele
   const bundle = await exportTenants(fixture.api);
   // This app has no Gateway to read workspace files from, as for a stopped Agent.
   const exported = bundle.namespaces.find(({ name }) => name === "team-a");
-  assert.equal(exported.agents[0].unreadWorkspaceFiles.length, 4);
+  assert.equal(exported?.agents[0]?.unreadWorkspaceFiles?.length, 4);
   const discard = (options = {}) =>
     discardTenants(fixture.api, bundle, { sleep: noSleep, intervalMs: 0, ...options });
   await assert.rejects(
@@ -732,11 +811,13 @@ test("discard refuses a stale bundle or one missing workspace files, before dele
     discard({ allowUnreadWorkspaceFiles: true }),
     /team-a has resources the bundle lacks .*export again/u,
   );
-  const agents = (await request(fixture.app, `/namespaces/${seeded.namespace.id}/agents`)).payload
-    .data;
+  const agents = resources(
+    (await request(fixture.app, `/namespaces/${seeded.namespace.id}/agents`)).payload.data,
+  );
   assert.equal(agents.length, 1);
-  const secrets = (await request(fixture.app, `/namespaces/${seeded.namespace.id}/secrets`)).payload
-    .data;
+  const secrets = resources(
+    (await request(fixture.app, `/namespaces/${seeded.namespace.id}/secrets`)).payload.data,
+  );
   assert.equal(secrets.length, 2);
 });
 
@@ -790,7 +871,7 @@ test("import refuses non-array destination inventories before adopting a populat
   const before = (await fixture.api.expect("GET", `${base}/agents`)).data;
 
   for (const data of [null, "", "not-an-array", {}, 0, false]) {
-    const state = { ids: {}, deployed: [] };
+    const state: SavedState = { ids: {}, deployed: [] };
     let saves = 0;
     let writes = 0;
     const api = createOccApi({
@@ -804,8 +885,8 @@ test("import refuses non-array destination inventories before adopting a populat
           return response;
         }
         assert.equal(response.status, 200);
-        const payload = await response.json();
-        assert.ok(payload.data.some(({ id }) => id === existingAgent.id));
+        const payload = object((await response.json()) as unknown);
+        assert.ok(resources(payload.data).some(({ id }) => id === existingAgent.id));
         return Response.json({ ...payload, data }, { status: 200 });
       },
     });
@@ -820,7 +901,7 @@ test("import refuses non-array destination inventories before adopting a populat
             saves += 1;
           },
           deploy: false,
-          names: { "team-a": destination.name },
+          names: { "team-a": string(destination.name) },
         },
       ),
       {
@@ -836,7 +917,7 @@ test("import refuses non-array destination inventories before adopting a populat
   // A genuinely empty, ready destination still follows the normal import path.
   const empty = await created(fixture, "/namespaces", { name: "empty-destination" });
   await markReady(fixture, empty.id);
-  const state = { ids: {}, deployed: [] };
+  const state: SavedState = { ids: {}, deployed: [] };
   const result = await importTenants(
     fixture.api,
     bundle,
@@ -844,7 +925,7 @@ test("import refuses non-array destination inventories before adopting a populat
     {
       state,
       deploy: false,
-      names: { "team-a": empty.name },
+      names: { "team-a": string(empty.name) },
     },
   );
   assert.equal(result.complete, true);
