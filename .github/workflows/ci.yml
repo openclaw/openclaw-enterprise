@@ -262,8 +262,8 @@ jobs:
     name: Suite Audit and Static Checks
     # Both run in every mode. Start beside CI Impact, audit the workflow and
     # suite first, then reuse this checkout, Node and runner for static checks.
-    # The measured 3.2 GiB peak fits the 4-CPU / 15.2 GiB runner.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # The measured 3.2 GiB peak fits the 2-CPU / 7.6 GiB runner.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
