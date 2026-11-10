@@ -920,6 +920,27 @@ func (app *application) agentCommand() *cobra.Command {
 		}
 		return cmd
 	}
+	revision := &cobra.Command{
+		Use:   "revision AGENT_ID REVISION_ID",
+		Short: "Read one exact Agent revision and its saved settings",
+		Args:  idArgs(agentIDArg, revisionIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			value, err := client.GetAgentRevision(namespace, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return app.printBrowsingItems(value, false, []column{
+				{title: "ID", key: "id"},
+				{title: "REVISION", key: "revision"},
+				{title: "CONFIGURATION", key: "configurationId"},
+				{title: "GENERATION", key: "configurationGeneration"},
+			})
+		},
+	}
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -1063,6 +1084,7 @@ func (app *application) agentCommand() *cobra.Command {
 		deploy,
 		firstDeploymentCommand(false),
 		firstDeploymentCommand(true),
+		revision,
 		revisions,
 		deploymentStatus,
 		stop,

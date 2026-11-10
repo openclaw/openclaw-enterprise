@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -579,6 +580,33 @@ func TestAgentRevisionsTellsRevisionsApart(t *testing.T) {
 	}
 	if fields := strings.Fields(lines[2]); !slices.Equal(fields, []string{"*", testRevision1ID, "1", "1", "succeeded", "-", "2026-09-30T00:00:00.000Z"}) {
 		t.Fatalf("revision 1 must be active, generation 1, succeeded: %q", lines[2])
+	}
+}
+
+func TestAgentRevisionReadsExactSnapshotWithoutListing(t *testing.T) {
+	path := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions/" + testRevision1ID
+	snapshot := `{"id":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","harness":{"id":"codex","version":"1","mode":"dedicated","overrides":{},"configuration":{}}}`
+	out, requested, err := runOCC(t, map[string]string{path: snapshot}, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(requested, []string{path}) {
+		t.Fatalf("exact revision read must not select from history: %v", requested)
+	}
+	var got, want any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(snapshot), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot changed: %s", out)
+	}
+	denied := &fakeOCC{refuse: "revision read denied"}
+	out, _, err = runOCCAgainst(t, denied, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err == nil || out != "" || !slices.Equal(denied.requested, []string{path}) {
+		t.Fatalf("refused exact read must not fall back: output=%q requests=%v error=%v", out, denied.requested, err)
 	}
 }
 
