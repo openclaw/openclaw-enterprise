@@ -5,6 +5,7 @@ import {
   verifyModelRequestProfile,
 } from "./openshell-model-request-policy.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
+import { openShellGitGrantPrelude } from "./openshell-git-client.ts";
 import {
   openShellRepositoryAccess,
   type OpenShellGitPolicyOverlap,
@@ -1332,6 +1333,7 @@ function sandboxCommand(
   native: boolean,
   loginMode: HarnessWorkloadRequirements["loginMode"],
   workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
+  grantRepositoryUrl?: string,
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1348,7 +1350,7 @@ function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}${grantRepositoryUrl === undefined ? "" : openShellGitGrantPrelude(grantRepositoryUrl)}`;
   const composed = [
     ...command.slice(0, loaderIndex),
     prelude + loader,
@@ -2210,6 +2212,7 @@ function sandboxSpec(
   egressPolicy?: Readonly<Record<string, unknown>>,
   plugin?: ReturnType<typeof openShellPluginPolicy>,
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
+  grantRepositoryUrl?: string,
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
@@ -2306,6 +2309,7 @@ function sandboxSpec(
       revision.harness.id === "openclaw",
       requirements.loginMode,
       requirements.workspaceSetup,
+      grantRepositoryUrl,
     ),
     restart_policy: SANDBOX_RESTART_POLICY,
   };
@@ -3432,6 +3436,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         egressPolicy,
         plugin,
         mcpPolicies,
+        git?.grantRepositoryUrl,
       ),
       serviceExposures,
     };

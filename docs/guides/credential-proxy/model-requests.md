@@ -167,9 +167,13 @@ that the workload passed installation checks or can answer a model turn.
 
 An installation can enable `repository.openShell.grantRedemption` for one
 selected read-only `github-repository` grant. Use matching Gateway and
-supervisor builds that support provider assertions and dynamic Git HTTP Basic
-injection. The held Agent still requires a current prepared token before release.
-The Gateway provider stores no copy of that token.
+supervisor builds that support provider assertions and grant-backed header
+placeholders. The provider declares `auth_style: placeholder`,
+`header_name: Authorization`, and one `GITHUB_TOKEN` alias. OpenShell gives the
+Sandbox an opaque placeholder, and the Sandbox launcher configures Git to send
+it as the Basic password on its first request to the selected repository.
+Startup does not issue or install a GitHub token. Deploy a new Agent revision to
+select the updated provider profile and launch configuration.
 
 Configure the Worker’s HTTPS `/token` listener on a port separate from its
 middleware authority. Set `assertionSource: openshell_gateway`, the exact
@@ -179,11 +183,13 @@ Gateway `issuer`, and `bundlePath` to its public JWKS. With Helm, set
 immutable ID, the `installation_token` credential and the exact HTTPS endpoint with
 the Gateway. Use the existing [supervisor TLS requirements](../../reference/repository-credentials/protected-openshell-git.md#prerequisites).
 
-The middleware first approves the inspected operation. The proxy presents a
-separate signed assertion to redeem that approval. The Worker rechecks the
-same recipient, grant and material before release, then OpenShell injects the
-token into the authorized Git HTTPS request. This profile disables token
-caching. Installed candidate qualification remains pending.
+The middleware approves the inspected operation. OpenShell checks the header
+placeholder against the attached provider before it presents a separate signed
+assertion to redeem that approval. The Worker rechecks the same recipient, grant
+and material before release. OpenShell replaces the placeholder in that request
+and keeps the token out of the Sandbox environment. OpenShell does not cache
+grant results; OCE can reuse the prepared token across separately authorized
+requests. Installed candidate qualification remains pending.
 
 ## Verify the installed path
 

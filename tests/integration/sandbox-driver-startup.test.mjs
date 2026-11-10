@@ -1,5 +1,6 @@
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
+import { verifyOpenShellGrantGitLauncher } from "../helpers/openshell-grant-git-launcher.ts";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -3263,6 +3264,33 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
 
   await driver.cleanup(context);
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
+});
+
+test("OpenShell grant launcher preauthenticates the first Git request to its selected repository", async (t) => {
+  await verifyOpenShellGrantGitLauncher(t, async (git, program) => {
+    const gateway = workspaceGatewayClient();
+    let spec;
+    gateway.createSandbox = async (request) => {
+      spec = request.spec;
+      return storedSandbox(request);
+    };
+    const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      backend: backendFor(gateway),
+      openShellGit: {
+        overlappingPolicy: () => undefined,
+        bind: async () => {},
+        prepare: async () => git,
+      },
+    });
+    const { context, revision, requirements } = runtimeSandboxFixture(driver);
+    revision.repositoryCredentials = { bindings: [], deadlineWallMs: Date.now() + 60_000 };
+    requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
+    requirements.environment.push({ name: "GITHUB_TOKEN", value: "configured-value" });
+    requirements.command = harnessRuntimeCommand(program);
+    await driver.provisionHarness({ ...context, revision, requirements });
+    return spec;
+  });
 });
 
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
