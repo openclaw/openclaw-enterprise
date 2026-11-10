@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 
 const imageRoles = ["gateway", "sandbox", "supervisor"] as const;
@@ -141,25 +142,39 @@ async function verifyChart(
       const path = join(directory, name);
       const key = relative ? `${relative}/${name}` : name;
       const entry = expected.get(key);
-      const info = await lstat(path);
       if (!entry) {
         throw new Error("OpenShell candidate chart contains files outside the selected commit.");
       }
       expected.delete(key);
-      if (entry.mode === "040000" && info.isDirectory()) {
+      if (entry.mode === "040000") {
+        if (!(await lstat(path)).isDirectory()) {
+          throw new Error("OpenShell candidate chart contains a symlink or unsupported file type.");
+        }
         await visit(path, key);
-      } else if (entry.mode !== "040000" && info.isFile()) {
-        const executable = (info.mode & 0o111) !== 0;
-        const content = await readFile(path);
+        continue;
+      }
+
+      // Check the opened file and hash that same handle. Do not follow a symlink
+      // or block on a special file substituted for the committed regular file.
+      const file = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const info = await file.stat();
+        if (!info.isFile()) {
+          throw new Error("OpenShell candidate chart contains an unsupported file type.");
+        }
+        const content = await file.readFile();
         const oid = createHash("sha1")
           .update(`blob ${content.length}\0`)
           .update(content)
           .digest("hex");
-        if (oid !== entry.oid || executable !== (entry.mode === "100755")) {
+        if (oid !== entry.oid || ((info.mode & 0o111) !== 0) !== (entry.mode === "100755")) {
           throw new Error("OpenShell candidate chart files differ from the selected commit.");
         }
-      } else {
-        throw new Error("OpenShell candidate chart contains a symlink or unsupported file type.");
+      } finally {
+        await file.close();
       }
     }
   };

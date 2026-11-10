@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
@@ -1414,6 +1414,15 @@ test("prepareOpenShell rejects source, chart, and image mismatches before cluste
   await execFileAsync("git", ["-C", checkout, "update-index", "--assume-unchanged", values]);
   await writeFile(values, "replicaCount: 99\n");
   await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await writeFile(values, "replicaCount: 1\n");
+  // A committed file must remain a regular file with its recorded mode, even
+  // when a link points at a file with identical bytes.
+  await chmod(values, 0o755);
+  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await rm(values);
+  await symlink(join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"), values);
+  await assert.rejects(prepare(), /chart contents do not match the selected source revision/);
+  await rm(values);
   await writeFile(values, "replicaCount: 1\n");
   for (const name of ["extra.yaml", "ignored.yaml"]) {
     const extra = join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, name);
