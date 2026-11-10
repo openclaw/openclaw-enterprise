@@ -55,7 +55,17 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
   const before = await sources(false);
   const secretsBefore = await relationships();
   return async function assertOwnershipAfterUpgrade() {
-    assert.deepEqual(await sources(true), before, "main source fields survive unchanged");
+    assert.deepEqual(
+      await sources(true),
+      before.map((source) => ({
+        ...source,
+        static_template_id: null,
+        static_template_version: null,
+        static_base_url: null,
+        static_protocol: null,
+      })),
+      "existing sources keep their metadata and gain no static-key consent",
+    );
     assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
       (await sources(false)).map(({ owner_capability, egress }) => ({ owner_capability, egress })),
