@@ -64,7 +64,8 @@
     "fixtures/repository-credentials/planning.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts",
-    "helpers/native-admin-postgres.ts"
+    "helpers/native-admin-postgres.ts",
+    "conformance/topology-launch-cases.ts"
   ],
   "references": [
     {
