@@ -89,7 +89,7 @@ evidence is reported as unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-Full Integration uses `github.sha`: verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatch requires `integration-main-approval` and verified dispatcher, team and environment policy. Admission rejects reruns and invalid selections.
+Full Integration uses `github.sha`: verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatch requires `integration-main-approval` and verified dispatcher, team and environment policy. Admission rejects invalid selections.
 A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
 otherwise it runs fresh. Credentialed lanes do not wait for reuse.
 

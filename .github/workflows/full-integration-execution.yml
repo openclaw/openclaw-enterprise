@@ -646,14 +646,13 @@ jobs:
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
-          LANE: ${{ inputs.lane }}
-          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane || inputs.lane }}
+          SELECTED_LANE: ${{ needs.preflight.outputs.selected_lane }}
           REUSED_LANES: ${{ needs.ci-reuse.outputs.lanes }}
         run: |
           node <<'NODE'
           const fs = require("fs");
           const needs = JSON.parse(process.env.NEEDS_JSON);
-          const lane = process.env.SELECTED_LANE || process.env.LANE;
+          const lane = process.env.SELECTED_LANE;
           const out = { preflight: needs.preflight };
           const reused = needs["ci-reuse"]?.result === "success" ? JSON.parse(process.env.REUSED_LANES || "[]") : [];
           if (lane === "all") {
