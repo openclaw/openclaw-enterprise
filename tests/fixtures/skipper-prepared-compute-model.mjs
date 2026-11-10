@@ -34,7 +34,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
     }
     const { input } = JSON.parse(request);
     if (active?.id !== id) {
-      active = { id, results: new Map() };
+      active = { id, results: new Map(), invalid: false };
     }
     const marker = "SKIPPER_COMPUTE_DONE_" + id;
     const prefix = id + "-wait-";
@@ -43,11 +43,19 @@ export function createSkipperPreparedComputeEvents(commandPath) {
     for (const item of input) {
       if (
         item.type === "function_call_output" &&
-        (item.call_id === id ||
-          (item.call_id?.startsWith(prefix) && /^\d+$/.test(item.call_id.slice(prefix.length)))) &&
+        (item.call_id === id || item.call_id?.startsWith(prefix)) &&
         !active.results.has(item.call_id)
       ) {
-        active.results.set(item.call_id, item);
+        const count = active.results.size;
+        const previous = nativeResult([...active.results.values()].at(-1)?.output);
+        if (
+          item.call_id !== (count === 0 ? id : prefix + count) ||
+          (count > 0 && previous?.sessionId === undefined)
+        ) {
+          active.invalid = true;
+        } else {
+          active.results.set(item.call_id, item);
+        }
       }
     }
     const results = [...active.results.values()];
@@ -55,15 +63,19 @@ export function createSkipperPreparedComputeEvents(commandPath) {
     const current = parsed.at(-1);
     let item;
     const remaining = expiresAt - Date.now();
-    if (results.length > 0) {
+    if (results.length > 0 || active.invalid) {
       const sessionId = parsed[0]?.sessionId;
       const sameSession =
+        !active.invalid &&
+        active.results.has(id) &&
         Number.isSafeInteger(sessionId) &&
         sessionId > 0 &&
         parsed.every(
           (result) => result && (result.sessionId === undefined || result.sessionId === sessionId),
         );
-      if (current?.sessionId !== undefined && sameSession && remaining > 0) {
+      // Codex clamps empty write_stdin polls to at least five seconds.
+      const pollFits = remaining >= 5_000;
+      if (current?.sessionId !== undefined && sameSession && pollFits) {
         // Continue the original process, with empty stdin. Never replay its Git writes.
         item = {
           type: "function_call",
@@ -75,7 +87,13 @@ export function createSkipperPreparedComputeEvents(commandPath) {
             yield_time_ms: Math.min(30_000, remaining),
           }),
         };
-        emit({ event: "skipper-native-poll", id, status: "running", sessionPresent: true });
+        emit({
+          event: "skipper-native-poll",
+          id,
+          status: "running",
+          exitCode: current.exitCode ?? null,
+          sessionPresent: true,
+        });
       } else {
         const output = parsed.map((result) => result?.output ?? "").join("");
         const markerSeen = output.includes(marker);
@@ -84,16 +102,19 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           current?.exitCode !== undefined &&
           current.sessionId === undefined;
         const ok =
+          !active.invalid &&
+          active.results.has(id) &&
+          remaining > 0 &&
           completed &&
           current.exitCode === 0 &&
           markerSeen &&
           (results.length === 1 || sameSession);
         const sha = output.match(/(?:^|\n)([0-9a-f]{40})(?:\n|$)/)?.[1];
         let status = "unrecognized";
-        if (completed) {
-          status = "completed";
-        } else if (remaining <= 0) {
+        if (remaining <= 0 || (current?.sessionId !== undefined && !pollFits)) {
           status = "deadline";
+        } else if (!active.invalid && completed) {
+          status = "completed";
         }
         emit({
           event: "skipper-native-result",

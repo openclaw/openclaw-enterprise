@@ -652,12 +652,13 @@ test(
 // ExecCommandToolOutput::response_text (core/src/tools/context.rs), not the
 // separate JSON envelope used by code-mode tools. These adapter checks do not
 // execute native tools.
-function nativeToolOutput({ session, exit, output = "" }) {
+function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
   return [
     "Chunk ID: abc123",
     "Wall time: 0.2500 seconds",
     ...(exit === undefined ? [] : ["Process exited with code " + exit]),
     ...(session === undefined ? [] : ["Process running with session ID " + session]),
+    ...(tokenCount === null ? [] : ["Original token count: " + tokenCount]),
     "Output:",
     output,
   ].join("\n");
@@ -672,7 +673,7 @@ async function controlledModel(t) {
     expiresAt: Date.now() + 170_000,
   };
   await writeFile(path, JSON.stringify(command));
-  const respond = createSkipperPreparedComputeEvents(path);
+  let respond = createSkipperPreparedComputeEvents(path);
   const observations = [];
   const input = [{ type: "message", role: "user", content: command.id }];
   const next = () =>
@@ -689,7 +690,10 @@ async function controlledModel(t) {
     input.push(call, { type: "function_call_output", call_id: call.call_id, output });
     return next();
   };
-  return { path, command, observations, next, result };
+  const restart = () => {
+    respond = createSkipperPreparedComputeEvents(path);
+  };
+  return { path, command, observations, next, result, restart };
 }
 
 function toolCall(events) {
@@ -707,25 +711,39 @@ test("the installed Skipper model waits for the same native session without repl
     model.result(initial, nativeToolOutput({ session: 42, output: "SKIPPER_COMPUTE_" })),
   );
   assert.equal(first.name, "write_stdin");
+  assert.equal(first.call_id, model.command.id + "-wait-1");
+  assert.equal(model.observations.at(-1).exitCode, null);
+  assert.equal(model.observations.at(-1).status, "running");
+  assert.equal(model.observations.at(-1).sessionPresent, true);
   assert.deepEqual(JSON.parse(first.arguments), {
     session_id: 42,
     chars: "",
     yield_time_ms: 30_000,
   });
+  // Reconstruct from replayed full history after callback state is lost.
+  model.restart();
   // A process may have exited while its output still drains. The session ID
   // remains authoritative until Codex reports that collection has finished.
   const second = toolCall(
-    model.result(first, nativeToolOutput({ session: 42, exit: 0, output: "DONE_" }), true),
+    model.result(first, nativeToolOutput({ session: 42, exit: 0, output: "DONE_" })),
   );
   assert.equal(second.name, "write_stdin");
-  assert.notEqual(second.call_id, first.call_id);
+  assert.equal(second.call_id, model.command.id + "-wait-2");
+  assert.equal(model.observations.at(-1).exitCode, 0);
+  assert.equal(model.observations.at(-1).sessionPresent, true);
+  // The same full history must not append either result again.
+  assert.equal(toolCall(model.next()).call_id, second.call_id);
   assert.deepEqual(JSON.parse(second.arguments), {
     session_id: 42,
     chars: "",
     yield_time_ms: 30_000,
   });
   assert.equal(
-    model.result(second, nativeToolOutput({ exit: 0, output: "skipper-test\n" }), true),
+    model.result(
+      second,
+      nativeToolOutput({ exit: 0, output: "skipper-test\n", tokenCount: null }),
+      true,
+    ),
     "SKIPPER_COMPUTE_DONE_skipper-test",
   );
   assert.equal(
@@ -789,4 +807,57 @@ test("the installed Skipper model rejects a changed native session and stops pol
     expired.observations.some((event) => event.event === "skipper-native-poll"),
     false,
   );
+});
+
+test("the installed Skipper model rejects orphan or out-of-order native results", async (t) => {
+  for (const session of [42, undefined]) {
+    const orphan = await controlledModel(t);
+    const exec = toolCall(orphan.next());
+    const poll = toolCall(orphan.result(exec, nativeToolOutput({ session: 42 })));
+    orphan.restart();
+    assert.equal(
+      orphan.result(
+        poll,
+        nativeToolOutput({ session, exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+        true,
+      ),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(orphan.observations.at(-1).status, "unrecognized");
+  }
+  const reordered = await controlledModel(t);
+  const exec = toolCall(reordered.next());
+  const poll = toolCall(reordered.result(exec, nativeToolOutput({ session: 42 })));
+  assert.equal(
+    reordered.result(
+      { ...poll, call_id: reordered.command.id + "-wait-2" },
+      nativeToolOutput({ session: 42 }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+});
+
+test("the installed Skipper model reserves the native poll minimum and rejects late success", async (t) => {
+  for (const remaining of [1_000, -1]) {
+    const model = await controlledModel(t);
+    const exec = toolCall(model.next());
+    await writeFile(
+      model.path,
+      JSON.stringify({ ...model.command, expiresAt: Date.now() + remaining }),
+    );
+    assert.equal(
+      model.result(exec, nativeToolOutput({ session: 42 })),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(model.observations.at(-1).status, "deadline");
+  }
+  const late = await controlledModel(t);
+  const exec = toolCall(late.next());
+  const poll = toolCall(late.result(exec, nativeToolOutput({ session: 42 })));
+  await writeFile(late.path, JSON.stringify({ ...late.command, expiresAt: Date.now() - 1 }));
+  assert.equal(
+    late.result(poll, nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(late.observations.at(-1).status, "deadline");
 });
