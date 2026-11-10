@@ -29,6 +29,7 @@ import {
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
+import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.mjs";
 import { createNarrowOnlineGitStartup } from "../helpers/postgres-repository-set-journey.ts";
 
 // Credential sources on revision work: withdrawals (retries, replays, denials and maintenance
@@ -3086,6 +3087,102 @@ test(
     unacknowledgedActivation: true,
     leaseExhaustion: true,
   }),
+);
+
+test(
+  "private Gateway inference cannot borrow a protected Git release",
+  requiresPostgres,
+  async (t) => {
+    await assert.rejects(
+      createNarrowOnlineGitStartup(t, import.meta.url, {
+        draftPull: false,
+        kubeconfig: await writeSafeKubeconfig(t),
+        sessionDurationSeconds: 15,
+        async beforeAdmission({ fixture: f, agent }) {
+          // This ordinary model is delivered by the Credential Gateway. The repository binding
+          // gives the same Agent a separate protected Git plan during normal deployment.
+          const endpoint = {
+            baseUrl: "https://model.research.example.test/v1",
+            protocol: "openai-responses",
+          };
+          const namespaceId = f.namespace.id;
+          const template = await f.controller.createConnectionTemplate(
+            f.actor.id,
+            {
+              displayName: "Research inference",
+              mode: "static_bearer",
+              ...endpoint,
+              privatePeer: { kind: "private_ipv4", address: "10.77.43.42" },
+            },
+            assert.fail,
+          );
+          const providerId = "mpr_" + randomUUID();
+          await f.state.transact((unit) =>
+            unit.modelProviders.createModelProvider({
+              id: providerId,
+              displayName: "Research",
+              ...endpoint,
+              models: [{ id: "gpt-4.1" }],
+              connectionTemplateId: template.id,
+            }),
+          );
+          const secret = await f.controller.createSecret(f.actor.id, {
+            namespaceId,
+            name: "private-inference-test-key",
+            value: "fixture-inference-key",
+          });
+          // The repository-only proxy refuses new model sources. Seed the ready source
+          // registered with this Gateway before protected Git was enabled.
+          const sourceId = "cs_" + randomUUID();
+          await f.state.transact(async (unit) => {
+            const original = await unit.credentialSources.findCredentialSource(
+              namespaceId,
+              agent.harnessAuth.sourceId,
+            );
+            assert.equal(original.ownerCapability, "credential_gateway");
+            await unit.credentialSources.createCredentialSource({
+              ...original,
+              id: sourceId,
+              name: "research-key",
+              state: "registering",
+              config: { authorized_base_url: endpoint.baseUrl },
+              secrets: { api_key: { kind: "secret", namespaceId, id: secret.id } },
+              staticKeyGrant: {
+                ...endpoint,
+                privatePeer: template.current.privatePeer,
+                connectionTemplateId: template.id,
+                connectionTemplateVersion: template.current.version,
+              },
+            });
+            await unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId);
+          });
+          const bindings = await f.controller.listIAMAccessBindings(f.actor.id, namespaceId);
+          const existing = bindings.find(
+            (binding) =>
+              binding.subjectId === agent.servicePrincipalId &&
+              binding.resourceId === agent.harnessAuth.sourceId,
+          );
+          assert.ok(existing);
+          await f.controller.createIAMAccessBinding(f.actor.id, {
+            namespaceId,
+            subjectKind: "identity",
+            subjectId: agent.servicePrincipalId,
+            roleId: existing.roleId,
+            resourceKind: "credential_source",
+            resourceId: sourceId,
+          });
+          await f.controller.updateAgent(f.actor.id, {
+            namespaceId,
+            agentId: agent.id,
+            modelProviderId: providerId,
+            harnessAuth: { method: "credential_source", sourceId },
+            credentialSources: [{ sourceId }],
+          });
+        },
+      }),
+      /separate protected Git plan cannot release an ordinary model credential/,
+    );
+  },
 );
 
 function attachedGitExpires({
