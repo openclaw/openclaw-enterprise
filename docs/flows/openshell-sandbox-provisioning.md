@@ -314,10 +314,11 @@ A policy that excludes the required sandbox mode, named profile or human reviewe
 fails preparation or activation with `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`. Missing
 or malformed replies stay `starting`. An explicit null requirements result means
 the server reports no managed requirements. OCE bounds the requirements reply to
-1 MiB and all other replies/notifications combined to 16 KiB. A complete correlated
-requirements reply above 1 MiB fails with `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`.
-The WebSocket caps each message at 1 MiB + 16 KiB; failures before a complete reply
-remain pending. These defensive limits are OCE-specific.
+1 MiB and other replies/notifications to 16 KiB combined. Each message and the
+exchange, including earlier initialization/notifications, have a 1 MiB +
+16 KiB cap. A complete, correlated, usable requirements reply above 1 MiB yields
+`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` only within the remaining budget;
+otherwise readiness stays pending.
 
 For `credential_source`/`codex_pat`, the same connection then requests
 `getAuthStatus` with `includeToken:false` and `refreshToken:false`. Only
