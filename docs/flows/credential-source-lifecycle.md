@@ -269,7 +269,7 @@ in one transaction. Until then, Namespace deletion returns `NAMESPACE_NOT_EMPTY`
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-The first transaction authorizes `credential_source:update`, reads the Namespace,
+One transaction authorizes `credential_source:update`, reads the Namespace,
 locks the source, and requires a ready source offered by the catalog (`409`
 otherwise). Device-authorized sources reject PATCH before Secret reads or refresh
 changes. Static sources validate replacement references, authorize each
@@ -278,11 +278,11 @@ Compute's placement while the source lock is held; OpenShell requires matching
 ownership and nonempty values because `UpdateProvider` merges credentials.
 Only subsequently started processes receive the update.
 
-It also retains each replacement (`credential_source_retained_secrets`, a
-consumer), setting `update_attempt_id`. A second requires that fence, writes the
-gateway, commits references, clears both, audits. Failing earlier while still
-fenced releases its own additions; commit failures or crashes release nothing.
-Adoption meanwhile returns `409`; an absent/failed source, `503`. Refresh
+It retains each replacement (`credential_source_retained_secrets`, a consumer)
+and sets `update_attempt_id`. A second requires that fence, writes the gateway,
+commits references, clears both, audits. Failing early while fenced releases
+only its additions; lost commits and crashes release nothing. Adoption meanwhile
+returns `409`; an absent/failed source, `503`. Refresh
 updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotation).
 
 ### 9. Withdraw a source from an Agent
@@ -382,7 +382,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 - 2026-10-29 15:48: Preserve DELETE ownership when live registration loses readiness without an external write. (authoring-run/0f4f447d-cd98-4f49-9d16-217bf7500d1d - 6ead449d5)
 
-- 2026-10-23 16:00: Retain sent Secrets; fence update attempts. (adopt-2520)
+- 2026-10-23 16:00: Retain sent Secrets. (adopt-2520)
 
 - 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
 
