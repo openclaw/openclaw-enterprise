@@ -4427,9 +4427,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.session(request, reply),
     );
-    routes.post(
+    routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       "/api/auth/accounts",
       {
+        config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
         schema: {
           ...createAuthAccountOperation.schema,
           operationId: createAuthAccountOperation.operationId,
@@ -4446,9 +4447,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            429: {
+              description: "Too many account creation requests; wait for Retry-After",
+              ...error,
+            },
             ...bodyErrors,
           },
-        },
+        } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
           // Passwords are hashed before persistence; their existing schema and hashing
@@ -4503,6 +4508,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           createAuthAccountOperation,
           context,
         );
+
+        // Charge the authorized Principal before hashing; new sessions and target
+        // email addresses must not reset an administrator's account-creation budget.
+        const retryAfter = request.routeOptions.config.rateLimit.consume(context.actorId);
+        if (retryAfter !== undefined) {
+          reply.header("retry-after", String(retryAfter));
+          throw failure(
+            429,
+            "RATE_LIMITED",
+            "Too many account creation requests. Wait before retrying.",
+          );
+        }
 
         const prepared = await options.auth.prepareAccount({
           email,

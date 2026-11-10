@@ -269,8 +269,10 @@ closed. Bearer credentials and caller-supplied identity headers are rejected.
 ### 5. Provision additional accounts
 
 `apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
-administrator create accounts. `prepareAccount` validates
-and hashes the password without writes. `provisionPasswordAccount` writes the user,
+administrator create accounts. After authorization, the route's `RequestRateLimiter`
+charges the administrator Principal before `prepareAccount` validates and hashes the
+password. Exhaustion returns `429` with `Retry-After`, without writes. See the
+[account-creation limit](../reference/authentication.md#account-provisioning). `provisionPasswordAccount` writes the user,
 password method, Principal, optional existing-role binding, configured
 [default Group memberships](../reference/authorization/default-users.md#group-membership),
 enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`

@@ -10,9 +10,9 @@ The selected IAM Driver resolves the authenticated account or service identity
 to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
-For a sign-in procedure, see
+See
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
-For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
+For automation, see the [service-key procedure](authentication/service-api-keys.md).
 The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
@@ -28,7 +28,7 @@ Fresh native-IAM bootstrap creates the first human administrator and one
 Installation-scoped, non-Agent ServicePrincipal. Both have separate bindings to
 the same [administrator Role](authorization.md#supported-policy-surface).
 The service identity has no email, password, session, Namespace, or Agent owner;
-its authority does not depend on the human account remaining present.
+its authority survives human account deletion.
 
 Fresh bootstrap also creates the initial [`default` Namespace](namespaces.md#initial-namespace)
 under the bootstrap Principal's ordinary Namespace creation permission.
@@ -264,6 +264,11 @@ singleton Installation. One transaction writes the account, Principal, grant and
 enrollment. Attach an external identity explicitly after creation. Unknown
 identities can instead use [OIDC enrollment](authentication/team-enrollment.md).
 
+Each controller permits 10 account-creation attempts per administrator Principal,
+refilling one every six seconds, after authorization and before hashing.
+Exhaustion returns `429 RATE_LIMITED` with `Retry-After`.
+Changing sessions or target emails cannot reset this budget.
+
 An optional `roleId` binds an existing Installation Role (`400` if unknown,
 Namespace-scoped, or a configured `role_config_` Role); without one the account
 has no grants. It cannot create Roles or infer grants. The same transaction adds
@@ -272,12 +277,12 @@ the account to each
 Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
 Creation issues no session.
 
-Apart from configured Roles, the only Installation Role is the built-in
-Installation administrator (`role_admin_<uuid>`). No API creates another, and
-the Namespace policy API omits this one. Its Installation-scoped binding grants only
+The built-in Installation administrator (`role_admin_<uuid>`) is the only
+non-configured Installation Role. APIs cannot create others; the Namespace policy
+API omits it. Its Installation-scoped binding grants only
 `installation:administer` and `installation:read`; see
 [Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
-A representative provisioning body is:
+Example:
 
 ```json
 {
@@ -286,7 +291,7 @@ A representative provisioning body is:
 }
 ```
 
-Emails are normalized to lowercase. Passwords must contain 12–128 characters.
+Emails use lowercase. Passwords require 12–128 characters.
 Duplicates are rejected; there is no email verification.
 
 ## Authorization and failures

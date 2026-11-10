@@ -499,6 +499,43 @@ test(
     );
     const stillDenied = await injectJson(appB, "GET", "/installation", { session: noGrantSession });
     assert.equal(stillDenied.statusCode, 403, stillDenied.body);
+
+    await context.test(
+      "account creation throttles hashing without writing an account",
+      async () => {
+        // Controller B has a fresh per-administrator budget. Duplicate requests still hash
+        // passwords, so they must consume it even though their transactions cannot create users.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const duplicate = await injectJson(appB, "POST", "/api/auth/accounts", {
+            session,
+            body: { email, password },
+          });
+          assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
+        }
+        const limitedEmail = `limited-${randomUUID()}@example.test`;
+        const limited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(limited, 429, "RATE_LIMITED");
+        assert.ok(Number(limited.headers["retry-after"]) > 0);
+        assert.deepEqual(
+          (await observerPool.query('SELECT id FROM occ."user" WHERE email=$1', [limitedEmail]))
+            .rows,
+          [],
+        );
+        // A caller cannot reset the budget by signing in again under the same Principal.
+        const nextSession = await signInToControllerApp(appB, {
+          email: adminEmail,
+          password: adminPassword,
+        });
+        const stillLimited = await injectJson(appB, "POST", "/api/auth/accounts", {
+          session: nextSession,
+          body: { email: limitedEmail, password },
+        });
+        assertApiError(stillLimited, 429, "RATE_LIMITED");
+      },
+    );
   },
 );
 

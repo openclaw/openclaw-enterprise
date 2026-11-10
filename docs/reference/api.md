@@ -175,6 +175,7 @@ Example request
 | `409` | Conflict |
 | `413` | Payload Too Large |
 | `415` | Unsupported Media Type |
+| `429` | Too many account creation requests; wait for Retry-After |
 | `503` | Service Unavailable |
 
 **`201` response body:** `application/json`
