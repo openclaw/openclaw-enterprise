@@ -138,6 +138,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createRuntimeLogDriverFixture } from "./kubernetes-runtime-log-fixture.ts";
 import { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -13295,11 +13296,8 @@ async function exerciseEmbeddedReplacement(scenario) {
   };
   const gatewayName = `gateway-${suffix}`;
   const agentName = `agent-${suffix}`;
-  const objects = new Map();
-  const key = (kind, name) => `${kind}:${name}`;
-  const save = (object) =>
-    objects.set(key(object.kind, object.metadata.name), structuredClone(object));
-  const missing = (name) => Object.assign(new Error(`${name} not found`), { statusCode: 404 });
+  const { objects, key, save, patches, readyDeployments, clients } =
+    createEmbeddedReplacementKubernetesFixture(tenant.id, gatewayName);
 
   save({
     ...driver.manifest("v1", "Namespace", namespace, tenantOwnership),
@@ -13378,182 +13376,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   save(activeRoute);
   const predecessor = structuredClone(objects.get(key("Deployment", gatewayName)));
 
-  const patches = [];
-  const readyDeployments = new Set();
-  let replacementDeploymentPatched = false;
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespacedSecret({ name, namespace: target }) {
-        if (name === "occ-model-key") {
-          return {
-            apiVersion: "v1",
-            kind: "Secret",
-            metadata: { name, namespace: target, uid: "model-secret-uid" },
-            data: { value: Buffer.from("fixture-model").toString("base64") },
-          };
-        }
-        const observed = objects.get(key("Secret", name));
-        if (!observed || observed.metadata.namespace !== target) {
-          throw missing(name);
-        }
-        return structuredClone(observed);
-      },
-      async createNamespacedSecret({ body }) {
-        const value = {
-          ...body,
-          metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
-        };
-        save(value);
-        return value;
-      },
-      async deleteNamespacedSecret({ name, body }) {
-        assert.equal(objects.get(key("Secret", name))?.metadata.uid, body.preconditions.uid);
-        objects.delete(key("Secret", name));
-      },
-      async deleteNamespacedConfigMap({ name, body }) {
-        assert.equal(objects.get(key("ConfigMap", name))?.metadata.uid, body.preconditions.uid);
-        objects.delete(key("ConfigMap", name));
-      },
-
-      async listNamespacedPod() {
-        return { items: [] };
-      },
-      async listNamespace({ labelSelector }) {
-        assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
-        return { items: [] };
-      },
-      async readNamespace({ name }) {
-        return structuredClone(objects.get(key("Namespace", name)) ?? missing(name));
-      },
-      async readNamespacedConfigMap({ name }) {
-        const current = objects.get(key("ConfigMap", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedConfigMap({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedServiceAccount({ name }) {
-        const current = objects.get(key("ServiceAccount", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedServiceAccount({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedService({ name }) {
-        const current = objects.get(key("Service", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedService({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-      async readNamespacedPersistentVolumeClaim({ name }) {
-        const current = objects.get(key("PersistentVolumeClaim", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedPersistentVolumeClaim({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-    },
-    apps: {
-      async readNamespacedDeployment({ name }) {
-        const current = objects.get(key("Deployment", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        const observed = structuredClone(current);
-        // Readiness is an explicit transport observation, never inferred from a successful write.
-        if (readyDeployments.has(name)) {
-          observed.status = {
-            observedGeneration: observed.metadata.generation,
-            replicas: 1,
-            updatedReplicas: 1,
-            readyReplicas: 1,
-          };
-        }
-        return observed;
-      },
-      async patchNamespacedDeployment({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        if (body.metadata.name === gatewayName) {
-          replacementDeploymentPatched = true;
-        }
-        const previous = objects.get(key("Deployment", body.metadata.name));
-        save({
-          ...previous,
-          ...body,
-          metadata: {
-            ...body.metadata,
-            generation: previous?.metadata.generation ?? 1,
-            uid: previous?.metadata.uid ?? `${body.metadata.name}-uid`,
-          },
-        });
-      },
-    },
-    discovery: {
-      async listNamespacedEndpointSlice() {
-        assert.equal(
-          replacementDeploymentPatched,
-          true,
-          "replacement preparation must not wait on the unready previous gateway",
-        );
-        return {
-          items: [
-            {
-              metadata: {
-                labels: { "kubernetes.io/service-name": gatewayName },
-                ownerReferences: [
-                  { kind: "Service", name: gatewayName, uid: `${gatewayName}-uid` },
-                ],
-              },
-              endpoints: [{ conditions: { ready: true } }],
-            },
-          ],
-        };
-      },
-    },
-    networking: {
-      async readNamespacedNetworkPolicy({ name }) {
-        const current = objects.get(key("NetworkPolicy", name));
-        if (current === undefined) {
-          throw missing(name);
-        }
-        return structuredClone(current);
-      },
-      async patchNamespacedNetworkPolicy({ body }) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save(body);
-      },
-    },
-    objects: {
-      async read({ metadata }) {
-        const current = objects.get(key("HTTPRoute", metadata.name));
-        if (current === undefined) {
-          throw missing(metadata.name);
-        }
-        return structuredClone(current);
-      },
-      async patch(body) {
-        patches.push({ kind: body.kind, name: body.metadata.name });
-        save({ ...body, metadata: { ...body.metadata, uid: "route-uid" } });
-      },
-    },
-  });
+  driver.apiClients = Promise.resolve(clients);
 
   admitRevisionHarness(driver, oldRevision);
   admitRevisionHarness(driver, replacement);
