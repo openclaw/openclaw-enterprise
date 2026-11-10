@@ -117,6 +117,17 @@ A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
 only. Final timing receipts and test results remain the completion evidence.
 
+For canonical `openshell` and split `openshell-policy` runs, inspect
+`files[].installationPhases` in the lane result artifact for workspace Helm,
+gateway Helm and gateway Pod readiness intervals. These records do not appear
+in the live log. Each interval identifies its invocation, entry offset and
+outcome; a settled interval also has elapsed milliseconds. An entered phase
+without a terminal record remains `unknown`, including after interruption.
+The receipt retains up to eight invocations (24 intervals). The ninth invocation
+emits one workspace-entry marker that sets `truncated` if received; later
+invocations still run but emit no installation records. These intervals do not
+establish model execution or whole-file success.
+
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.

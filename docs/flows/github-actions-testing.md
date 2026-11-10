@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b
+last_updated_session: authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2
 ---
 
 # GitHub Actions testing flow
@@ -162,12 +162,13 @@ both commits.
 
 The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
 
-OpenShell lifecycle stages call `scripts/ci/openshell-progress.mjs:emitOpenShellProgress`
-before and after measured operations. The reporter admits only fixed kind, stage
-and outcome fields; markers and their separators stay out of failure tails.
-`run-tests.mjs:runNode` forwards them live with runner-owned lane/file labels.
-Both readers bound partial records; the parent enforces its byte budget first.
-Timing receipts and case accounting remain separate.
+`scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
+kind, stage and outcome fields; `run-tests.mjs:runNode` logs them with lane/file
+labels. Installation records add invocation ordinals and millisecond offsets,
+retained in [file receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof)
+without live logging. Readers bound partial records; the parent enforces its
+byte budget first. Markers and separators stay out of failure tails. Timing and
+case accounting remain separate.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -245,7 +246,7 @@ awaits an approved resource ledger.
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
 - Reproduce the sanitized result's failing file, name and location with approved prerequisites. The named aggregate bounds coverage.
-- On local Docker Desktop or equivalent VM-backed Docker hosts, run one Kubernetes lane at a time when disk or network pressure has caused measured instability. GitHub Actions still runs the configured matrix; this local guidance is for reproducible operator runs.
+- After measured disk or network instability on local VM-backed Docker hosts, run Kubernetes lanes sequentially. GitHub Actions retains its configured matrix.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
 
@@ -261,6 +262,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 16:02: Document installation receipt retention. (authoring-run/a06db5de-e6ec-40b7-811e-7f04ff14b7e2 - 242eed4481d16c13227383acd8b58c4d8757ae1f)
 
 - 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
 
