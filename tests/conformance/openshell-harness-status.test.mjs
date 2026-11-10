@@ -22,6 +22,7 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
@@ -929,7 +930,13 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     );
   }
   for (const origin of [
-    "http://user:pass@host/",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "user",
+      password: "pass",
+      host: "host",
+      pathname: "/",
+    }),
     "http://host/path",
     "http://host/?query",
     "ftp://host/",
