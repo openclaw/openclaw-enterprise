@@ -22,7 +22,7 @@ the per-model Harness settings, and the selected provider's catalog. OCC admits 
 choices in `packages/occ/src/configured-harness.ts`. Dedicated OpenClaw uses the same concrete
 choices for the worker catalog and the credential destination check in
 `apps/controller/src/drivers/native-openai-catalog.ts`. Changing the session model leaves the
-revision's primary and automatic fallbacks intact.
+revision's primary and automatic fallbacks intact. If a Credential Proxy protects inference, OCC also pins these explicit IDs in its grant. The sender checks the request body's model before it reads the credential.
 
 ## Entry Points
 

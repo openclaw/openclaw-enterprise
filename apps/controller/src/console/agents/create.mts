@@ -1910,6 +1910,7 @@ function renderAgentForm(
     }
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
       if (
+        !namedProviders.named() &&
         !savedSecret &&
         !savedCredentialSource &&
         !credentialRegistration &&
@@ -2771,8 +2772,12 @@ function renderAgentForm(
   }
   function renderConfigurationEditors() {
     const values = parseObject(configuration);
-    const { primary, selected } = switchableModelIds(values);
-    additional.update(primary, modelChoices(), selected);
+    // Keep the last valid choices and normal tab order while the operator repairs a JSON draft.
+    additional.fields.inert = values === undefined;
+    if (values) {
+      const { primary, selected } = switchableModelIds(values);
+      additional.update(primary, modelChoices(), selected);
+    }
     if (values === undefined) {
       channelEditor.replaceChildren(
         element(

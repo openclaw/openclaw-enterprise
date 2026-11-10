@@ -177,8 +177,10 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
       return { authorized_base_url: baseUrl };
     },
     normalizeGrant(models) {
-      if (models.length !== 1 || !models[0] || models[0].length > 256) {
-        throw new Error("Protected inference requires one explicit model.");
+      if (!models.length || models.some((id) => !id || id.length > 256)) {
+        throw new Error(
+          "Protected inference requires explicit model IDs of at most 256 characters.",
+        );
       }
       return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
     },
