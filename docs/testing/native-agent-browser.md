@@ -101,6 +101,10 @@ workspace routing, dedicated native administration, embedded sharing, and OIDC
 owner/operator chat. The existing protected environment and credential gates
 still apply. See [QA advisory triggers](ci/qa-advisory.md#when-it-runs).
 
+The job uses the same Blacksmith runner and pinned Playwright Chromium setup as
+the full integration Gateway Routing job. Sandbox preparation must pass on that
+runner before browser tests start.
+
 This job builds runtime images from the checked-out
 `deploy/runtime/openclaw-source.json` and its patches. Before running a proposed
 native change, pin that source manifest to the intended native commit. The
