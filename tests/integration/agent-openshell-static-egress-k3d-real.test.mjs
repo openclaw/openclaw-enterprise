@@ -324,7 +324,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
       "the same registered supervisor must remain installed",
     );
   };
-  const turn = async (phase, expected = "completed") => {
+  const turn = async (phase, expected = "completed", expectedHttpStatus = null) => {
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
       gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0], "gateway"),
@@ -367,12 +367,16 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
           assert.equal(result.assistant, nonce);
         } else {
           assertNoConnectedAssistantOutput(result);
-          // The selected supplier returns an empty HTTP 502. Its private, content-free
-          // transitions distinguish refusal before access from a blocked provider response.
-          assert.match(
-            JSON.stringify(result.error),
-            /\b502\b/,
-            "expected the supplier's public refusal",
+          assert.ok(
+            Number.isInteger(expectedHttpStatus),
+            "failed scenario requires an HTTP status",
+          );
+          // Native status distinguishes incomplete capture from a fixed refusal.
+          // Origin counts and custody transitions distinguish the two refusal paths.
+          assert.deepEqual(
+            result.error?.codexErrorInfo,
+            { httpConnectionFailed: { httpStatusCode: expectedHttpStatus } },
+            "expected the scenario's structured supplier refusal",
           );
         }
       },
@@ -525,7 +529,7 @@ async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployme
   );
   const knownDenials = new Set(beforeDenials.rows.map(({ id }) => id));
   const beforeDenied = provider.observations.length;
-  const { requestId } = await turn("fresh-iam-revoked", "failed");
+  const { requestId } = await turn("fresh-iam-revoked", "failed", 403);
   assert.equal(
     provider.observations.length,
     beforeDenied,
@@ -633,18 +637,19 @@ async function rotateSecretOnly(setup, stack, evidence, deployment, turns) {
 async function verifyHostileResponsesAndRecovery(owned, turns) {
   const { provider } = owned;
   const { turn, unchanged, successfulTurn } = turns;
-  for (const mode of [
-    "reflect-body",
-    "reflect-header",
-    "reflect-split-id",
-    "reflect-encoded-arguments",
-    "reflect-message-citation",
-    "oversize",
-    "incomplete",
+  // Oversize fails during HTTP capture; incomplete is finite HTTP with unfinished SSE.
+  for (const [mode, expectedHttpStatus] of [
+    ["reflect-body", 403],
+    ["reflect-header", 403],
+    ["reflect-split-id", 403],
+    ["reflect-encoded-arguments", 403],
+    ["reflect-message-citation", 403],
+    ["oversize", 409],
+    ["incomplete", 403],
   ]) {
     provider.setMode(mode);
     const before = provider.observations.length;
-    const { nonce } = await turn(mode, "failed");
+    const { nonce } = await turn(mode, "failed", expectedHttpStatus);
     assert.equal(
       provider.observations.length,
       before + 1,

@@ -343,12 +343,12 @@ are limited to 2,000 lines and 1 MiB per Pod/read. Counts are observed lower
 bounds. Passing proves natural same-process reconnect, not restart,
 configuration-change, forced-disconnection or upgrade behavior.
 
-The sibling and TCP probe use the authenticated [workload launch path](./protected-repository-custody.md)
-for connection mediation; Kubernetes exec inspects processes. Each exchange
-requires matching resolve, permit and response transitions. IAM revocation
-must prevent permits and upstream traffic. TCP bypass must fail, with listener
-reachability checked before and after. Hostile responses require empty HTTP 502,
-no partial assistant output and private `response_blocked` evidence. Leak checks
+The sibling and TCP probe use the authenticated [workload launch path](./protected-repository-custody.md);
+Kubernetes exec inspects processes. Exchanges
+require matching resolve, permit and response transitions. IAM revocation
+must prevent permits and upstream traffic. TCP bypass must fail; verify listener
+reachability before and after. Hostile responses require native HTTP status 403
+(409 for oversized capture), no assistant output and private `response_blocked` evidence. Leak checks
 cover Agent/Codex environments, responses, logs, diagnostics, audit, Pod specs
 and ConfigMaps.
 
