@@ -103,6 +103,55 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
 describe("CI k3d preparation", { concurrency: true }, () => {
+  test("Gateway Routing prepares checkout images with read-only BuildKit caches", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
+      GITHUB_ACTIONS: "true",
+      OCC_CI_IMAGE_CACHE: "1",
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+    });
+    // Stop at image import after both real preparation build commands. This
+    // proves cache selection, not Docker execution, cache hits, or model access.
+    let imports = 0;
+    await interceptFixtureDocker(t, commands, (args) => {
+      if (args.length === 3 && args[0] === "image" && args[1] === "inspect") {
+        imports += 1;
+        return "printf 'synthetic import stop\\n' >&2; exit 1";
+      }
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1);
+    assertStderrMatch(prepared.stderr, /synthetic import stop/);
+    assert.equal(imports, 1);
+    const calls = await commands.commands();
+    const builds = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
+    assert.equal(builds.length, 2, "prepare both the controller and runtime from this checkout");
+    for (const { args } of builds) {
+      const role = args.includes("--target") ? "controller" : "runtime";
+      assert.equal(
+        args[args.indexOf("--cache-from") + 1],
+        `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
+      );
+      assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
+      assert.equal(args.includes("--cache-to"), false);
+    }
+    assert.equal(
+      calls.some(({ args }) => args[0] === "build"),
+      false,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(calls) +
+        (await readFile(commands.statePath, "utf8")) +
+        prepared.stdout +
+        prepared.stderr,
+      /synthetic-cache-credential/,
+    );
+    await commands.cleanupSuccessfully();
+  });
+
   // Only external commands are substituted: the preparation CLI owns child deadlines,
   // cleanup inventory, and publication. These cases do not exercise Docker or Kubernetes.
   for (const stage of ["fixture-engine-version", "fixture-image-build"]) {
