@@ -176,7 +176,7 @@ middleware authority. Set `assertionSource: openshell_gateway`, the exact
 Gateway `issuer`, and `bundlePath` to its public JWKS. With Helm, set
 `openshellGit.tokenGrant.enabled`, match its `port`, and configure
 `bundleConfigMapName` and trusted supervisor `clients`. Register the provider’s
-immutable ID, the `access_token` credential and the exact HTTPS endpoint with
+immutable ID, the `installation_token` credential and the exact HTTPS endpoint with
 the Gateway. Use the existing [supervisor TLS requirements](../../reference/repository-credentials/protected-openshell-git.md#prerequisites).
 
 The middleware first approves the inspected operation. The proxy presents a
