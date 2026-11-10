@@ -63,6 +63,7 @@ import {
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
+import { agentGrantRehearsal } from "../helpers/agent-grant-rehearsal.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -631,6 +632,7 @@ function externalGitJourney(
         ? await standingGitConversation(t, codex)
         : undefined;
     let askModel: Awaited<ReturnType<NonNullable<typeof conversation>["launch"]>> | undefined;
+    const rehearsal = conversation && agentGrantRehearsal(t);
     let modelEnvironment: Record<string, string> | undefined;
     let modelCustody: ComputeRevisionContext | undefined;
     let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
@@ -1428,6 +1430,16 @@ function externalGitJourney(
       }));
     }
     const ref = { ...key, revisionId: revision.id };
+    const observeAgent = async () => {
+      const current = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
+      assert.ok(current?.activeRevisionId);
+      const policy = await peer.observePolicy();
+      return {
+        agentId: current.id,
+        revisionId: current.activeRevisionId,
+        runtimeId: policy.sandboxId,
+      };
+    };
     t.diagnostic("journey revision " + revision.id);
     const startWorker = () =>
       f.start(compute, {
@@ -1510,7 +1522,8 @@ function externalGitJourney(
               ),
             revision.egressPlan!.routes.length + 1,
           );
-          await askModel("before");
+          const turn = await askModel("before");
+          rehearsal?.modelBefore({ ...(await observeAgent()), ...turn });
         }
       }
 
@@ -1536,23 +1549,34 @@ function externalGitJourney(
         : "http.extraHeader=" + peer.clientHeader;
       const fetch = (mayDeny = false) =>
         git(["-c", auth, "fetch", "--no-tags", remote, "refs/heads/main"], mayDeny);
+      const hasObject = async (oid: string) => {
+        const result = await git(["cat-file", "-t", oid], true);
+        if (result.code === 128) {
+          assert.equal(result.stderr.trim(), "fatal: git cat-file: could not get object info");
+          return false;
+        }
+        assert.equal(result.code, 0);
+        assert.equal(result.stdout.trim(), "commit");
+        return true;
+      };
       const transfer = async (oid: string) => {
-        assert.notEqual(
-          (await git(["cat-file", "-e", oid], true)).code,
-          0,
-          "destination must lack this exact commit",
-        );
+        const beforePresent = await hasObject(oid);
+        assert.equal(beforePresent, false, "destination must lack this exact commit");
         const n = traffic().requests;
         await fetch();
+        const originRequests = traffic().requests - n;
         assert.equal(
-          traffic().requests,
-          n + (broad ? 3 : 2),
+          originRequests,
+          broad ? 3 : 2,
           "the real Git discovery and upload reached the private origin",
         );
-        assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), oid);
-        assert.equal((await git(["cat-file", "-t", oid])).stdout.trim(), "commit");
+        const afterSha = (await git(["rev-parse", "FETCH_HEAD"])).stdout.trim();
+        assert.equal(afterSha, oid);
+        assert.equal(await hasObject(oid), true);
+        return { expectedSha: oid, beforePresent, afterSha, originRequests };
       };
-      await transfer(await origin.ref("main"));
+      const initialFetch = await transfer(await origin.ref("main"));
+      rehearsal?.gitFetched(initialFetch);
       if (broad) {
         const provider = broad.installation;
         const { repositories, apiRequests } = provider;
@@ -2654,6 +2678,12 @@ function externalGitJourney(
           expectedGeneration: 1,
         });
       }
+      // A fresh provider-side commit distinguishes refusal from a cached fetch.
+      const withdrawnSha = rehearsal && (await origin.addCommit());
+      if (withdrawnSha) {
+        assert.equal(await origin.ref("main"), withdrawnSha);
+      }
+      const withdrawnBeforePresent = withdrawnSha ? await hasObject(withdrawnSha) : false;
       const denied = await fetch(true);
       assert.deepEqual(
         providerTraffic(),
@@ -2668,6 +2698,15 @@ function externalGitJourney(
       ]);
       assert.equal(denied.code, 128);
       assert.match(denied.stderr.toString(), /403/);
+      if (rehearsal && withdrawnSha) {
+        rehearsal.gitRefused({
+          expectedSha: withdrawnSha,
+          beforePresent: withdrawnBeforePresent,
+          afterPresent: await hasObject(withdrawnSha),
+          exitCode: denied.code,
+          originRequests: providerTraffic().requests - before.requests,
+        });
+      }
       assert.ok(
         Date.now() < Date.parse(second.expiresAt),
         "withdrawal was tested while the installed credential was usable",
@@ -2786,7 +2825,10 @@ function externalGitJourney(
         }
         await independentRead(200);
         assert.equal(independentRequests, 2);
-        await askModel?.("after");
+        if (askModel) {
+          const turn = await askModel("after");
+          rehearsal?.modelAfter({ ...(await observeAgent()), ...turn });
+        }
         if (conversationRequired && !finiteRemoval) {
           assert.ok(askModel, "required same-conversation proof ran on v7");
         }

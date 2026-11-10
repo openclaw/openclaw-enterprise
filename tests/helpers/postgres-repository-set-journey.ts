@@ -566,7 +566,7 @@ async function repositoryGitJourney(
   const nativeRelease = deferred<ReturnType<typeof signComputeExecutionRelease> | undefined>();
   let launching:
     ReturnType<Awaited<ReturnType<typeof standingGitConversation>>["launch"]> | undefined;
-  let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
+  let askModel: Awaited<NonNullable<typeof launching>> | undefined;
   let signed = false;
   let reducedAttachmentEpoch: string | undefined;
   let wrongIdentity = false;
