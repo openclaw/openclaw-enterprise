@@ -6764,6 +6764,67 @@
             },
             "description": "Forbidden"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -7063,6 +7124,67 @@
             },
             "description": "Forbidden"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -7358,6 +7480,67 @@
               }
             },
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "429": {
             "content": {
@@ -7658,6 +7841,67 @@
             },
             "description": "Forbidden"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -7854,6 +8098,67 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Bad Request",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -7975,6 +8280,191 @@
               }
             },
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Payload Too Large",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Payload Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Unsupported Media Type",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
           },
           "429": {
             "content": {
@@ -8293,6 +8783,67 @@
               }
             },
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "429": {
             "content": {
@@ -8623,6 +9174,67 @@
               }
             },
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Conflict",
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": { "type": "string" },
+                        "details": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "anyOf": [
+                                  { "const": "REQUIRED", "type": "string" },
+                                  { "const": "UNKNOWN_FIELD", "type": "string" },
+                                  { "const": "INVALID_TYPE", "type": "string" },
+                                  { "const": "INVALID_FORMAT", "type": "string" },
+                                  { "const": "INVALID_VALUE", "type": "string" },
+                                  { "const": "TOO_LONG", "type": "string" },
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
+                                ]
+                              },
+                              "message": { "maxLength": 512, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["path", "code"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["code", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["error", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "429": {
             "content": {

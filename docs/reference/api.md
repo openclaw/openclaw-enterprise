@@ -795,6 +795,7 @@ Account linking: cancel
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -836,6 +837,7 @@ Account linking: candidate
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -879,6 +881,7 @@ Account linking: confirm
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -922,6 +925,7 @@ Account linking: owner
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -982,8 +986,12 @@ Example request
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
+| `400` | Bad Request |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -1025,6 +1033,7 @@ Account linking: start
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 
@@ -1075,6 +1084,7 @@ Account linking: status
 | `200` | OK |
 | `401` | Unauthorized |
 | `403` | Forbidden |
+| `409` | Conflict |
 | `429` | Too Many Requests |
 | `503` | Service Unavailable |
 

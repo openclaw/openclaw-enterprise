@@ -3706,6 +3706,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               : {}),
             response: {
               ...responses(linkResponses[action]),
+              ...(action === "password"
+                ? { ...bodyErrors, 400: { description: "Bad Request", ...error } }
+                : {}),
+              409: { description: "Conflict", ...error },
               429: { description: "Too Many Requests", ...error },
               403: { description: "Forbidden", ...error },
             },

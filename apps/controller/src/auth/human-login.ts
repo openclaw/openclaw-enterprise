@@ -217,11 +217,12 @@ export function createHumanLogin(
   const bindingCookie = secure ? "__Host-occ_login_attempt" : "occ_login_attempt";
   const linkCookie = secure ? "__Host-occ_account_link" : "occ_account_link";
   const linkingEnabled = config.oidc?.linking?.enabled === true;
+  const recoveryOnly = config.passwordSignIn === "recovery-only";
   const linkPolicy = digest(
     JSON.stringify({
       oidc: config.oidc,
       google: config.google,
-      password: config.passwordSignIn ?? "all",
+      recoveryOnly,
       linkingEnabled,
     }),
   );
@@ -491,7 +492,6 @@ export function createHumanLogin(
     return browserCookie === undefined ? [] : [admissionKey("browser", browserCookie())];
   }
   let recoveryEmail: string | undefined;
-  const recoveryOnly = config.passwordSignIn === "recovery-only";
   function designateRecovery(email: string): void {
     recoveryEmail = email.trim().toLowerCase();
   }
