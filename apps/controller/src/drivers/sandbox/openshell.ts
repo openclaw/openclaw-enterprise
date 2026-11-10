@@ -26,6 +26,7 @@ import {
   assertPluginRequestPolicy,
   googleRequestPolicyFromSandbox,
   openShellPluginPolicy,
+  reconcileObsoleteGoogleRequestRules,
   verifyPluginRequestGuard,
   verifyManagedPluginRegistration,
 } from "./openshell-plugin-policy.ts";
@@ -3547,6 +3548,33 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
+    const storedPolicy = asRecord(existing.spec?.policy);
+    const reconciledPolicy = storedPolicy && reconcileObsoleteGoogleRequestRules(storedPolicy);
+    if (
+      storedPolicy &&
+      reconciledPolicy &&
+      !sameOpenShellPolicy(reconciledPolicy, storedPolicy) &&
+      client.updatePolicy !== undefined &&
+      /^[1-9][0-9]*$/.test(String(existing.resourceVersion ?? ""))
+    ) {
+      await client.updatePolicy(
+        {
+          sandbox: sandbox.resourceName,
+          workspace,
+          policy: reconciledPolicy,
+          expectedResourceVersion: String(existing.resourceVersion),
+          requestId: requestIds[1]!,
+        },
+        context.signal,
+      );
+      const reread = await refused(() => client.getSandbox(selector, context.signal));
+      if (reread === undefined) {
+        throw new OpenShellSandboxConfigurationFailure(
+          `OpenShell Sandbox ${sandbox.resourceName} disappeared while replacing its Google request rules.`,
+        );
+      }
+      existing = reread;
+    }
     let expectedSpec = create.spec;
     if (
       !plugin &&
@@ -4536,10 +4564,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (client.updatePolicy === undefined) {
       throw new Error("Live policy application is unsupported.");
     }
-    const baseline = asRecord(sandbox.spec?.policy);
-    if (baseline === undefined) {
+    const rawBaseline = asRecord(sandbox.spec?.policy);
+    if (rawBaseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
+    // Stored expanded-parameter rules are the previous single-star compiler output.
+    // Rewrite that generated rule, then keep the exact guard against the result.
+    const baseline = reconcileObsoleteGoogleRequestRules(rawBaseline);
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {

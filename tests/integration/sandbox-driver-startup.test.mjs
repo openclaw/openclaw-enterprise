@@ -1587,6 +1587,146 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   assert.ok(!created.spec.providers.includes(ref));
 });
 
+test("adopting a stored AdSense Sandbox replaces obsolete single-star rules before exact equality", async () => {
+  const { googleRequestPolicy, reconcileObsoleteGoogleRequestRules } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts");
+  const { eligibleGoogleOperations, googleDiscoveryRequests } =
+    await import("../../apps/controller/src/drivers/plugin/google-workspace/operations.ts");
+  const { managedPluginMiddleware, managedPluginMiddlewareAudience } =
+    await import("../../apps/controller/src/drivers/plugin/managed-catalog.ts");
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.managedPluginMiddleware = "https://authority.test:443";
+  const client = workspaceGatewayClient();
+  client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
+  const driver = openShellDriver(client, configuration);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const sourceId = "cs_00000000-0000-4000-8000-000000000015";
+  const scope = {
+    host: "adsense.googleapis.com",
+    port: 443,
+    path: "/v2/**",
+    scopes: ["https://www.googleapis.com/auth/adsense.readonly"],
+  };
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: {
+      [managedGoogleInstall.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: managedGoogleInstall.releaseSha256,
+          credentials: { account: sourceId },
+        },
+      },
+    },
+  };
+  requirements.credentialAttachments = [
+    { sourceId, ref: openShellProviderName(sourceId), requestScope: scope },
+  ];
+  let created;
+  const updates = [];
+  client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
+    if (created !== undefined) {
+      throw new OpenShellSandboxAlreadyExistsError(name);
+    }
+    created = {
+      name,
+      workspace,
+      labels,
+      annotations,
+      spec: structuredClone(spec),
+      serviceUrls: {},
+      resourceVersion: "4",
+    };
+    return created;
+  };
+  client.getSandbox = async () => created;
+  client.updatePolicy = async (request) => {
+    updates.push(request.policy);
+    created.spec.policy = request.policy;
+    created.resourceVersion = "5";
+  };
+  client.getSandboxConfig = async (workspace) => {
+    const policy = structuredClone(created.spec.policy);
+    const providerName = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
+    policy.network_policies[providerName] = {
+      name: providerName,
+      binaries: [{ path: managedGoogleInstall.binaryPath }],
+      endpoints: [
+        {
+          host: scope.host,
+          port: scope.port,
+          path: scope.path,
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+          provider_credentialed: true,
+        },
+      ],
+    };
+    return {
+      workspace,
+      policy_source: 1,
+      configuration_admitted: true,
+      policy_validation_failure_mode: "fail_closed",
+      extension_authentication_enabled: true,
+      supervisor_middleware_services: [
+        {
+          name: managedPluginMiddleware,
+          grpc_endpoint: configuration.gateway.managedPluginMiddleware,
+          audience: managedPluginMiddlewareAudience,
+        },
+      ],
+      policy,
+    };
+  };
+  await driver.ensureNamespace(context);
+  await driver.provisionHarness({ ...context, revision, requirements });
+  assert.equal(updates.length, 0);
+  const current = googleRequestPolicy(scope);
+  const legacyPaths = new Map();
+  const permit = (host, method, path) => {
+    const rules = legacyPaths.get(host) ?? new Map();
+    rules.set(`${method} ${path}`, { method, path });
+    legacyPaths.set(host, rules);
+  };
+  const operations = eligibleGoogleOperations(scope);
+  for (const [, op] of operations) {
+    const literal = op.path.split("{")[0];
+    const inside =
+      scope.path === "/**" ||
+      (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
+    permit(scope.host, op.method, inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path);
+  }
+  for (const discovery of googleDiscoveryRequests(scope, operations)) {
+    permit(discovery.host, "GET", discovery.path);
+  }
+  created.spec.policy.network_policies["oce-google-requests"] = {
+    name: "oce-google-requests",
+    binaries: [{ path: managedGoogleInstall.binaryPath }],
+    endpoints: [...legacyPaths].map(([host, rules]) => ({
+      host,
+      ports: [443],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [...rules.values()].map((allow) => ({ allow })),
+    })),
+  };
+  assert.notDeepStrictEqual(
+    reconcileObsoleteGoogleRequestRules(created.spec.policy).network_policies[
+      "oce-google-requests"
+    ],
+    created.spec.policy.network_policies["oce-google-requests"],
+  );
+  await driver.provisionHarness({ ...context, revision, requirements });
+  assert.equal(updates.length, 1);
+  assert.deepEqual(
+    created.spec.policy.network_policies["oce-google-requests"],
+    current.networks["oce-google-requests"],
+  );
+});
+
 test("OpenShell provisions native OpenClaw without exposing an inbound Harness service", async () => {
   const requests = [];
   let storedSandbox;

@@ -25,6 +25,77 @@ import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
 const googleRequestRuleName = "oce-google-requests";
 
+function googleOperationInsideScope(opPath: string, scope: GoogleRequestScope): boolean {
+  const literal = opPath.split("{")[0]!;
+  return (
+    scope.path === "/**" ||
+    (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)))
+  );
+}
+
+/** Current OpenShell allow path. `{name}` is one segment. A segment containing `{+name}` is `**`. */
+function currentGoogleAllowPath(opPath: string, scope: GoogleRequestScope): string {
+  if (!googleOperationInsideScope(opPath, scope)) {
+    return scope.path;
+  }
+  return opPath
+    .split("/")
+    .map((segment) => (segment.includes("{+") ? "**" : segment.replace(/\{\w+\}/g, "*")))
+    .join("/");
+}
+
+/** The pre-cutover compiler. Both `{name}` and `{+name}` became a single `*`. */
+function legacyGoogleAllowPath(opPath: string, scope: GoogleRequestScope): string {
+  if (!googleOperationInsideScope(opPath, scope)) {
+    return scope.path;
+  }
+  return opPath.replace(/\{\+?\w+\}/g, "*");
+}
+
+function allowKeys(rule: unknown): ReadonlySet<string> | undefined {
+  const endpoints = asRecord(rule)?.endpoints;
+  if (!Array.isArray(endpoints)) {
+    return undefined;
+  }
+  const keys = new Set<string>();
+  for (const entry of endpoints) {
+    const rules = asRecord(entry)?.rules;
+    if (!Array.isArray(rules)) {
+      return undefined;
+    }
+    for (const item of rules) {
+      const allow = asRecord(asRecord(item)?.allow);
+      if (typeof allow?.method !== "string" || typeof allow.path !== "string") {
+        return undefined;
+      }
+      keys.add(`${allow.method} ${allow.path}`);
+    }
+  }
+  return keys;
+}
+
+function withoutAllowRules(rule: unknown): unknown {
+  const record = asRecord(rule);
+  if (!record || !Array.isArray(record.endpoints)) {
+    return rule;
+  }
+  return {
+    ...record,
+    endpoints: record.endpoints.map((entry) => {
+      const endpoint = asRecord(entry);
+      if (!endpoint) {
+        return entry;
+      }
+      const { rules: _rules, ...rest } = endpoint;
+      return rest;
+    }),
+  };
+}
+
+function sameAllowKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((key) => right.has(key));
+}
+
 function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
 }
@@ -156,19 +227,7 @@ export function googleRequestPolicy(scope: GoogleRequestScope) {
     allows.set(host, rules);
   }
   for (const [, op] of entries) {
-    const literal = op.path.split("{")[0]!;
-    const inside =
-      scope.path === "/**" ||
-      (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
-    // `{name}` is one segment (`*`). `{+name}` may contain slashes, so that whole segment is
-    // `**`, including a `:method` suffix such as `{+parent}:listChildAccounts`.
-    const path = inside
-      ? op.path
-          .split("/")
-          .map((segment) => (segment.includes("{+") ? "**" : segment.replace(/\{\w+\}/g, "*")))
-          .join("/")
-      : scope.path;
-    permit(scope.host, op.method, path);
+    permit(scope.host, op.method, currentGoogleAllowPath(op.path, scope));
   }
   for (const { host, path } of discovery) {
     permit(host, "GET", path);
@@ -191,6 +250,67 @@ export function googleRequestPolicy(scope: GoogleRequestScope) {
     middlewares,
     networks,
     environment: managedGoogleInstall.credentials.account!.delivery.env,
+  };
+}
+
+/**
+ * A stored Sandbox still carries `/v2/*` where this compiler now emits `/v2/**`.
+ * Replace that rule only when every allow path is the previous generator's output for
+ * the same admitted scope. Any other difference stays in place for the exact guard.
+ */
+export function reconcileObsoleteGoogleRequestRules(
+  policy: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const middlewares = asRecord(policy.network_middlewares);
+  if (!middlewares || !Object.hasOwn(middlewares, managedPluginMiddleware)) {
+    return policy;
+  }
+  const middleware = asRecord(middlewares[managedPluginMiddleware]);
+  const fields = asRecord(asRecord(middleware?.config)?.fields);
+  const scope = googleScopeFromString(asRecord(fields?.request_scope)?.stringValue);
+  if (!scope || asRecord(fields?.binding_id)?.stringValue !== managedGoogleInstall.releaseSha256) {
+    return policy;
+  }
+  let expected: ReturnType<typeof googleRequestPolicy>;
+  try {
+    expected = googleRequestPolicy(scope);
+  } catch {
+    return policy;
+  }
+  const networks = asRecord(policy.network_policies);
+  const stored = networks?.[googleRequestRuleName];
+  const expectedRule = expected.networks[googleRequestRuleName];
+  const storedAllows = allowKeys(stored);
+  const expectedAllows = allowKeys(expectedRule);
+  if (!storedAllows || !expectedAllows || sameAllowKeys(storedAllows, expectedAllows)) {
+    return policy;
+  }
+  if (
+    !isDeepStrictEqual(
+      wirePolicy(withoutAllowRules(stored)),
+      wirePolicy(withoutAllowRules(expectedRule)),
+    ) ||
+    !isDeepStrictEqual(
+      wirePolicy({ network_middlewares: middlewares }),
+      wirePolicy({ network_middlewares: expected.middlewares }),
+    )
+  ) {
+    return policy;
+  }
+  const operations = eligibleGoogleOperations(scope);
+  const legacy = new Set<string>();
+  for (const [, op] of operations) {
+    legacy.add(`${op.method} ${legacyGoogleAllowPath(op.path, scope)}`);
+  }
+  for (const discovery of googleDiscoveryRequests(scope, operations)) {
+    legacy.add(`GET ${discovery.path}`);
+  }
+  if (!sameAllowKeys(storedAllows, legacy)) {
+    return policy;
+  }
+  return {
+    ...policy,
+    network_policies: { ...networks, [googleRequestRuleName]: expectedRule },
   };
 }
 
