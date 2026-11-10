@@ -33,8 +33,24 @@ export interface ModelProviderView extends ModelProvider {
   readonly settingsFingerprint: string;
 }
 
+/** A private receiver the Installation administrator selects when creating a template version. */
+export type InferencePrivatePeerInput =
+  | { readonly kind: "private_ipv4"; readonly address: string }
+  | { readonly kind: "kubernetes_service"; readonly namespace: string; readonly name: string };
+
+/** Service identity and ports observed by Compute before a credential owner approves the version. */
+export type InferencePrivatePeer =
+  | Extract<InferencePrivatePeerInput, { kind: "private_ipv4" }>
+  | (Extract<InferencePrivatePeerInput, { kind: "kubernetes_service" }> & {
+      readonly uid: string;
+      readonly address: string;
+      readonly targetPort: number;
+      readonly podSelector: Readonly<Record<string, string>>;
+    });
+
 /** The version pins where the credential owner approved sending the key. */
 export interface StaticKeyGrant {
+  readonly privatePeer?: InferencePrivatePeer;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
   readonly baseUrl: string;

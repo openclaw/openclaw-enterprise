@@ -545,6 +545,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
             host: endpoint.hostname,
             port: Number(endpoint.port || 443),
             protocol: "rest",
+            ...(grant?.privatePeer && { allowedIps: [grant.privatePeer.address] }),
             path: exact?.path ?? `${endpoint.pathname}/**`,
             ...(exact ? { rules: [{ allow: { method: exact.method, path: exact.path } }] } : {}),
           },

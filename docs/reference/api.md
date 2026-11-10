@@ -6132,6 +6132,7 @@ Example request
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.harness.overrides` | `object<string, any>` | Yes | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data.harness.privateInferencePeer` | `object or object` | No | — |
 | `data.harness.version` | `string` | Yes | min length: 1 |
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9347,6 +9348,7 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].harness.mode` | `"embedded" or "dedicated"` | Yes | — |
 | `data[].harness.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].harness.overrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
+| `data[].harness.privateInferencePeer` | `object or object` | No | — |
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -10256,6 +10258,7 @@ List readable credential sources without revealing credential values
 | `data[].staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data[].staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data[].staticKeyGrant.privatePeer` | `object or object` | No | — |
 | `data[].staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data[].status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data[].status.reason` | `string` | No | max length: 512 |
@@ -10403,6 +10406,7 @@ Example request
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.privatePeer` | `object or object` | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -10538,6 +10542,7 @@ Get one credential source and its live Credential Gateway status
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.privatePeer` | `object or object` | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -10669,6 +10674,7 @@ Example request
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.privatePeer` | `object or object` | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
@@ -10771,6 +10777,7 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.staticKeyGrant.baseUrl` | `string` | Yes | — |
 | `data.staticKeyGrant.connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.staticKeyGrant.connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
+| `data.staticKeyGrant.privatePeer` | `object or object` | No | — |
 | `data.staticKeyGrant.protocol` | `"openai-responses" or "openai-completions"` | Yes | — |
 | `data.status` | `object` | No | Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |

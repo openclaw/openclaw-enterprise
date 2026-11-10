@@ -34,6 +34,14 @@ The Installation can offer several providers. One Agent selects **Internal vLLM*
 | Agent draft          | A new provider reference selects the route. Agent Configuration selects the model ID, and the existing `harnessAuth` binding selects the Credential Source the Agent may use.                                                                 |
 | Agent revision       | Records the selected provider ID and the admitted credential binding. Its Harness settings snapshot holds the resolved URL and protocol. Its Configuration snapshot holds the selected model and metadata. Recovery reads these saved values. |
 
+## Approve a private receiver
+
+An Installation administrator can give a static-key template a private destination. For a private server, the administrator pins one private IPv4 address to the HTTPS host. For a Kubernetes Service, the administrator selects the Service by namespace and name. Compute reads that named Service and records its UID, ClusterIP, Pod selector, and TCP target port in the template version. The credential owner approves that version and sees which receiver can receive the key.
+
+On deployment, Compute checks that the selected Service still matches the approved version. It renders a Kubernetes egress rule for the trusted sender. A private server gets one address and port. A Service gets its approved front-end address and its selected backend Pods and port. OpenShell allows the approved hostname to resolve to the pinned address and checks the request method and path before installing the key. The model owner controls ingress and TLS. Deployment after a Service replacement or address change requires a new template version and credential approval. A running supervisor checks the HTTPS identity and address per request. Before transferring that identity, the owner stops the Agent or withdraws the key.
+
+The proposed optional Compute Driver operation `resolveInferencePrivatePeer` resolves the private destination at template creation and verifies it again at deployment. Revisions preserve the approved peer. The existing public-endpoint path needs no private network grant.
+
 ## Deploy through the existing revision flow
 
 OpenClaw Control Plane resolves the provider reference into the existing [Harness provider settings](../../../docs/reference/drivers/kubernetes-compute/model-provider.md). Compute translates those settings into the native Codex or OpenClaw configuration. Admission checks the selected model against the provider catalog and the resolved route against the [credential binding](../../../docs/reference/credential-sources.md). For example, if an Agent switches from an internal endpoint to OpenAI but keeps a key approved only for the internal endpoint, admission refuses the deployment before either endpoint receives the key.

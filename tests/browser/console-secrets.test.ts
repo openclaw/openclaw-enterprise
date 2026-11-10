@@ -84,6 +84,8 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   await editor.getByLabel("Model ID", { exact: true }).last().fill("research-large");
   await editor.getByLabel("Default model").selectOption("research-model");
   await editor.getByLabel("New static-key template name").fill("Research key");
+  await editor.getByLabel("Network destination").selectOption("private_ipv4");
+  await editor.getByLabel("Private IPv4 address").fill("10.20.30.40");
   const saved = responseTo(page, "POST", fixture.origin + "/model-providers");
   await editor.getByRole("button", { name: "Save provider" }).click();
   const created = await saved;
@@ -102,9 +104,14 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     .selectOption(provider.connectionTemplateId);
   await page.getByLabel("API key Secret", { exact: true }).selectOption({ label: "provider-key" });
   await page
-    .getByText("Approve POST " + modelProvider.baseUrl + "/responses (template version 1).", {
-      exact: true,
-    })
+    .getByText(
+      "Approve POST " +
+        modelProvider.baseUrl +
+        "/responses (template version 1). Private server at 10.20.30.40.",
+      {
+        exact: true,
+      },
+    )
     .waitFor();
   await page.getByRole("button", { name: "Approve and register key" }).click();
   await page
@@ -120,6 +127,7 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   );
   assert.equal(key?.state, "ready");
   assert.deepEqual(key.staticKeyGrant, {
+    privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
     baseUrl: modelProvider.baseUrl,
     protocol: "openai-responses",
     connectionTemplateId: provider.connectionTemplateId,

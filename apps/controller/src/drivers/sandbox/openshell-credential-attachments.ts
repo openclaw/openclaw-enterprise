@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -151,6 +152,16 @@ export class OpenShellCredentialAttachments {
       }
       const type = this.sources.sourceType(source.type);
       if (type.catalog.type === "openai") {
+        if (
+          !isDeepStrictEqual(
+            source.staticKeyGrant?.privatePeer,
+            context.revision.harness.privateInferencePeer,
+          )
+        ) {
+          throw new ScopeViolationError(
+            "The credential does not authorize the revision's private inference peer.",
+          );
+        }
         requireModelSourceDestination(source.config, modelProvider, source.staticKeyGrant);
         if (
           (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||

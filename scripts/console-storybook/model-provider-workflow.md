@@ -6,6 +6,8 @@ Use these desktop stories:
 - **Pages/Create Agent → Authorize shared model destination**
 - **Pages/Create Agent → Destination authorization refusal**
 
+In **Pages/Settings → Manage model providers**, edit **Internal vLLM** to see the static-key template’s approved private address. Add a provider, select **Create a static-key template**, and change **Network destination**. **Private server** asks for a pinned IPv4 address. **Kubernetes Service** takes the namespace and Service name from the inference URL. This fixture simulates Service lookup.
+
 In Settings, expand Compute and inspect `runtime.modelProvider`. Switch between
 Fields and JSON. Confirm that the URL and protocol agree and that no credential
 value appears. The view is read-only; operators change Installation startup

@@ -56,12 +56,49 @@ export const AgentProvisioningWorkId = Type.String({
 export const HarnessSettings = Type.Record(Type.String(), Type.Unknown(), {
   description: "Nonsecret settings owned and validated by the selected Compute Driver.",
 });
+const octet = "(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])";
+const privateAddress = Type.String({
+  pattern: `^(?:10\\.${octet}\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)${octet}\\.${octet}$`,
+  description: "One private IPv4 address for the approved HTTPS hostname.",
+});
+const dnsLabel = Type.String({
+  minLength: 1,
+  maxLength: 63,
+  pattern: "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+});
+const privateServer = Type.Object(
+  { kind: Type.Literal("private_ipv4"), address: privateAddress },
+  { additionalProperties: false },
+);
+const privateService = {
+  kind: Type.Literal("kubernetes_service"),
+  namespace: dnsLabel,
+  name: dnsLabel,
+};
+export const InferencePrivatePeerInputSchema = Type.Union([
+  privateServer,
+  Type.Object(privateService, { additionalProperties: false }),
+]);
+export const InferencePrivatePeerSchema = Type.Union([
+  privateServer,
+  Type.Object(
+    {
+      ...privateService,
+      uid: Type.String({ minLength: 1 }),
+      address: privateAddress,
+      targetPort: Type.Integer({ minimum: 1, maximum: 65535 }),
+      podSelector: Type.Record(Type.String(), Type.String(), { minProperties: 1 }),
+    },
+    { additionalProperties: false },
+  ),
+]);
 export const RevisionHarnessSchema = Type.Object(
   {
     id: Type.String({ minLength: 1 }),
     version: Type.String({ minLength: 1 }),
     mode: HarnessExecutionModeSchema,
     modelProviderId: Type.Optional(ModelProviderId),
+    privateInferencePeer: Type.Optional(InferencePrivatePeerSchema),
     overrides: HarnessSettings,
     configuration: HarnessSettings,
   },

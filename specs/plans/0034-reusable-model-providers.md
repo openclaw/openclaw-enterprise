@@ -17,7 +17,7 @@ rfc: ../rfcs/0034-reusable-model-providers/index.md
 
 ## Private endpoint routing
 
-The current implementation uses the trusted sender’s existing network route. Automatic Kubernetes policy for a private receiver remains open. It needs an Installation-authorized network peer and port and an enforcing-cluster test that distinguishes the approved destination from an unapproved one.
+An Installation administrator approves an exact private IPv4 address or a named Kubernetes Service on the static-key template. The revision carries the approved receiver to Kubernetes Compute and OpenShell. Compute creates a supervisor egress NetworkPolicy, and OpenShell restricts the authenticated route to that address. The [Compute reference](../../docs/reference/drivers/kubernetes-compute/model-provider.md#private-endpoints) describes Service identity checks, access prerequisites, and the effect of other NetworkPolicies.
 
 ## Verification
 

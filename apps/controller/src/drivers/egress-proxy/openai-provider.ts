@@ -200,6 +200,9 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
           },
           binding,
           origin: base.origin,
+          ...(source.staticKeyGrant?.privatePeer && {
+            privateInferenceAddress: source.staticKeyGrant.privatePeer.address,
+          }),
           path: `${base.pathname}/${operation}`,
           method: "POST" as const,
           operationPolicy: { id: "openai-bounded-inference", generation: 1 },

@@ -239,7 +239,12 @@ export function openShellEgressConfiguration(
                 ports: [Number(origin.port || 443)],
                 protocol: "rest",
                 enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                access: "NETWORK_ACCESS_PRESET_FULL",
+                ...(route.privateInferenceAddress
+                  ? {
+                      allowed_ips: [route.privateInferenceAddress],
+                      rules: [{ allow: { method: route.method, path: route.path } }],
+                    }
+                  : { access: "NETWORK_ACCESS_PRESET_FULL" }),
                 path: route.path,
               },
             ],

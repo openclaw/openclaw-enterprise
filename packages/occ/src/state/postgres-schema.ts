@@ -801,7 +801,9 @@ export const agentRevisions = occSchema.table(
         AND jsonb_typeof(${table.admittedSpec}->'draft_spec') = 'object'
         AND jsonb_typeof(${table.admittedSpec}->'harness') = 'object'
         AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])
-        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration' - 'modelProviderId') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration' - 'modelProviderId' - 'privateInferencePeer') = '{}'::jsonb
+        AND (NOT ((${table.admittedSpec}->'harness') ? 'privateInferencePeer') OR (
+          (${table.admittedSpec}->'harness') ? 'modelProviderId' AND occ.inference_private_peer_is_valid(${table.admittedSpec} #> '{harness,privateInferencePeer}') IS TRUE))
         AND (NOT ((${table.admittedSpec}->'harness') ? 'modelProviderId')
              OR (jsonb_typeof(${table.admittedSpec} #> '{harness,modelProviderId}') = 'string'
                  AND (${table.admittedSpec} #>> '{harness,modelProviderId}') ~ '^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'))
@@ -2504,6 +2506,7 @@ export const staticKeyTemplateVersions = occSchema.table(
       .notNull()
       .references(() => connectionTemplates.id, { onDelete: "cascade" }),
     version: integer("version").notNull(),
+    privatePeer: jsonb("private_peer"),
     baseUrl: text("base_url").notNull(),
     protocol: text("protocol").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -2511,6 +2514,10 @@ export const staticKeyTemplateVersions = occSchema.table(
   (table): PgTableExtraConfigValue[] => [
     primaryKey({ columns: [table.templateId, table.version] }),
     unique().on(table.templateId, table.version, table.baseUrl, table.protocol),
+    check(
+      "static_key_template_versions_private_peer",
+      sql`occ.inference_private_peer_is_valid(${table.privatePeer})`,
+    ),
   ],
 );
 

@@ -8,6 +8,8 @@ import type { Driver, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
+  InferencePrivatePeer,
+  InferencePrivatePeerInput,
   CredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
@@ -222,6 +224,11 @@ export type RepositoryWorkerRestartDisposition =
   "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
 
 export interface ComputeDriver extends Driver {
+  /** Resolve only the explicitly selected private receiver for an HTTPS inference destination. */
+  resolveInferencePrivatePeer?(
+    input: InferencePrivatePeerInput,
+    baseUrl: string,
+  ): Promise<InferencePrivatePeer>;
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
     revision: Readonly<AgentRevision>,

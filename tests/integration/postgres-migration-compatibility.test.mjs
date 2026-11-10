@@ -2194,6 +2194,7 @@ test(
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
       [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2688,6 +2689,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
       [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2884,6 +2886,7 @@ test(
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
       [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2974,6 +2977,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
       [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2997,6 +3001,8 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          // The first ALTER TABLE in 0078 follows the validator and its application-role grant.
+          [77, "ALTER TABLE"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

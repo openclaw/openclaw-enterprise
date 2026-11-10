@@ -1,4 +1,8 @@
-import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import type {
+  InferencePrivatePeer,
+  InferencePrivatePeerInput,
+  CredentialPolicyWithdrawalOptions,
+} from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -50,6 +54,7 @@ import {
 } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
+import { resolvePrivateInferencePeer } from "./private-inference.ts";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
@@ -162,6 +167,7 @@ import {
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
+  ResourceStateConflictError,
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
@@ -6484,6 +6490,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
     const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
+    await this.verifyPrivateInferencePeer(revision);
     this.lifecycleStarted = true;
     const result = {
       namespaceId: revision.namespaceId,
@@ -7408,6 +7415,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
+        if (revision.harness.privateInferencePeer) {
+          await this.reconcilePrivateInferencePolicy(revision, namespace);
+        }
         let heldForRepositoryGitMaterial = false;
         if (egressContext !== undefined) {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
@@ -7807,6 +7817,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<void> {
     const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
+    await this.verifyPrivateInferencePeer(revision);
     if (
       revision.compute.id !== this.id ||
       revision.compute.implementation !== this.implementation ||
@@ -7863,6 +7874,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+    if (revision.harness.privateInferencePeer) {
+      await this.reconcilePrivateInferencePolicy(revision, namespace);
+    }
     await this.revokeUnavailablePublicGithubRead(revision, namespace);
     await this.deliverWorkspaceSetup(revision, workspaceSetup, namespace);
     const sourceNamespace =
@@ -8802,6 +8816,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
+    if (revision.harness.privateInferencePeer) {
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        `allow-private-inference-${sha256Hex(revision.id, 12)}`,
+        { namespaceId: revision.namespaceId, agentId: revision.agentId, revisionId: revision.id },
+        namespace,
+      );
+    }
     if (revision.harness.mode === "embedded") {
       return;
     }
@@ -11507,6 +11529,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     if (source?.type === "openai") {
+      if (
+        !isDeepStrictEqual(
+          source.staticKeyGrant?.privatePeer,
+          revision.harness.privateInferencePeer,
+        )
+      ) {
+        throw new ConfigurationFailure(
+          "The model credential no longer matches the revision's admitted private peer.",
+        );
+      }
       requireModelSourceDestination(
         source.config,
         savedModelProvider(revision.harness.configuration),
@@ -14507,6 +14539,64 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
+  async resolveInferencePrivatePeer(
+    input: InferencePrivatePeerInput,
+    baseUrl: string,
+  ): Promise<InferencePrivatePeer> {
+    const clients = await this.clients("execution");
+    const network = this.options.network;
+    return resolvePrivateInferencePeer(input, baseUrl, {
+      infrastructureNamespaces: [
+        network.dns.namespace,
+        network.providerHarness?.namespace,
+        this.options.gatewayRouting?.gatewayNamespace,
+        this.options.gatewayRouting?.envoyNamespace,
+        this.options.executionCluster?.network.dns.namespace,
+        this.options.executionCluster?.harnessRouting.gatewayNamespace,
+        this.options.executionCluster?.harnessRouting.envoyNamespace,
+      ],
+      infrastructureAddresses: [
+        process.env.KUBERNETES_SERVICE_HOST,
+        clients.server && new URL(clients.server).hostname,
+        network.publicGithubRead?.address,
+        network.providerHarness?.address,
+      ],
+      service: async (namespace, name) => {
+        try {
+          return await this.request(() => clients.core.readNamespacedService({ namespace, name }));
+        } catch (error) {
+          const status = numericErrorStatus(error);
+          if (status === 403 || status === 404) {
+            throw new ResourceStateConflictError(
+              "The named inference Service is unavailable or Compute cannot read it.",
+            );
+          }
+          throw new DependencyUnavailableError(
+            "Compute could not read the selected inference Service.",
+          );
+        }
+      },
+    });
+  }
+
+  private async verifyPrivateInferencePeer(revision: Readonly<AgentRevision>): Promise<void> {
+    const peer = revision.harness.privateInferencePeer;
+    if (!peer) return;
+    const provider = savedModelProvider(revision.harness.configuration);
+    if (
+      !provider ||
+      !revision.harness.modelProviderId ||
+      revision.harness.mode !== "dedicated" ||
+      revision.harnessAuth.method !== "credential_source" ||
+      this.sandboxDriverForRevision(revision)?.implementation !== "openshell" ||
+      !isDeepStrictEqual(peer, await this.resolveInferencePrivatePeer(peer, provider.baseUrl))
+    ) {
+      throw new ConfigurationFailure(
+        "The admitted private inference peer is unavailable or changed. Review the Connection Template and deploy a new revision.",
+      );
+    }
+  }
+
   readonly resolveModelProvider = resolveKubernetesModelProvider;
 
   normalizeHarnessOverrides(overrides: Readonly<Record<string, unknown>>) {
@@ -14558,6 +14648,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const provider = savedModelProvider(harness.configuration);
     for (const source of sources) {
       if (source.type === "openai") {
+        if (!isDeepStrictEqual(source.staticKeyGrant?.privatePeer, harness.privateInferencePeer)) {
+          throw new ConfigurationHarnessError(
+            "The credential's private inference peer must match the selected Model Provider revision.",
+          );
+        }
         requireModelSourceDestination(source.config, provider, source.staticKeyGrant);
       }
     }
@@ -15550,6 +15645,78 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       namespace,
       preparation,
       await this.workspaceNodePeers(revision, namespace, preparation),
+    );
+  }
+
+  private async reconcilePrivateInferencePolicy(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const peer = revision.harness.privateInferencePeer;
+    const provider = savedModelProvider(revision.harness.configuration);
+    const driver = this.sandboxDriverForRevision(revision);
+    if (
+      !peer ||
+      !provider ||
+      !driver?.workspaceNodePeerLabels ||
+      driver.implementation !== "openshell"
+    ) {
+      throw new ConfigurationFailure(
+        "Private inference requires the selected OpenShell revision's supervisor.",
+      );
+    }
+    const context = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, namespace),
+      namespace,
+    );
+    const labels = await driver.workspaceNodePeerLabels({ ...context, revision });
+    if (
+      !labels ||
+      !labels["openshell.ai/sandbox-id"] ||
+      labels["openshell.ai/boundary-role"] !== "supervisor"
+    ) {
+      throw new DependencyUnavailableError(
+        "The private inference NetworkPolicy requires the exact observed supervisor.",
+      );
+    }
+    const port = Number(new URL(provider.baseUrl).port || 443);
+    // Kubernetes CNIs can inspect a Service before or after DNAT. Keep the ClusterIP/port
+    // distinct from the selected backend Pods/targetPort so neither admits the other's port.
+    const egress = [
+      { to: [{ ipBlock: { cidr: peer.address + "/32" } }], ports: [{ protocol: "TCP", port }] },
+    ];
+    const serviceTargets =
+      peer.kind === "kubernetes_service"
+        ? [
+            {
+              to: [this.peer({ namespace: peer.namespace, podLabels: peer.podSelector })],
+              ports: [{ protocol: "TCP", port: peer.targetPort }],
+            },
+          ]
+        : [];
+    const owner = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    const policy = this.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      `allow-private-inference-${sha256Hex(revision.id, 12)}`,
+      owner,
+      namespace,
+    );
+    await this.reconcile(
+      {
+        ...policy,
+        spec: {
+          podSelector: { matchLabels: { ...labels } },
+          policyTypes: ["Egress"],
+          egress: [...egress, ...serviceTargets],
+        },
+      },
+      owner,
+      namespace,
     );
   }
 
