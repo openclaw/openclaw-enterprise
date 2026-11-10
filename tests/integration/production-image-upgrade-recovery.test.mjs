@@ -126,6 +126,17 @@ const yqRaw = (value) => (value === undefined || value === null ? "null" : Strin
 const yqOr = (value, alternative) =>
   value === undefined || value === null || value === false ? alternative : value;
 
+const testCertificate = {
+  apiVersion: "cert-manager.io/v1",
+  kind: "Certificate",
+  metadata: { name: "gateway-certificate", namespace: "system" },
+  spec: {
+    secretName: "gateway-tls",
+    dnsNames: ["gateway.example.test"],
+    issuerRef: { name: "gateway-issuer", kind: "Issuer" },
+  },
+};
+
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
 async function standInChart(
@@ -668,6 +679,31 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("apply") && args.includes("--dry-run=server")) {
+      assert.ok(args.includes("--server-side"));
+      assert.ok(args.includes("--force-conflicts"));
+      assert.ok(args.includes("--field-manager=occ-upgrade-preflight"));
+      assert.equal(fileArg("--namespace"), "system");
+      const submitted = JSON.parse(readFileSync(fileArg("--filename"), "utf8"));
+      assert.equal(submitted.apiVersion, "v1");
+      assert.equal(submitted.kind, "List");
+      assert.ok(submitted.items.length > 0);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      if (state.realChart) {
+        for (const item of submitted.items) {
+          assert.equal(item.apiVersion, "cert-manager.io/v1");
+          assert.equal(item.kind, "Certificate");
+        }
+      } else {
+        assert.deepEqual(submitted.items, [testCertificate]);
+        log("certificate-admission");
+      }
+      if (take("refuse-certificate-admission")) {
+        return fail(1, "certificate webhook refused dry-run");
+      }
+      return io.exit(0);
+    }
     if (args.includes("create") && args.includes("--raw")) {
       assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
       const review = JSON.parse(await io.readInput());
@@ -1837,6 +1873,7 @@ async function fixture(
     recoveryHooks = false,
     initializationResources,
     preflightPolicy = false,
+    certificate = false,
     preflightFault = null,
     kubernetesNamespaces = [],
     kubernetesDenied = false,
@@ -2043,6 +2080,7 @@ async function fixture(
     inventoryNamespaces,
     names,
     configurationValues,
+    ...(certificate ? { recoveryCandidateResources: [testCertificate] } : {}),
     olderDraftRules,
     unavailableDraftResolver,
     version: 1,
@@ -7506,6 +7544,32 @@ test("a staged retry with replaced local values still cannot replace the publish
   assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
   assert.equal((await f.state()).helmSubmissions, 1);
   assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+});
+
+test("certificate admission refusal leaves the incumbent controllers running", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.failNext("refuse-certificate-admission");
+  await assert.rejects(f.run(), /certificate admission preflight failed/);
+  assert.deepEqual(await f.events(), ["certificate-admission"]);
+  const state = await f.state();
+  assert.equal(state.api, 1);
+  assert.equal(state.worker, 1);
+  assert.equal(state.version, 1);
+  assert.equal(
+    await readFile(join(f.evidence, "preflight-certificates.err"), "utf8"),
+    "certificate webhook refused dry-run\n",
+  );
+});
+
+test("successful certificate admission precedes shutdown and Helm submission", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.run();
+  assert.deepEqual(await f.events(), [
+    "certificate-admission",
+    "scale-api",
+    "scale-worker",
+    "migration",
+  ]);
 });
 
 test("failed attempt preparation preserves native dry-run diagnostics before stopping writers", async (t) => {

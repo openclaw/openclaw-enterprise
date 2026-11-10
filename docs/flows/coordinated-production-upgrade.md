@@ -125,12 +125,12 @@ Changed immutable data requires a successor. For changed mutable data, a Kuberne
 self-review checks update access to the named Secret. A completed denial stops
 preparation. An inconclusive review warns and continues. Replacement still
 requires update permission.
-After Helm's server dry run, `scripts/upgrade-startup-preflight.mjs` copies
-API/worker images, environment, mounts and service accounts into single-completion,
-single-Pod Jobs with the candidate Installation Secret, no retries and the selected
-deadline. `preflight_startup` verifies Job UID and child ownership: missing children
-wait; replacements or multiple children refuse preparation. Job completion is
-required; Job failure overrides child success.
+Rendered Certificates must pass server-side dry-run admission before startup Jobs.
+`scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
+mounts and service accounts into single-Pod Jobs with the candidate Secret,
+no retries and the selected deadline. `preflight_startup` verifies Job UID and
+child ownership. It waits for missing children and refuses replacements or
+multiple children. Job failure overrides child success.
 
 An API Pod with a theme first calls
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles
