@@ -212,10 +212,13 @@ must still pass this check. A fresh write with no eligible API material must
 start with discovery. [Request selection](../../../apps/controller/src/drivers/repo/github/access/routes/stock-gh-pull-request.ts)
 · [Possible-use authority](../../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts)
 
-Withdrawal of the repository entitlement closes both paths to new approvals.
-Each custody record retains its own issuance and revocation outcome under the
-original issuer owner. An unconfirmed issuance remains quarantined. The
-required model uses its own admitted authority.
+Expiry or committed removal closes both paths to new approvals in OCC. The
+original issuer settles each custody record independently and quarantines an
+unconfirmed issuance. The cold grant route has no stored material version, so
+current expiry and removal cleanup can retire the execution before any provider
+detach. Keeping the required model running needs a durable OCC withdrawal that
+checks both original GitHub attachments and the original execution fence,
+then confirms current model authorization.
 
 ## Debugging and Verification
 

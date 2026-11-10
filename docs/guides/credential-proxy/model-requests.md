@@ -222,11 +222,13 @@ authoritative identity response. The exact check runs before every write,
 including when a sender can reuse a token. GitHub still enforces the App's
 permissions and repository rules.
 
-Remove the repository entitlement to refuse future Git and API requests.
-The original issuer owner retires each token family. Qualify the running model
-separately on a mixed online execution. See the
-[repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-pull-request-preview)
-for the order of checks.
+OCC denies new Git and API requests after expiry or committed removal. The
+original issuer retires each token family. Current grant-mode cleanup can
+retire the execution before detaching a provider. Keeping the model running
+requires a durable withdrawal path that verifies both original GitHub
+attachments, the original execution fence, and current model authorization.
+Verify that path on an installed mixed online execution.
+[Repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-pull-request-preview)
 
 ## Verify the installed path
 
