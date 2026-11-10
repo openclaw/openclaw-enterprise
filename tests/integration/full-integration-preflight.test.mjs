@@ -1689,11 +1689,35 @@ test("workflow permits main push retries and refuses approval reuse on manual re
     assert.equal(
       workflowCondition(workflow.jobs.preflight.if, {
         github: { ...github, event_name, run_attempt: "2" },
-        needs: { "manual-approval": { result: event_name === "push" ? "skipped" : "success" } },
+        needs: { "manual-approval": { result: "skipped" } },
       }),
-      event_name === "push",
+      true,
+      "Retries reach preflight so refused manual reruns cannot silently skip every job",
     );
   }
+  assert.equal(
+    workflowCondition(manual.if, {
+      github: { ...github, event_name: "workflow_dispatch", run_attempt: "2" },
+    }),
+    false,
+  );
+  // Run the shipped preflight command: manual retries must report failure while
+  // the approval and expensive execution jobs remain excluded above.
+  const select = workflow.jobs.preflight.steps.find((step) => step.id === "select");
+  const refused = spawnSync("/bin/sh", ["-c", select.run], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    env: {
+      ...mainRun,
+      PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_RUN_ATTEMPT: "2",
+    },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(refused.error, undefined);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /Manual integration reruns are refused/);
   for (const result of ["skipped", "failure", "cancelled", "success"]) {
     assert.equal(
       workflowCondition(workflow.jobs.preflight.if, {

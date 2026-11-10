@@ -48,7 +48,7 @@ jobs:
 
   preflight:
     needs: manual-approval
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && ((github.event_name == 'push' && needs.manual-approval.result == 'skipped') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.manual-approval.result == 'success')) }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && ((github.event_name == 'push' && needs.manual-approval.result == 'skipped') || (github.event_name == 'workflow_dispatch' && (github.run_attempt != '1' || needs.manual-approval.result == 'success'))) }}
     name: Dispatch Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
