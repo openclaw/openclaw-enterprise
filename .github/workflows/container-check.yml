@@ -118,19 +118,30 @@ jobs:
               if (current !== root && !current.startsWith(`${root}/`)) {
                 throw new Error("Unsupported cgroup path");
               }
-              while (current !== root) {
-                const quota = fs.readFileSync(`${current}/cpu.max`, "utf8").trim().match(/^(max|[1-9][0-9]*) ([1-9][0-9]*)$/);
+              while (true) {
+                const names = ["cpu.max", "memory.current", "memory.max", "memory.high"];
+                const values = names.map((name) => {
+                  try { return fs.readFileSync(`${current}/${name}`, "utf8").trim(); }
+                  catch (error) {
+                    if (current === root && error.code === "ENOENT") { return undefined; }
+                    throw error;
+                  }
+                });
+                // The real host root has no limits; a delegated visible root can have them.
+                if (current === root && values.every((value) => value === undefined)) { break; }
+                if (values.some((value) => value === undefined)) { throw new Error("Incomplete cgroup limits"); }
+                const quota = values[0].match(/^(max|[1-9][0-9]*) ([1-9][0-9]*)$/);
                 if (!quota) { throw new Error("Unknown CPU limit"); }
                 if (quota[1] !== "max") { buildCpus = Math.min(buildCpus, Number(quota[1]) / Number(quota[2])); }
-                const used = Number(fs.readFileSync(`${current}/memory.current`, "utf8").trim());
+                const used = Number(values[1]);
                 if (!Number.isSafeInteger(used) || used < 0) { throw new Error("Unknown memory usage"); }
-                for (const name of ["memory.max", "memory.high"]) {
-                  const limit = fs.readFileSync(`${current}/${name}`, "utf8").trim();
+                for (const limit of values.slice(2)) {
                   if (limit !== "max") {
                     if (!/^[0-9]+$/.test(limit) || !Number.isSafeInteger(Number(limit))) { throw new Error("Unknown memory limit"); }
                     availableBytes = Math.min(availableBytes, Math.max(0, Number(limit) - used));
                   }
                 }
+                if (current === root) { break; }
                 current = path.dirname(current);
               }
               limitsKnown = true;

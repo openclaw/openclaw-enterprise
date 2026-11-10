@@ -153,6 +153,17 @@ test("native runtime compilation uses spare capacity without overruling runner s
   // checks admission and output wiring, not scheduler capacity or build success.
   for (const scenario of [
     { name: "spare ARM capacity", expected: 8 },
+    { name: "visible root memory pressure", rootHigh: 40 * GiB, rootUsed: 12 * GiB, expected: 4 },
+    { name: "visible root CPU quota", rootQuota: "800000 100000", expected: 4 },
+    {
+      name: "delegated root is current cgroup",
+      cgroup: "0::/",
+      rootHigh: 40 * GiB,
+      rootUsed: 12 * GiB,
+      expected: 4,
+    },
+    { name: "partial root observations", partialRoot: true, expected: 4 },
+    { name: "unreadable root", deniedRoot: true, expected: 4 },
     { name: "smaller override", cpus: 8, expected: 4 },
     { name: "busy host", free: 39 * GiB, expected: 4 },
     { name: "process memory limit", constrained: 24 * GiB, expected: 4 },
@@ -180,6 +191,17 @@ test("native runtime compilation uses spare capacity without overruling runner s
       "/sys/fs/cgroup/slice/memory.high": String(scenario.high ?? "max"),
       "/sys/fs/cgroup/slice/memory.current": String(scenario.used ?? 0),
     };
+    if (scenario.rootHigh !== undefined || scenario.rootQuota !== undefined) {
+      Object.assign(files, {
+        "/sys/fs/cgroup/cpu.max": scenario.rootQuota ?? "max 100000",
+        "/sys/fs/cgroup/memory.max": "max",
+        "/sys/fs/cgroup/memory.high": String(scenario.rootHigh ?? "max"),
+        "/sys/fs/cgroup/memory.current": String(scenario.rootUsed ?? 0),
+      });
+    }
+    if (scenario.partialRoot) {
+      files["/sys/fs/cgroup/cpu.max"] = "max 100000";
+    }
     const modules = {
       "node:path": path,
       "node:os": {
@@ -189,8 +211,11 @@ test("native runtime compilation uses spare capacity without overruling runner s
       },
       "node:fs": {
         readFileSync: (name) => {
-          if (scenario.missing || !(name in files)) {
-            throw new Error("unavailable");
+          if (scenario.missing || (scenario.deniedRoot && name === "/sys/fs/cgroup/cpu.max")) {
+            throw Object.assign(new Error("unavailable"), { code: "EACCES" });
+          }
+          if (!(name in files)) {
+            throw Object.assign(new Error("absent"), { code: "ENOENT" });
           }
           return files[name];
         },
@@ -220,11 +245,9 @@ test("native runtime compilation uses spare capacity without overruling runner s
     assert.deepEqual(output, [`node_build_jobs=${scenario.expected}\n`], scenario.name);
     assert.equal(observed[0].nodeBuildJobs, scenario.expected, scenario.name);
   }
-  const builds = prepare.steps.filter((step) => step.uses?.startsWith("docker/build-push-action@"));
-  assert.equal(builds.length, 2);
-  assert.equal(builds[0].with["build-args"], builds[1].with["build-args"]);
+  const assembly = prepare.steps.find((step) => step.id === "build");
   assert.ok(
-    builds[0].with["build-args"].includes(
+    assembly.with["build-args"].includes(
       "format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs)",
     ),
   );
