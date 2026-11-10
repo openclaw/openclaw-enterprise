@@ -180,7 +180,14 @@ function run(root, args, env = {}, { timeout } = {}) {
 }
 
 test("installed Skipper failure summary reads the actual runner result without exposing errors", async (t) => {
-  for (const scenario of ["assertion", "rejection", "file failure"]) {
+  for (const scenario of [
+    "assertion",
+    "rejection",
+    "file failure",
+    "captured subprocess rejection",
+    "unrecognized operation",
+    "unrecognized outcome",
+  ]) {
     await t.test(scenario, async (t) => {
       const root = join(await fixture(t), "private-source-canary");
       await mkdir(join(root, "tests/integration"), { recursive: true });
@@ -206,6 +213,36 @@ test("installed Skipper failure summary reads the actual runner result without e
         lines.push('  assert.equal(process.env.CI_RUNNER_FIXTURE_CREDENTIAL, "expected");');
       } else if (scenario === "rejection") {
         lines.push("  await fail();");
+      } else if (
+        [
+          "captured subprocess rejection",
+          "unrecognized operation",
+          "unrecognized outcome",
+        ].includes(scenario)
+      ) {
+        // Match withdrawal's settled promise: a child callback rejects before the test rethrows it.
+        // Such an Error has no test-file stack frame; the operation must survive the real reporter.
+        const helper = new URL("../../scripts/ci/skipper-release.ts", import.meta.url).href;
+        lines.push(
+          `  const { runSkipperOperation } = await import(${JSON.stringify(helper)});`,
+          '  const { execFile } = await import("node:child_process");',
+          '  const { promisify } = await import("node:util");',
+          '  const outcome = runSkipperOperation("gateway-chat", () => promisify(execFile)(process.execPath, ["-e", "console.error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL); process.exit(7)"])).then(() => ({}), (error) => ({ error }));',
+          "  const settled = await outcome;",
+          "  await new Promise((resolve) => setImmediate(resolve));",
+          "  Object.assign(settled.error.openclawCiDiagnostic, { command: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, stderr: process.env.CI_RUNNER_FIXTURE_CREDENTIAL });",
+          ...(scenario === "unrecognized operation"
+            ? [
+                "  settled.error.openclawCiDiagnostic.operation = process.env.CI_RUNNER_FIXTURE_CREDENTIAL;",
+              ]
+            : []),
+          ...(scenario === "unrecognized outcome"
+            ? [
+                "  Object.assign(settled.error.openclawCiDiagnostic, { exitCode: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, signal: process.env.CI_RUNNER_FIXTURE_CREDENTIAL, code: process.env.CI_RUNNER_FIXTURE_CREDENTIAL });",
+              ]
+            : []),
+          "  throw settled.error;",
+        );
       }
       lines.push("});");
       if (scenario === "file failure") {
@@ -239,12 +276,37 @@ test("installed Skipper failure summary reads the actual runner result without e
         assertion: "ERR_ASSERTION",
         rejection: "ERR_TEST_FAILURE",
         "file failure": "post-test-async-activity",
+        "captured subprocess rejection": "ERR_TEST_FAILURE",
+        "unrecognized operation": "ERR_TEST_FAILURE",
+        "unrecognized outcome": "ERR_TEST_FAILURE",
       }[scenario];
-      assert.ok(diagnostic.endsWith(`, ${category}`));
-      if (scenario !== "file failure") {
+      if (scenario === "captured subprocess rejection") {
+        assert.equal(
+          diagnostic,
+          "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat, exit=7",
+        );
+        assert.deepEqual(summary.files[0].tests[0].error.diagnostic, {
+          kind: "skipper-operation",
+          operation: "gateway-chat",
+          exitCode: 7,
+        });
+      } else if (scenario === "unrecognized outcome") {
+        assert.equal(diagnostic, "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat");
+        assert.deepEqual(summary.files[0].tests[0].error.diagnostic, {
+          kind: "skipper-operation",
+          operation: "gateway-chat",
+        });
+      } else {
+        assert.ok(diagnostic.endsWith(`, ${category}`));
+      }
+      if (scenario === "unrecognized operation") {
+        assert.equal(summary.files[0].tests[0].error.diagnostic, undefined);
+        assert.equal(diagnostic, "location unavailable, ERR_TEST_FAILURE");
+      }
+      if (scenario === "assertion" || scenario === "rejection") {
         assert.match(diagnostic, /^skipper-prepared-git-installed\.test\.mjs:5:\d+, /);
         assert.ok(summary.issues.some((entry) => entry.code === "expected-test-not-passed"));
-      } else {
+      } else if (scenario === "file failure") {
         assert.equal(summary.files[0].tests[0].status, "passed");
         assert.ok(summary.files[0].fileFailure);
       }
@@ -256,6 +318,8 @@ test("installed Skipper failure summary reads the actual runner result without e
       const error =
         summary.files[0].tests.find((entry) => entry.status === "failed")?.error ??
         summary.files[0].fileFailure.error;
+      // The remaining cases exercise location/category fallback without an operation receipt.
+      delete error.diagnostic;
       if (scenario === "rejection") {
         const malformed = structuredClone(summary);
         const selected = malformed.files[0].tests.find((entry) => entry.status === "failed").error;

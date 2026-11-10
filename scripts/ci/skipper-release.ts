@@ -95,6 +95,82 @@ export function projectSkipperRunnerReceipt(value: unknown) {
   };
 }
 
+const skipperOperations = [
+  "command-input",
+  "gateway-chat",
+  "native-observation",
+  "model-observation",
+  "command-cleanup",
+] as const;
+type SkipperOperation = (typeof skipperOperations)[number];
+
+/** Only this closed projection may leave the installed test's private result. */
+export function skipperOperationDiagnostic(value: unknown) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const diagnostic = value as Record<string, unknown>;
+  if (
+    diagnostic.kind !== "skipper-operation" ||
+    !skipperOperations.some((operation) => operation === diagnostic.operation)
+  ) {
+    return undefined;
+  }
+  const { operation, exitCode, signal, code } = diagnostic;
+  return {
+    kind: "skipper-operation",
+    operation: operation as SkipperOperation,
+    ...(Number.isInteger(exitCode) &&
+    typeof exitCode === "number" &&
+    exitCode >= 0 &&
+    exitCode <= 255
+      ? { exitCode }
+      : {}),
+    ...(typeof signal === "string" && ["SIGTERM", "SIGKILL", "SIGABRT"].includes(signal)
+      ? { signal }
+      : {}),
+    ...(typeof code === "string" &&
+    [
+      "ERR_ASSERTION",
+      "ENOENT",
+      "EACCES",
+      "E2BIG",
+      "ETIMEDOUT",
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    ].includes(code)
+      ? { code }
+      : {}),
+  };
+}
+
+/** Preserve the original rejection, including asynchronous subprocess errors without user frames. */
+export async function runSkipperOperation<T>(
+  operation: SkipperOperation,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    const error =
+      cause instanceof Error ? cause : new Error("Installed Skipper operation failed", { cause });
+    try {
+      const fields = error as Error & { code?: unknown; signal?: unknown };
+      Object.assign(error, {
+        openclawCiDiagnostic: skipperOperationDiagnostic({
+          kind: "skipper-operation",
+          operation,
+          exitCode: typeof fields.code === "number" ? fields.code : undefined,
+          code: typeof fields.code === "string" ? fields.code : undefined,
+          signal: fields.signal,
+        }),
+      });
+    } catch {
+      // A frozen or unusual Error must keep its original failure.
+    }
+    throw error;
+  }
+}
+
 /** Keep the selected failure's location and category together, without publishing its text. */
 export function skipperFailureSummary(resultText: string, root: string, fallback: string): string {
   const coordinate = (value: unknown): value is number =>
@@ -102,6 +178,7 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
   let text = fallback;
   let site;
   let category;
+  let operationDetail;
   try {
     const files = record(JSON.parse(resultText)).files;
     assert.ok(Array.isArray(files));
@@ -113,6 +190,17 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
     const error = record(failed?.error ?? fileFailure?.error);
     const cause = record(error.cause ?? {});
     const location = record(error.location ?? {});
+    const diagnostic = skipperOperationDiagnostic(error.diagnostic);
+    if (diagnostic) {
+      operationDetail = [
+        `operation=${diagnostic.operation}`,
+        diagnostic.exitCode === undefined ? undefined : `exit=${diagnostic.exitCode}`,
+        diagnostic.signal === undefined ? undefined : `signal=${diagnostic.signal}`,
+        diagnostic.code === undefined ? undefined : `code=${diagnostic.code}`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+    }
     // Commit selected state only after its nested records validate. Never pair
     // one case's location with another case's error from the lane output.
     text = [error.message, error.frame].filter((value) => typeof value === "string").join("\n");
@@ -149,7 +237,9 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
     )?.[0] ??
     category ??
     text.match(/ERR_ASSERTION|expected-test-not-passed/)?.[0];
-  return `${site ?? "location unavailable"}, ${category ?? "unclassified"}`;
+  return [site ?? "location unavailable", category ?? "unclassified", operationDetail]
+    .filter(Boolean)
+    .join(", ");
 }
 
 function digest(value: unknown): string {

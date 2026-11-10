@@ -118,7 +118,7 @@ The installed-Skipper lane publishes a sanitized passing receipt only after its
 test and owned-resource cleanup succeed. Complete full-scope results retain
 empty issue lists and each file's exercised status, exit code, and signal for
 coverage validation. Focused or incomplete results carry no full-coverage proof.
-Raw test output and diagnostics remain private.
+Raw test output and diagnostics remain private. Failed native operations report a known operation label and, when available, a bounded exit code or allowlisted signal/error code. These log fields do not prove that the installed journey passed.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
 its assigned files serially, and the aggregate requires both results. QA Advisory uses
