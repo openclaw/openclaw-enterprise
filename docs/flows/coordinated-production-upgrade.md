@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-10"
-last_updated_session: "authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b"
+last_updated_session: "authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e"
 ---
 
 # Production image upgrade flow
@@ -78,28 +78,29 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md) before access.
-`HEAD` must match `--source-revision`; chart changes, symlinks and internal
-evidence/baseline aliases are rejected. Other edits and image provenance remain unchecked.
+Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md),
+mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
+aliases before access. Other edits/image provenance are unchecked.
 
-Resume locks evidence paths, devices and inodes, including aliases; runtime upgrades lock dispatch journals.
+`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
+with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
 
-`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-and live mappings, then validates candidates. Invalid input or unwritable evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
-protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
-and wrapping one registration in an array. Removing empty
-`agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
-live comparison stays exact. Immutable reference switches require
-string keys. Startup validates controllers; broker checks references,
-not contents.
+Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
 
-`read_restart_inventory` requires complete authorized inventory with valid
-ownership, IDs and selection states. Retained running revisions need an accepted
+`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
+Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
+Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
+and array-wrapping one registration.
+Removing empty `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
+live comparison stays exact. Immutable reference switches require string keys.
+Startup validates controllers; broker checks only references.
+
+`read_restart_inventory` validates complete authorized inventory ownership, IDs and selection states. Retained running revisions require accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` still requires one owned
+Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
 revision with object-valued Harness settings; retain IDs and validation outcome.
 Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
-support and size compliance. Quiescence is nonatomic; repository continuity is unverified.
+support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
 
 `OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
 unreadable snapshots yield `unknown`; database/identity errors propagate. `getInstallationDeploymentInventory` invokes Compute outside State
@@ -362,6 +363,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:41: Validate the preprovisioned Namespace boolean before access. (authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e - 9c59ab71b8dfe3ea2816e3cee25182aeb4bcf172)
 
 - 2026-11-10 12:09: Clarify resume refusal and retained diagnostics. (authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b - d2d12783a23e1c06c27f3f932faa09ffb2f59110)
 

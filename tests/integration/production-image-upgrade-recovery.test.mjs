@@ -6237,7 +6237,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
         error.stderr,
       ),
     );
-    // The temporary NetworkPolicy, Secret and both Pods are removed after the refusal.
+    // All three preflight Jobs and their dependencies are removed after the refusal.
     const state = await assertStoppedBeforeWriters(f);
     // Both components fail the same way, and both logs are saved (finding 447).
     for (const component of ["api", "worker"]) {
@@ -6247,6 +6247,7 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       );
     }
     assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
+      "job.batch",
       "job.batch",
       "job.batch",
       "networkpolicy.networking.k8s.io",

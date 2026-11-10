@@ -1373,8 +1373,12 @@ cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
 
-if yq -e '.preprovisionedNamespace != null and .preprovisionedNamespace != {}' \
-  "$evidence_dir/before-values.yaml" >/dev/null; then
+if ! preprovisioned_namespace=$(yq -r '(.preprovisionedNamespace // {} | length) > 0' \
+  "$evidence_dir/before-values.yaml" 2>"$evidence_dir/preprovisioned-namespace.err") ||
+  [[ "$preprovisioned_namespace" != true && "$preprovisioned_namespace" != false ]]; then
+  die "cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory."
+fi
+if [[ "$preprovisioned_namespace" == true ]]; then
   die "production image upgrades require the chart initialization Job; preprovisioned Namespace canaries manage database upgrades separately. See docs/reference/drivers/kubernetes-compute/preprovisioned-namespace.md."
 fi
 
