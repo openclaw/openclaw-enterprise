@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { AssertionError } from "node:assert";
+import { execFile, type ExecFileException } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
@@ -13,7 +14,7 @@ import {
   assertProbeDenied,
   boundedTeardown,
   createKubernetesClient,
-  deleteNamespaceExplained,
+  deleteNamespaceExplained as deleteNamespaceExplainedJs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
@@ -21,8 +22,8 @@ import {
   namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
-  retryKubectlRead,
-  retryKubectlWrite,
+  retryKubectlRead as retryKubectlReadJs,
+  retryKubectlWrite as retryKubectlWriteJs,
   teardownStepLimitMs,
   withBoundedTeardown,
   withinDiagnosticDeadline,
@@ -33,11 +34,11 @@ import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
-  assertAllowedCredentialRoute,
-  createOpenShellKubernetesFixture,
-  failedRecoveryDiagnostic,
+  assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
+  createOpenShellKubernetesFixture as createOpenShellKubernetesFixtureJs,
+  failedRecoveryDiagnostic as failedRecoveryDiagnosticJs,
   modelAtCapacityOutcome,
-  retryModelAtCapacity,
+  retryModelAtCapacity as retryModelAtCapacityJs,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -48,12 +49,98 @@ import {
 } from "./kubernetes-teardown-cases.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
+type RetryOptions = {
+  sleep: (ms: number) => Promise<unknown>;
+  log: (message: string) => void;
+  applied?: RegExp;
+};
+type RetryOperation<Result = never> = <T>(
+  operation: () => Promise<T>,
+  options: RetryOptions,
+) => Promise<T | Result>;
+type Kubectl = (...args: string[]) => Promise<unknown>;
+type DiagnosticSleep = (
+  ms: number,
+  value: undefined,
+  options: { signal: AbortSignal },
+) => Promise<undefined>;
+
+// The JavaScript helpers accept these fixture inputs at runtime; inference from their defaults
+// otherwise narrows callback return values and treats unused fixture settings as required.
+const retryKubectlRead = retryKubectlReadJs as RetryOperation;
+const retryKubectlWrite = retryKubectlWriteJs as RetryOperation<"">;
+const retryModelAtCapacity = retryModelAtCapacityJs as RetryOperation;
+const deleteNamespaceExplained = deleteNamespaceExplainedJs as (
+  kubectl: Kubectl,
+  namespace: string,
+  options?: { timeout?: string; listTimeoutMs?: number; sleep?: DiagnosticSleep },
+) => Promise<unknown>;
+const createOpenShellKubernetesFixture = createOpenShellKubernetesFixtureJs as (options: {
+  kubeconfigPath: string;
+  kubernetesContext: string;
+  modelAtCapacityRetry?: Partial<RetryOptions>;
+}) => ReturnType<typeof createOpenShellKubernetesFixtureJs>;
+const assertAllowedCredentialRoute = assertAllowedCredentialRouteJs as (
+  input: {
+    probe: { httpStatus: string; connectStatus?: string; exitCode?: string | number };
+    sourceType?: string;
+    destination?: string;
+    capture: () => unknown;
+    write: (text: string) => unknown;
+  },
+  options?: { timeoutMs?: number },
+) => Promise<void>;
+const failedRecoveryDiagnostic = failedRecoveryDiagnosticJs as (
+  input: {
+    readWorker: () => unknown;
+    describe: (worker: unknown) => unknown;
+    failure?: Error | undefined;
+    write: (text: string) => unknown;
+  },
+  options?: { timeoutMs?: number },
+) => Promise<string>;
+
+function expectExecFailure(
+  value: unknown,
+): asserts value is ExecFileException & { stdout: string; stderr: string } {
+  assert.ok(value instanceof Error);
+  assert.ok("stdout" in value && typeof value.stdout === "string");
+  assert.ok("stderr" in value && typeof value.stderr === "string");
+}
+
+function expectStringArrays(value: unknown): asserts value is string[][] {
+  assert.ok(Array.isArray(value));
+  assert.ok(
+    value.every(
+      (entry: unknown) =>
+        Array.isArray(entry) && entry.every((part: unknown) => typeof part === "string"),
+    ),
+  );
+}
+
+function runRecordedHook(context: RecordingContext): Promise<void> {
+  const [hook] = context.hooks;
+  assert.ok(hook);
+  return hook();
+}
+
+function parseWrittenJson(written: string[]): unknown {
+  const [line] = written;
+  assert.ok(line);
+  return JSON.parse(line.slice(line.indexOf("{")));
+}
+
+function expectError(value: unknown): Error {
+  assert.ok(value instanceof Error);
+  return value;
+}
+
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
 
 // execFile rejects a non-zero kubectl exit with a numeric code and the
 // captured stderr; a spawn failure has a string code and no stderr.
-function kubectlFailure(stderr, code = 1) {
+function kubectlFailure(stderr: string, code = 1) {
   return Object.assign(new Error(`Command failed: kubectl\n${stderr}`), { code, stderr });
 }
 
@@ -69,16 +156,16 @@ const createRequestDropped =
 const secretExists = 'Error from server (AlreadyExists): secrets "transport-1" already exists\n';
 
 function recordingOptions() {
-  const sleeps = [];
-  const logs = [];
+  const sleeps: number[] = [];
+  const logs: string[] = [];
   return {
     sleeps,
     logs,
     options: {
-      sleep: async (ms) => {
+      sleep: async (ms: number) => {
         sleeps.push(ms);
       },
-      log: (message) => logs.push(message),
+      log: (message: string) => logs.push(message),
     },
   };
 }
@@ -166,7 +253,7 @@ test(
   { timeout: 5_000 },
   async () => {
     const { sleeps, logs, options } = recordingOptions();
-    const failures = [];
+    const failures: Array<ReturnType<typeof kubectlFailure>> = [];
     await assert.rejects(
       retryKubectlRead(async () => {
         const failure = kubectlFailure(execStreamDropped);
@@ -207,8 +294,8 @@ const retrySafeExitCode = 75;
 // stdout, exit code) and later ones with a completed turn, and the OpenShell fixture's Gateway
 // Pod turn run against it. Returns the turn's outcome and the kubectl calls.
 async function gatewayTurnWithFakeKubectl(
-  t,
-  atCapacity,
+  t: TestContext,
+  atCapacity: number,
   failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
 ) {
   const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
@@ -230,25 +317,35 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
     { mode: 0o755 },
   );
   const { sleeps, logs, options } = recordingOptions();
-  const fixture = createOpenShellKubernetesFixture({
+  const fixture: {
+    requestCodexTurnFromGatewayPod(input: {
+      namespace: string;
+      gatewayPod: string;
+      providerModel: string;
+      prompt: string;
+    }): Promise<unknown>;
+  } = createOpenShellKubernetesFixture({
     kubeconfigPath: join(directory, "kubeconfig"),
     kubernetesContext: "fake",
     modelAtCapacityRetry: options,
   });
-  const outcome = await withEnvironment({ PATH: commandPath(directory) }, () =>
-    fixture
-      .requestCodexTurnFromGatewayPod({
-        namespace: "oce-gateway",
-        gatewayPod: "gateway-0",
-        providerModel: "gpt-test",
-        prompt: "Reply with exactly OCC-TURN-OK.",
-      })
-      .then(
-        (turn) => ({ turn }),
-        (error) => ({ error }),
-      ),
+  const outcome: { turn?: unknown; error?: unknown } = await withEnvironment(
+    { PATH: commandPath(directory) },
+    () =>
+      fixture
+        .requestCodexTurnFromGatewayPod({
+          namespace: "oce-gateway",
+          gatewayPod: "gateway-0",
+          providerModel: "gpt-test",
+          prompt: "Reply with exactly OCC-TURN-OK.",
+        })
+        .then(
+          (turn: unknown) => ({ turn }),
+          (error: unknown) => ({ error }),
+        ),
   );
-  const kubectlCalls = await readJsonLines(calls);
+  const kubectlCalls: unknown = await readJsonLines(calls);
+  expectStringArrays(kubectlCalls);
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
 
@@ -259,6 +356,7 @@ test("a real-model turn with the client's retry receipt runs again and returns i
   assert.equal(kubectlCalls.length, 2);
   // The whole command, the turn's script included.
   assert.deepEqual(kubectlCalls[1], kubectlCalls[0], "the same turn runs again");
+  assert.ok(kubectlCalls[0]);
   assert.deepEqual(kubectlCalls[0].slice(4, 8), [
     "exec",
     "gateway-0",
@@ -276,6 +374,7 @@ test("a real-model turn at capacity on every attempt says so on its failure's fi
   assert.equal(turn, undefined);
   assert.equal(kubectlCalls.length, 3);
   assert.deepEqual(sleeps, [15_000, 30_000]);
+  expectExecFailure(error);
   const [firstLine, ...rest] = error.message.split("\n");
   assert.equal(
     firstLine,
@@ -300,6 +399,7 @@ test("a real-model turn at capacity without the client's retry receipt is not ru
   assert.equal(turn, undefined);
   assert.equal(kubectlCalls.length, 1);
   assert.deepEqual(sleeps, []);
+  expectExecFailure(error);
   assert.equal(
     error.message.split("\n")[0],
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).',
@@ -308,7 +408,7 @@ test("a real-model turn at capacity without the client's retry receipt is not ru
 });
 
 test("only the client's exact receipt retries a real-model turn", async () => {
-  const exitedWith = (line) =>
+  const exitedWith = (line: string) =>
     kubectlFailure(
       `Defaulted container "gateway" out of: gateway, prepare-private-state (init)\n${line}\ncommand terminated with exit code 1\n`,
     );
@@ -344,7 +444,7 @@ test("only the client's exact receipt retries a real-model turn", async () => {
     assert.equal(calls, 1, failure.message);
     assert.deepEqual([sleeps, logs], [[], []]);
   }
-  const outcome = (stdout, code, stderr = modelAtCapacityStderr) =>
+  const outcome = (stdout: string | undefined, code: number, stderr = modelAtCapacityStderr) =>
     modelAtCapacityOutcome(Object.assign(kubectlFailure(stderr, code), { stdout }));
   assert.equal(outcome(retrySafeReceipt, retrySafeExitCode), "retry");
   // Anything short of the exact receipt with its exit status is not permission.
@@ -364,9 +464,9 @@ test("only the client's exact receipt retries a real-model turn", async () => {
 
 // A stubbed kubectl for deleteNamespaceExplained: the delete times out, and each read answers
 // from `reads` by its first two arguments.
-function namespaceKubectl(reads) {
-  const calls = [];
-  const kubectl = async (...args) => {
+function namespaceKubectl(reads: Record<string, string | Error>) {
+  const calls: string[][] = [];
+  const kubectl = async (...args: string[]) => {
     calls.push(args);
     if (args[0] === "delete") {
       throw kubectlFailure("error: timed out waiting for the condition on namespaces/oce-held\n");
@@ -406,7 +506,7 @@ test("a Namespace delete that times out says what still holds the Namespace", as
   });
   const error = await deleteNamespaceExplained(kubectl, "oce-held").then(
     () => assert.fail("the delete resolved"),
-    (failure) => failure,
+    expectError,
   );
   // The delete's own failure comes first, unchanged; what remains follows it.
   assert.match(
@@ -435,11 +535,10 @@ test("a Namespace delete that times out says what still holds the Namespace", as
     assert.equal(call.at(-1), diagnosticRequestTimeout);
   }
   const listing = calls.find((call) => call[0] === "get" && call[1] !== "namespace");
-  assert.match(
-    listing.at(-2),
-    /^jsonpath=\{range \.items\[\*\]\}\{\.kind\}\/\{\.metadata\.name\} /,
-  );
-  assert.doesNotMatch(listing.at(-2), /\.data|\.spec|\.status/);
+  const template = listing?.at(-2);
+  assert.ok(template);
+  assert.match(template, /^jsonpath=\{range \.items\[\*\]\}\{\.kind\}\/\{\.metadata\.name\} /);
+  assert.doesNotMatch(template, /\.data|\.spec|\.status/);
 });
 
 test("a timed-out Namespace delete still fails when the Namespace is gone or the listing fails", async () => {
@@ -449,6 +548,7 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     ),
   });
   await assert.rejects(deleteNamespaceExplained(gone.kubectl, "oce-held"), (error) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /\nNamespace oce-held remains: none \(the Namespace is gone\)$/);
     return true;
   });
@@ -462,6 +562,7 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     ),
   });
   await assert.rejects(deleteNamespaceExplained(partial.kubectl, "oce-held"), (error) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /remains: phase Terminating, finalizers \[\]\n/);
     assert.match(
       error.message,
@@ -498,6 +599,7 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     "get pods": "",
   });
   await assert.rejects(deleteNamespaceExplained(discovery.kubectl, "oce-held"), (error) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /\n {2}condition NamespaceDeletionDiscoveryFailure=True /);
     assert.match(
       error.message,
@@ -506,10 +608,11 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     assert.doesNotMatch(error.message, /no objects left/);
     return true;
   });
-  assert.equal(discovery.calls.at(-1)[1], "pods");
+  assert.equal(discovery.calls.at(-1)?.[1], "pods");
 
   const unreadable = namespaceKubectl({ "get namespace": kubectlFailure("error: EOF\n") });
   await assert.rejects(deleteNamespaceExplained(unreadable.kubectl, "oce-held"), (error) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /^Command failed: kubectl\nerror: timed out waiting/);
     assert.match(
       error.message,
@@ -545,41 +648,42 @@ test("a Namespace listing past its deadline keeps the conditions it read", async
     "condition NamespaceFinalizersRemaining=True SomeFinalizersRemain: Some content in the namespace has finalizers remaining",
     "listing what remains timed out",
   ].join("\n  ");
-  const remains = (error) => error.message.slice(error.message.indexOf("\nNamespace oce-held"));
+  const remains = (error: unknown) => {
+    assert.ok(error instanceof Error);
+    return error.message.slice(error.message.indexOf("\nNamespace oce-held"));
+  };
   // The object listing never answers, as a get through a hung aggregated API.
-  function stalledAt(stall) {
+  function stalledAt(stall: string) {
     const reads = namespaceKubectl(held);
-    let reached;
-    const stalled = new Promise((resolve) => {
-      reached = resolve;
-    });
-    const kubectl = (...args) => {
+    const stalled = Promise.withResolvers<void>();
+    const kubectl = (...args: string[]) => {
       if (`${args[0]} ${args[1]}` === stall) {
-        reached();
-        return new Promise(() => {});
+        stalled.resolve();
+        return new Promise<string>(() => {});
       }
       return reads.kubectl(...args);
     };
-    return { kubectl, stalled };
+    return { kubectl, stalled: stalled.promise };
   }
 
   // The deadline's timer is held until released, so the default bound is read, not waited for.
   const listing = stalledAt("get pods");
-  const sleeps = [];
-  let release;
-  const sleep = (ms, value, { signal }) => {
+  const sleeps: number[] = [];
+  let release: (() => void) | undefined;
+  const sleep: DiagnosticSleep = (ms, value, { signal }) => {
     sleeps.push(ms);
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, reject: (reason?: unknown) => void) => {
       release = () => resolve(value);
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   };
   const failure = deleteNamespaceExplained(listing.kubectl, "oce-held", { sleep }).then(
     () => assert.fail("the delete resolved"),
-    (error) => error,
+    expectError,
   );
   await listing.stalled;
   assert.deepEqual(sleeps, [40_000]);
+  assert.ok(release);
   release();
   assert.equal(remains(await failure), expected);
 
@@ -632,31 +736,29 @@ if (command === "delete namespace") {
     { interpreter: process.execPath },
   );
   prependPath(t, directory);
-  const client = createKubernetesClient({
+  const client: { kubectl: Kubectl } = createKubernetesClient({
     selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
   });
-  let reached;
-  const listing = new Promise((resolve) => {
-    reached = resolve;
-  });
-  const kubectl = (...args) => {
+  const listing = Promise.withResolvers<void>();
+  const kubectl = (...args: string[]) => {
     if (args[0] === "get" && args[1] === "pods") {
-      reached();
+      listing.resolve();
     }
     return client.kubectl(...args);
   };
   // The deadline's timer is held until the stalled listing has started.
-  let release;
-  const sleep = (ms, value, { signal }) =>
-    new Promise((resolve, reject) => {
+  let release: (() => void) | undefined;
+  const sleep: DiagnosticSleep = (ms, value, { signal }) =>
+    new Promise((resolve, reject: (reason?: unknown) => void) => {
       release = () => resolve(value);
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   const failure = deleteNamespaceExplained(kubectl, "oce-held", { sleep }).then(
     () => assert.fail("the delete resolved"),
-    (error) => error,
+    expectError,
   );
-  await listing;
+  await listing.promise;
+  assert.ok(release);
   release();
   const error = await failure;
   assert.equal(
@@ -685,6 +787,7 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
     }),
   });
   await assert.rejects(deleteNamespaceExplained(kubectl, "oce-held"), (error) => {
+    assert.ok(error instanceof Error);
     assert.equal(
       error.message.slice(error.message.indexOf("\nNamespace oce-held")),
       [
@@ -700,9 +803,9 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
 });
 
 test("an allowed credential route failure captures a safe tail before cleanup", async () => {
-  const order = [];
-  const written = [];
-  const captured = Promise.withResolvers();
+  const order: string[] = [];
+  const written: string[] = [];
+  const captured = Promise.withResolvers<string>();
   const probe = { httpStatus: "000", connectStatus: "000", exitCode: 52 };
   const pending = assertAllowedCredentialRoute({
     probe,
@@ -721,7 +824,7 @@ test("an allowed credential route failure captures a safe tail before cleanup", 
   // Producer-shaped stock lines from the retained supervisor trace. Earlier events count too:
   // this inventory makes no clock or causal claim. Other destinations and arbitrary text do not.
   const prefix = "2026-11-07T10:02:40.494Z 2026-11-07T10:02:40.491Z OCSF ";
-  const close = (host) =>
+  const close = (host: string) =>
     `${prefix}NET:OPEN [MED] DENIED ${host}:443 [reason:L7 tunnel closed before inspection because policy changed: policy generation is stale [captured_generation:1 current_generation:2]]`;
   captured.resolve(
     [
@@ -733,6 +836,7 @@ test("an allowed credential route failure captures a safe tail before cleanup", 
     ].join("\n"),
   );
   await assert.rejects(pending, (error) => {
+    assert.ok(error instanceof AssertionError);
     assert.equal(error.code, "ERR_ASSERTION");
     assert.equal(error.actual, "000");
     assert.equal(error.expected, "200");
@@ -743,7 +847,7 @@ test("an allowed credential route failure captures a safe tail before cleanup", 
     return true;
   });
   assert.deepEqual(order, ["capture", "write", "cleanup"]);
-  assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+  assert.deepEqual(parseWrittenJson(written), {
     sourceType: "codex-pat",
     ...probe,
     uncorrelatedSupervisorTail: {
@@ -771,8 +875,8 @@ test("credential route diagnostics distinguish no match and unavailable without 
       { status: "unavailable" },
     ],
     [() => new Promise(() => {}), { status: "unavailable" }],
-  ]) {
-    const written = [];
+  ] as const) {
+    const written: string[] = [];
     await assert.rejects(
       assertAllowedCredentialRoute(
         {
@@ -786,7 +890,7 @@ test("credential route diagnostics distinguish no match and unavailable without 
       ),
       { code: "ERR_ASSERTION", actual: "000", expected: "200" },
     );
-    assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+    assert.deepEqual(parseWrittenJson(written), {
       sourceType: null,
       httpStatus: "000",
       connectStatus: null,
@@ -813,11 +917,11 @@ test("credential route diagnostics distinguish no match and unavailable without 
 });
 
 test("a failed outage recovery says why without replacing its failure", async () => {
-  const written = [];
-  const write = (text) => written.push(text);
+  const written: string[] = [];
+  const write = (text: string) => written.push(text);
   // The wait itself failed: the worker and Pod evidence join its message.
   const failure = new Error("deployment rev-1 to activate after the gateway outage timed out");
-  const described = [];
+  const described: unknown[] = [];
   const detail = await failedRecoveryDiagnostic({
     readWorker: async () => ({ events: [{ code: "RUNTIME_LOGIN_FAILED" }] }),
     describe: async (worker) => {
@@ -837,7 +941,7 @@ test("a failed outage recovery says why without replacing its failure", async ()
 
   // The deployment failed without a wait error: the detail is returned for the assertion, and a
   // worker read that throws still lets the Pods be described.
-  const unread = [];
+  const unread: unknown[] = [];
   assert.equal(
     await failedRecoveryDiagnostic({
       readWorker: () => {
@@ -865,7 +969,7 @@ test("a failed outage recovery says why without replacing its failure", async ()
     }),
     "\nRecovery diagnostic unavailable: TypeError",
   );
-  const stalledWorker = [];
+  const stalledWorker: unknown[] = [];
   await failedRecoveryDiagnostic(
     {
       readWorker: () => new Promise(() => {}),
@@ -944,7 +1048,7 @@ test(
       label: "probe teardown",
     });
     const { context } = teardown;
-    const ran = [];
+    const ran: string[] = [];
     context.after(() => ran.push("namespace delete"));
     context.after(() => {
       ran.push("role delete");
@@ -957,10 +1061,11 @@ test(
     });
     assert.equal(testContext.hooks.length, 1, "one node:test hook holds every cleanup");
     assert.equal(teardown.started, false);
-    await assert.rejects(testContext.hooks[0](), (error) => {
+    await assert.rejects(runRecordedHook(testContext), (error) => {
+      assert.ok(error instanceof Error);
       assert.match(
         error.message,
-        /^cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+: roles are gone$/,
+        /^cleanup registered at kubernetes-real-kubectl\.test\.ts:\d+: roles are gone$/,
       );
       return true;
     });
@@ -968,7 +1073,8 @@ test(
     assert.deepEqual(ran, ["worker stop", "late cleanup", "role delete", "namespace delete"]);
     assert.equal(logs.length, 5);
     assert.ok(logs.every((line) => /^probe teardown: cleanup registered at /.test(line)));
-    assert.match(logs[3], /kubernetes-real-kubectl\.test\.mjs:\d+ failed: roles are gone$/);
+    assert.ok(logs[3]);
+    assert.match(logs[3], /kubernetes-real-kubectl\.test\.ts:\d+ failed: roles are gone$/);
     assert.deepEqual(exits, [], "nothing was abandoned, so the process is left to exit itself");
     // Other members read through the teardown's context come from the test's own.
     assert.equal(context.name, "recorded test");
@@ -984,16 +1090,18 @@ test(
   async () => {
     const { testContext, teardown, logs, events: exits } = recordTeardown(shortTeardownOptions);
     const { context } = teardown;
-    const ran = [];
+    const ran: string[] = [];
     context.after(() => ran.push("namespace delete"));
     // Never settles, like a worker stop waiting on an operation that ignores its abort.
     context.after(() => new Promise(() => {}));
     context.after(() => ran.push("port-forward stop"));
-    await assert.rejects(testContext.hooks[0](), /: did not finish within 50 ms$/);
+    await assert.rejects(runRecordedHook(testContext), /: did not finish within 50 ms$/);
     assert.deepEqual(ran, ["port-forward stop", "namespace delete"]);
+    const lastLog = logs.at(-1);
+    assert.ok(lastLog);
     assert.match(
-      logs.at(-1),
-      /^teardown: exiting once the file's tests settle for 10 ms; abandoned cleanups registered at kubernetes-real-kubectl\.test\.mjs:\d+$/,
+      lastLog,
+      /^teardown: exiting once the file's tests settle for 10 ms; abandoned cleanups registered at kubernetes-real-kubectl\.test\.ts:\d+$/,
     );
     await waitUntil("the exit after the 10 ms grace", () => exits.length > 0, 2_000);
     assert.deepEqual(exits, ["exit"]);
@@ -1007,7 +1115,7 @@ const openShellHelperUrl = new URL("../helpers/openshell-kubernetes-real.mjs", i
   .href;
 const topologyHelperUrl = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url).href;
 
-function attemptedCleanupLines(stdout) {
+function attemptedCleanupLines(stdout: string) {
   return stdout.match(/^attempted .+$/gm);
 }
 
@@ -1092,10 +1200,10 @@ test("two helpers given one node:test context share its bounded teardown, newest
   const second = withBoundedTeardown(testContext, { label: "second helper" });
   assert.equal(second, first);
   assert.equal(testContext.hooks.length, 1);
-  const ran = [];
+  const ran: string[] = [];
   first.after(() => ran.push("namespace delete"));
   second.after(() => ran.push("worker stop"));
-  await testContext.hooks[0]();
+  await runRecordedHook(testContext);
   assert.deepEqual(ran, ["worker stop", "namespace delete"]);
   // A helper given the context its caller already bounded joins the caller's teardown too, and a
   // caller that bounds a context after a helper did gets the helper's.
@@ -1111,23 +1219,23 @@ test("two helpers given one node:test context share its bounded teardown, newest
 
 // A cleanup registered after its teardown ran also stops the setup that made it, by throwing to it.
 const stopsSetup =
-  /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
+  /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.ts:\d+ runs now and setup stops here$/;
 
 test(
   "a cleanup registered after the teardown ran runs at once, bounded, and fails the file",
   { timeout: 5_000 },
   async () => {
     // Finding 1722: such a cleanup was kept for a teardown that had already run, so it never ran.
-    const events = [];
+    const events: string[] = [];
     const { testContext, teardown, logs } = recordTeardown(
       { ...shortTeardownOptions, failFile: () => events.push("fail") },
       events,
     );
     const { context } = teardown;
-    const ran = [];
+    const ran: string[] = [];
     context.after(() => ran.push("early cleanup"));
-    await testContext.hooks[0]();
-    assert.deepEqual(events, [], "nothing was abandoned or late");
+    await runRecordedHook(testContext);
+    assert.deepEqual([...events], [], "nothing was abandoned or late");
     // Each late registration also stops the setup that made it, by throwing to it.
     assert.throws(() => context.after(() => ran.push("worker stop")), { message: stopsSetup });
     // A late cleanup that never settles is abandoned like any other.
@@ -1168,7 +1276,7 @@ test(
     );
     assert.ok(
       logs.some((line) =>
-        /^teardown: cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ failed: did not finish within 50 ms$/.test(
+        /^teardown: cleanup registered at kubernetes-real-kubectl\.test\.ts:\d+ failed: did not finish within 50 ms$/.test(
           line,
         ),
       ),
@@ -1186,18 +1294,18 @@ test(
       log: () => {},
       exit: () => {},
       failFile: () => {},
-      settled: (quietMs) => delay(quietMs),
+      settled: (quietMs: number) => delay(quietMs),
     };
     const first = new RecordingContext();
     const second = new RecordingContext();
     const { context: firstContext } = boundedTeardown(first, options);
     const { context: secondContext } = boundedTeardown(second, options);
-    await first.hooks[0]();
-    await second.hooks[0]();
-    const ran = [];
-    const firstHeld = Promise.withResolvers();
-    const firstRan = Promise.withResolvers();
-    const release = Promise.withResolvers();
+    await runRecordedHook(first);
+    await runRecordedHook(second);
+    const ran: string[] = [];
+    const firstHeld = Promise.withResolvers<void>();
+    const firstRan = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     assert.throws(
       () =>
         firstContext.after(async () => {
@@ -1227,8 +1335,11 @@ test(
 
 // Runs a script as its own node:test root, not as a child reporting to this runner, with a TAP
 // report, and returns how it ended.
-async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } = {}) {
-  const env = { ...process.env, ...overrides };
+async function runTestScript(
+  script: string,
+  { env: overrides = {}, timeout = 15_000 }: { env?: NodeJS.ProcessEnv; timeout?: number } = {},
+) {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   delete env.NODE_TEST_CONTEXT;
   const started = Date.now();
   const exited = await execute(
@@ -1237,12 +1348,15 @@ async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } =
     { env, timeout },
   ).then(
     ({ stdout, stderr }) => ({ code: 0, killed: false, stdout, stderr }),
-    (error) => error,
+    (error: unknown) => {
+      expectExecFailure(error);
+      return error;
+    },
   );
   return { ...exited, elapsedMs: Date.now() - started };
 }
 
-async function runFailingTestScript(script, options) {
+async function runFailingTestScript(script: string, options?: Parameters<typeof runTestScript>[1]) {
   const exited = await runTestScript(script, options);
   assert.equal(exited.killed, false, "the file exited on its own");
   assert.ok(exited.elapsedMs < 10_000, "the file exited promptly");
@@ -1501,7 +1615,12 @@ test(
       ],
       { env, timeout: 15_000 },
     );
-    const result = JSON.parse(/^result (.+)$/m.exec(stdout)[1]);
+    const resultLine = /^result (.+)$/m.exec(stdout)?.[1];
+    assert.ok(resultLine);
+    const result: unknown = JSON.parse(resultLine);
+    assert.ok(typeof result === "object" && result !== null);
+    assert.ok("failure" in result && typeof result.failure === "string");
+    assert.ok("hooks" in result);
     assert.match(result.failure, /Dedicated storage requires the imported controller image/);
     assert.equal(result.hooks, 1, "one bounded teardown hook, registered before the first check");
   },
@@ -1558,7 +1677,7 @@ test(
 // registers cleanups in the helper's order: the platform Namespace delete (which removes the
 // worker's ServiceAccount) first, the cluster roles next, and the worker stop last. The delete
 // fails, and the worker's poll keeps the file alive until its stop runs.
-const topologyStandIn = (exported) => `
+const topologyStandIn = (exported: string[]) => `
   import { appendFileSync } from "node:fs";
   const record = (line) => appendFileSync(process.env.TOPOLOGY_TEARDOWN_RECORD, line + "\\n");
   export async function arrangeProductionTopology(context) {
@@ -1604,6 +1723,7 @@ test(
     const helper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url);
     const exportList = /^export \{([^}]+)\};$/m.exec(await readFile(helper, "utf8"));
     assert.ok(exportList, "the topology helper ends with one export { ... } list");
+    assert.ok(exportList[1]);
     const exported = exportList[1]
       .split(",")
       .map((name) => name.trim())
@@ -1634,7 +1754,7 @@ test(
     const results = await Promise.all(
       Object.entries(files).map(async ([file, tests]) => {
         const record = join(directory, `${file}.log`);
-        const env = {
+        const env: NodeJS.ProcessEnv = {
           ...process.env,
           TOPOLOGY_TEARDOWN_RECORD: record,
           OCC_TEST_SLACK_CHANNEL_ID: "C0",
@@ -1654,7 +1774,10 @@ test(
           { env, timeout: 15_000 },
         ).then(
           () => ({ code: 0, stdout: "", stderr: "" }),
-          (error) => error,
+          (error: unknown) => {
+            expectExecFailure(error);
+            return error;
+          },
         );
         return { file, tests, exited, record: await readFile(record, "utf8").catch(() => "") };
       }),
@@ -1681,7 +1804,11 @@ test(
           `${file}: ${name}`,
         );
       }
-      assert.notEqual(exited.killed, true, `${file} exited on its own`);
+      assert.notEqual(
+        "killed" in exited ? exited.killed : undefined,
+        true,
+        `${file} exited on its own`,
+      );
       assert.equal(exited.code, 1, `${file} fails its stand-in topology`);
     }
   },
@@ -1697,24 +1824,29 @@ test(
     const started = join(directory, "started");
     await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
     prependPath(t, directory);
-    const { kubectl } = createKubernetesClient({
+    const { kubectl }: { kubectl: Kubectl } = createKubernetesClient({
       selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
     });
 
     const begun = Date.now();
-    let work;
-    const result = await withinDiagnosticDeadline(
-      (signal) =>
-        (work = (async () => {
-          const first = await kubectl("get", "pods").catch((error) => error);
+    const observation: {
+      work?: Promise<{ first: unknown; second: unknown; aborted: boolean; passed: boolean }>;
+    } = {};
+    const result: unknown = await withinDiagnosticDeadline(
+      (signal: AbortSignal) =>
+        (observation.work = (async () => {
+          const first: unknown = await kubectl("get", "pods").catch((error: unknown) => error);
           // A read the diagnostic starts after its deadline is refused without running kubectl.
-          const second = await kubectl("get", "pods").catch((error) => error);
+          const second: unknown = await kubectl("get", "pods").catch((error: unknown) => error);
           return { first, second, aborted: signal.aborted, passed: diagnosticDeadlinePassed() };
         })()),
       { timeoutMs: 500, timedOut: "\nDiagnostic timed out" },
     );
     assert.equal(result, "\nDiagnostic timed out");
-    const { first, second, aborted, passed } = await work;
+    assert.ok(observation.work);
+    const { first, second, aborted, passed } = await observation.work;
+    assert.ok(first instanceof Error);
+    assert.ok(second instanceof Error);
     // The stalled kubectl was killed at the deadline instead of running its 30 s.
     assert.equal(first.name, "AbortError");
     assert.equal(second.name, "AbortError");
@@ -1726,11 +1858,12 @@ test(
       .filter(Boolean);
     assert.ok(pids.length <= 1, `kubectl ran ${pids.length} times`);
     // The read rejects once the kill is sent; the process is gone soon after, not in 30 s.
-    const running = (pid) => {
+    const running = (pid: string) => {
       try {
         process.kill(Number(pid), 0);
         return true;
       } catch (error) {
+        assert.ok(error instanceof Error && "code" in error);
         assert.equal(error.code, "ESRCH");
         return false;
       }
@@ -1746,12 +1879,12 @@ test(
 );
 
 test("a nested failure diagnostic stops at the outer deadline", { timeout: 5_000 }, async () => {
-  let inner;
-  const result = await withinDiagnosticDeadline(
+  const observation: { inner?: AbortSignal } = {};
+  const result: unknown = await withinDiagnosticDeadline(
     () =>
       withinDiagnosticDeadline(
-        async (signal) => {
-          inner = signal;
+        async (signal: AbortSignal) => {
+          observation.inner = signal;
           await once(signal, "abort");
           return "inner stopped";
         },
@@ -1760,7 +1893,7 @@ test("a nested failure diagnostic stops at the outer deadline", { timeout: 5_000
     { timeoutMs: 50, timedOut: "outer timed out" },
   );
   assert.equal(result, "outer timed out");
-  assert.equal(inner.aborted, true);
+  assert.equal(observation.inner?.aborted, true);
 });
 
 test("a dropped kubectl create counts AlreadyExists on its retry as done", async () => {
@@ -1861,7 +1994,7 @@ test(
   { timeout: 5_000 },
   async () => {
     const { sleeps, options } = recordingOptions();
-    const failures = [];
+    const failures: Array<ReturnType<typeof kubectlFailure>> = [];
     await assert.rejects(
       retryKubectlWrite(async () => {
         const failure = kubectlFailure(createRequestDropped);
@@ -1877,11 +2010,12 @@ test(
 
 // Stands in for `kubectl exec <pod> -- node <script> ...`: kubectl reports a
 // remote command's non-zero exit on stderr and exits with the same code.
-async function fakeKubectlExec(script, ...args) {
+async function fakeKubectlExec(script: string, ...args: string[]) {
   try {
     const { stdout } = await execute(process.execPath, [script, ...args], { timeout: 10_000 });
     return stdout;
   } catch (error) {
+    expectExecFailure(error);
     if (typeof error.code === "number") {
       error.stderr = `${error.stderr}command terminated with exit code ${error.code}\n`;
     }
@@ -1891,9 +2025,10 @@ async function fakeKubectlExec(script, ...args) {
 
 // A loopback port that refuses connections until the test ends. A released port could be
 // taken by a test running in parallel, and the probe would then connect.
-async function refusingLoopbackPort(t) {
-  const refusing = await refusingPort();
+async function refusingLoopbackPort(t: TestContext) {
+  const refusing: { port: number | undefined; release: () => Promise<void> } = await refusingPort();
   t.after(() => refusing.release());
+  assert.ok(typeof refusing.port === "number");
   return refusing.port;
 }
 
@@ -1901,7 +2036,7 @@ const quiet = { sleep: async () => {}, log: () => {} };
 
 test("the probe's own refused connection passes a deny check", async (t) => {
   const port = await refusingLoopbackPort(t);
-  const denial = await assertProbeDenied(
+  const denial: unknown = await assertProbeDenied(
     "refused loopback traffic",
     () => fakeKubectlExec(probeScript, "tcp", "127.0.0.1", String(port)),
     quiet,
@@ -1911,14 +2046,18 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  await listen(context, server);
+  const port: unknown = await listen(context, server);
+  assert.equal(typeof port, "number");
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",
-      () => fakeKubectlExec(probeScript, "tcp", "127.0.0.1", String(server.address().port)),
+      () => fakeKubectlExec(probeScript, "tcp", "127.0.0.1", String(port)),
       quiet,
     ),
-    (error) => error.code === "ERR_ASSERTION" && /unexpectedly succeeded/.test(error.message),
+    (error) =>
+      error instanceof AssertionError &&
+      error.code === "ERR_ASSERTION" &&
+      /unexpectedly succeeded/.test(error.message),
   );
 });
 
@@ -1933,10 +2072,13 @@ test("a deny check fails when the probe never reports a denial", async () => {
     // A name that cannot resolve fails before any connection attempt.
     ["DNS failure", () => fakeKubectlExec(probeScript, "tcp", "probe.invalid", "80")],
     ["unsupported operation", () => fakeKubectlExec(probeScript, "udp", "127.0.0.1", "1")],
-  ]) {
+  ] satisfies Array<[string, () => Promise<string>]>) {
     await assert.rejects(
       assertProbeDenied(reason, run, quiet),
-      (error) => error.code !== "ERR_ASSERTION" && /did not report a denial/.test(error.message),
+      (error) =>
+        error instanceof Error &&
+        (!("code" in error) || error.code !== "ERR_ASSERTION") &&
+        /did not report a denial/.test(error.message),
       reason,
     );
   }
@@ -1945,7 +2087,7 @@ test("a deny check fails when the probe never reports a denial", async () => {
 test("a deny check retries a dropped exec stream and accepts the probe's denial", async (t) => {
   const port = await refusingLoopbackPort(t);
   let calls = 0;
-  const denial = await assertProbeDenied(
+  const denial: unknown = await assertProbeDenied(
     "refused loopback traffic after a dropped stream",
     async () => {
       calls += 1;
@@ -1957,6 +2099,7 @@ test("a deny check retries a dropped exec stream and accepts the probe's denial"
     quiet,
   );
   assert.equal(calls, 2);
+  assert.ok(typeof denial === "object" && denial !== null && "code" in denial);
   assert.equal(denial.code, "ECONNREFUSED");
 });
 
@@ -1982,16 +2125,18 @@ test("only the probe's denial exit code with its stdout report is a denial", () 
 
 // The Gateway container does not mount the probe fixture, so the Gateway
 // connect check (finding 335) runs probe.mjs from its source text.
-async function fakeKubectlExecInline(source, ...probeArguments) {
-  const [node, ...args] = inlineProbeCommand(source, ...probeArguments);
+async function fakeKubectlExecInline(source: string, ...probeArguments: Array<string | number>) {
+  const [node, script, ...args]: unknown[] = inlineProbeCommand(source, ...probeArguments);
   assert.equal(node, "node");
-  return fakeKubectlExec(...args);
+  assert.ok(typeof script === "string");
+  assert.ok(args.every((argument): argument is string => typeof argument === "string"));
+  return fakeKubectlExec(script, ...args);
 }
 
 test("the inline probe's refused connection passes a deny check", async (t) => {
   const source = await readFile(probeScript, "utf8");
   const port = await refusingLoopbackPort(t);
-  const denial = await assertProbeDenied(
+  const denial: unknown = await assertProbeDenied(
     "refused inline loopback traffic",
     () => fakeKubectlExecInline(source, "tcp", "127.0.0.1", port),
     quiet,
@@ -2021,10 +2166,13 @@ test("an inline deny check fails unless the probe reports a denial", async (t) =
       "a script that exits 1 on any error",
       () => fakeKubectlExec("-e", exitOnAnyError, "127.0.0.1", String(port)),
     ],
-  ]) {
+  ] satisfies Array<[string, () => Promise<string>]>) {
     await assert.rejects(
       assertProbeDenied(reason, run, quiet),
-      (error) => error.code !== "ERR_ASSERTION" && /did not report a denial/.test(error.message),
+      (error) =>
+        error instanceof Error &&
+        (!("code" in error) || error.code !== "ERR_ASSERTION") &&
+        /did not report a denial/.test(error.message),
       reason,
     );
   }
