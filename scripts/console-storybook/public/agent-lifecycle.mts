@@ -659,7 +659,9 @@ export function createAgentLifecycle(
           configurationId: item.configurationId,
           configurationGeneration: item.configurationGeneration,
           harness:
-            scenario.unrecordedHarnessRevision === item.revision && item.harness
+            item.agentId === seedAgentId &&
+            scenario.unrecordedHarnessRevision === item.revision &&
+            item.harness
               ? { id: item.harness.id, version: item.harness.version, mode: item.harness.mode }
               : item.harness,
           createdAt: item.createdAt,
@@ -677,7 +679,10 @@ export function createAgentLifecycle(
       if (!revision || revision.agentId !== id) {
         return error(404, "NOT_FOUND", "The requested platform resource was not found.");
       }
-      if (scenario.unrecordedHarnessRevision === revision.revision) {
+      if (
+        revision.agentId === seedAgentId &&
+        scenario.unrecordedHarnessRevision === revision.revision
+      ) {
         return response({
           id: revision.id,
           namespaceId: revision.namespaceId,
