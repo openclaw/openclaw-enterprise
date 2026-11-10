@@ -215,7 +215,7 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 	assets := &openShellDevelopmentAssets{workspaceResources: []any{map[string]any{
 		"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "openshell-sandbox"},
 	}}}
-	if err := writeInstallation(state, "runtime@"+profileTestDigest, assets, "", "", "10.42.0.1/32"); err != nil {
+	if err := writeInstallation(state, "runtime@"+profileTestDigest, assets, "10.43.0.99", "", "10.42.0.1/32"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
@@ -296,9 +296,19 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 	if !reflect.DeepEqual(callback[0].Spec.Egress[0].Ports, []map[string]any{{"protocol": "TCP", "port": 8443}}) {
 		t.Fatalf("unexpected callback egress ports: %#v", callback[0].Spec.Egress[0].Ports)
 	}
-	// The ClusterIP bridge is only for the owned in-cluster gateway.
-	if len(installation.Drivers.Compute.Configuration.Network.ProviderHarness) != 0 {
-		t.Fatalf("an external gateway must not configure the provider Harness bridge: %#v", installation.Drivers.Compute.Configuration.Network.ProviderHarness)
+	// The external bridge Service gives the compute driver its providerHarness
+	// route: the selectorless Service's ClusterIP and the external port.
+	harness := installation.Drivers.Compute.Configuration.Network.ProviderHarness
+	if !reflect.DeepEqual(harness, map[string]any{
+		"namespace": "oce-system",
+		"podLabels": map[string]any{
+			"app.kubernetes.io/name":     "openshell",
+			"app.kubernetes.io/instance": "openshell-external-bridge",
+		},
+		"address": "10.43.0.99",
+		"port":    8443,
+	}) {
+		t.Fatalf("unexpected external providerHarness: %#v", harness)
 	}
 }
 

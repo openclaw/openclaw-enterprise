@@ -220,6 +220,25 @@ None.
   provide — a design decision (launcher bridge Service or direct routing in
   the compute driver) is open. Evidence: `proof/pr-4024/` (not committed).
 
+- 2026-11-10 (maintainer decision: no RFC, recorded waiver):
+  - **Waiver for the `oidcClientCredentials` auth variant on the closed
+    `openshell` Backend contract.** The variant extends the existing contract
+    with a third auth mode alongside `unauthenticated`, `bearerTokenFile`, and
+    `mtls`; it changes no existing mode and is opt-in. The contract's shape,
+    validation, and TLS/`insecureTransport` fencing are unchanged. The user
+    decided no RFC is needed.
+  - **Trust relationship:** an external IdP issues the credential that
+    authorizes the control plane to the gateway. This is the same trust
+    direction as `bearerTokenFile` (the operator provisions a credential OCC
+    presents to the gateway); the difference is the credential's lifetime and
+    refresh are managed by the IdP's token endpoint rather than a static file.
+    The control plane never holds the IdP's signing keys and cannot mint
+    tokens for other audiences. The Backend parser restricts the token URL to
+    `https` (or cleartext loopback), preventing credential exfiltration to an
+    unencrypted endpoint. NetworkPolicy admission for the token endpoint is
+    part of this PR's launcher changes; production installations must admit
+    the issuer in their own egress configuration.
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]

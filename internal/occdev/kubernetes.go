@@ -453,7 +453,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		if openShell == nil {
 			return fmt.Errorf("OpenShell development assets are required")
 		}
-		if s.openShellExternal == nil && openShellGatewayAddress == "" {
+		if openShellGatewayAddress == "" {
 			return fmt.Errorf("OpenShell Gateway address is required")
 		}
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
@@ -462,19 +462,26 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		if s.DeploymentMode == "k3d" {
 			gatewayNamespace = s.PlatformNamespace
 		}
-		// The ClusterIP bridge maps the owned k3d profile's *.openshell.localhost
-		// advertisements to the in-cluster gateway. An external gateway advertises its
-		// own real URLs, so ordinary Service or private routing applies instead.
-		if s.openShellExternal == nil {
-			compute["network"].(map[string]any)["providerHarness"] = map[string]any{
-				"namespace": gatewayNamespace,
-				"podLabels": map[string]string{
-					"app.kubernetes.io/name":     "openshell",
-					"app.kubernetes.io/instance": openShellGatewayService,
-				},
-				"address": openShellGatewayAddress,
-				"port":    8080,
+		// The compute driver requires an in-cluster providerHarness route for
+		// SandboxDriver harness endpoints: the gateway Service ClusterIP for the
+		// owned profiles, or a selectorless bridge Service for an external gateway.
+		harnessPort := 8080
+		harnessLabels := map[string]string{
+			"app.kubernetes.io/name":     "openshell",
+			"app.kubernetes.io/instance": openShellGatewayService,
+		}
+		if s.openShellExternal != nil {
+			harnessPort = s.openShellExternal.port
+			harnessLabels = map[string]string{
+				"app.kubernetes.io/name":     "openshell",
+				"app.kubernetes.io/instance": "openshell-external-bridge",
 			}
+		}
+		compute["network"].(map[string]any)["providerHarness"] = map[string]any{
+			"namespace": gatewayNamespace,
+			"podLabels": harnessLabels,
+			"address":   openShellGatewayAddress,
+			"port":      harnessPort,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{

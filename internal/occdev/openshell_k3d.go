@@ -466,6 +466,55 @@ type developmentPlatformInputs struct {
 	codexSeccompProfile, routingPodCIDR          string
 }
 
+// installExternalOpenShellBridge creates a selectorless Service whose Endpoints
+// forward to the external gateway's resolved addresses, giving the compute
+// driver's providerHarness an in-cluster route to the external harness
+// endpoints. Returns the Service's ClusterIP.
+func (r *runner) installExternalOpenShellBridge(ctx context.Context, state *developmentState) (string, error) {
+	bridge := "openshell-external-bridge"
+	labels := map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"}
+	addresses := make([]any, 0, len(state.openShellExternal.addresses))
+	for _, cidr := range state.openShellExternal.addresses {
+		addresses = append(addresses, map[string]any{"ip": strings.Split(cidr, "/")[0]})
+	}
+	service := map[string]any{
+		"apiVersion": "v1", "kind": "Service",
+		"metadata": kubernetesMetadata(bridge, state.PlatformNamespace, labels),
+		"spec": map[string]any{
+			"type": "ClusterIP",
+			"ports": []any{map[string]any{
+				"port":       state.openShellExternal.port,
+				"targetPort": state.openShellExternal.port,
+				"protocol":   "TCP",
+			}},
+		},
+	}
+	if err := r.writeAndApply(ctx, state, "openshell-external-bridge-service", service); err != nil {
+		return "", err
+	}
+	endpoints := map[string]any{
+		"apiVersion": "v1", "kind": "Endpoints",
+		"metadata": kubernetesMetadata(bridge, state.PlatformNamespace, labels),
+		"subsets": []any{map[string]any{
+			"addresses": addresses,
+			"ports":     []any{map[string]any{"port": state.openShellExternal.port, "protocol": "TCP"}},
+		}},
+	}
+	if err := r.writeAndApply(ctx, state, "openshell-external-bridge-endpoints", endpoints); err != nil {
+		return "", err
+	}
+	data, err := r.output(ctx, "kubectl", "get", "service", bridge, "--namespace", state.PlatformNamespace, "-o", "jsonpath={.spec.clusterIP}")
+	if err != nil {
+		return "", err
+	}
+	address := strings.TrimSpace(string(data))
+	if address == "" {
+		return "", fmt.Errorf("the external OpenShell bridge Service has no ClusterIP")
+	}
+	fmt.Fprintf(r.opts.Out, "External OpenShell bridge Service at %s...\n", address)
+	return address, nil
+}
+
 func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
 		return startupError("platform-namespace", err)
@@ -488,6 +537,15 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	openShellGatewayAddress := ""
 	if state.SandboxDriver == "openshell" && state.openShellExternal == nil {
 		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, state.PlatformNamespace)
+		if err != nil {
+			return err
+		}
+	}
+	if state.SandboxDriver == "openshell" && state.openShellExternal != nil {
+		// The compute driver requires an in-cluster providerHarness route for
+		// SandboxDriver harness endpoints; a selectorless bridge Service gives
+		// the external gateway one.
+		openShellGatewayAddress, err = r.installExternalOpenShellBridge(ctx, state)
 		if err != nil {
 			return err
 		}
