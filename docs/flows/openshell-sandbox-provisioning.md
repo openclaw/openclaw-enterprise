@@ -205,7 +205,7 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
+`sandboxDataMount` and `sandboxExtraMounts` validate mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
 mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and

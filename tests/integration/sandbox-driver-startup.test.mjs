@@ -4766,6 +4766,184 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   await loadInstallationFile(t, accepted);
 });
 
+const matterMounts = () => [
+  { subPath: "matter/originals", mountPath: "/sandbox/matter/originals", readOnly: true },
+  { subPath: "matter/record", mountPath: "/sandbox/matter/record", readOnly: false },
+];
+
+// Landlock grants accumulate beneath the writable data mount, so a read-only extra mount must
+// sit outside it and outside the runtime mounts, where kubelet enforces readOnly.
+test("startup refuses OpenShell extra mounts that overlap or leave /sandbox", async (t) => {
+  const refused = invalidValue("", "Configuration violates the Driver's constraints.");
+  const extra = (fields) => (c) =>
+    (sandboxOf(c).kubernetes.sandboxExtraMounts = [{ ...matterMounts()[0], ...fields }]);
+  for (const change of [
+    extra({ subPath: "." }),
+    extra({ subPath: "/matter/originals" }),
+    extra({ subPath: "matter/../workspace" }),
+    extra({ subPath: "matter//originals" }),
+    extra({ subPath: "workspace" }),
+    extra({ subPath: "workspace/originals" }),
+    extra({ subPath: "openshell-runtime-0123456789abcdef" }),
+    extra({ mountPath: "/data/originals" }),
+    extra({ mountPath: "/sandbox/matter/../enterprise" }),
+    extra({ mountPath: "/sandbox/enterprise" }),
+    extra({ mountPath: "/sandbox/enterprise/originals" }),
+    extra({ mountPath: "/sandbox/.openclaw-runtime/originals" }),
+    extra({ mountPath: "/sandbox/.openclaw-mounts" }),
+    extra({ readOnly: undefined }),
+    (c) =>
+      (sandboxOf(c).kubernetes.sandboxExtraMounts = [
+        matterMounts()[0],
+        { subPath: "matter/originals/sub", mountPath: "/sandbox/other", readOnly: true },
+      ]),
+    (c) =>
+      (sandboxOf(c).kubernetes.sandboxExtraMounts = [
+        matterMounts()[0],
+        { subPath: "matter/derived", mountPath: "/sandbox/matter", readOnly: true },
+      ]),
+  ]) {
+    await rejectsAtStartup(t, change, refused);
+  }
+  await rejectsAtStartup(
+    t,
+    extra({ readonly: true }),
+    structuralRefusal("/kubernetes/sandboxExtraMounts/0", "additionalProperties", "UNKNOWN_FIELD"),
+  );
+  await rejectsAtStartup(
+    t,
+    extra({ readOnly: "true" }),
+    structuralRefusal("/kubernetes/sandboxExtraMounts/0/readOnly", "type", "INVALID_TYPE"),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).kubernetes.sandboxExtraMounts = matterMounts()[0]),
+    structuralRefusal("/kubernetes/sandboxExtraMounts", "type", "INVALID_TYPE"),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.sandboxExtraMounts = matterMounts();
+      sandboxOf(c).policy.filesystem = { readWrite: ["/tmp", "/sandbox/matter/originals"] };
+    },
+    invalidValue(
+      "/policy/filesystem/readWrite/1",
+      "Sandbox extra mount 0 is read-only; remove it from readWrite.",
+    ),
+  );
+  // Control: sibling mounts outside the data mount load, and a writable one may be listed.
+  const accepted = sandboxInstallation();
+  sandboxOf(accepted).kubernetes.sandboxExtraMounts = matterMounts();
+  sandboxOf(accepted).policy.filesystem = { readWrite: ["/tmp", "/sandbox/matter/record"] };
+  await loadInstallationFile(t, accepted);
+});
+
+test("OpenShell prepares and mounts extra PVC subpaths with their own access", async (t) => {
+  const gateway = workspaceGatewayClient();
+  const requests = [];
+  gateway.createSandbox = async (request) => {
+    requests.push(request);
+    return { name: request.name, serviceUrls: {} };
+  };
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  const extraMounts = [
+    ...matterMounts(),
+    {
+      subPath: "matter/determinations",
+      mountPath: "/sandbox/matter/determinations",
+      readOnly: true,
+    },
+  ];
+  configuration.kubernetes.sandboxExtraMounts = extraMounts;
+  const driver = openShellDriver(gateway, configuration);
+  const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  await driver.provisionHarness({ ...context, revision, requirements });
+
+  const [{ spec }] = requests;
+  const kubernetesDriver = spec.template.driver_config.fields.kubernetes.structValue.fields;
+  const mounts =
+    kubernetesDriver.containers.structValue.fields.agent.structValue.fields.volume_mounts.listValue.values.map(
+      ({ structValue: { fields } }) => ({
+        name: fields.name.stringValue,
+        mount_path: fields.mount_path.stringValue,
+        sub_path: fields.sub_path.stringValue,
+        read_only: fields.read_only.boolValue,
+      }),
+    );
+  const data = mounts.find(({ mount_path }) => mount_path === "/sandbox/enterprise");
+  for (const { subPath, mountPath, readOnly } of extraMounts) {
+    assert.deepEqual(
+      mounts.find(({ mount_path }) => mount_path === mountPath),
+      { name: data.name, mount_path: mountPath, sub_path: subPath, read_only: readOnly },
+    );
+  }
+  assert.ok(spec.policy.filesystem.read_only.includes("/sandbox/matter/originals"));
+  assert.ok(spec.policy.filesystem.read_only.includes("/sandbox/matter/determinations"));
+  assert.equal(spec.policy.filesystem.read_write.includes("/sandbox/matter/originals"), false);
+  assert.ok(spec.policy.filesystem.read_write.includes("/sandbox/matter/record"));
+  assert.ok(spec.policy.filesystem.read_write.includes("/sandbox/enterprise"));
+
+  // Run the captured preparer: missing subpaths exist for the Sandbox UID before launch, and
+  // a read-only directory another writer already placed keeps its mode.
+  const container = prepared[0].spec.template.spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-extra-mounts-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  const claim = join(directory, "workspace-preparation", data.name);
+  await mkdir(join(claim, "matter", "originals"), { recursive: true });
+  await chmod(join(claim, "matter", "originals"), 0o750);
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  const child = spawn(process.execPath, ["-e", program], {
+    cwd: directory,
+    env: { PATH: dirname(process.execPath) },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let errors = "";
+  child.stderr.on("data", (chunk) => (errors += chunk));
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  t.after(async () => {
+    child.kill("SIGKILL");
+    await exited;
+  });
+  const marker = join(directory, "preparation-status", "ready");
+  while ((await stat(marker).catch(() => undefined)) === undefined) {
+    assert.equal(child.exitCode, null, errors);
+    await delay(20);
+  }
+  for (const subPath of ["matter/determinations", "matter/record"]) {
+    const created = await stat(join(claim, subPath));
+    assert.ok(created.isDirectory(), subPath);
+    assert.equal(created.uid, process.getuid(), subPath);
+  }
+  assert.equal((await stat(join(claim, "matter", "originals"))).mode & 0o777, 0o750);
+});
+
+test("OpenShell refuses extra mounts over approved Harness workspace mounts before Kubernetes calls", async () => {
+  for (const extra of [
+    { subPath: "workspace-node-codex", mountPath: "/sandbox/node", readOnly: true },
+    { subPath: "workspace-node-codex/keys", mountPath: "/sandbox/node", readOnly: true },
+  ]) {
+    const gateway = workspaceGatewayClient();
+    gateway.createSandbox = async () => assert.fail("an overlapping mount must prevent launch");
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.kubernetes.sandboxExtraMounts = [extra];
+    const driver = openShellDriver(gateway, configuration);
+    const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
+      harnessId: "openclaw",
+    });
+    await assert.rejects(
+      driver.provisionHarness({ ...context, revision, requirements }),
+      /must not overlap an approved Harness workspace mount/,
+    );
+    assert.deepEqual(prepared, []);
+  }
+});
+
 // A non-object ingress rule cannot be mapped for the client; startup names the field instead of
 // the apply failing later.
 test("startup refuses NetworkPolicy ingress rules that are not objects", async (t) => {

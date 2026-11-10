@@ -189,6 +189,12 @@ export interface OpenShellNetworkBinary {
   readonly path: string;
 }
 
+interface OpenShellSandboxExtraMount {
+  readonly subPath: string;
+  readonly mountPath: string;
+  readonly readOnly: boolean;
+}
+
 export interface OpenShellSandboxDriverOptions {
   readonly egress?: OpenShellProxyOptions;
   /** Workspace and readiness policy; the `openshell` Backend owns the gateway connection. */
@@ -215,6 +221,8 @@ export interface OpenShellSandboxDriverOptions {
       readonly mountPath: string;
       readonly readOnly: boolean;
     };
+    /** More subpaths of the data mount's PVC, mounted outside it with their own access. */
+    readonly sandboxExtraMounts?: readonly OpenShellSandboxExtraMount[];
     readonly agentResources?: ConfigurationRecord;
     readonly userNamespaces?: boolean;
   };
@@ -580,6 +588,74 @@ function validateSandboxDataMount(mount: {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell sandboxDataMount readOnly must be explicit.",
     );
+  }
+}
+
+function pathsNest(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function exactPathSegments(path: string): boolean {
+  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function validateSandboxExtraMounts(
+  dataMount: { readonly subPath: string; readonly mountPath: string },
+  mounts: readonly OpenShellSandboxExtraMount[] | undefined,
+): void {
+  if (mounts === undefined) {
+    return;
+  }
+  if (!Array.isArray(mounts)) {
+    throw new OpenShellSandboxConfigurationFailure("OpenShell sandboxExtraMounts must be a list.");
+  }
+  const seen: OpenShellSandboxExtraMount[] = [];
+  for (const mount of mounts) {
+    configurationObject(mount, "OpenShell sandbox extra mount");
+    const subPath = nonempty(mount.subPath, "OpenShell sandboxExtraMounts subPath");
+    // The runtime root uses an openshell-runtime-<revision> subpath of the same PVC.
+    if (!exactPathSegments(subPath) || subPath.startsWith("openshell-runtime-")) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxExtraMounts must use exact PVC subpaths.",
+      );
+    }
+    const mountPath = nonempty(mount.mountPath, "OpenShell sandboxExtraMounts mountPath");
+    if (!mountPath.startsWith("/sandbox/") || !exactPathSegments(mountPath.slice(1))) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxExtraMounts must mount exact paths under /sandbox.",
+      );
+    }
+    // Landlock grants accumulate down a tree, so a read-only mount inside the writable data
+    // mount would stay writable to the policy; kubelet readOnly needs a separate path.
+    if (
+      [dataMount.mountPath, OPENSHELL_RUNTIME_ROOT, OPENSHELL_WORKSPACE_MOUNTS].some((reserved) =>
+        pathsNest(mountPath, reserved),
+      )
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell sandboxExtraMounts mountPath ${mountPath} must not overlap the data or runtime mounts.`,
+      );
+    }
+    if (pathsNest(subPath, dataMount.subPath)) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell sandboxExtraMounts subPath ${subPath} must not overlap the data mount subPath.`,
+      );
+    }
+    if (typeof mount.readOnly !== "boolean") {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxExtraMounts readOnly must be explicit.",
+      );
+    }
+    if (
+      seen.some(
+        (other) => pathsNest(subPath, other.subPath) || pathsNest(mountPath, other.mountPath),
+      )
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxExtraMounts must not overlap each other.",
+      );
+    }
+    seen.push(mount);
   }
 }
 
@@ -1434,6 +1510,7 @@ function workspaceVolumeMounts(
   requirements: HarnessWorkloadRequirements,
   dataMount: { readonly name: string; readonly mount_path: string; readonly sub_path: string },
   revisionId: string,
+  extraMounts: readonly OpenShellSandboxExtraMount[] = [],
 ) {
   const volumes = new Map<string, { readonly claimName: string; readOnly: boolean }>();
   const links: OpenShellWorkspaceLink[] = [];
@@ -1480,6 +1557,35 @@ function workspaceVolumeMounts(
       read_only: mount.readOnly,
     };
   });
+  validateSandboxExtraMounts(
+    { subPath: dataMount.sub_path, mountPath: dataMount.mount_path },
+    extraMounts,
+  );
+  for (const extra of extraMounts) {
+    if (
+      requirements.workspaceMounts.some(
+        (mount) =>
+          workspaceVolumeName(mount.claimName) === dataMount.name &&
+          pathsNest(mount.subPath, extra.subPath),
+      ) ||
+      mounts.some((mount) => pathsNest(mount.mount_path, extra.mountPath))
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell sandboxExtraMounts ${extra.subPath} must not overlap an approved Harness workspace mount.`,
+      );
+    }
+    if (!extra.readOnly && volumes.get(dataMount.name)?.readOnly !== false) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell sandboxExtraMounts must not weaken an approved read-only workspace PVC.",
+      );
+    }
+    mounts.push({
+      name: dataMount.name,
+      mount_path: extra.mountPath,
+      sub_path: extra.subPath,
+      read_only: extra.readOnly,
+    });
+  }
   mounts.unshift({
     name: dataMount.name,
     mount_path: OPENSHELL_RUNTIME_ROOT,
@@ -1653,18 +1759,33 @@ async function prepareNativeWorkspace(
     );
   }
   const data = sandboxDataMount(options, context.requirements);
-  const workspace = workspaceVolumeMounts(context.requirements, data, context.revision.id);
+  const extraMounts = options.kubernetes.sandboxExtraMounts ?? [];
+  const workspace = workspaceVolumeMounts(
+    context.requirements,
+    data,
+    context.revision.id,
+    extraMounts,
+  );
+  const readOnlyExtras = extraMounts.filter((mount) => mount.readOnly);
   const claims = [
-    ...new Set(workspace.mounts.filter((mount) => !mount.read_only).map((mount) => mount.name)),
+    ...new Set([
+      ...workspace.mounts.filter((mount) => !mount.read_only).map((mount) => mount.name),
+      ...(readOnlyExtras.length === 0 ? [] : [data.name]),
+    ]),
   ];
   const paths = workspace.mounts
     .filter((mount) => !mount.read_only)
     .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
+  // Read-only extra mounts hold content another writer provides, so preparation only creates
+  // a missing directory for the Sandbox UID and leaves an existing one untouched.
+  const readOnlyPaths = readOnlyExtras.map(
+    (mount) => `/workspace-preparation/${data.name}/${mount.subPath}`,
+  );
   const name = `${sandbox.resourceName}-workspace`;
   const labels = workspacePreparationLabels(context.revision);
   const program = `{
     const fs = require("node:fs");
-    for (const path of ${JSON.stringify(paths)}) {
+    for (const path of ${JSON.stringify([...paths, ...readOnlyPaths])}) {
       let current = "";
       for (const component of path.split("/").filter(Boolean)) {
         current += "/" + component;
@@ -1676,6 +1797,12 @@ async function prepareNativeWorkspace(
   ${harnessWorkspacePreparationScript(paths)}
   {
     const fs = require("node:fs");
+    for (const path of ${JSON.stringify(readOnlyPaths)}) {
+      fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+      if (!fs.lstatSync(path).isDirectory()) {
+        throw new Error("Preparation refuses a non-directory read-only mount.");
+      }
+    }
     for (const path of ${JSON.stringify(paths)}) {
       const stat = fs.lstatSync(path);
       const saved = require("node:path").join(require("node:path").dirname(path),
@@ -1958,6 +2085,18 @@ function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
       message: "The Sandbox data mount is read-only; remove it from readWrite.",
     });
   }
+  const extraMounts = options.kubernetes.sandboxExtraMounts;
+  (Array.isArray(extraMounts) ? extraMounts : []).forEach((mount, index) => {
+    const writable =
+      mount?.readOnly === true ? filesystem?.readWrite?.indexOf(mount.mountPath) : -1;
+    if (writable !== undefined && writable !== -1) {
+      details.push({
+        path: `/policy/filesystem/readWrite/${writable}`,
+        code: "INVALID_VALUE",
+        message: `Sandbox extra mount ${index} is read-only; remove it from readWrite.`,
+      });
+    }
+  });
   // The API server refuses the Sandbox Pod otherwise, after a deploy stopped its predecessors.
   // Startup reports problems under each map's own path, so messages name the resource.
   const agentResources = {
@@ -2201,7 +2340,12 @@ function sandboxSpec(
     assertNoManagedMcpRouteOverlap(additions, install);
   }
   const dataMount = sandboxDataMount(options, requirements);
-  const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
+  const workspace = workspaceVolumeMounts(
+    requirements,
+    dataMount,
+    revision.id,
+    options.kubernetes.sandboxExtraMounts,
+  );
   const volumeMounts = workspace.mounts;
   const podConfig: Record<string, unknown> = {
     runtime_class_name: options.kubernetes.runtimeClassName,
@@ -2388,6 +2532,10 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
   }
   configurationObject(options.kubernetes.sandboxDataMount, "OpenShell sandbox data mount");
   validateSandboxDataMount(options.kubernetes.sandboxDataMount);
+  validateSandboxExtraMounts(
+    options.kubernetes.sandboxDataMount,
+    options.kubernetes.sandboxExtraMounts,
+  );
   if (
     options.policy.landlockCompatibility !== undefined &&
     options.policy.landlockCompatibility !== "hard_requirement"
@@ -2498,6 +2646,18 @@ export const configurationSchema = Object.freeze({
             subPath: { type: "string" },
             mountPath: { type: "string" },
             readOnly: { type: "boolean" },
+          },
+        },
+        sandboxExtraMounts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              subPath: { type: "string" },
+              mountPath: { type: "string" },
+              readOnly: { type: "boolean" },
+            },
           },
         },
         // The protobuf serializer sends a quoted "false" as true.

@@ -179,9 +179,9 @@ Kubernetes-only installations enable Gateway TLS, mTLS and authentication; stati
 `gateway.operatorWorkspaceResources` accepts workspace ServiceAccount, Role, RoleBinding and NetworkPolicy manifests; `gateway.networkPolicyResources` accepts namespaced provider networking manifests. Operator `ensureNamespace` applies both server-side to the Compute-owned namespace with OCC ownership metadata; `preprovisionedNamespace` only compares. Startup rejects Secrets, NetworkPolicy ingress `_from` (use `from`), and fields the Kubernetes client drops or changes (misspelled selector keys, LimitRange `default`). Neither list permits OpenShell credentials or cluster-scoped objects.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
-workspace mount. It may not mount the PVC root or use `..`, and must mount
-under `/sandbox/`. For native OpenClaw, the permission preparer creates that subpath
-before Sandbox creation. After supervisor readiness, Sandbox initializes
+workspace mount. It may not mount the PVC root, use `..`, or leave `/sandbox/`.
+[`sandboxExtraMounts`](openshell-sandbox/extra-mounts.md) adds other subpaths.
+For native OpenClaw, the permission preparer creates them before Sandbox creation. After supervisor readiness, Sandbox initializes
 [private workspace inputs](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
 through private stdin; the Harness verifies completion at its effective path.
 
