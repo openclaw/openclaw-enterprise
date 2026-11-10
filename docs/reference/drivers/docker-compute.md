@@ -312,6 +312,10 @@ the setup container prepares ownership and permissions on the named volumes.
 
 ## Troubleshooting
 
+Aborted engine requests identify the operation, method, elapsed time, deadline
+and whether the request timed out or its caller cancelled. Check that operation
+and engine health before increasing timeouts.
+
 - **Worker starts with the wrong Compute Driver:** unset `OCC_CONFIG_PATH` for
   default Compose development, or inspect the trusted startup YAML if selecting
   another Driver intentionally.
