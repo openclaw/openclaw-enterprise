@@ -976,6 +976,8 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
+  ["slack", { localStore: false }],
+  ["production-tui", { localStore: false }],
   ["gateway-routing", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
