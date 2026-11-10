@@ -130,7 +130,7 @@ In `kubernetes.agentResourceOverrides`, each entry binds an exact
 `namespaceId` and `agentId`. Supply `requests` and `limits` maps with optional
 `cpu` and `memory` quantities. Omitted keys inherit `agentResources`. An optional
 `runtimeClassName` selects the class for preparation and the Agent Pod. Startup
-rejects duplicates and requests above limits. Deploy a new revision after
+rejects malformed IDs, duplicates, and requests above limits. Deploy a new revision after
 changes. Existing Sandboxes with different settings fail adoption.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs

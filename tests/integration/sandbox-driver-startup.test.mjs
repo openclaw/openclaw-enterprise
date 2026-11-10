@@ -4628,6 +4628,20 @@ test("startup refuses invalid or conflicting exact-Agent resource overrides", as
     limits: { cpu: "90" },
   };
   const path = "/kubernetes/agentResourceOverrides";
+  for (const [field, value] of [
+    ["namespaceId", `${override.namespaceId} `],
+    ["agentId", "agent-display-name"],
+  ]) {
+    await t.test(`refuses a malformed ${field}`, async (scopeTest) => {
+      await rejectsAtStartup(
+        scopeTest,
+        (c) => {
+          sandboxOf(c).kubernetes.agentResourceOverrides = [{ ...override, [field]: value }];
+        },
+        structuralRefusal(`${path}/0/${field}`, "pattern", "INVALID_FORMAT"),
+      );
+    });
+  }
   await rejectsAtStartup(
     t,
     (c) => {

@@ -25,6 +25,8 @@ import {
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
+  AgentId,
+  NamespaceId,
   requireConfiguration,
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
@@ -2596,8 +2598,8 @@ export const configurationSchema = Object.freeze({
             additionalProperties: false,
             required: ["namespaceId", "agentId", "requests", "limits"],
             properties: {
-              namespaceId: { type: "string", minLength: 1 },
-              agentId: { type: "string", minLength: 1 },
+              namespaceId: NamespaceId,
+              agentId: AgentId,
               requests: agentResourceQuantitySchema,
               limits: agentResourceQuantitySchema,
               runtimeClassName: { type: "string" },
