@@ -1,16 +1,22 @@
 import type { CredentialDeliveryReduction, PostgresClient } from "@openclaw-enterprise/occ";
 
+interface OnlineGitWithdrawalReceipt extends Omit<CredentialDeliveryReduction, "materialVersion"> {
+  readonly materialVersion: string | null;
+  readonly preparationAttemptId: string | null;
+}
+
 /** The caller holds the original delivery row lock in this transaction, before this statement. */
 export async function withdrawOnlineGitRoute(
   client: PostgresClient,
-  identity: CredentialDeliveryReduction,
+  identity: OnlineGitWithdrawalReceipt,
 ): Promise<boolean> {
   const result = await client.query(
     `UPDATE occ.credential_deliveries r
      SET blocked='withdrawn',
          updated_at=CASE WHEN r.blocked='withdrawn' THEN r.updated_at ELSE clock_timestamp() END
      WHERE r.revision_id=$1 AND r.binding_id=$2 AND r.fence=$3
-       AND r.observed=$4::jsonb AND r.material_version=$5 AND r.retained_policy_hash=$6
+       AND r.observed=$4::jsonb AND r.material_version IS NOT DISTINCT FROM $5::uuid
+       AND r.preparation_attempt_id IS NOT DISTINCT FROM $7::uuid AND r.retained_policy_hash=$6
        AND r.live_revision_id=r.revision_id AND r.settlement='snapshot' AND r.write_pending IS NULL
        AND (r.blocked IS NULL OR r.blocked IN ('repository_expired','withdrawn'))
        AND EXISTS (
@@ -40,6 +46,7 @@ export async function withdrawOnlineGitRoute(
       JSON.stringify(identity.recipient),
       identity.materialVersion,
       identity.retainedPolicyHash,
+      identity.preparationAttemptId,
     ],
   );
   return result.rowCount === 1;

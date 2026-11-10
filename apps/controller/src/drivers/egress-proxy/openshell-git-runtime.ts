@@ -1278,7 +1278,13 @@ export class OpenShellGitRuntime {
     }
     // Only the exact committed removal can bypass current finite Git permission.
     // Pass the natural-expiry check before the store records any reduction intent.
-    const saved = await this.routes.expire(revision, workspace, sandbox, finiteScopeIsCurrent);
+    const saved = await this.routes.expire(
+      revision,
+      workspace,
+      sandbox,
+      finiteScopeIsCurrent,
+      !!(this.configuration.grantRedemption && this.owner.grant),
+    );
     if (!saved) {
       return "retire-runtime";
     }
