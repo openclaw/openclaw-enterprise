@@ -4305,6 +4305,26 @@ test("Kubernetes Gateway counts consecutive unexplained exits across container r
   assert.equal(next.files.get("/dev/termination-log"), unexplainedExits(2));
 });
 
+// A count write that stops half-way, as an out-of-memory kill would leave it, keeps the
+// previous count instead of a torn one that would lower the next start's count.
+test("Kubernetes Gateway replaces its unexplained exit count whole", async (t) => {
+  const first = await startCodexGatewaySupervisor(t);
+  first.children[0].exit(1, null);
+  const gateway = await startCodexGatewaySupervisor(t, {
+    savedFiles: first.files,
+    runtimeStatus: true,
+  });
+  assert.equal(gateway.files.get(UNEXPLAINED_EXITS), "2");
+  gateway.tearWrite = (path) => path.startsWith(UNEXPLAINED_EXITS);
+  assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 200);
+  assert.equal(gateway.tearWrite, undefined, "the count write should have been interrupted");
+  assert.equal(gateway.files.get(UNEXPLAINED_EXITS), "2");
+  assert.deepEqual(
+    [...gateway.files.keys()].filter((path) => path.startsWith(`${UNEXPLAINED_EXITS}.`)),
+    [],
+  );
+});
+
 // Only the wrapper's own deliberate restart exits 75: an OpenClaw exit with that status is
 // reported as 1, so a native crash always counts toward a crash loop (finding 3041).
 test("Kubernetes Gateway reports a native exit with the deliberate restart status as 1", async (t) => {
@@ -4465,7 +4485,8 @@ test("Codex gateway supervisor bounds respawn retries and falls back to a contai
   await respawn;
   assert.equal(gateway.children.length, 4);
   assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
-  assertDeliberateRestart(gateway, "HARNESS_PEER_CHANGED");
+  // The peer changed once; the replacement that never served is what failed.
+  assertDeliberateRestart(gateway, "HARNESS_PEER_RESPAWN_FAILED");
   assert.equal(gateway.status().phase, "starting");
 });
 

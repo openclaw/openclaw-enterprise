@@ -19,6 +19,7 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
   UNEXPLAINED_EXITS_MESSAGE,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
@@ -2554,12 +2555,20 @@ function writeTerminationMessage(message) {
   } catch {}
 }
 
-// A count that cannot be saved only lowers the next start's count.
+// A count that cannot be saved only lowers the next start's count. The count is replaced
+// whole, so an exit during the write leaves the previous count, not a torn one.
 function countUnexplainedExits(count) {
   if (!countsUnexplainedExits) return;
+  const fs = require("node:fs");
+  const pending = UNEXPLAINED_EXITS_PATH + ".pending";
   try {
-    require("node:fs").writeFileSync(UNEXPLAINED_EXITS_PATH, String(count));
-  } catch {}
+    fs.writeFileSync(pending, String(count));
+    fs.renameSync(pending, UNEXPLAINED_EXITS_PATH);
+  } catch {
+    try {
+      fs.rmSync(pending, { force: true });
+    } catch {}
+  }
   writeTerminationMessage(${JSON.stringify(UNEXPLAINED_EXITS_MESSAGE)} + count);
 }
 
@@ -3330,7 +3339,7 @@ function stopContainer(reason) {
       require("node:fs").rmSync(UNEXPLAINED_EXITS_PATH, { force: true });
     } catch {}
   }
-  writeTerminationMessage("deliberate restart: " + reason.toLowerCase().replaceAll("_", "-"));
+  writeTerminationMessage(${JSON.stringify(DELIBERATE_RESTART_MESSAGE)} + reason.toLowerCase().replaceAll("_", "-"));
   if (!childRunning) {
     process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;
@@ -3530,7 +3539,11 @@ if (followsPeerStatus) {
   // A changed Harness peer requires a new credential for the replacement and
   // may change the configured plugin result. Respawn only the native process:
   // the container, its volumes and runtime assets stay, and there is no kubelet
-  // crash-loop backoff.
+  // crash-loop backoff. A respawn that fails falls back to a deliberate container
+  // restart, named HARNESS_PEER_CHANGED when the peer kept changing or went away and
+  // HARNESS_PEER_RESPAWN_FAILED otherwise (a replacement that never served). A fresh
+  // container that cannot start then exits on its own, and that exit counts.
+  const peerChangeFailure = (message) => Object.assign(new Error(message), { peerChanged: true });
   const respawnForPeerStatus = async (current) => {
     respawning = true;
     // Mark plugin status unready before replacing the native Gateway.
@@ -3555,7 +3568,7 @@ if (followsPeerStatus) {
         recentRespawns.shift();
       }
       if (recentRespawns.length >= GATEWAY_RESPAWN_LIMIT) {
-        throw new Error("The Harness peer changed too often to respawn the Gateway in place.");
+        throw peerChangeFailure("The Harness peer changed too often to respawn the Gateway in place.");
       }
       recentRespawns.push(respawnStartedAt);
       await stopGatewayProcess();
@@ -3587,11 +3600,11 @@ if (followsPeerStatus) {
       }
       if (gatewayTerminating || !childRunning) return;
       if (verifiedPeer === undefined) {
-        throw new Error("The Harness peer became unavailable during Gateway startup.");
+        throw peerChangeFailure("The Harness peer became unavailable during Gateway startup.");
       }
       if (peerChanged(verifiedPeer)) {
         logStartupPhase("peer-verification-changed", respawnStartedAt, "failed");
-        throw new Error("The Harness peer changed during Gateway startup.");
+        throw peerChangeFailure("The Harness peer changed during Gateway startup.");
       }
       publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
       logStartupPhase("gateway-respawn", respawnStartedAt);
@@ -3600,7 +3613,7 @@ if (followsPeerStatus) {
       if (holdGatewayToolPolicyFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
-        stopContainer("HARNESS_PEER_CHANGED");
+        stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
       }
     } finally {
       waitingForPeerDuringOutage = false;

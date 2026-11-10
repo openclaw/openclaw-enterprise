@@ -4008,7 +4008,8 @@ test("a pending dedicated deploy names a container image pull failure", async ()
 // backs off after its third consecutive unexplained exit, instead of waiting for the
 // convergence deadline (finding 3041). Only the role's own container on a live Pod of the
 // revision counts. The Gateway wrapper states the count in its termination message, and its
-// deliberate restart (exit 75) never counts; without a count the restart count stands in.
+// deliberate restart (exit 75, or its message) never counts; without a count the restart
+// count plus one stands in, as the kubelet counts a restart only once it starts it.
 for (const embedded of [true, false]) {
   test(`a pending ${embedded ? "embedded" : "dedicated"} deploy fails a crash-looping runtime container`, async () => {
     const { state, clients, prepare } = dedicatedFirstDeployFixture({
@@ -4067,6 +4068,8 @@ for (const embedded of [true, false]) {
       for (const options of [
         { exitCode: 1 },
         { exitCode: 137 },
+        // Three exits: in backoff the kubelet has restarted the container twice.
+        { restartCount: 2 },
         ...(role === "gateway"
           ? [{ restartCount: 5, message: exits(3) }]
           : [{ exitCode: 75 }, { message: exits(1) }]),
@@ -4087,6 +4090,19 @@ for (const embedded of [true, false]) {
           ? [
               // The wrapper stops its container on purpose, as for a changed Harness peer.
               ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+              // A deliberate restart killed while it stops exits with another status.
+              [
+                "a killed deliberate restart",
+                {
+                  containerStatuses: [
+                    container(role, {
+                      exitCode: 137,
+                      restartCount: 5,
+                      message: "deliberate restart: harness-peer-changed",
+                    }),
+                  ],
+                },
+              ],
               // Two deliberate restarts, then two unexplained exits.
               [
                 "two consecutive unexplained exits",
@@ -4094,7 +4110,7 @@ for (const embedded of [true, false]) {
               ],
             ]
           : []),
-        ["two restarts", { containerStatuses: [container(role, { restartCount: 2 })] }],
+        ["two exits", { containerStatuses: [container(role, { restartCount: 1 })] }],
         ["a running restart", { containerStatuses: [container(role, { waiting: null })] }],
         [
           "a pull back-off",

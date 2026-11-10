@@ -238,7 +238,11 @@ import {
   type ModelProviderConfiguration,
 } from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
-import { DELIBERATE_RESTART_EXIT_STATUS, UNEXPLAINED_EXITS_MESSAGE } from "../runtime-startup.ts";
+import {
+  DELIBERATE_RESTART_EXIT_STATUS,
+  DELIBERATE_RESTART_MESSAGE,
+  UNEXPLAINED_EXITS_MESSAGE,
+} from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
@@ -2214,12 +2218,17 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
 
 // A runtime container with this many consecutive unexplained exits, waiting in the kubelet's
 // crash-loop backoff, fails startup (finding 3041). A slow start, an image pull or one exit
-// cannot reach it.
+// cannot reach it. Without a count, the exits are the restart count plus one: in backoff the
+// kubelet has not yet counted the restart it waits for.
 const CRASH_LOOP_EXITS = 3;
 
-// The consecutive unexplained exits a Gateway wrapper states in its termination message, or
-// undefined for a message without the count (a Pod started before the wrapper kept one).
+// The consecutive unexplained exits a Gateway wrapper states in its termination message: 0
+// for a deliberate restart, even one that then exits with another status (killed while it
+// stops), or undefined without a count (a Pod started before the wrapper kept one).
 function unexplainedExitCount(message: unknown): number | undefined {
+  if (typeof message === "string" && message.startsWith(DELIBERATE_RESTART_MESSAGE)) {
+    return 0;
+  }
   if (typeof message !== "string" || !message.startsWith(UNEXPLAINED_EXITS_MESSAGE)) {
     return undefined;
   }
@@ -11337,9 +11346,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // consecutive unexplained exits. Init containers and sidecars never count. The Gateway
   // wrapper exits DELIBERATE_RESTART_EXIT_STATUS when it stops its container on purpose,
   // which keeps the wait and clears its count, and states the count in its termination
-  // message. Without one (a Pod from before the count), the restart count stands in. No Harness
-  // wrapper restarts on purpose, so each of its restarts follows an unexplained exit. Like
-  // failure evidence, an unavailable observation reports nothing.
+  // message. Without one (a Pod from before the count), the restart count plus one stands
+  // in. No Harness wrapper restarts on purpose, so each of its restarts follows an
+  // unexplained exit. Like failure evidence, an unavailable observation reports nothing.
   private async safeCrashLoopObservation(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -11364,7 +11373,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const terminated = asRecord(asRecord(status?.lastState)?.terminated);
           const exits =
             (role === "gateway" ? unexplainedExitCount(terminated?.message) : undefined) ??
-            status?.restartCount;
+            (typeof status?.restartCount === "number" ? status.restartCount + 1 : undefined);
           if (
             asRecord(asRecord(status?.state)?.waiting)?.reason === "CrashLoopBackOff" &&
             typeof exits === "number" &&

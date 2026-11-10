@@ -164,7 +164,9 @@ state after admission.
   unexplained exits. The Gateway wrapper states that count in its termination
   message (`runtime-entrypoints.ts:countUnexplainedExits`); readiness starts it
   again at 1, and a deliberate restart (exit 75, `stopContainer`) clears it and
-  never counts. Without a count, and for a Harness, the restart count stands in.
+  never counts; its `deliberate restart:` message counts 0 whatever the exit
+  code. Without a count, and for a Harness, the restart count plus one stands
+  in: in backoff the kubelet has not yet counted the restart it waits for.
   The deployment fails with `RUNTIME_STARTUP_FAILED`; the record keeps no check,
   but the runtime description shows the restart count and last exit code.
 - When a Codex startup check returns `model_not_found`, the worker saves that

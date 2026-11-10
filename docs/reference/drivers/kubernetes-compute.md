@@ -293,8 +293,10 @@ before replacing the controller images.
   times in a row without a deliberate restart (internal check `crash-loop`).
   The Gateway wrapper exits 75 and logs startup phase `container-restart` when
   it restarts its container on purpose; those restarts never count, and readiness
-  resets the count. `occ agent runtime` shows the restart count and last exit
-  code; `occ agent logs --previous` shows the crashed container's output.
+  resets the count. Without the wrapper's count (a Harness, or an older Pod),
+  restart count 2 in backoff is the third exit. `occ agent runtime` shows the
+  restart count and last exit code; `occ agent logs --previous` shows the
+  crashed container's output.
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

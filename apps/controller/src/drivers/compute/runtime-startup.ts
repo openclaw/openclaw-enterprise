@@ -20,6 +20,13 @@ export const DELIBERATE_RESTART_EXIT_STATUS = 75;
  */
 export const UNEXPLAINED_EXITS_MESSAGE = "consecutive unexplained exits: ";
 
+/**
+ * How a Kubernetes Gateway wrapper's termination message states a deliberate restart: this
+ * prefix, then its reason. Kubernetes Compute counts no unexplained exits for it, even when
+ * the container then exits with another status (finding 3041).
+ */
+export const DELIBERATE_RESTART_MESSAGE = "deliberate restart: ";
+
 // Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
 export function gatewayManagedModeEnvironment(managedMode: boolean): string {
   return JSON.stringify(
