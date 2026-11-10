@@ -30,6 +30,30 @@ and one `openclaw node run` on that image as uid 1000. Then copy the database wi
 `VACUUM INTO`, delete its `device_identities` rows, vacuum it again and archive it
 without the Git sample hooks. Each test run saves a new identity in the older row format.
 
+The [native profile fixture](../../tests/fixtures/runtime-state/native-profile-state-openclaw-513c127.json)
+records a human profile and conversation created by the OpenClaw `513c127`
+runtime through `users.self`, `users.setDisplayName`, `sessions.create`, and
+`chat.inject`. The metadata records the immutable image, source provenance,
+archive checksum, and original profile, session, and message fields. The message
+is administrator-injected text; it does not prove model generation.
+
+Regenerate it from an available immutable image with native profile support:
+
+```sh
+node scripts/generate-native-profile-state-fixture.mjs \
+  --image '<runtime-repository>@sha256:<digest>' \
+  --out /tmp/native-profile-fixture
+```
+
+The output directory must not exist. The generator uses isolated Docker volumes
+without network access or host ports. It removes generated credentials and
+configuration keys, preserves native migration records, and checks the sanitized
+archive against the original runtime before writing its metadata. It removes its
+containers and volumes on exit. Copy the reviewed archive and metadata into
+`tests/fixtures/runtime-state/` together. The existing image state test restores
+that archive through current Gateway startup, checks the original identity,
+session ownership and message, then appends text through `chat.inject`.
+
 ## Make cases easy to add and diagnose
 
 Use named cases with independent mutable state. Share a contract suite when
