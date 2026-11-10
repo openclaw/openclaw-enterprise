@@ -21,6 +21,14 @@ public repository with `github-repository` standing access. Start the Installati
 with `networkEgressMode: restricted` and no credential-free artifact allowances.
 The test checks explicit modes; default selection belongs to packaging tests.
 
+Use the existing local Gateway TLS profile with `openShellBackend.endpoint` set
+to `https://127.0.0.1:<port>` and its CA and mTLS client paths. The scenario opens
+its own loopback forward to the exact selected supplier Pod and substitutes only
+the port, preserving certificate IP verification and client identity. It checks
+that Pod’s UID and image observations around the Gateway reads. Other observer
+endpoint profiles are unsupported by this lane; production endpoint support is
+unchanged. The separate controller API forward remains operator-owned.
+
 Set these variables through the authorized credential workflow:
 
 | Variable                             | Value                                              |
@@ -33,23 +41,24 @@ Set these variables through the authorized credential workflow:
 The JSON uses this contract. It contains references and expected public metadata,
 not credential values.
 
-| Field                                                 | Required value                                                                              |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `version`                                             | `1`                                                                                         |
-| `apiOrigin`, `installationId`, `namespaceId`          | Exact loopback API origin and prepared IDs                                                  |
-| `modelSourceId`, `model`                              | Ready Gateway source and authorized native model                                            |
-| `repositoryRef`, `repository`                         | Registry reference and authorized `owner/name`                                              |
-| `repositoryPermissions`                               | Expected authenticated GitHub permissions object, including `pull`                          |
-| `expectedGitHubAppId`, `expectedGitHubInstallationId` | Decimal strings naming the authorized App installation                                      |
-| `custodySecretNames`                                  | Nonempty list of worker/model Kubernetes Secret names forbidden in Agent Pod references     |
-| `publicTcp`                                           | Controlled HTTPS `url` on a nonstandard public TCP port, plus `expectedBodySha256`          |
-| `kubeconfigPath`, `kubernetesContext`, `clusterUID`   | Absolute owned kubeconfig, `k3d-*` context and `kube-system` UID                            |
-| `controllerNamespace`, `controllerSelector`           | Exact namespace and selector for one ready API Pod                                          |
-| `openShellBackend`                                    | Authenticated HTTPS endpoint, CA path and mTLS certificate/key paths                        |
-| `images`                                              | Digest-pinned `controller`, `gateway`, `agent`, `openShellGateway`, `sandbox`, `supervisor` |
-| `oceCommit`                                           | Candidate checkout's base commit                                                            |
-| `evidenceDirectory`                                   | New absolute evidence directory outside the checkout                                        |
-| `pauseForAcceptance`                                  | Optional boolean, default false; retain the public revision for operator checks             |
+| Field                                                   | Required value                                                                                   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `version`                                               | `1`                                                                                              |
+| `apiOrigin`, `installationId`, `namespaceId`            | Exact loopback API origin and prepared IDs                                                       |
+| `modelSourceId`, `model`                                | Ready Gateway source and authorized native model                                                 |
+| `repositoryRef`, `repository`                           | Registry reference and authorized `owner/name`                                                   |
+| `repositoryPermissions`                                 | Expected authenticated GitHub permissions object, including `pull`                               |
+| `expectedGitHubAppId`, `expectedGitHubInstallationId`   | Decimal strings naming the authorized App installation                                           |
+| `custodySecretNames`                                    | Nonempty list of worker/model Kubernetes Secret names forbidden in Agent Pod references          |
+| `publicTcp`                                             | Controlled HTTPS `url` on a nonstandard public TCP port, plus `expectedBodySha256`               |
+| `kubeconfigPath`, `kubernetesContext`, `clusterUID`     | Absolute owned kubeconfig, `k3d-*` context and `kube-system` UID                                 |
+| `controllerNamespace`, `controllerSelector`             | Exact namespace and selector for one ready API Pod                                               |
+| `openShellGatewayNamespace`, `openShellGatewaySelector` | Exact namespace and selector for one ready supplier Gateway Pod owned by its current StatefulSet |
+| `openShellBackend`                                      | Authenticated HTTPS endpoint, CA path and mTLS certificate/key paths                             |
+| `images`                                                | Digest-pinned `controller`, `gateway`, `agent`, `openShellGateway`, `sandbox`, `supervisor`      |
+| `oceCommit`                                             | Checked-out candidate HEAD (`git rev-parse HEAD`)                                                |
+| `evidenceDirectory`                                     | New absolute evidence directory outside the checkout                                             |
+| `pauseForAcceptance`                                    | Optional boolean, default false; retain the public revision for operator checks                  |
 
 The controlled endpoint must be reachable by public DNS and a globally routable
 address, use valid TLS, and return the prepared fixed body. The scenario sends
@@ -91,9 +100,7 @@ credential-use records must match the current workload network instance.
 When `pauseForAcceptance` is true, `public-egress-ready.json` retains that successor
 for separately authorized repository checks. Finish within 30 minutes, then write
 `acceptance-complete.json` with its unchanged `runId`, `agentId`,
-`baselineRevisionId` and `revisionId`. The runner retires its Agent after success
-or failure. An uncertain create response is reconciled by the exact run-owned
-Agent name before cleanup; it is not replayed.
+`baselineRevisionId` and `revisionId`. The runner retires its Agent and waits for identity bindings to disappear before deleting its Role and Configuration. Uncertain Agent or Role creation is reconciled by the exact run-owned name; it is not replayed. An unconfirmed Configuration create cannot be looked up by name and leaves cleanup unsettled.
 
 ## Interpret results
 
@@ -110,8 +117,7 @@ refresh/private-key material. They do not establish arbitrary filesystem secrecy
 or provider revocation. No real credential is sent to an untrusted receiver, and
 this scenario does not currently prove a synthetic-canary receiver boundary.
 
-`complete.json` records acceptance; `cleanup.json` separately records retirement
-and closed repository sessions. Retain the owned stack and custody until cleanup
+`complete.json` records acceptance; `cleanup.json` separately records Agent retirement, closed repository sessions, and removal of the run-owned Role and Configuration. Retain the owned stack and custody until cleanup
 succeeds. Keep separate evidence for repository installation, formatting and tests;
 a successful package-manager bootstrap does not prove those operations.
 

@@ -13,6 +13,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createRealKubernetesFixture } from "../helpers/kubernetes-real.mjs";
 import {
   assertConnectedResponse,
+  connectedReceiptRevision,
   serializeConnectedRequest,
   sendConnectedRequest,
   validateConnectedDatabaseUrl,
@@ -32,7 +33,7 @@ const selected =
 const shellQuote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
 
 // Preparation owns real credentials and the production Helm installation.
-// This scenario owns only its ordinary Agent.
+// This scenario owns its ordinary Agent, Configuration and namespace IAM Role.
 test(
   "a protected Agent admits public TCP only in its frozen public egress mode",
   {
@@ -93,6 +94,27 @@ test(
     for (const image of Object.values(input.images)) {
       assert.match(image, /@sha256:[a-f0-9]{64}$/u);
     }
+    assert.match(input.openShellGatewayNamespace ?? "", /^[a-z0-9-]+$/u);
+    assert.ok(
+      typeof input.openShellGatewaySelector === "string" &&
+        input.openShellGatewaySelector.length > 0 &&
+        !/[\r\n]/u.test(input.openShellGatewaySelector),
+    );
+    const supplierEndpoint = new URL(input.openShellBackend.endpoint);
+    assert.equal(supplierEndpoint.protocol, "https:");
+    assert.equal(
+      supplierEndpoint.username +
+        supplierEndpoint.password +
+        supplierEndpoint.search +
+        supplierEndpoint.hash,
+      "",
+    );
+    assert.equal(supplierEndpoint.pathname, "/");
+    assert.equal(
+      supplierEndpoint.hostname,
+      "127.0.0.1",
+      "this host-run lane retains the Gateway certificate's loopback IP identity",
+    );
     const databaseUrl = validateConnectedDatabaseUrl(process.env.OCC_TEST_DATABASE_URL);
     const f = createRealKubernetesFixture({
       kubeconfigPath: input.kubeconfigPath,
@@ -139,14 +161,22 @@ test(
       clusterUID: input.clusterUID,
     });
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 10000 });
-    const backend = new OpenShellGateway(input.openShellBackend);
-    let cleanupAgent = async () => {};
+    let backend;
+    let forwarding;
+    let cleanup = async () => {};
     t.after(async () => {
       try {
-        await cleanupAgent();
+        await cleanup();
       } finally {
-        backend.close();
-        await pool.end();
+        try {
+          backend?.close();
+        } finally {
+          try {
+            await forwarding?.stop();
+          } finally {
+            await pool.end();
+          }
+        }
       }
     });
     const namespacePath = "/namespaces/" + input.namespaceId;
@@ -185,6 +215,84 @@ test(
     ).items;
     assert.equal(placements.length, 1);
     const placement = placements[0].metadata.name;
+    const observeSupplier = async () => {
+      const supplierPods = await f.resources(
+        "pods",
+        input.openShellGatewayNamespace,
+        "-l",
+        input.openShellGatewaySelector,
+      );
+      const readySuppliers = supplierPods.filter(
+        (pod) =>
+          !pod.metadata.deletionTimestamp &&
+          pod.status.conditions?.some(
+            (condition) => condition.type === "Ready" && condition.status === "True",
+          ),
+      );
+      assert.equal(readySuppliers.length, 1, "one ready selected OpenShell Gateway");
+      const supplier = readySuppliers[0];
+      const supplierContainer = supplier.spec.containers.find(
+        (container) => container.name === "openshell-gateway",
+      );
+      const supplierStatus = supplier.status.containerStatuses?.find(
+        (container) => container.name === "openshell-gateway",
+      );
+      assert.equal(supplierContainer?.image, input.images.openShellGateway);
+      assert.ok(supplierStatus?.ready && supplierStatus.state?.running && supplierStatus.imageID);
+      assert.ok(supplier.metadata.uid);
+      assert.ok(
+        supplierContainer.ports?.some(
+          (port) => port.protocol === "TCP" && port.containerPort === 8080,
+        ),
+        "the selected Gateway container must declare its forwarded TCP listener",
+      );
+      const supplierOwner = supplier.metadata.ownerReferences?.find(
+        (owner) => owner.controller === true && owner.kind === "StatefulSet",
+      );
+      assert.ok(supplierOwner?.uid);
+      const supplierStatefulSet = await f.resource(
+        "statefulset",
+        supplierOwner.name,
+        input.openShellGatewayNamespace,
+      );
+      assert.equal(supplierStatefulSet.metadata.uid, supplierOwner.uid);
+      assert.equal(supplierStatefulSet.apiVersion, supplierOwner.apiVersion);
+      assert.equal(
+        supplierStatefulSet.spec.template.spec.containers.find(
+          (container) => container.name === "openshell-gateway",
+        )?.image,
+        input.images.openShellGateway,
+      );
+      return {
+        namespace: supplier.metadata.namespace,
+        pod: supplier.metadata.name,
+        uid: supplier.metadata.uid,
+        owner: supplierOwner,
+        image: supplierContainer.image,
+        imageID: supplierStatus.imageID,
+      };
+    };
+    const supplier = await observeSupplier();
+    // Own the transport to the exact observed Pod. Only its local port changes;
+    // the HTTPS loopback IP identity, CA and client credentials remain unchanged.
+    forwarding = await f.startPortForwardTarget(
+      supplier.namespace,
+      "pod/" + supplier.pod,
+      "0:8080",
+    );
+    const checkSupplier = async () =>
+      assert.deepEqual(
+        await observeSupplier(),
+        supplier,
+        "the forwarded Gateway must remain current",
+      );
+    await checkSupplier();
+    supplierEndpoint.port = new URL(forwarding.url).port;
+    backend = new OpenShellGateway({
+      ...input.openShellBackend,
+      endpoint: supplierEndpoint.origin,
+    });
+    await save("supplier-transport", { runId, ...supplier, endpoint: supplierEndpoint.origin });
     const gateway = backend.clientForNamespace(placement);
     const values = createHarnessConfiguration("codex", input.model);
     const workspace = "/home/node/workspace";
@@ -195,56 +303,98 @@ test(
     });
     values.agents.defaults.workspace = workspace;
     values.tools = { profile: "full" };
-    const config = await api(
-      "POST",
-      namespacePath + "/configurations",
-      { kind: "agent", values },
-      201,
-    );
     const agentName = "public-egress-" + runId;
+    const roleName = "public-egress-model-" + runId;
+    let config;
+    let configCreateAttempted = false;
     let agent;
+    let agentCreateAttempted = false;
     let agentPath;
+    let role;
+    let roleCreateAttempted = false;
+    let binding;
     let active;
-    // Cleanup goes through the same owner that issued and enrolled credentials.
-    // Namespace/database teardown is forbidden until this ledger reports settled.
-    cleanupAgent = async () => {
+    // Install cleanup before the first create, including evidence writes that can
+    // fail before Agent creation. Only exact run-owned resources may be retired.
+    cleanup = async () => {
       await checkCluster();
-      if (!agent) {
+      if (agentCreateAttempted && !agent) {
         const matches = (await api("GET", namespacePath + "/agents")).filter(
           (item) => item.name === agentName,
         );
-        assert.ok(matches.length <= 1, "run-owned Agent creation must reconcile uniquely");
-        if (matches.length === 0) {
-          throw new Error("Agent creation outcome is unconfirmed; retain the prepared environment");
-        }
+        assert.equal(matches.length, 1, "Agent creation outcome is unconfirmed; retain the stack");
         agent = matches[0];
       }
-      agentPath = namespacePath + "/agents/" + agent.id;
-      const approvals = await api("GET", agentPath + "/repository-approvals");
-      for (const approval of approvals.filter((entry) => entry.status === "active")) {
-        await api(
-          "POST",
-          agentPath + "/repository-approvals/" + approval.id + "/remove",
-          { expectedGeneration: approval.generation },
-          204,
+      if (agent) {
+        agentPath = namespacePath + "/agents/" + agent.id;
+        const approvals = await api("GET", agentPath + "/repository-approvals");
+        for (const approval of approvals.filter((entry) => entry.status === "active")) {
+          await api(
+            "POST",
+            agentPath + "/repository-approvals/" + approval.id + "/remove",
+            { expectedGeneration: approval.generation },
+            204,
+          );
+        }
+        await api("DELETE", agentPath, undefined, 202);
+        await f.waitFor(
+          "owned Agent retirement and identity binding removal",
+          async () => {
+            const agents = await api("GET", namespacePath + "/agents");
+            const bindings = await api("GET", namespacePath + "/iam/access-bindings");
+            const pods = await f.resources(
+              "pods",
+              placement,
+              "-l",
+              "openclaw.dev/agent=" + agent.id,
+            );
+            const pending = await pool.query(
+              "SELECT 1 FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND phase IN ('opening','open','closing')",
+              [input.namespaceId, agent.id],
+            );
+            // The Agent finalizer owns deletion of bindings for its identity,
+            // including a binding whose successful POST response was lost.
+            return (
+              !agents.some((item) => item.id === agent.id) &&
+              !bindings.some((item) => item.subjectId === agent.servicePrincipalId) &&
+              pods.length === 0 &&
+              pending.rowCount === 0
+            );
+          },
+          300000,
         );
       }
-      await api("DELETE", agentPath, undefined, 202);
-      await f.waitFor(
-        "owned Agent retirement",
-        async () => {
-          const pods = await f.resources("pods", placement, "-l", "openclaw.dev/agent=" + agent.id);
-          const pending = await pool.query(
-            "SELECT 1 FROM occ.repository_session_attempts WHERE namespace_id=$1 AND agent_id=$2 AND phase IN ('opening','open','closing')",
-            [input.namespaceId, agent.id],
-          );
-          return pods.length === 0 && pending.rowCount === 0;
-        },
-        300000,
-      );
-      await save("cleanup", { runId, agentId: agent.id, settled: true });
+      if (roleCreateAttempted && !role) {
+        const matches = (await api("GET", namespacePath + "/iam/roles")).filter(
+          (item) => item.name === roleName,
+        );
+        assert.equal(matches.length, 1, "Role creation outcome is unconfirmed; retain the stack");
+        role = matches[0];
+      }
+      if (role) {
+        await api("DELETE", namespacePath + "/iam/roles/" + role.id, undefined, 204);
+      }
+      if (config) {
+        // Configuration deletion is valid only after the Agent row is finalized.
+        await api("DELETE", namespacePath + "/configurations/" + config.id, undefined, 204);
+      } else if (configCreateAttempted) {
+        throw new Error("Configuration creation outcome is unconfirmed; retain the stack");
+      }
+      await save("cleanup", {
+        runId,
+        agentId: agent?.id,
+        configurationId: config?.id,
+        roleId: role?.id,
+        bindingId: binding?.id,
+        settled: true,
+      });
     };
+    await save("configuration-create-intent", { runId, namespaceId: input.namespaceId });
+    configCreateAttempted = true;
+    config = await api("POST", namespacePath + "/configurations", { kind: "agent", values }, 201);
+    await save("configuration-created", { runId, configurationId: config.id });
     await save("agent-create-intent", { runId, name: agentName });
+    agentCreateAttempted = true;
     agent = await api(
       "POST",
       namespacePath + "/agents",
@@ -259,16 +409,20 @@ test(
       201,
     );
     agentPath = namespacePath + "/agents/" + agent.id;
-    const role = await api(
+    await save("agent-created", { runId, agentId: agent.id });
+    await save("role-create-intent", { runId, name: roleName });
+    roleCreateAttempted = true;
+    role = await api(
       "POST",
       namespacePath + "/iam/roles",
       {
-        name: "public-egress-model-" + runId,
+        name: roleName,
         permissions: [{ action: "operate", resourceKind: "credential_source" }],
       },
       201,
     );
-    await api(
+    await save("role-created", { runId, roleId: role.id });
+    binding = await api(
       "POST",
       namespacePath + "/iam/access-bindings",
       {
@@ -280,6 +434,7 @@ test(
       },
       201,
     );
+    await save("binding-created", { runId, bindingId: binding.id });
     await api("POST", agentPath + "/runtime-credentials", {});
     const [scope] = await api("GET", agentPath + "/repository-approval-scopes");
     assert.equal(scope.repositoryRef, input.repositoryRef);
@@ -378,6 +533,7 @@ test(
       return active;
     };
     const observePolicy = async () => {
+      await checkSupplier();
       const sandboxes = await f.resources("sandboxes.agents.x-k8s.io", placement);
       const candidates = sandboxes.filter(
         (box) =>
@@ -386,6 +542,27 @@ test(
       );
       assert.equal(candidates.length, 1);
       const box = candidates[0];
+      assert.ok(box.metadata.uid);
+      assert.ok(
+        active.harness.metadata.ownerReferences?.some(
+          (owner) =>
+            owner.controller === true &&
+            owner.kind === "Sandbox" &&
+            owner.apiVersion === box.apiVersion &&
+            owner.name === box.metadata.name &&
+            owner.uid === box.metadata.uid,
+        ),
+        "the current Sandbox must own the selected Agent Pod",
+      );
+      const bootstrap = active.harness.spec.initContainers?.find(
+        (container) => container.name === "openshell-sandbox-bootstrap",
+      );
+      const bootstrapStatus = active.harness.status.initContainerStatuses?.find(
+        (container) => container.name === "openshell-sandbox-bootstrap",
+      );
+      assert.equal(bootstrap?.image, input.images.sandbox);
+      assert.equal(bootstrapStatus?.state?.terminated?.exitCode, 0);
+      assert.ok(bootstrapStatus.imageID);
       const name = box.metadata.labels["openshell.ai/sandbox-name"];
       assert.ok(name);
       const selectedSandbox = await gateway.getSandbox(
@@ -432,8 +609,14 @@ test(
       assert.equal(config.configuration_instance_id, admission.instance_id);
       assert.equal(config.version, admission.policy_version);
       assert.equal(config.policy_hash, admission.policy_hash);
-      assert.equal(config.config_revision, admission.config_revision);
-      assert.equal(config.provider_env_revision, admission.provider_env_revision);
+      assert.equal(
+        connectedReceiptRevision(config.config_revision),
+        connectedReceiptRevision(admission.config_revision),
+      );
+      assert.equal(
+        connectedReceiptRevision(config.provider_env_revision),
+        connectedReceiptRevision(admission.provider_env_revision),
+      );
       assert.equal(policy.active_version, admission.policy_version);
       // Provider composition can change the effective hash without changing the source version.
       assert.ok(policy.revision.policy_hash);
@@ -446,6 +629,22 @@ test(
       // The Git recipient binds the workload's network instance, while the
       // configuration admission identifies the supervisor configuration.
       active.mainProcessInstanceId = current.mainProcessInstanceId;
+      await checkSupplier();
+      // CRI imageIDs may name child manifests or configs, so preserve them
+      // separately from selected image references and source provenance.
+      await save("supplier-images-" + active.revision.id, {
+        runId,
+        revisionId: active.revision.id,
+        openShellGateway: { ...supplier, endpoint: supplierEndpoint.origin },
+        sandbox: {
+          namespace: active.harness.metadata.namespace,
+          pod: active.harness.metadata.name,
+          uid: active.harness.metadata.uid,
+          sandboxUid: box.metadata.uid,
+          image: bootstrap.image,
+          imageID: bootstrapStatus.imageID,
+        },
+      });
       return {
         policy: config.policy,
         appliedPublicTcp: admission.applied_allow_unconfigured_public_tcp,
@@ -791,6 +990,7 @@ test(
         1_800_000,
       );
     }
+    await checkSupplier();
     await save("complete", {
       ...handshake,
       revisionId: active.revision.id,

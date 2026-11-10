@@ -249,6 +249,19 @@ export interface OpenShellSandboxDriverSelection {
 
 class OpenShellSandboxConfigurationFailure extends Error {}
 
+function sameConfigurationGeneration(effective: unknown, admitted: unknown): boolean {
+  // These proto3 uint64 fields omit zero; the decoder preserves other values as strings.
+  // Keep full uint64 precision and never treat malformed, matching values as evidence.
+  const actual = effective === undefined ? "0" : effective;
+  const expected = admitted === undefined ? "0" : admitted;
+  return (
+    typeof actual === "string" &&
+    /^(0|[1-9][0-9]{0,19})$/.test(actual) &&
+    BigInt(actual) <= 18446744073709551615n &&
+    actual === expected
+  );
+}
+
 function networkEgressModeApplied(
   mode: AgentRevision["networkEgressMode"],
   status: OpenShellPolicyStatus,
@@ -281,8 +294,8 @@ function networkEgressModeApplied(
     config.configuration_instance_id === admission.instance_id &&
     config.version === admission.policy_version &&
     config.policy_hash === admission.policy_hash &&
-    config.config_revision === admission.config_revision &&
-    config.provider_env_revision === admission.provider_env_revision &&
+    sameConfigurationGeneration(config.config_revision, admission.config_revision) &&
+    sameConfigurationGeneration(config.provider_env_revision, admission.provider_env_revision) &&
     asRecord(config.policy)?.allow_unconfigured_public_tcp === true
   );
 }

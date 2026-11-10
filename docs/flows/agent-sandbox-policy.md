@@ -140,20 +140,19 @@ remain in the separate Gateway.
 
 Admission freezes `networkEgressMode` independently of `sandboxPolicy`.
 PostgreSQL's immutable `admitted_spec` constrains the value; retries use that
-snapshot, not changed Installation settings. Existing omitted values stay restricted.
+snapshot, not changed Installation settings. Omitted values stay restricted.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
 compile `allow_unconfigured_public_tcp`; managed routes and artifact grants stay
 independent. The proxy compares configuration before wiring.
 `apps/controller/src/drivers/sandbox/openshell.ts:networkEgressModeApplied` requires
-the loaded source version and matching nonempty effective hash, instance and
-generations. Provider composition changes hashes; global overrides fail.
+the loaded source version, matching nonempty effective hash and instance, and equal uint64 generations (omitted means zero). Provider composition changes hashes; global overrides fail.
 
-Initial acceptance can precede networking startup. A missing applied bit or
+Acceptance may precede networking. A missing applied bit or
 pending generation yields `TransientDependencyError`; Compute returns incomplete
-without workload-stop hooks. The worker's convergence deadline bounds the wait
-without spending retry attempts. Explicit denial, false applied mode, or conflicting
+without workload-stop hooks. The worker's convergence deadline bounds waiting
+without spending retries. Explicit denial, false applied mode, or conflicting
 same-generation evidence fails. Live additions preserve the revision's mode.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy

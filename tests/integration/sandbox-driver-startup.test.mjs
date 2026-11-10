@@ -2495,6 +2495,26 @@ test("OpenShell native startup creates private temporary state without changing 
 // The Gateway transport is a controlled peer. This proves the production Driver's readiness
 // gate and replay behavior, not that an installed supervisor enforces public network access.
 test("OpenShell requires matching applied network egress evidence before accepting a Sandbox", async (t) => {
+  const grpc = controllerRequire("@grpc/grpc-js");
+  const loader = controllerRequire("@grpc/proto-loader");
+  const proto = await loader.load(
+    join(
+      import.meta.dirname,
+      "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    ),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const generationCases = [
+    ["both omitted", undefined, undefined, true],
+    ["effective zero omitted", undefined, "0", true],
+    ["admitted zero omitted", "0", undefined, true],
+    ["maximum uint64", "18446744073709551615", "18446744073709551615", true],
+    ["effective zero versus admitted nonzero", undefined, "1", false],
+    ["effective nonzero versus admitted zero", "1", undefined, false],
+    // These adjacent generations collide if converted to JavaScript Number.
+    ["distinct large generations", "9007199254740992", "9007199254740993", false],
+  ];
   for (const mode of ["public", "restricted"]) {
     await t.test(mode, async (t) => {
       const gateway = workspaceGatewayClient();
@@ -2534,8 +2554,45 @@ test("OpenShell requires matching applied network egress evidence before accepti
         sandbox = storedSandbox(request, { serviceUrls: {}, resourceVersion: "1" });
         return sandbox;
       };
-      gateway.getSandbox = async () => sandbox && { ...sandbox, configurationAdmission: admission };
-      gateway.getSandboxConfig = async () => effective;
+      // Decode readiness through the production gRPC client. Proto3 scalar zero can
+      // be absent on the wire even when the other response explicitly encodes it.
+      const server = new grpc.Server();
+      server.addService(OpenShell.service, {
+        GetSandbox(_call, callback) {
+          if (sandbox === undefined) {
+            callback({ code: grpc.status.NOT_FOUND });
+            return;
+          }
+          callback(null, {
+            sandbox: {
+              metadata: {
+                name: sandbox.name,
+                workspace: sandbox.workspace,
+                labels: sandbox.labels,
+                annotations: sandbox.annotations,
+                resource_version: sandbox.resourceVersion,
+              },
+              spec: sandbox.spec,
+              status: { configuration_activated: true, configuration_admission: admission },
+            },
+          });
+        },
+        GetSandboxConfig(_call, callback) {
+          callback(null, effective);
+        },
+      });
+      const port = await new Promise((resolve, reject) =>
+        server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+          error ? reject(error) : resolve(value),
+        ),
+      );
+      const wireClient = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+      t.after(async () => {
+        wireClient.close();
+        await new Promise((resolve) => server.tryShutdown(resolve));
+      });
+      gateway.getSandbox = wireClient.getSandbox.bind(wireClient);
+      gateway.getSandboxConfig = wireClient.getSandboxConfig.bind(wireClient);
       gateway.getPolicyStatus = async () => status;
       const driver = openShellDriver(gateway);
       const { context, revision, requirements } = runtimeSandboxFixture(driver, {
@@ -2572,6 +2629,21 @@ test("OpenShell requires matching applied network egress evidence before accepti
       assert.equal(creates, 1, "reconciliation adopts the admitted Sandbox");
 
       if (mode === "public") {
+        for (const field of ["config_revision", "provider_env_revision"]) {
+          for (const [label, effectiveValue, admittedValue, matches] of generationCases) {
+            await t.test(`provision ${field}: ${label}`, async () => {
+              effective = { ...configuration, [field]: effectiveValue };
+              admission = { ...accepted, [field]: admittedValue };
+              if (matches) {
+                assert.deepEqual(await provision(), first);
+              } else {
+                await assert.rejects(provision(), rejectedAppliedMode);
+              }
+            });
+          }
+        }
+        effective = configuration;
+        admission = accepted;
         // A requested and loaded policy can outlive its supervisor or provider generation.
         // Each response must independently prove that the active engine accepted this mode.
         for (const [label, change, expected = /has not confirmed active public network egress/] of [
@@ -2684,14 +2756,28 @@ test("OpenShell requires matching applied network egress evidence before accepti
             policy_hash: "policy-two",
             config_revision: "5",
           };
-          effective = {
+          const currentConfiguration = {
             ...configuration,
             version: 4,
             policy_hash: "policy-two",
             config_revision: "5",
             policy: candidate,
           };
+          effective = currentConfiguration;
           const observe = () => driver.observeNetworkPolicy({ ...context, revision }, snapshot);
+          status = currentStatus;
+          for (const field of ["config_revision", "provider_env_revision"]) {
+            for (const [label, effectiveValue, admittedValue, matches] of generationCases) {
+              await t.test(`observe ${field}: ${label}`, async () => {
+                effective = { ...currentConfiguration, [field]: effectiveValue };
+                admission = { ...currentAdmission, [field]: admittedValue };
+                const observation = await observe();
+                assert.equal(observation.matches, true, "the requested policy still matches");
+                assert.equal(observation.state, matches ? "applied" : "pending");
+              });
+            }
+          }
+          effective = currentConfiguration;
           for (const [label, acknowledgement, reported] of [
             ["missing applied mode", { applied_allow_unconfigured_public_tcp: undefined }, {}],
             ["false applied mode", { applied_allow_unconfigured_public_tcp: false }, {}],
