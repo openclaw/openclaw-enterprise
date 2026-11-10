@@ -1,20 +1,19 @@
 ---
 created: 2026-09-23
 updated: "2026-11-10"
-last_updated_session: "authoring-run/f2adfad8-a3ec-4d5a-a92c-96e12e671ed8"
+last_updated_session: "authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e"
 ---
 
 # Production image upgrade flow
 
 ## Overview
 
-`scripts/upgrade-production-images` upgrades OpenClaw Control Plane (OCC) or
-Agent runtimes.
+Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ## Entry Points
 
 - Run `scripts/upgrade-production-images` with reviewed inputs.
-- Required: healthy production Helm release, matching OCC/Kubernetes Installation
+- Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
@@ -25,36 +24,36 @@ Agent runtimes.
 ```mermaid
 graph TD
     A["Validate inputs and inventory"] --> RR{"Repository assessment<br/>permits retention?"}
-    RR -->|"No or unknown"| X["Stop and retain recovery evidence"]
+    RR -->|"No or unknown"| X["Retain recovery evidence"]
     RR -->|"Yes or replacement"| HS{"Harness settings saved<br/>or runtime replacement?"}
     HS -->|No| X
     HS -->|Yes| DB["Validate compatibility receipt"]
     DB --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
-    Q -->|No| B["Render and check candidate startup with Jobs"]
+    Q -->|No| B["Run startup/migration Jobs"]
     P --> B
-    B --> V{"Startup and cleanup confirmed?"}
+    B --> V{"Startup, history and cleanup confirmed?"}
     V -->|No| X
     V -->|Yes| R{"Preflight only?"}
-    R -->|Yes| S["Exit without prepared deployment"]
+    R -->|Yes| S["Exit unprepared"]
     R -->|No| T["Save prepared recovery record"]
-    T --> C["Read live Secret and Helm state"]
+    T --> C["Read live Secret/Helm state"]
     C --> RC{"Recover interrupted candidate?"}
-    RC -->|No| D{"Candidate Helm release deployed?"}
-    RC -->|Yes| AR["Verify attribution and roll back to same candidate"]
+    RC -->|No| D{"Candidate deployed?"}
+    RC -->|Yes| AR["Verify attribution; roll back same candidate"]
     AR -->|Refused| X
     AR -->|Acknowledged| I
     D -->|No| VQ{"Both writers valid?"}
     VQ -->|No| X
     VQ -->|Yes| RI{"Worker stopped or<br/>fresh inventory unchanged?"}
     RI -->|No| X
-    RI -->|Yes| E["Stop remaining API and worker Pods"]
+    RI -->|Yes| E["Stop remaining writer Pods"]
     E --> DBP{"Separate database deployment?"}
-    DBP -->|Yes| PAUSE["Pause for migration and completed-history check"]
+    DBP -->|Yes| PAUSE["Pause for migration/history check"]
     PAUSE -->|Resume with checked history| F["Select Installation and run Helm hook"]
     DBP -->|No| F
     F --> G{"Helm completes?"}
-    G -->|No| H["Inspect migration and release before retry"]
+    G -->|No| H["Inspect migration/release before retry"]
     H --> C
     G -->|Yes| I["Verify OCC rollout"]
     D -->|Yes| I
@@ -62,14 +61,14 @@ graph TD
     J -->|No| AC{"Selected Agent still Ready?"}
     AC -->|"Yes or not selected"| K["Hand off application checks"]
     AC -->|No| X
-    J -->|Yes| W["Reconcile journal and receipts"]
-    W --> L["Deploy Agents still eligible"]
+    J -->|Yes| W["Reconcile journal/receipts"]
+    W --> L["Deploy eligible Agents"]
     L --> M{"Dispatch response known?"}
-    M -->|No| N["Inspect revision history and audit records"]
+    M -->|No| N["Inspect revision history/audit"]
     N -->|"Confirm accepted revision"| W
-    M -->|Refused| U["Name refusals and stop for correction"]
+    M -->|Refused| U["Stop for refusal correction"]
     U --> W
-    M -->|Yes| O["Check versions, Pods, and Doctor"]
+    M -->|Yes| O["Check versions/Pods/Doctor"]
     O --> K
 ```
 
@@ -79,28 +78,29 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md) before access.
-`HEAD` must match `--source-revision`; chart changes, symlinks and internal
-evidence/baseline aliases are rejected. Other edits and image provenance remain unchecked.
+Reject nonempty [Helm target/TLS overrides](../guides/deploy/production-upgrade.md),
+mismatched `HEAD`/`--source-revision`, chart edits/symlinks and internal evidence/baseline
+aliases before access. Other edits/image provenance are unchecked.
 
-Resume locks evidence paths, devices and inodes, including aliases; runtime upgrades lock dispatch journals.
+`yq -r` tests for nonempty `preprovisionedNamespace`. Continue on success
+with one `false`; otherwise refuse before access (`preprovisioned-namespace.err`).
 
-`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-and live mappings, then validates candidates. Invalid input or unwritable evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
-protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
-and wrapping one registration in an array. Removing empty
-`agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
-live comparison stays exact. Immutable reference switches require
-string keys. Startup validates controllers; broker checks references,
-not contents.
+Resume locks evidence paths/devices/inodes/aliases and runtime dispatch journals.
 
-`read_restart_inventory` requires complete authorized inventory with valid
-ownership, IDs and selection states. Retained running revisions need an accepted
+`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings and validates candidates.
+Invalid inputs/unwritable evidence cause `Cannot compare upgrade YAML`.
+Projections/`cmp` permit Slack directory proxy, curated Codex PluginDriver selection
+and array-wrapping one registration.
+Removing empty `agentNativeAdmin.sharedCookieDomain` affects only baseline projection;
+live comparison stays exact. Immutable reference switches require string keys.
+Startup validates controllers; broker checks only references.
+
+`read_restart_inventory` validates complete authorized inventory ownership, IDs and selection states. Retained running revisions require accepted
 [restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only `occ agent revision AGENT_ID REVISION_ID` still requires one owned
+Controller-only `occ agent revision AGENT_ID REVISION_ID` requires one owned
 revision with object-valued Harness settings; retain IDs and validation outcome.
 Drafts cannot substitute. Runtime upgrades record replacements; draft validation requires image
-support and size compliance. Quiescence is nonatomic; repository continuity is unverified.
+support/size compliance. Quiescence is nonatomic; repository continuity is unverified.
 
 `OpenClawController.deploymentInventorySnapshot` uses `findRevisionForBrowsing`:
 unreadable snapshots yield `unknown`; database/identity errors propagate. `getInstallationDeploymentInventory` invokes Compute outside State
@@ -110,11 +110,10 @@ selections. Changes refuse; owner failures yield `unknown`.
 Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
 Agents; allow pending repository cleanup.
 
-`prepare_upgrade` copies PostgreSQL's `run` result;
-`validate_controller_compatibility` invokes
-`scripts/upgrade-evidence.py:validate_compatibility` before preflight, checking
-runner/file consistency, passing data/IAM cases, cleanup and incumbent/candidate
-digests. Hashes bind resume, not execution authenticity or image source.
+`prepare_upgrade` copies PostgreSQL's `run` result. Before preflight,
+`validate_controller_compatibility` calls `scripts/upgrade-evidence.py:validate_compatibility`
+to check runner/file consistency, data/IAM success, cleanup and both image digests.
+Hashes bind resume, not authenticity or image source.
 This permits neither online migration nor rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
 
 `verify_agent_continuity` requires Agent read/operate, active AgentRevision read
@@ -126,31 +125,34 @@ architecture across matching control-plane nodes, including unready/cordoned one
 verifies the selected platform and blob hashes from Docker OCI exports
 (2 MiB/blob, 32 MiB total metadata).
 `scripts/upgrade-repository-image-probe.mjs` tests both images
-for recovery and refused reservations using synthetic inputs and a private receipt
-listener, recording image identities, requests and responses.
-Kubernetes image availability, receipt durability and disposal remain unverified. The broker hostname
-stays fixed. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
+for recovery and refused reservations with synthetic inputs/private receipt listener,
+recording image identities, requests and responses.
+Kubernetes image availability, receipt durability and disposal remain unverified; the broker hostname stays fixed. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
-For immutable reference switches, `prepare_upgrade` validates both identities,
-unrelated data and candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
-Changed immutable data requires a successor. Mutable data changes require a Kubernetes self-review of named-Secret update access. Denial stops preparation; an inconclusive review warns and continues.
-Replacement still requires update permission.
-Rendered Certificates must pass server-side dry-run admission before startup Jobs.
+For immutable switches, `prepare_upgrade` validates identities, unrelated data and
+candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
+Changed immutable data requires a successor. Mutable changes require a Kubernetes
+self-review of named-Secret update access: denial stops preparation; inconclusive
+review warns and continues. Replacement still requires update permission.
+Rendered Certificates require server-side dry-run admission.
 `scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
-mounts and service accounts into single-Pod Jobs with the candidate Secret,
-no retries and the selected deadline. `preflight_startup` verifies Job UID/child ownership, waiting for children and
-refusing replacements or multiple children. Job failure overrides child success.
+mounts and service accounts into single-Pod Jobs: candidate Secret, no retries,
+deadline. `preflight_startup` refuses changed UIDs or multiple children.
+Job failure overrides child success.
+
+`scripts/migrate-production.mjs --check` uses the initializer's migration container,
+environment, mounts and Pod identity before preflight success or shutdown.
+`scripts/migration-history.mjs:migrateWithHistory` checks receipts/catalog/grants under
+lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
 
 API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
-bundles; workers skip themes. Both resolve Drivers and Presets through
-`loadStartupConfigurationSnapshot` and `loadInstallationConfiguration` without database access.
-`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` formats
-typed configuration refusals with up to 32 field diagnostics through the API/worker
-log filter. Before and after log retrieval, it checks Job/Pod identity; it rejects NUL bytes
-before parsing markers and discards unbound output.
+bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration` without database access.
+`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` filters
+typed refusals to up to 32 field diagnostics. Preflight checks Job/Pod identity around log retrieval, rejects NUL bytes and
+discards unbound output. kubectl diagnostics stay separate from container logs.
 
-Bundled Kubernetes Compute Driver `preflight` uses Pod credentials (`inCluster`
-service account), matching startup. It refuses
+Kubernetes Compute `preflight` uses startup's Pod credentials (`inCluster` service account). It refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 on single-cluster upgrades.
 The image's `isName` validates `occ installation get` names
@@ -171,33 +173,37 @@ and `delete`. Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
 [upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
 
-Preflight Jobs retain default-deny labels and a copy of
+Startup Jobs retain default-deny labels and a copy of
 `openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
 Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
-Startup failures, timeouts and unconfirmed creates leave writers serving. Create errors: `preflight-<resource>-create.err`.
-`cleanup_preflight` requests UID-guarded foreground deletion, waiting up to
-30 seconds per Job for it, its UID-selected children and recorded child to disappear.
-Only then are original Secret/policy UIDs deleted. Ambiguous creates or unconfirmed
-consumer cleanup retain dependencies and refuse progress; replacements remain
-untouched. Reconcile `preflight-cleanup.err` before retrying.
+Initial preflight failures leave writers serving.
+Create errors: `preflight-<resource>-create.err`. `cleanup_preflight` requests
+UID-guarded foreground deletion, waiting up to 30 seconds per Job for it and all
+UID-selected/recorded children to disappear before deleting original Secret/policy UIDs.
+Ambiguous creates or unconfirmed consumer cleanup retain dependencies and refuse progress;
+replacements remain untouched. Reconcile `preflight-cleanup.err` before retrying.
 
-Reference switches recheck both Secrets after cleanup.
+Reference switches recheck Secrets after cleanup.
 `--preflight-only` leaves writers serving with non-resumable evidence.
-Preparation saves candidates, inventory and target/parameter hashes under lock. `scripts/upgrade-production-images:interrupted_upgrade`
-retains it and skips preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
-Before unlocking, confirm helper termination and reconcile accepted operations/resources. Freeze writers, autoscalers, Helm changes and drafts per the [production guide](../guides/deploy/production-upgrade.md).
+Preparation locks candidates, inventory and target/parameter hashes. `scripts/upgrade-production-images:interrupted_upgrade`
+retains the lock and skips cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
+Before unlocking, confirm termination and reconcile accepted operations/resources.
+Freeze writers, autoscalers, Helm changes and drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images` binds resume to the prepared inputs, directory,
-source and cluster, requalifies images, and rejects changed eligible nodes.
+Resume binds prepared inputs, directory, source and cluster, requalifies images,
+and rejects changed eligible nodes.
 Values must match baseline, candidate or the recorded predecessor and revision.
 Resume checks immutable intent, Secret identity and unrelated data. `verify_installation_switch`
-rechecks both immutable Secrets' UIDs/data. Pending Installation
-writes require a mutable Secret before scaling. Retries require migration-history review and terminal
-initializer Jobs/Pods. `new_attempt` fsyncs attempt-directory ancestors before
-publishing pointers.
+rechecks both immutable Secrets' UIDs/data. Pending Installation writes require a mutable Secret before scaling. Retries require
+migration-history review and terminal initializer Jobs/Pods. `new_attempt` fsyncs
+attempt-directory ancestors before publishing pointers.
+Before further quiescence, resume rechecks migrations in `migration-preflight-resume.*`;
+failure leaves stopped writers stopped. Reconcile unknown creates before same-directory
+`--resume`, retaining lock/evidence/journal. The original process handles signals;
+ordinary failures attempt cleanup.
 Ordinary resume skips Helm only at the exact submitted deployed revision.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
@@ -238,7 +244,7 @@ Identical interrupted staging can finish; staged retries cannot replace publishe
 intent. In separate mode,
 `scripts/migration-history.mjs:migrateWithHistory` verifies the completed candidate
 ledger, catalog and grants under the migration lock. Pending or unsupported history
-fails the hook. In hook mode the migrator applies pending SQL.
+fails the hook. Hook mode applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
@@ -331,15 +337,16 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 - Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
   preparation failures; `server-dry-run.txt` retains successful output. Inspect
-  `preflight-<api|worker>.log` and `-status.json` for rejected candidates.
+  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json` for rejected candidates;
+  use the current `migration-preflight-resume.*` directory on resume.
 - Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - For runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
-- Compare `before-workloads.json` and `after-workloads.json`. After a controller-only release, expect one same-image Pod template
-  rollout per affected Agent. Separately check
-  repository-bound versions affected by broker restart.
-- End-to-end proof requires credentialed production Kubernetes integration with
-  distinct images; command fixtures prove script control flow.
+- Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
+  roll affected Agents' same-image Pod templates once. Separately check broker-affected
+  repository versions.
+- End-to-end proof requires credentialed production Kubernetes with distinct images;
+  command fixtures prove control flow.
 
 ## Related docs
 
@@ -356,6 +363,12 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:41: Validate the preprovisioned Namespace boolean before access. (authoring-run/f66b42c3-90f1-4ca7-9805-a68727232c1e - 9c59ab71b8dfe3ea2816e3cee25182aeb4bcf172)
+
+- 2026-11-10 12:09: Clarify resume refusal and retained diagnostics. (authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b - d2d12783a23e1c06c27f3f932faa09ffb2f59110)
+
+- 2026-11-10 11:26: Check candidate migration history before writer shutdown. (authoring-run/50fc84bd-0fe3-4009-ba19-6703902571c7 - 5f649b35692c1508678ce6e2bc4db1603df1654b)
 
 - 2026-11-10 08:20: Classify unreadable snapshots. (authoring-run/f2adfad8-a3ec-4d5a-a92c-96e12e671ed8 - 6665c7f7e3c8ef13f8d7eb8962749840ff82f6c5)
 
