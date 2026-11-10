@@ -32,21 +32,30 @@ function record(value: unknown): Record<string, unknown> {
 /** Publish the passed runner result without copying diagnostics or inventing coverage. */
 export function projectSkipperRunnerReceipt(value: unknown) {
   const summary = record(value);
-  assert.equal(summary.version, 1);
-  assert.equal(summary.command, "run");
+  assert.ok(
+    summary.version === 1 && summary.command === "run",
+    "Invalid installed Skipper runner result",
+  );
   assert.ok(typeof summary.sourceSha === "string" && /^[a-f0-9]{40}$/.test(summary.sourceSha));
-  assert.equal(summary.status, "passed");
-  assert.equal(summary.exitCode, 0);
-  assert.deepEqual(summary.counts, passedCounts);
-  assert.deepEqual(summary.issues, []);
+  assert.ok(
+    summary.status === "passed" &&
+      summary.exitCode === 0 &&
+      isDeepStrictEqual(summary.counts, passedCounts) &&
+      isDeepStrictEqual(summary.issues, []),
+    "Invalid installed Skipper runner outcome",
+  );
   assert.ok(Array.isArray(summary.files) && summary.files.length === 1);
   const file = record(summary.files[0]);
-  assert.equal(file.path, installedTestPath);
-  assert.deepEqual(file.cleanup, { status: "passed" });
+  assert.ok(
+    file.path === installedTestPath && isDeepStrictEqual(file.cleanup, { status: "passed" }),
+    "Invalid installed Skipper file result",
+  );
   assert.ok(Array.isArray(file.tests) && file.tests.length === 1);
   const test = record(file.tests[0]);
-  assert.equal(test.name, installedTestName);
-  assert.equal(test.status, "passed");
+  assert.ok(
+    test.name === installedTestName && test.status === "passed",
+    "Invalid installed Skipper test result",
+  );
   const { durationMs } = test;
   assert.ok(typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0);
   const scope = summary.scope === "full" || summary.scope === "focused" ? summary.scope : undefined;

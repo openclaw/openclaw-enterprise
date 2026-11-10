@@ -93,6 +93,24 @@ test("installed Skipper publishes only verified coverage evidence from the runne
     exercisedLaneStatus(projectSkipperRunnerReceipt({ ...summary, scope: "focused" }), expected),
     undefined,
   );
+
+  const malformed = structuredClone(summary);
+  malformed.files[0].tests[0].name = canary;
+  const projection = new URL("../../scripts/ci/skipper-release.ts", import.meta.url);
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { readFileSync } from "node:fs";
+import { projectSkipperRunnerReceipt } from ${JSON.stringify(projection.href)};
+projectSkipperRunnerReceipt(JSON.parse(readFileSync(0, "utf8")));`,
+    ],
+    { encoding: "utf8", input: JSON.stringify(malformed) },
+  );
+  assert.equal(result.status, 1);
+  assert.ok(!result.stderr.includes(canary), "stderr echoed rejected private input");
+  assert.match(result.stderr, /Invalid installed Skipper test result/);
 });
 
 async function fixture(t) {
