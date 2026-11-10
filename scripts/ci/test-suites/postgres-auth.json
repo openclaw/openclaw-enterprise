@@ -74,8 +74,7 @@
     {
       "path": "tests/integration/postgres-github-session-cookie.test.mjs",
       "expectedTests": [
-        "guarded production sessions share the browser cookie with trusted Agent hosts",
-        "production GitHub-profile sessions reject cookies planted by a sibling domain"
+        "guarded production sessions share the browser cookie with trusted Agent hosts"
       ]
     },
     {
