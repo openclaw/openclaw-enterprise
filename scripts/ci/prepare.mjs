@@ -979,6 +979,7 @@ const imageCacheLanes = new Map([
   ["slack", { localStore: false }],
   ["production-tui", { localStore: false }],
   ["gateway-routing", { localStore: false }],
+  ["k3d-otel", { localStore: false }],
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
   ["qa-matrix", { localStore: false }],

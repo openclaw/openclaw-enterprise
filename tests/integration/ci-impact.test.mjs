@@ -1386,7 +1386,7 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
     lanes.filter(([, job]) => job.env.NODE_BASE_IMAGE === environment).length,
   );
   const names = lanes.map(([name]) => name);
-  for (const lane of ["gateway-routing", "slack", "openshell", "qa-matrix"]) {
+  for (const lane of ["gateway-routing", "slack", "openshell", "qa-matrix", "dev-up-k3d"]) {
     assert.ok(names.includes(lane), lane);
   }
 });
@@ -1623,6 +1623,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
     pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
   );
   const cached = [...imageCacheLanes.keys()].sort();
+  assert.ok(cached.includes("k3d-otel"), "OTEL preparation restores the image cache");
   const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
   const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
   const mode = action.runs.steps.find(({ id }) => id === "image-mode");

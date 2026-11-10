@@ -768,17 +768,35 @@ describe("CI preparation", { concurrency }, () => {
 
   // Only main's warm job exports: a lane export on main could land after a newer
   // commit's warm export and replace main's cache with older layers.
-  test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
+  test("image-building lanes restore read-only caches, on main pushes too", async (t) => {
     const source = JSON.parse(
       await readFile(join(repositoryRoot, "deploy/runtime/openclaw-source.json"), "utf8"),
     );
-    for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
-      const commands = await fixtureImageCommands(t, "success", "images-packaging", {
+    for (const [lane, event, scenario] of [
+      ...["pull_request", "merge_group", "workflow_dispatch", "push"].map((event) => [
+        "images-packaging",
+        event,
+        "success",
+      ]),
+      ["k3d-otel", "push", "save-failed"],
+    ]) {
+      const commands = await fixtureImageCommands(t, scenario, lane, {
         ...imageCacheEnv,
         GITHUB_EVENT_NAME: event,
+        NODE_BASE_IMAGE: packagingNodeBaseImage,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENAI_MODEL: "synthetic-model",
       });
       const prepared = await commands.prepare();
-      assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      if (lane === "k3d-otel") {
+        // Stop at image export after both real preparation builds, before routing
+        // downloads. This proves cache orchestration, not Docker or OTLP execution.
+        assert.equal(prepared.status, 1, prepared.stderr);
+        assert.match(prepared.stderr, /synthetic export failure/);
+        await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+      } else {
+        assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
+      }
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
       assert.equal(builds.length, 2, event);
@@ -814,7 +832,7 @@ describe("CI preparation", { concurrency }, () => {
       assert.doesNotMatch(
         JSON.stringify(calls) +
           (await readFile(commands.statePath, "utf8")) +
-          (await readFile(commands.githubEnv, "utf8")) +
+          (prepared.status === 0 ? await readFile(commands.githubEnv, "utf8") : "") +
           prepared.stdout +
           prepared.stderr,
         /synthetic-cache-credential/,

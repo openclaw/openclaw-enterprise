@@ -484,6 +484,8 @@ jobs:
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d') }}
     timeout-minutes: 180
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
