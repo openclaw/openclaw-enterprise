@@ -3,6 +3,7 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
   ConnectionTemplate,
+  InferencePrivatePeer,
   ConnectionTemplateVersion,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
@@ -98,6 +99,9 @@ function staticVersionFromRow(
     templateId: text(row, "id"),
     version: integer(row, "current_version"),
     createdAt: timestamp(row, "static_created_at"),
+    ...(row.static_private_peer != null && {
+      privatePeer: row.static_private_peer as InferencePrivatePeer,
+    }),
     baseUrl,
     protocol,
     destinations: [inferenceKeyDestination(baseUrl, protocol)],
@@ -126,8 +130,15 @@ async function insertVersion(
 ): Promise<void> {
   if (version.mode === "static_bearer") {
     await client.query(
-      "INSERT INTO occ.static_key_template_versions(template_id,version,base_url,protocol,created_at) VALUES($1,$2,$3,$4,$5)",
-      [version.templateId, version.version, version.baseUrl, version.protocol, version.createdAt],
+      "INSERT INTO occ.static_key_template_versions(template_id,version,base_url,protocol,created_at,private_peer) VALUES($1,$2,$3,$4,$5,$6)",
+      [
+        version.templateId,
+        version.version,
+        version.baseUrl,
+        version.protocol,
+        version.createdAt,
+        version.privatePeer ?? null,
+      ],
     );
     return;
   }
@@ -163,7 +174,7 @@ export function postgresConnectionTemplates(
     (
       await client.query(
         `SELECT t.id, t.namespace_id, t.display_name,t.created_at,t.static_key,t.current_version,
-          k.base_url AS static_base_url,k.protocol AS static_protocol,k.created_at AS static_created_at, ${versionColumns}
+          k.base_url AS static_base_url,k.protocol AS static_protocol,k.private_peer AS static_private_peer,k.created_at AS static_created_at, ${versionColumns}
          FROM occ.connection_templates t
          LEFT JOIN occ.oauth_connection_template_versions v ON v.template_id = t.id AND v.version = t.current_oauth_version
          LEFT JOIN occ.static_key_template_versions k ON k.template_id=t.id AND k.version=t.current_static_version

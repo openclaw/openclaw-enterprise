@@ -182,6 +182,8 @@ import type {
   ModelProvider,
   ModelProviderSettings,
   ModelProviderView,
+  InferencePrivatePeer,
+  InferencePrivatePeerInput,
   InferenceProtocol,
   StaticKeyGrant,
   CredentialRefreshDriver,
@@ -1093,6 +1095,7 @@ type TemplateInput =
       readonly mode: "static_bearer";
       readonly baseUrl: string;
       readonly protocol: InferenceProtocol;
+      readonly privatePeer?: InferencePrivatePeerInput;
     }
   | (ApprovedTemplateSettings &
       (
@@ -5706,7 +5709,22 @@ export class OpenClawController {
   ): Promise<ConnectionTemplateSettings> {
     if (input.mode === "static_bearer") {
       const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
+      let privatePeer: InferencePrivatePeer | undefined;
+      if (input.privatePeer) {
+        const compute = this.selectedDriver("compute");
+        if (!compute.resolveInferencePrivatePeer) {
+          throw new ResourceStateConflictError(
+            "The selected Compute Driver does not support private inference destinations.",
+          );
+        }
+        privatePeer = await compute.resolveInferencePrivatePeer(input.privatePeer, baseUrl);
+      } else if (new URL(baseUrl).hostname.endsWith(".svc.cluster.local")) {
+        throw new ResourceStateConflictError(
+          "Select the Kubernetes Service for this inference endpoint.",
+        );
+      }
       return {
+        ...(privatePeer && { privatePeer }),
         mode: input.mode,
         baseUrl,
         protocol: input.protocol,
@@ -8817,8 +8835,9 @@ export class OpenClawController {
             "Choose the current static-key template version available to this Namespace.",
           );
         }
-        const { baseUrl, protocol, version } = template.current;
+        const { baseUrl, protocol, version, privatePeer } = template.current;
         staticKeyGrant = {
+          ...(privatePeer && { privatePeer }),
           connectionTemplateId: template.id,
           connectionTemplateVersion: version,
           baseUrl,
