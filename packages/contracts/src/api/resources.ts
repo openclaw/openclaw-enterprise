@@ -690,6 +690,7 @@ export const CredentialSourceStatusSchema = Type.Object(
 
 import { ConnectionTemplateId } from "./common.ts";
 import { InferenceProtocolSchema } from "./model-providers.ts";
+
 export const CredentialSourceSchema = Type.Object(
   {
     id: CredentialSourceId,
