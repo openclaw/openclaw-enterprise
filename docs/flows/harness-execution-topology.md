@@ -1,15 +1,15 @@
 ---
 created: 2026-08-21
-updated: 2026-11-05
-last_updated_session: authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2
+updated: 2026-11-06
+last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes Gateway settings, Harness policy, placement and authentication. Compute prepares
-workloads, publishes guarded routes and retires predecessors before activation audit.
+Deployment saves settings and authentication. Compute prepares workloads, publishes
+guarded routes, and retires predecessors.
 
 ## Entry Points
 
@@ -26,7 +26,10 @@ workloads, publishes guarded routes and retires predecessors before activation a
 ```mermaid
 graph TD
   A["Authorize Agent and Configuration"] --> B["Resolve runtime, placement and native HTTP transport"]
-  B --> C["Freeze configuration, Gateway managed mode, Harness identity and authentication"]
+  B --> B1["Compute resolves Harness settings"]
+  B1 --> B2{"Source authorizes destination?"}
+  B2 -->|No| H
+  B2 -->|Yes| C["Freeze requested and resolved settings with authentication"]
   C --> D["Claim and reauthorize version work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
@@ -64,17 +67,15 @@ modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before version creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.
-The saved version keeps [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode), native configuration, approved Harness identity/version, mode,
-Compute selection, and Agent ServicePrincipal unchanged. Production admits approved
-`openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
-the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment and the Installation has native-worker support.
-Pinned runtime support is automatic; custom images can declare it at startup.
-An associated
-`access_token` additionally requires dedicated Codex; the frozen account
-contains only its OCC identity, credential kind, and opaque Secret reference.
-`KubernetesComputeDriver.admitRevision` saves the configured OpenAI-compatible
-API-key provider fingerprint in `AgentRevision.compute.admission`.
+The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
+native configuration, Harness identity/version/mode, Compute selection, and Agent
+ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
+Custom images must declare native-worker support. An associated `access_token` requires dedicated Codex;
+its snapshot contains the OCC identity, credential kind, and opaque Secret reference.
+`KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
+admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
+`validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
+the provider.
 
 ### 2. Claim work and realize the approved topology
 
@@ -178,7 +179,11 @@ Sandbox receives projections and login mode through `HarnessWorkloadRequirements
 Compute templates, allow policies and peers require the
 [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
-For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonterminating `Ready=True` Pod matching the active Service's Agent, Agent revision ID, and role labels. Malformed observations enter cleanup; activation rechecks before routing changes. The [readiness contract](../reference/drivers/kubernetes-compute.md#requirements) owns candidate rules and observation limits.
+`providerHarnessReady` requires one nonterminating `Ready=True` Pod matching the active Service's Agent, revision and role labels. Malformed observations trigger cleanup; activation rechecks before routing. See [candidate rules and observation limits](../reference/drivers/kubernetes-compute.md#requirements).
+
+After authenticated HTTP 101 and accept-key validation,
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
+sends a masked normal-close frame without a Harness request. Cleanup is bounded.
 
 ### 3. Publish safely and complete activation once
 
@@ -192,10 +197,11 @@ claim leases. Failed preparation or preparing or activating the predecessor clea
 its record. New exclusive versions supersede old reconciliation and maintenance
 without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
 For API-key inference, `modelProviderConfiguration` in
-`apps/controller/src/drivers/compute/model-provider.ts` translates the shared
-Installation provider for OpenClaw. `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/model-provider.ts` translates the provider
+saved in the revision for OpenClaw. `pluginRuntimeSnapshot` in
 `apps/controller/src/drivers/compute/kubernetes/index.ts` supplies it to Codex.
-Recovery repeats this check.
+Recovery repeats snapshot validation without reading Installation defaults.
+Missing or inconsistent saved settings refuse execution before workload effects.
 Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
@@ -350,6 +356,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
+
+- 2026-11-05 21:24: Trace probe closure. (authoring-run/61309ab1-dd2a-4cb0-99b5-e2a9485fe91f - fdb3fbd93a5295e37ad7814a5197029f2b615346)
 
 - 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
 

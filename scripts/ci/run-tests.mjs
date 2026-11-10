@@ -1,8 +1,22 @@
 import { spawn, spawnSync } from "node:child_process";
-import { constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
@@ -15,8 +29,15 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
-import { qualifySkipperRelease } from "./skipper-release.ts";
+import {
+  exercisedLaneStatus,
+  exercisedAssertionFailures,
+  recordsCoverage,
+} from "./full-integration-coverage.ts";
+import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { collectInstallationPhases } from "./openshell-installation-phase.ts";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -119,6 +140,7 @@ function normalizeFile(file, laneName, index, issues) {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
+    optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
 }
 
@@ -773,6 +795,7 @@ const timeoutGraceMs = 5_000;
 // Process groups of the Node test runners still running, so a signal that ends this
 // runner can end them too: they run detached, out of the terminal's process group.
 const liveGroups = new Set();
+const liveCase2Directories = new Set();
 
 function killGroup(pgid, signal) {
   // Membership is the real guard: only a group this runner spawned and whose
@@ -805,6 +828,9 @@ function forwardSignal(signal) {
   // the signal, and nothing reads the runners' reports any more.
   for (const pgid of liveGroups) {
     killGroup(pgid, "SIGKILL");
+  }
+  for (const directory of liveCase2Directories) {
+    removeK3dCase2Directory(directory);
   }
   for (const other of forwardedSignals) {
     process.removeListener(other, forwardSignal);
@@ -839,7 +865,7 @@ function addLiveGroup(pgid) {
 // gets SIGKILL once the grace period is over, and whenever the runner exits:
 // anything still in its group then has outlived its file. ENOBUFS discards the
 // rest of the output, so it kills the group at once.
-function runNode(args, { cwd, env, timeout }) {
+function runNode(args, { cwd, env, timeout, onProgress }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
@@ -883,18 +909,35 @@ function runNode(args, { cwd, env, timeout }) {
     }
     child.stdin.end();
     child.stderr.resume();
+    const readProgress = boundedProgressLines((line) => {
+      // Only this small closed record reaches the live log. Ordinary reporter
+      // output still waits for final accounting and failure redaction below.
+      try {
+        const event = JSON.parse(line);
+        const progress =
+          event?.type === "test:progress" ? openShellProgress(event.data) : undefined;
+        if (progress) {
+          onProgress(progress);
+        }
+      } catch {
+        // Final parsing owns malformed reporter output and its failure result.
+      }
+    });
     child.stdout.on("data", (chunk) => {
       if (error?.code === "ENOBUFS") {
         return;
       }
       if (bytes + chunk.length > maxReporterBytes) {
-        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        const admitted = chunk.subarray(0, maxReporterBytes - bytes);
+        chunks.push(admitted);
         bytes = maxReporterBytes;
+        readProgress(admitted.toString("utf8"));
         stop("ENOBUFS");
         return;
       }
       chunks.push(chunk);
       bytes += chunk.length;
+      readProgress(chunk.toString("utf8"));
     });
     const finish = (status, signal) => {
       if (settled) {
@@ -907,6 +950,7 @@ function runNode(args, { cwd, env, timeout }) {
         status,
         signal,
         stdout: Buffer.concat(chunks).toString("utf8"),
+        processGroupId: pgid,
         ...(error ? { error } : {}),
       });
     };
@@ -1082,6 +1126,8 @@ function imageDigests(env) {
     pairBroker: "OCC_PROBE_BROKER_IMAGE",
     pairOldController: "OCC_PROBE_OLD_CONTROLLER_IMAGE",
     pairOldBroker: "OCC_PROBE_OLD_BROKER_IMAGE",
+    releasedController: "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+    candidateController: "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
   };
   return Object.fromEntries(
     Object.entries(names).flatMap(([role, name]) => {
@@ -1132,6 +1178,170 @@ function validateExpectedTests(path, expectedTests, tests, issues) {
         }),
       );
     }
+  }
+}
+
+const case2PhaseEnv = "OCC_TEST_K3D_CASE2_PHASE_FILE";
+
+function sameDirectory(path, identity) {
+  try {
+    const current = lstatSync(path);
+    return (
+      current.isDirectory() &&
+      current.dev === identity.dev &&
+      current.ino === identity.ino &&
+      current.uid === identity.uid &&
+      (current.mode & 0o777) === 0o700
+    );
+  } catch {
+    return false;
+  }
+}
+
+function openK3dCase2Directory(statePath) {
+  if (process.platform !== "linux") {
+    return undefined;
+  }
+  let entry;
+  let parentFd;
+  let fd;
+  let identity;
+  try {
+    const parent = realpathSync(dirname(statePath));
+    parentFd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const parentStatus = fstatSync(parentFd);
+    const uid = process.getuid();
+    // Directory entries must remain under the runner's control through cleanup.
+    if (parentStatus.uid !== uid || (parentStatus.mode & 0o022) !== 0) {
+      throw new Error("case-2 state parent is not private to the runner");
+    }
+    entry = mkdtempSync(`/proc/self/fd/${parentFd}/.k3d-case2-`);
+    const path = join(parent, basename(entry));
+    // Establish ownership from the opened descriptor before checking either name.
+    fd = openSync(entry, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd);
+    if (opened.uid !== uid || (opened.mode & 0o777) !== 0o700 || !sameDirectory(entry, opened)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    identity = opened;
+    if (!sameDirectory(path, identity)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    const directory = { path, entry, parentFd, fd, identity };
+    liveCase2Directories.add(directory);
+    return directory;
+  } catch {
+    if (entry && identity && sameDirectory(entry, identity)) {
+      try {
+        rmdirSync(entry);
+      } catch {
+        console.error("[run:k3d-model] case-2 receipt directory could not be removed");
+      }
+    }
+    for (const descriptor of [fd, parentFd]) {
+      if (descriptor !== undefined) {
+        closeSync(descriptor);
+      }
+    }
+    return undefined;
+  }
+}
+
+function removeK3dCase2Directory(directory) {
+  if (!liveCase2Directories.delete(directory)) {
+    return;
+  }
+  try {
+    // Only unlink the two receipt names in the opened directory. Never chase a
+    // replacement path or recursively remove child-controlled contents.
+    for (const name of ["case-2.json", "case-2.json.tmp"]) {
+      try {
+        unlinkSync(`/proc/self/fd/${directory.fd}/${name}`);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+    if (!sameDirectory(directory.entry, directory.identity)) {
+      throw new Error("case-2 directory identity changed");
+    }
+    rmdirSync(directory.entry);
+  } catch {
+    console.error("[run:k3d-model] case-2 receipt directory could not be removed");
+  } finally {
+    for (const descriptor of [directory.fd, directory.parentFd]) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        console.error("[run:k3d-model] case-2 receipt descriptor could not be closed");
+      }
+    }
+  }
+}
+
+function readK3dCase2Phase(directory) {
+  const limit = 512;
+  if (!sameDirectory(directory.path, directory.identity)) {
+    return undefined;
+  }
+  try {
+    const fd = openSync(
+      `/proc/self/fd/${directory.fd}/case-2.json`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const initial = fstatSync(fd);
+      if (!initial.isFile() || initial.nlink !== 1 || initial.size > limit) {
+        return undefined;
+      }
+      const bytes = Buffer.alloc(limit + 1);
+      let count = 0;
+      while (count < bytes.length) {
+        const read = readSync(fd, bytes, count, bytes.length - count, count);
+        if (read === 0) {
+          break;
+        }
+        count += read;
+      }
+      const final = fstatSync(fd);
+      if (
+        count > limit ||
+        count !== initial.size ||
+        count !== final.size ||
+        final.nlink !== 1 ||
+        !sameDirectory(directory.path, directory.identity)
+      ) {
+        return undefined;
+      }
+      const row = JSON.parse(bytes.subarray(0, count).toString("utf8"));
+      if (!row || Object.keys(row).length !== 7) {
+        return undefined;
+      }
+      const { version, caseId, setupEntered, setupCompleted, bodyEntered, firstError, teardown } =
+        row;
+      if (
+        version !== 1 ||
+        caseId !== "dedicated-skill-source-policy" ||
+        setupEntered !== true ||
+        typeof setupCompleted !== "boolean" ||
+        typeof bodyEntered !== "boolean" ||
+        (bodyEntered && !setupCompleted) ||
+        (setupCompleted && !bodyEntered && firstError !== "unobserved") ||
+        !["unobserved", "assertion", "timeout", "abort", "aggregate", "other"].includes(
+          firstError,
+        ) ||
+        !["unobserved", "entered", "completed", "failed"].includes(teardown)
+      ) {
+        return undefined;
+      }
+      return { version, caseId, setupEntered, setupCompleted, bodyEntered, firstError, teardown };
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // A missing or malformed child receipt supplies no phase evidence.
+    return undefined;
   }
 }
 
@@ -1222,7 +1432,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
-  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  const env = mergeEnv(
+    baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
+    lane.env,
+    prepared.env,
+  );
   for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
@@ -1238,11 +1452,16 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let tests = [];
   let skippedSuites = [];
   let fileFailure;
+  let testRunExercised = false;
   let details;
   let nodeElapsedMs;
   let agentActivity;
+  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationPhases = collectInstallationPhases();
   let measurements = [];
   let timeout;
+  let case2Directory;
+  let case2Phase;
   try {
     if (issues.length === 0) {
       agentActivity = await startAgentNamespaceCapture({
@@ -1257,12 +1476,36 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       });
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
+      delete env[case2PhaseEnv];
+      if (
+        lane.name === "k3d-model" &&
+        relativePath === "tests/integration/harness-topology-k3d-real.test.mjs"
+      ) {
+        case2Directory = openK3dCase2Directory(statePath);
+        if (case2Directory) {
+          const { dev, ino } = case2Directory.identity;
+          env[case2PhaseEnv] = JSON.stringify({ path: case2Directory.path, dev, ino });
+        }
+      }
+      if (installationProgress) {
+        env.OCC_TEST_OPENSHELL_INSTALLATION_PROGRESS = "1";
+      }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
+        onProgress: (progress) => {
+          const { kind, stage, outcome } = progress;
+          if (kind === "openshell-installation") {
+            if (installationProgress) {
+              installationPhases.accept(progress);
+            }
+            return;
+          }
+          process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
+        },
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
@@ -1292,19 +1535,40 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      tests = events
-        .filter((event) => isRealTestEvent(event, absolutePath))
-        .map((event) => ({
-          name: event.data.name,
-          status: testStatus(event),
-          file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
-          line: event.data.line,
-          column: event.data.column,
-          skip: event.data.skip,
-          todo: event.data.todo,
-          error: failureError(event.data.error),
-          durationMs: event.data.durationMs,
-        }));
+      const terminalEvents = events.filter(
+        (event) =>
+          isRealTestEvent(event, absolutePath) ||
+          ((event.type === "test:pass" || event.type === "test:fail") &&
+            event.data?.testType === "suite"),
+      );
+      const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      let coverageAssertions;
+      if (
+        recordsCoverage(process.env.GITHUB_WORKFLOW) &&
+        !nodeResult.error &&
+        !nodeResult.signal &&
+        !rootFailure &&
+        !events.some((event) => event.type === "test:interrupted")
+      ) {
+        coverageAssertions = exercisedAssertionFailures(
+          events.filter((event) => event.type === "test:summary").map((event) => event.data),
+          terminalEvents,
+          nodeResult.status,
+        );
+        testRunExercised = coverageAssertions !== undefined;
+      }
+      tests = caseEvents.map((event) => ({
+        name: event.data.name,
+        status: testStatus(event),
+        ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
+        file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
+        line: event.data.line,
+        column: event.data.column,
+        skip: event.data.skip,
+        todo: event.data.todo,
+        error: failureError(event.data.error),
+        durationMs: event.data.durationMs,
+      }));
       // A skipped describe() never registers its tests, so only its suite event shows the skip.
       skippedSuites = events
         .filter(
@@ -1324,6 +1588,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       }),
     );
   } finally {
+    delete env[case2PhaseEnv];
+    if (case2Directory) {
+      case2Phase = readK3dCase2Phase(case2Directory);
+      removeK3dCase2Directory(case2Directory);
+    }
     // Capture before cleanup so passing k3d runs keep their Agent Pod timeline.
     // The capture updates the lane's diagnostics file; keep it out of other setup.
     await setup(async () => agentActivity?.finish({ env }));
@@ -1434,15 +1703,22 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     });
   }
 
+  const exercised =
+    testRunExercised &&
+    issues.every(({ code, status }) => code === "expected-test-not-passed" && status === "failed");
   return {
     path: relativePath,
     status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(exercised ? { exercised: true } : {}),
+    ...(nodeResult?.processGroupId ? { processGroupId: nodeResult.processGroupId } : {}),
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
+    ...(case2Phase ? { case2Phase } : {}),
+    ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),
@@ -1671,10 +1947,34 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
   }
 
-  const observedFiles = new Map(summary.files.map((file) => [file.path, file]));
+  const observedFiles = Map.groupBy(summary.files, (file) => file.path);
+  for (const [file, records] of observedFiles) {
+    if (records.length > 1) {
+      const expectedFile = lane.files.find((entry) => entry.path === file);
+      if (expectedFile) {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for ${expectedFile.path}`,
+            { lane: laneName, file: expectedFile.path },
+          ),
+        );
+      } else {
+        issues.push(
+          issue(
+            "duplicate-lane-file",
+            `lane ${laneName} has duplicate file evidence for an unregistered file`,
+            {
+              lane: laneName,
+            },
+          ),
+        );
+      }
+    }
+  }
   for (const expectedFile of lane.files) {
-    const observed = observedFiles.get(expectedFile.path);
-    if (!observed) {
+    const records = observedFiles.get(expectedFile.path);
+    if (!records) {
       issues.push(
         issue("missing-lane-evidence", `lane ${laneName} is missing file evidence`, {
           lane: laneName,
@@ -1683,37 +1983,44 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       );
       continue;
     }
-    if (observed.status !== "passed") {
-      issues.push(
-        issue("lane-file-failed", `lane ${laneName} file did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-          status: observed.status,
-        }),
-      );
-    }
-    if (
-      !observed.counts ||
-      !Number.isInteger(observed.counts.total) ||
-      observed.counts.total < 1 ||
-      !Array.isArray(observed.tests)
-    ) {
-      issues.push(
-        issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
-    } else {
-      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
-    }
-    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
-      issues.push(
-        issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
-          lane: laneName,
-          file: expectedFile.path,
-        }),
-      );
+    for (const observed of records) {
+      if (observed.status !== "passed") {
+        issues.push(
+          issue("lane-file-failed", `lane ${laneName} file did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+            status: observed.status,
+          }),
+        );
+      }
+      if (
+        !observed.counts ||
+        !Number.isInteger(observed.counts.total) ||
+        observed.counts.total < 1 ||
+        !Array.isArray(observed.tests)
+      ) {
+        issues.push(
+          issue("missing-lane-evidence", `lane ${laneName} file has no test evidence`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      } else {
+        validateExpectedTests(
+          expectedFile.path,
+          expectedFile.expectedTests,
+          observed.tests,
+          issues,
+        );
+      }
+      if (observed.cleanup != null && observed.cleanup.status !== "passed") {
+        issues.push(
+          issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
+            lane: laneName,
+            file: expectedFile.path,
+          }),
+        );
+      }
     }
   }
 }
@@ -1754,6 +2061,16 @@ async function aggregateGroup(
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
+  const exercised = new Map();
+  const recordFullCoverage =
+    process.env.GITHUB_WORKFLOW === "Full Integration" &&
+    process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
+    groupName === "full" &&
+    selection === undefined &&
+    Boolean(needsPath) &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    source.sha === process.env.GITHUB_SHA;
   const currentSha = source.sha;
 
   if (!laneNames) {
@@ -1790,6 +2107,19 @@ async function aggregateGroup(
               }),
             );
           }
+          if (
+            need?.lanes !== undefined &&
+            (!Array.isArray(need.lanes) ||
+              need.lanes.length === 0 ||
+              new Set(need.lanes).size !== need.lanes.length ||
+              !need.lanes.every((lane) => typeof lane === "string" && lane.length > 0))
+          ) {
+            issues.push(
+              issue("invalid-need-lanes", `needs JSON has invalid lanes for ${needName}`, {
+                need: needName,
+              }),
+            );
+          }
         }
       }
     } catch (error) {
@@ -1801,9 +2131,18 @@ async function aggregateGroup(
 
   for (const laneName of laneNames ?? []) {
     if (needs) {
-      const need = needs[laneName];
-      if (!need) {
+      const owners = Object.entries(needs).filter(
+        ([name, need]) =>
+          name === laneName || (Array.isArray(need?.lanes) && need.lanes.includes(laneName)),
+      );
+      if (owners.length === 0) {
         issues.push(issue("missing-need", `needs JSON is missing ${laneName}`, { lane: laneName }));
+      } else if (owners.length > 1) {
+        issues.push(
+          issue("ambiguous-need", `needs JSON has multiple jobs for ${laneName}`, {
+            lane: laneName,
+          }),
+        );
       }
     }
 
@@ -1821,25 +2160,11 @@ async function aggregateGroup(
     try {
       const summary = await readJson(resultPath);
       const lane = manifest.lanes.get(laneName);
-      lanes.push({
-        lane: summary.lane,
-        status: summary.status,
-        exitCode: summary.exitCode,
-        sourceSha: summary.sourceSha,
-      });
       if (summary.lane !== laneName) {
         issues.push(
           issue("lane-output-mismatch", `result file for ${laneName} reports ${summary.lane}`, {
             lane: laneName,
             reportedLane: summary.lane,
-          }),
-        );
-      }
-      if (summary.status !== "passed") {
-        issues.push(
-          issue("lane-failed", `lane ${laneName} did not pass`, {
-            lane: laneName,
-            status: summary.status,
           }),
         );
       }
@@ -1851,6 +2176,38 @@ async function aggregateGroup(
             observedSourceSha: summary.sourceSha,
           }),
         );
+      }
+      if (summary.lane !== laneName || summary.sourceSha !== currentSha) {
+        continue;
+      }
+      lanes.push({
+        lane: summary.lane,
+        status: summary.status,
+        exitCode: summary.exitCode,
+        sourceSha: summary.sourceSha,
+      });
+      if (summary.status !== "passed") {
+        issues.push(
+          issue("lane-failed", `lane ${laneName} did not pass`, {
+            lane: laneName,
+            status: summary.status,
+          }),
+        );
+      }
+      if (recordFullCoverage && lane) {
+        let outcome = exercisedLaneStatus(summary, lane.files);
+        if (outcome && laneName === "skipper-prepared-git-installed") {
+          try {
+            const projected = projectSkipperRunnerReceipt(summary);
+            outcome = exercisedLaneStatus({ ...projected, cleanup: summary.cleanup }, lane.files);
+          } catch {
+            // Its owning contract requires file cleanup even when other lanes do not.
+            outcome = undefined;
+          }
+        }
+        if (outcome) {
+          exercised.set(laneName, outcome);
+        }
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
@@ -1882,11 +2239,31 @@ async function aggregateGroup(
     }
   }
 
+  const fullCoverageExercised =
+    recordFullCoverage &&
+    laneNames?.length > 0 &&
+    exercised.size === laneNames.length &&
+    issues.every((entry) => {
+      if (entry.code === "lane-failed") {
+        return exercised.get(entry.lane) === "failed";
+      }
+      if (entry.code !== "need-not-success" || entry.result !== "failure") {
+        return false;
+      }
+      const ownedLanes = needs?.[entry.need]?.lanes ?? [entry.need];
+      return (
+        Array.isArray(ownedLanes) &&
+        ownedLanes.length > 0 &&
+        ownedLanes.every((lane) => exercised.has(lane))
+      );
+    });
+
   return {
     version: 1,
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(fullCoverageExercised ? { fullCoverageExercised: true } : {}),
     ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
@@ -1903,7 +2280,10 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+  const manifest = normalizeManifest(
+    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+    manifestPath,
+  );
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {
@@ -1948,6 +2328,21 @@ async function main() {
     options.lanes,
     options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
+  if (
+    options["full-coverage-marker"] &&
+    summary.fullCoverageExercised &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    summary.sourceSha === process.env.GITHUB_SHA &&
+    process.env.GITHUB_OUTPUT
+  ) {
+    try {
+      await writeFile(options["full-coverage-marker"], "1\n", { flag: "wx" });
+      await appendFile(process.env.GITHUB_OUTPUT, "full_coverage_exercised=true\n");
+    } catch {
+      process.stderr.write("run-tests: full coverage marker could not be written.\n");
+    }
+  }
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
 }

@@ -1,15 +1,14 @@
 ---
 created: 2026-09-01
-updated: 2026-11-03
-last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
+updated: 2026-11-10
+last_updated_session: authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1
 ---
 
 # Platform console request flow
 
 ## Overview
 
-`/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior.
+[Console reference](../reference/console.md).
 
 ## Entry Points
 
@@ -33,13 +32,13 @@ graph TD
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
     B --> B1["Recheck session and Namespace access"]
     B1 -->|no session| C["Login"]
-    C -->|GitHub| C1["Start GitHub sign-in"]
+    C -->|OIDC/Google| C1["External sign-in"]
     B1 -->|authenticated recovery key| NR["Resolve authorized Agent key"]
     NR -->|allowed| D
     NR -->|unavailable| D
     C1 -->|callback redirect| B1
     B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
-    D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
+    D -->|Debug mode enabled| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
@@ -106,87 +105,80 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
-`apps/controller/src/api-startup.mjs:startApi` loads an optional
-[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
-ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mts:brandContents`
-renders the name as text. `/console/theme/` serves only referenced images and
-generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
-API restart can replace the theme.
+`apps/controller/src/api-startup.mjs:startApi` loads the [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes branding;
+`console/shell.mts:brandContents` renders names as text. `/console/theme/` serves
+images and generated CSS with `no-store`; missing assets return 404.
 
-Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
-[Backend-managed delivery](service-account-driver-credential-delivery.md) owns
-Driver activation. Requests do not reread configuration or credentials.
+Startup passes Backend `{id,type}` to `createFastifyApp`.
+[Backend-managed delivery](service-account-driver-credential-delivery.md) owns activation.
 
-`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
-and the shared HTML shell with MIME types and same-origin CSP. Unknown console
-paths return the shell with `404`; API routes retain JSON errors.
-`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
-encodings. The shell, which also answers sign-in, stays identity.
+`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted HTML and assets with MIME types and same-origin CSP. Unknown paths return HTML 404s; API errors stay JSON. `encodedAsset` caches brotli/gzip output
+according to `Accept-Encoding` and `Vary`; higher-weight `identity` wins.
+HTML, including sign-in, stays uncompressed.
 
-`scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
-the full commit; invalid or absent metadata remains unknown.
+`scripts/build-console-metadata.mjs` stamps `OCC_BUILD_REVISION` into HTML.
+`internal/occdev/openshell_k3d.go:importDevelopmentController` resolves Git `HEAD`
+and runs the engine directly for cancellation and timing. Missing metadata
+stops builds; the SHA excludes uncommitted edits.
+`shell.mts:renderShell` displays it in Debug mode.
 
-`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
-readable Agents in the selected Namespace.
-`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
-exact Agent read, resolves its selected version, then calls its Compute Driver.
-The [Compute contract](../reference/drivers/compute.md) owns workload inspection
-and Enterprise/OpenClaw provenance. Navigation preserves `debug=true`; removing it
-stops reads. Missing provenance stays explicit.
+`console.mts:readDebugPreference` enables diagnostics only for local-storage
+`oce.console.debug=true`. Storage failures default to off. `settingsView` saves,
+clears retained views, and rebuilds the shell; failures show an error.
+`navigation.mts` removes the old query flag.
+
+`runtime-images.mts:renderRuntimeImages` limits reads to three concurrent requests
+for readable Agents in the selected Namespace. `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`
+authorizes Agent read, resolves its selected version, and calls its Compute Driver.
+Disabling Debug mode stops new reads. See the
+[Compute contract](../reference/drivers/compute.md) for provenance.
 
 ### 2. Resolve the session before private reads
 
-`apps/controller/src/console/console.mjs:loadPage`
+`agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
+Interactive targets, modified clicks, and selected text retain their behavior.
 
-`agents/collection.mts:renderAgentList` focuses the Agent-name link for plain row
-clicks. Links, buttons (including disabled ones), modified clicks, and selected
-text keep their own behavior.
+`loadPage` starts with `GET /api/auth/session`. Opening an Agent shows **Loading
+agent details…** and **Back to Agents**. Back cancels once. Refocus waits. Loading
+delays are 400 ms for other Agent routes and 250 ms for other visits or Refresh.
+A visible loading page stays for 300 ms or longer.
 
-`loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
-shows **Loading agent details…** and **Back to Agents**, then reveals its name,
-actions, and overview after access checks. Back cancels once; refocus does not
-interrupt loading. Other Agent routes preserve the page or show loading after
-400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
-visits and Refresh show loading after 250 ms.
+Return and refocus hold the view inert. **Still checking…** appears after one
+second. Up to 16 views retain drafts and disclosures by route, Namespace, and
+session. Changed reads, newly readable Namespaces, and Refresh rebuild. A cancelled
+return preserves the view. A cancelled Refresh discards it. Discovery, passwords,
+mutations, and pending or failed reads prevent reuse. Read-only POSTs permit reuse.
 
-Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
-disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
-route, Namespace, and session owner. Matching user and GET dependencies restore
-DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
-Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
-mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
-Interrupted returns preserve the view; interrupted Refresh discards it.
+`console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
+reads. Focus and visibility share the check. Navigation cancels it. Detail errors
+hide protected content. A 5xx permits one retry unless a refusal, 429, or delay
+takes precedence. Narrowed access rebuilds. Both reused and replacement views
+require confirmed Agent permissions for grant-dependent controls.
 
-`api-client.mts:createApiClient` preserves abort reasons through response bodies.
-Socket failure means interrupted read, not invalid JSON. Neither replays requests.
+Persistent detail errors show a warning with the confirmed Agent name. **Retry**
+starts foreground admission after the latest deadline. Expiry opens sign-in.
+Refusals remove private content.
 
-**Back to Agents** waits for session, Namespace, permission, and collection checks,
-not row reads. The newest readable revisions page supplies each row;
-`agents/collection.mts:currentRevision` reads only an off-page current version.
-`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
-after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
-cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
-A search cancels the unfinished reads of rows it hides (`collection.mts:retireHidden`); a row
-shown again reads once.
+`api-client.mts:createApiClient` preserves abort and socket failures through
+response bodies without replay.
 
-Changed users or session keys clear retained views and drafts before private
-reads. Missing sessions open login; failed reads offer Retry. The
-[sign-in flow](platform-console/sign-in-return.md) owns provider discovery,
-one-use session binding, and destination recovery.
+**Back to Agents** waits for admission and the collection. The newest readable
+versions supply the rows. `agents/collection.mts:currentRevision` reads off-page
+current versions. `deniedReadsFor` retains 403s. Reused deployment cells show
+**Reading deployment…** after 250 ms for at least 150 ms. Focus returns to the
+cell. Pending or failed reads resume. Search cancels reads for rows it hides
+(`collection.mts:retireHidden`). A row shown again reads once.
 
-After authentication, `GET /namespaces` preserves URL selection or chooses the
-first ready/readable Namespace. Unreadable IDs remain unavailable; selection
-never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
-during session/Namespace checks, naming known selections; retained-view reads do
-not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
-avoids focusing its hidden toggle. While `drawer-open`, `console.css` prevents
-background scrolling. `createShell` preserves primary navigation
-presses across replacement renders. Empty lists explain access. Namespace
-navigation sends Agent detail/creation to Agents; global pages stay open and
-recovered warnings disappear.
+A changed user or session key clears private state. A missing session opens login.
+See [sign-in and return](platform-console/sign-in-return.md) for recovery.
+
+After authentication, `GET /namespaces` keeps the URL selection or picks the
+first ready and readable Namespace. Unreadable IDs stay unavailable.
+`shell.mts:namespaceSelector` hides choices during admission. Widening past 760 px
+closes the drawer without focusing its toggle. An open drawer blocks scrolling.
+`createShell` preserves navigation presses across renders. A Namespace switch
+returns Agent detail and creation to Agents.
 
 ### 3. Authorize the selected page resource
 
@@ -218,19 +210,20 @@ status read after an uncertain delete; a denial never confirms removal.
 Replacement hands delivery to explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`apps/controller/src/console/namespaces.mts:renderNamespaces` sends Name-rule-valid names
-through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
-each attempt, queues provisioning; `perform` audits. Open Agents needs the Namespace
-relisted. Closing refocuses the opener; a 403 disables it per account, across
-navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
-mark names; conflicts keep input; unconfirmed responses need inspection.
+`apps/controller/src/console/namespaces.mts:renderNamespaces` tracks Name-rule-valid
+`POST /namespaces`; `OpenClawController.createNamespace` authorizes and queues
+provisioning; `perform` audits. Open Agents requires relisting. Closing refocuses
+the opener; 403 disables it per account across navigation until Refresh (`fromRefresh`).
+Pending writes prevent dismissal; 400s mark names; conflicts retain input.
+Inspect unconfirmed responses.
 
-`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
-IAM and contents. `http/errors.ts` limits blockers to 20
-IDs per kind. Poll every three seconds after `202`; `404` removes the row;
-`console.mjs` repairs selection and views. `403` reports lost access.
-Uncertain writes require **Refresh status** before retry.
-See [deletion](../guides/console/delete-namespace.md).
+`namespace-deletion.mts` blocks navigation/dismissal during writes. OCC rechecks
+IAM/contents (20 blocker IDs/kind). `202`: three-second polling; `404`: remove row,
+repair selection; `403`: lost access. `readStatus` requires exact ID and scalar
+[NamespaceSchema status](../../packages/contracts/src/api/resources.ts). Failed/invalid
+reads close confirmation. Uncertainty shows **Status unknown**;
+[**Refresh status**](../guides/console/delete-namespace.md) restores confirmed status
+and deletion actions.
 
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
@@ -322,7 +315,7 @@ including other Namespace selections, because the permission is Installation-wid
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
 acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
 Postacceptance 403 stops polling without claiming completion.
-The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
+See [asynchronous cleanup](../reference/agents.md#deletion).
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -371,6 +364,17 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
+
+- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
+
+- 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+
+- 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+- 2026-11-05 22:43: Unconfirmed status. (authoring-run/104e0ca4-86db-492b-af14-750b4ea079f1 - 346f0db69fb93eb462822c7f5a7f600081f10847)
+
+- 2026-11-05 20:13: Close stale confirmations. (namespace-cleanup-confirmation)
 
 - 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 

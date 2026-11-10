@@ -5,10 +5,13 @@ import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
+import { administrativeActor } from "../helpers/administrative-actor.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -55,7 +58,7 @@ test(
       password,
       authSecret: secret,
       installationName: "Human authentication persistence",
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: "https://console.oce.localhost",
     });
     const installation = await state.loadInstallation();
     assert.ok(installation);
@@ -63,7 +66,8 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret,
       pool,
     });
@@ -110,11 +114,11 @@ test(
     async function signInAdmin() {
       const snapshot = await persistence.snapshotPassword(recoveryEmail);
       adminSession = await persistence.issueSession(snapshot.proof, sessionRecord(recoveryUser.id));
-      admin = {
+      admin = administrativeActor(state, installation.id, {
         userId: recoveryUser.id,
         sessionId: adminSession.id,
         principalId: recoveryPrincipal.id,
-      };
+      });
     }
     async function changeAccount(userId, operation, store = persistence) {
       const target = await persistence.readAccount(userId, admin);
@@ -264,6 +268,158 @@ test(
         assert.equal(await persistence.currentSession(session.token), undefined);
       },
     );
+
+    // A real policy INSERT must serialize with an already-authorized account
+    // mutation. The callback only pauses the real IAM decision; it never supplies one.
+    await context.test("account authorization retains policy locks through commit", async () => {
+      const before = await persistence.readAccount(person.id, admin);
+      const authorized = Promise.withResolvers();
+      const resume = Promise.withResolvers();
+      const writer = await pool.connect();
+      let mutation;
+      let policyWrite;
+      try {
+        await writer.query("BEGIN");
+        await writer.query("SET LOCAL lock_timeout = '5s'");
+        const pid = (await writer.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        mutation = persistence.changeAccount(
+          person.id,
+          "revoke",
+          {
+            ...admin,
+            authorize: async (scope) => {
+              await admin.authorize(scope);
+              authorized.resolve();
+              await within(resume.promise, "release account authorization", 5000);
+            },
+          },
+          before.version,
+        );
+        // Observe early failures without leaving an unhandled pending operation.
+        mutation.catch(authorized.reject);
+        await within(authorized.promise, "account authorization");
+        policyWrite = writer.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, 'installation', $4)`,
+          [`binding_${randomUUID()}`, seed.principal.id, roleId, installation.id],
+        );
+        policyWrite.catch(() => {});
+        await waitForLockHolder(pool, pid, "policy writer blocked by the account transaction", {
+          timeoutMs: 3000,
+        });
+        resume.resolve();
+        await mutation;
+        await policyWrite;
+        // Once the policy writer proceeds, the account change is already visible
+        // to its READ COMMITTED transaction. Roll back its temporary grant.
+        const account = (
+          await writer.query(
+            "SELECT version FROM occ.human_authentication_accounts WHERE user_id = $1",
+            [person.id],
+          )
+        ).rows[0];
+        assert.equal(account.version, before.version + 1);
+      } finally {
+        resume.resolve();
+        await Promise.allSettled([mutation, policyWrite]);
+        await writer.query("ROLLBACK");
+        writer.release();
+      }
+    });
+
+    await context.test(
+      "contended account authorization rolls back and can be retried",
+      async () => {
+        const before = await persistence.readAccount(person.id, admin);
+        const auditsBefore = await state.transact((unit) => unit.audit.list());
+        const writer = await pool.connect();
+        try {
+          await writer.query("BEGIN");
+          // An uncommitted policy change owns a conflicting table lock. Account
+          // administration must refuse promptly instead of writing with stale policy.
+          await writer.query(
+            `INSERT INTO occ.iam_access_bindings
+           (id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, 'installation', $4)`,
+            [`binding_${randomUUID()}`, seed.principal.id, roleId, installation.id],
+          );
+          await assert.rejects(
+            within(
+              persistence.changeAccount(person.id, "revoke", admin, before.version),
+              "contended account operation",
+              3000,
+            ),
+            { name: "DependencyUnavailableError" },
+          );
+        } finally {
+          await writer.query("ROLLBACK");
+          writer.release();
+        }
+        assert.deepEqual(await persistence.readAccount(person.id, admin), before);
+        assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+        // The failed attempt leaves neither a version change nor a retained lock.
+        await persistence.changeAccount(person.id, "revoke", admin, before.version);
+        assert.equal((await persistence.readAccount(person.id, admin)).version, before.version + 1);
+      },
+    );
+
+    await context.test("expiry during authorization prevents the account mutation", async () => {
+      const proof = (await persistence.snapshotPassword(recoveryEmail)).proof;
+      const session = await persistence.issueSession(proof, sessionRecord(recoveryUser.id));
+      const expiring = administrativeActor(state, installation.id, {
+        ...admin,
+        sessionId: session.id,
+      });
+      const before = await persistence.readAccount(person.id, admin);
+      const auditsBefore = await state.transact((unit) => unit.audit.list());
+      // Seed an otherwise current session near its real deadline. No clock or
+      // authorization result is replaced; the database clock advances normally.
+      const deadline = (
+        await pool.query(
+          "UPDATE occ.session SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at",
+          [session.id],
+        )
+      ).rows[0].expires_at;
+      await assert.rejects(
+        persistence.changeAccount(
+          person.id,
+          "revoke",
+          {
+            ...expiring,
+            authorize: async (scope) => {
+              await expiring.authorize(scope);
+              assert.equal(
+                (
+                  await pool.query("SELECT clock_timestamp() < $1::timestamptz AS current", [
+                    deadline,
+                  ])
+                ).rows[0].current,
+                true,
+                "the session must still be current when authorization starts",
+              );
+              await waitUntil(
+                "the session expires during authorization",
+                async () =>
+                  (
+                    await pool.query("SELECT clock_timestamp() >= $1::timestamptz AS expired", [
+                      deadline,
+                    ])
+                  ).rows[0].expired,
+                { timeoutMs: 5000 },
+              );
+            },
+          },
+          before.version,
+        ),
+        {
+          name: "AuthorizationDeniedError",
+          message: "The human administrator session is no longer current.",
+        },
+      );
+      assert.deepEqual(await persistence.readAccount(person.id, admin), before);
+      assert.deepEqual(await state.transact((unit) => unit.audit.list()), auditsBefore);
+    });
 
     await context.test(
       "after activation unbound sessions fail at COMMIT and bound issuance still commits",
@@ -475,7 +631,9 @@ test(
         assert.equal(external.proof.principalId, seed.principal.id);
         assert.equal(external.user.email, person.email);
         assert.equal(external.proof.passwordHash, undefined);
-        assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "missing"), {
+          missing: true,
+        });
       },
     );
 
@@ -619,6 +777,167 @@ test(
         await pool.query("DELETE FROM occ.human_authentication_attempts WHERE installation_id=$1", [
           installation.id,
         ]);
+      },
+    );
+
+    await context.test(
+      "result issuance rolls back with its session and acknowledged consumption is final",
+      async () => {
+        const { proof } = await persistence.snapshotExternal(providerId, subject);
+        const attemptId = randomBytes(32).toString("base64url");
+        const issued = await persistence.issueSession(
+          proof,
+          sessionRecord(person.id),
+          undefined,
+          attemptId,
+        );
+        const receipt = {
+          attemptId,
+          providerId,
+          sessionId: issued.id,
+          expiresAt: issued.resultExpiresAt,
+        };
+        const duplicate = sessionRecord(person.id);
+        await assert.rejects(peer.issueSession(proof, duplicate, undefined, attemptId), {
+          name: "ResourceConflictError",
+        });
+        assert.equal(await persistence.currentSession(duplicate.token), undefined);
+        assert.equal(
+          await peer.consumeLoginResult(issued.token, {
+            ...receipt,
+            expiresAt: receipt.expiresAt + 1,
+          }),
+          false,
+        );
+
+        // PostgreSQL commits the delete, but the client loses the acknowledgement.
+        // A different connection must observe the spent result and the original session.
+        const lost = new PostgresHumanAuthentication(
+          new PostgresPlatformState(
+            transportPool(pool, async (client, sql, args) => {
+              const answer = await client.query(sql, args);
+              if (sql === "COMMIT") {
+                throw new Error("lost commit acknowledgement");
+              }
+              return answer;
+            }),
+          ),
+          installation.id,
+          issuer,
+          configured,
+        );
+        await assert.rejects(lost.consumeLoginResult(issued.token, receipt), {
+          name: "PostgresCommitOutcomeUnknownError",
+        });
+        assert.equal(await peer.consumeLoginResult(issued.token, receipt), false);
+        assert.deepEqual((await peer.currentSession(issued.token)).expiresAt, issued.expiresAt);
+      },
+    );
+
+    async function issueResult() {
+      const { proof } = await persistence.snapshotExternal(providerId, subject);
+      const attemptId = randomBytes(32).toString("base64url");
+      const issued = await persistence.issueSession(
+        proof,
+        sessionRecord(person.id),
+        undefined,
+        attemptId,
+      );
+      return {
+        token: issued.token,
+        receipt: { attemptId, providerId, sessionId: issued.id, expiresAt: issued.resultExpiresAt },
+      };
+    }
+
+    // occ_app can DELETE results but cannot UPDATE or SELECT FOR UPDATE. An uncommitted
+    // delete holds the row until rollback, then the original result is available again.
+    async function holdResult(client, receipt) {
+      await client.query("BEGIN");
+      const lock = await client.query(
+        `DELETE FROM occ.human_authentication_results WHERE installation_id=$1 AND attempt_id=$2
+         RETURNING pg_backend_pid() AS pid`,
+        [installation.id, receipt.attemptId],
+      );
+      assert.equal(lock.rowCount, 1);
+      return lock.rows[0].pid;
+    }
+
+    for (const first of ["revocation", "collection"]) {
+      await context.test(
+        `result collection serializes with session revocation: ${first} first`,
+        async () => {
+          const { token, receipt } = await issueResult();
+          const holder = await pool.connect();
+          const collect = () => peer.consumeLoginResult(token, receipt);
+          const revoke = () => persistence.revokeSession(token);
+          let leading;
+          let trailing;
+          try {
+            const pid = await holdResult(holder, receipt);
+            // Both operations lock the user before deleting the result (via cascade for revoke).
+            // Hold that delete, then prove that the second transaction waits on the first.
+            leading = first === "revocation" ? revoke() : collect();
+            leading.catch(() => {});
+            const leadingPid = await waitForLockWaiter(
+              pool,
+              pid,
+              "first transaction waits on result",
+            );
+            trailing = first === "revocation" ? collect() : revoke();
+            trailing.catch(() => {});
+            await waitForLockWaiter(pool, leadingPid, "second transaction waits on first");
+          } finally {
+            await holder.query("ROLLBACK");
+            holder.release();
+            await Promise.allSettled([leading, trailing]);
+          }
+          const [firstOutcome, secondOutcome] = await Promise.all([leading, trailing]);
+          assert.equal(
+            first === "revocation" ? secondOutcome : firstOutcome,
+            first === "collection",
+          );
+          assert.equal(await peer.currentSession(token), undefined);
+        },
+      );
+    }
+
+    await context.test(
+      "a matching result expires while collection waits to delete it",
+      async () => {
+        const { token, receipt } = await issueResult();
+        // Shorten only this fixture's deadline. Keep the receipt and committed row identical
+        // to the millisecond so neither a mismatch nor session expiry can cause the refusal.
+        const deadline = await pool.query(
+          `WITH original AS (
+           DELETE FROM occ.human_authentication_results WHERE installation_id=$1 AND attempt_id=$2 RETURNING *
+         ) INSERT INTO occ.human_authentication_results (installation_id,attempt_id,session_id,provider_id,expires_at)
+         SELECT installation_id,attempt_id,session_id,provider_id,
+                date_trunc('milliseconds', clock_timestamp()) + interval '2 seconds' FROM original
+         RETURNING expires_at`,
+          [installation.id, receipt.attemptId],
+        );
+        receipt.expiresAt = deadline.rows[0].expires_at.getTime();
+        const holder = await pool.connect();
+        let collection;
+        try {
+          const pid = await holdResult(holder, receipt);
+          collection = peer.consumeLoginResult(token, receipt);
+          collection.catch(() => {});
+          await waitForLockWaiter(pool, pid, "collector waits to delete the live result");
+          await waitUntil("database reaches the matching result deadline", async () => {
+            const clock = await holder.query(
+              "SELECT clock_timestamp() >= $1::timestamptz AS expired",
+              [deadline.rows[0].expires_at],
+            );
+            return clock.rows[0].expired;
+          });
+        } finally {
+          await holder.query("ROLLBACK");
+          holder.release();
+          await Promise.allSettled([collection]);
+        }
+        assert.equal(await collection, false);
+        assert.equal((await peer.currentSession(token)).id, receipt.sessionId);
       },
     );
 
@@ -870,10 +1189,9 @@ test(
           disabled: true,
           userId: person.id,
         });
-        assert.equal(
-          await persistence.snapshotExternal(providerId, "unattached-subject"),
-          undefined,
-        );
+        assert.deepEqual(await persistence.snapshotExternal(providerId, "unattached-subject"), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(proof, sessionRecord(person.id)),
           /no longer current/,
@@ -1146,11 +1464,11 @@ test(
           assert.equal((await store.currentSession(passwordSession.token)).user.id, person.id);
         }
         // The in-transaction actor re-check follows the same configuration.
-        const actor = {
+        const actor = administrativeActor(state, installation.id, {
           userId: person.id,
           sessionId: externalSession.id,
           principalId: external.proof.principalId,
-        };
+        });
         await assert.rejects(elsewhere.readAccount(person.id, actor), {
           name: "AuthorizationDeniedError",
         });
@@ -1229,7 +1547,9 @@ test(
           ).rows[0].count,
           0,
         );
-        assert.equal(await persistence.snapshotExternal(providerId, subject), undefined);
+        assert.deepEqual(await persistence.snapshotExternal(providerId, subject), {
+          missing: true,
+        });
         await assert.rejects(
           persistence.issueSession(external.proof, sessionRecord(person.id)),
           /no longer current/,

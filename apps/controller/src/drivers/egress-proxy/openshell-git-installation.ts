@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   DependencyUnavailableError,
@@ -78,9 +77,6 @@ export interface OpenShellGitObservationEntry {
   installed?: OpenShellPreparedGitInstalled | undefined;
   /** When an installed route was last closed by a failed read; reported once it is restored. */
   closedAt?: number | undefined;
-  /** The persisted observation has not been verified in this process yet: the first read
-   * compares the full installation identity, whatever the session. */
-  unverified?: true | undefined;
 }
 
 interface OpenShellGitObservationOptions {
@@ -190,24 +186,6 @@ export async function readOpenShellGitEvidence<T>(
       error,
     );
   }
-}
-
-/**
- * Whether a request's observation reads as the installation the route admitted. The provider
- * environment revision is Sandbox-wide: it moves when another provider attached to the Sandbox
- * changes, as a sibling Agent's deploy does (finding 2146), while observe() pins this provider's
- * own id, resource version and profile version. The worker's next reconcile adopts it.
- */
-export function sameOpenShellGitInstallation(
-  observed: OpenShellPreparedGitInstalled,
-  installed: OpenShellPreparedGitInstalled | undefined,
-): boolean {
-  if (installed === undefined) {
-    return false;
-  }
-  const { providerEnvRevision: _observed, ...identity } = observed;
-  const { providerEnvRevision: _installed, ...admitted } = installed;
-  return isDeepStrictEqual(identity, admitted);
 }
 
 export function openShellGitExecutionIdentity(observed: OpenShellPreparedGitInstalled) {
@@ -400,9 +378,6 @@ export async function observeOpenShellGitInstallation(
           return;
         }
       }
-      if (adopt) {
-        entry.unverified = undefined;
-      }
       return last;
     }
     return;
@@ -512,10 +487,8 @@ export async function observeOpenShellGitInstallation(
       "OpenShell Git supervisor was replaced.",
     );
   }
-  if (observed.supervisorSessionId !== previous.supervisorSessionId || entry.unverified) {
-    // The supervisor holds a new control session, or this is the first read of a route
-    // re-adopted from its persisted observation after a worker restart (finding 2128),
-    // which has no in-process continuity at all and is verified the same way in full.
+  if (observed.supervisorSessionId !== previous.supervisorSessionId) {
+    // The supervisor holds a new control session. Verify its full installation identity.
     // A replaced Gateway Pod gives every running Sandbox a new control session at once
     // (the same supervisor process reconnects), so a redeploy of the whole fleet is not
     // required: the new session is adopted when the verified observation is the same
@@ -568,7 +541,6 @@ export async function observeOpenShellGitInstallation(
   }
   if (adopt) {
     entry.supervisor = observed;
-    entry.unverified = undefined;
     if (entry.continuity && observed.credentialState === "active") {
       // Credential rotation changes the aggregate provider environment. Complete its
       // model observation even after the original launch witness has been retained.
@@ -588,7 +560,7 @@ export async function observeOpenShellGitInstallation(
           sandbox,
           observed,
           signal,
-          previewReceipt,
+          { kind: "installation", completedPreviewReceipt: previewReceipt },
         );
         if (!hash) {
           return;

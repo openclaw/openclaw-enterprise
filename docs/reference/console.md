@@ -39,7 +39,7 @@ colors with a mounted [theme bundle](console/theming.md). See
 
 ## Identify the control-plane build
 
-With `debug=true`, the sidebar wordmark shows the first eight characters of the
+With **Debug mode** enabled in Settings, the sidebar wordmark shows the first eight characters of the
 running OCC image's source commit, or **dev** for builds without metadata; hover
 for the full commit. Published images bake their source commit into the console
 HTML.
@@ -91,6 +91,14 @@ channel Secret save is denied, the Console clears the binding controls and keeps
 the failed attempt's message. No save is sent. After access is restored, use
 **Refresh** to read saved state before retrying.
 
+When you return to an Agent tab, the Console checks access again. Actions such as
+**Delete Agent** and **Save Configuration** need a fresh permission answer, even
+if the Console has to rebuild the page. A temporary detail read error
+can trigger one automatic retry. If the read still fails, the Console hides
+unconfirmed details and shows a warning. **Retry** checks access again when any
+server retry delay ends. A successful check can restore the view and your place
+in it.
+
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
@@ -108,12 +116,11 @@ scope; global pages stay open. The selector cannot broaden API authorization.
 
 ## Inspect build and runtime images
 
-Append `debug=true` to the console URL, for example
-`/console/agents?debug=true` (or `&debug=true` after an existing query).
+Open **Settings → Browser preferences** and turn on **Debug mode**.
 The sidebar shows the full OCE source commit and per-container image
-observations for readable Agents in the selected Namespace. Navigation preserves
-the flag; remove it to hide diagnostics and stop these reads. **Refresh**
-retries unavailable metadata and updates the snapshot.
+observations for readable Agents in the selected Namespace. Turn it off in
+Settings to hide diagnostics and stop new image reads. **Refresh** retries
+unavailable metadata and updates the snapshot.
 [Debug sidebar fields](console/debug-fields.md) defines every field, Docker and
 Kubernetes differences, inspection scope, and unavailable states.
 
@@ -260,8 +267,8 @@ For an unavailable gateway, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show **Open Agent UI**
-in the header and its availability information to callers with exact Agent `administer`.
+detail tabs, including Configuration and Workspace files, show **Open chat** for chat access or **Open Agent UI** for administration
+in the header and its availability information to callers with exact Agent `operate` or `administer`. Chat access uses `operate`; native administration uses `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check

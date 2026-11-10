@@ -5,7 +5,9 @@ Create Agents and supported Dedicated runtimes with the
 [ready Namespace and Secret storage](../../guides/deploy/production-agents.md#prepare-each-namespace)
 to deploy; while it provisions, drafts needing no new Secret or sign-in still save, unless it
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
-Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
+Secret access. For a draft, an Installation administrator's console grants Agent key access; a
+member's console opens the draft, and the member's deploy
+[grants that access](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment). After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
 
 ## Create an Agent
@@ -14,9 +16,10 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-For browser access, select **Enable Native admin UI** (initially unchecked).
-It requires [installation setup](../../guides/deploy/native-admin.md) and supported
-Dedicated provisioning; opening the UI requires Agent `administer`.
+Select **Enable browser chat** (initially unchecked) after
+[installation setup](../../guides/deploy/native-admin.md), for ordinary creation
+or supported guided provisioning. After deployment, `operate` permits **Open chat**;
+`administer` permits **Open Agent UI**.
 See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
 for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 
@@ -72,12 +75,11 @@ as the reason Dedicated OpenClaw is disabled.
    newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning waits for deployment activation or failure, naming the deployment's current wait
-   when you can read the deployment.
-   Success opens Agent details. If a newer deployment takes over, Create stays open
-   and offers no retry or link. The job identifies only the deployment that ended.
-   For a failed deployment, open the linked Agent and version and follow its recovery
-   guidance. After a Stop, deploy again when ready.
+   Create opens the first revision's **Deployment** tab for progress and recovery as soon as
+   it can read the deployment. If Create sees job success first, it opens **Configuration**.
+   If a newer deployment takes over while Create is open, Create offers no retry or link.
+   For a failure on Create, follow the linked version's recovery guidance. After a Stop,
+   deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -161,8 +163,7 @@ If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 The same action is safe if the Console saved the Agent but could not confirm its service
 principal. It checks the saved Agent before granting access, without creating another Agent.
-A member without Installation administration gets no retry: open the saved Agent and
-ask an Installation administrator to grant it. If your permissions could not be checked,
+A member gets no retry; the member's deploy writes the grants. If your permissions could not be checked,
 select **Retry permission check**.
 If the configuration check times out, your entries stay in the form. Select
 **Create Agent** again to repeat the check and continue.

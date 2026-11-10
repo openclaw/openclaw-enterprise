@@ -122,9 +122,53 @@ mismatch, including a branch moved between review and dispatch, fails before
 image builds. An omitted or empty `source_sha` defaults to `github.sha`, with
 no independent check. Reusable callers must supply it.
 
-Successful runs upload OCI artifacts for one day; repository readers can
-download them. Review the image contents and audience, especially for public
-source. The workflow does not push images to a registry or install a release.
+The workflow does not push images to a registry or install a release. Repository
+readers can download its artifacts; review the image contents and audience,
+especially for public source.
+
+### Retain native export evidence
+
+Before using exports, require a successful terminal workflow with all four
+`Prepare <controller|runtime> (<amd64|arm64>)` jobs and both
+`Smoke runtime (<amd64|arm64>)` jobs successful. Controller preparation includes
+smoke and qualified upload. Runtime preparation supplies build digests; its
+separate smoke jobs verify the handoff, run startup tests, clean up and upload
+qualified artifacts. All four image/architecture outcomes are required.
+
+After smoke failure, rerun the whole native workflow. A smoke-only retry cannot
+consume the previous attempt's build artifact.
+
+Download the selected artifacts before their **one-day retention** expires.
+Their names are `platform-<controller|runtime>-<amd64|arm64>-<run-id>-<attempt>`.
+The intermediate `built-runtime-*` artifacts are unqualified.
+Keep the original download and artifact metadata, including its ID and SHA-256
+digest, together with the run, attempt, source SHA and successful job records.
+Compare the downloaded ZIP's checksum with the artifact metadata; this checksum
+identifies the ZIP bytes, not an OCI image digest.
+
+Extract the verified ZIP into a private directory and leave it unchanged during
+verification. Select the expected values from the reviewed source and producer
+job records. Use the **Digest** output from **Build native OCI image without
+publication** (`steps.build.outputs.digest`) and the pinned Node base used by that job.
+For a direct **Check Native Container Images** dispatch, leave both CI fields empty.
+For example, check its runtime export from the repository root:
+
+```sh
+SOURCE_SHA="$expected_sha" GITHUB_WORKFLOW_SHA="$workflow_sha" \
+GITHUB_RUN_ID="$run_id" GITHUB_RUN_ATTEMPT="$attempt" \
+CI_RUN_ID='' CI_ATTEMPT='' NODE_BASE_IMAGE="$pinned_node_base" \
+IMAGE=runtime PLATFORM=linux/arm64 IMAGE_DIGEST="$build_digest" \
+node scripts/ci/container-release.mjs verify-platform "$extracted_layout"
+```
+
+For a manual **CI** run that requests native images, use that CI run’s own ID
+and attempt. For **Enterprise Containers**, use the validated source CI run ID
+and attempt. The command checks `platform.json` and the reachable OCI
+bytes offline and prints the platform, build root, manifest and config digests.
+Preserve these identities through transport. ZIP verification and the six-job
+success check above are separate requirements. Registry and deployment checks
+use their own evidence. For local use, follow the
+[populated controller return rehearsal](../testing/populated-controller-return.md#prepare-the-cluster-and-images).
 
 ## Prepare and publish
 
@@ -140,14 +184,17 @@ source. The workflow does not push images to a registry or install a release.
    instead. The tag can contain up to 128 ASCII letters, digits, underscores,
    periods, and hyphens; it must start with a letter, digit, or underscore.
    Tags beginning with `sha-` or `bootstrap-` are reserved, case-insensitively.
-   The selected alias is mutable and an existing tag can be replaced. Preparation
-   builds both platforms in one OCI archive, checks the index and child manifest/config
-   digests, and loads each platform into Docker separately. Its config ID must
-   match that index entry. Both platforms run the existing controller or runtime
-   startup smoke before sealing/uploading. AMD64 and ARM64 builds and smoke tests
-   run on their matching native Linux architectures. The publisher copies those exact
-   archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
-   environment branch policy, and package visibility are rechecked before transfer.
+   The selected alias is mutable and an existing tag can be replaced.
+   Each platform builds natively; runtime smoke loads that export on a fresh
+   native runner, while controller smoke remains with its build.
+   Preparation verifies the loaded config against the export using Docker's image
+   ID on the legacy store or the verified config digest on the containerd store,
+   where the image ID identifies a manifest or index. After both platforms pass
+   startup smoke, the workflow [assembles and seals those exports](../flows/container-publication.md#2-verify-and-assemble-both-platform-variants)
+   from the same run and attempt into one archive per image. The publisher
+   rechecks the source, CI attempt, environment branch policy, and package
+   visibility, then copies each sealed archive with all child manifests using
+   Skopeo and verifies the remote index digest.
 4. Use the `image@sha256:...` references in the image job summary and
    `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
    receives an immutable `sha-<source-sha>` tag, the selected mutable alias,
@@ -209,11 +256,15 @@ on `main` with:
 
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
-  Containers** run. Validation, all four native preparation jobs, and both
-  image assembly jobs must succeed. For older runs that assembled each image
+  Containers** run. Validation, all four native preparation jobs, both runtime
+  smoke jobs, and both image assembly jobs must succeed. For older runs that assembled each image
   in its preparation job, validation and both image jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
+
+Native preparations that ran smoke inside `Prepare` jobs are unsupported by the
+current recovery gate. They require fresh full qualification, which does not
+reconstruct their original bytes.
 
 Review the original digests and current public package settings before dispatch.
 Recovery validates artifact IDs and downloads the exact
@@ -249,8 +300,8 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 Four existing CI lanes gate the selected source: Images and Packaging, and the three Image Runtime
 Startup lanes. Preparation reuses their controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
-transitives. Loading does not rebuild; each loaded config ID, its index entry, and the
-unchanged archive hash bind both platform smokes to the prepared image. Skopeo preserves manifest
+transitives. Loading does not rebuild an image. The assembler checks each platform export
+against its smoke receipt before including it in the final archive. Skopeo preserves manifest
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 

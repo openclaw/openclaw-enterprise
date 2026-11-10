@@ -18,7 +18,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-import { followContainer } from "./docker-follow.mjs";
+import { followContainer } from "./docker-follow.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";

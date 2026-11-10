@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Locator, Route } from "playwright";
-import type {
-  AuditEvent,
-  Permission,
-  ResourceKind,
-  SecretBinding,
+import {
+  serializeStartupConfiguration,
+  type AuditEvent,
+  type Permission,
+  type ResourceKind,
+  type SecretBinding,
 } from "../../packages/contracts/src/index.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -1250,8 +1251,8 @@ test("A Backends refusal after administration is revoked is read and audited onc
 });
 
 test("Settings inspects nested Driver fields and the same JSON without changing configuration", async (t) => {
-  // Startup integration tests establish projection ownership. This public controller fixture
-  // exercises generic values through the real API and browser without adding a product seam.
+  // Exercise the production startup projection before registering the selected Driver.
+  const writeOnlySentinel = "synthetic-operator-resource-that-must-stay-hidden";
   const accepted = {
     authentication: {
       mode: "kubeconfig",
@@ -1278,6 +1279,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
       description: index === 0 ? "<img src=x onerror=alert(1)>" : "Configured worker group",
     })),
   };
+  const startupConfiguration = serializeStartupConfiguration(
+    { type: "object", properties: { operatorResources: { writeOnly: true } } },
+    { ...accepted, operatorResources: writeOnlySentinel },
+  );
+  assert.ok(startupConfiguration);
   const fixture = await createConsoleAppFixture(t, {
     driverConfigurations: [
       {
@@ -1285,7 +1291,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
         driverId: "console-configuration",
         implementation: "kubernetes",
         definition: KubernetesConfigurationDriver,
-        startupConfiguration: accepted,
+        startupConfiguration,
       },
       {
         capability: "iam",
@@ -1306,10 +1312,19 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   const namespace = await fixture.createNamespace("Driver inspection", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const discovery = responseTo(page, "GET", `${fixture.origin}/installation/driver-configurations`);
   await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+  const response = await discovery;
+  assert.equal(response.status(), 200, "Driver configuration discovery succeeds");
+  assert.equal((await response.text()).includes(writeOnlySentinel), false);
   const configuration = page
     .locator("details.driver-configuration")
     .filter({ has: page.locator("summary", { hasText: "console-configuration" }) });
+  const summary = configuration.locator("summary");
+  await summary.getByText("console-configuration · startup", { exact: true }).waitFor();
+  assert.equal(await configuration.getAttribute("open"), null);
+  const implementation = summary.getByText("Implementation: kubernetes", { exact: true });
+  assert.equal(await implementation.isVisible(), true, "collapsed card shows the implementation");
   const fieldsButton = page.getByRole("button", { name: "Fields", exact: true });
   const jsonButton = page.getByRole("button", { name: "JSON", exact: true });
   assert.equal(await fieldsButton.getAttribute("aria-pressed"), "true");
@@ -1345,8 +1360,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     accepted,
   );
   assert.equal(await fields.isVisible(), false);
+  assert.equal(await implementation.isVisible(), true);
   await fieldsButton.click();
   assert.equal(await fields.isVisible(), true);
+  assert.equal(await implementation.isVisible(), true);
+  assert.equal((await configuration.textContent())?.includes(writeOnlySentinel), false);
   assert.equal(
     await configuration.getAttribute("open"),
     "",
@@ -1369,7 +1387,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
     .waitFor();
   assert.equal(await secret.locator("pre").count(), 0);
-  // Both columns belong to one document scroll; the profile reaches the long page's bottom.
+  // Long Settings content scrolls while the account control stays within the viewport.
   const desktop = await page.evaluate(() => {
     const shellElement = globalThis.document.querySelector(".shell");
     const sidebarElement = globalThis.document.querySelector(".sidebar");
@@ -1389,9 +1407,13 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     };
   });
   assert.ok(desktop.shellHeight > desktop.viewport * 1.5, "exercise a genuinely long page");
-  assert.ok(desktop.sidebarHeight >= desktop.shellHeight - 1, JSON.stringify(desktop));
+  assert.ok(Math.abs(desktop.sidebarHeight - desktop.viewport) <= 1, JSON.stringify(desktop));
   assert.ok(desktop.bottomGap >= 0 && desktop.bottomGap <= 32, JSON.stringify(desktop));
   assert.equal(desktop.fits, true);
+  await page.evaluate(() => globalThis.window.scrollTo(0, document.body.scrollHeight));
+  const account = await page.locator(".sidebar .account-toggle").boundingBox();
+  assert.ok(account);
+  assert.ok(account.y >= 0 && account.y + account.height <= desktop.viewport);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
     await page.evaluate(
@@ -2334,19 +2356,14 @@ test("A return to the Access tab after a revoke shows the member notice, audited
     },
   });
   assert.equal(binding.status, 201);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const policyReads = (from: number) =>
     requests.slice(from).filter(({ path }) => path.includes("/iam/"));
   const iamDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.iam\./);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
   const loaded = page.getByText("Current policy loaded.", { exact: true });
@@ -2430,16 +2447,11 @@ test("A first Access open after a revoke shows the member notice, audited once",
   const namespace = await fixture.createNamespace("Revoked first open", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "First open Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("revoked-opener", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
   await waitForIdleFetches(page);
@@ -2474,38 +2486,19 @@ test("A first Access open after a revoke shows the member notice, audited once",
 // she shared: that reread sent both lists at once. It reads one list at a time, so the revoke
 // costs one audited refusal, no write is sent, and the panel asks for Refresh sharing.
 test("A share after a revoke rereads the policy one list at a time, audited once", async (t) => {
-  const { fixture, page, requests, revoke } = await openAsRevocableAdministrator(
+  // No write is sent, so the Principal ID only has to pass the console's format check.
+  const { fixture, page, requests, panel, audited, sent } = await shareRefusedAfterRevoke(
     t,
     "Revoked share",
-    "draft",
+    "prn_revoked-share-target",
   );
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
-
-  revoke();
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  // No write is sent, so the Principal ID only has to pass the console's format check.
-  await panel.getByLabel("Existing person’s Principal ID").fill("prn_revoked-share-target");
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await panel
-    .getByText("Sharing policy requires Installation administration.", { exact: false })
-    .waitFor();
-  await waitForIdleFetches(page);
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
       .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
-  assert.deepEqual(
-    requests
-      .slice(sent)
-      .filter(({ path }) => path.includes("/iam/"))
-      .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`),
-    ["GET /iam/roles"],
-  );
+  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
   // The form waits for Refresh sharing. Its controls stay in the Tab order, described by the
   // refusal that says so, and send nothing (class of finding 2899).
   const refusal = (await panel.getByRole("alert").textContent())?.trim();
@@ -2531,21 +2524,26 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 // read-only until the page's Refresh. Refresh sharing now rereads the Agent's permission answer
 // and the Namespace's, neither audited, and then the policy, one list at a time. Still revoked,
 // it sends no policy read and adds no audited refusal.
-async function shareRefusedAfterRevoke(t: TestContext, name: string) {
+async function shareRefusedAfterRevoke(
+  t: TestContext,
+  name: string,
+  principalId = "prn_regrant-share-target",
+) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
-  const { fixture, page, revoke } = opened;
+  const { fixture, page, requests, revoke } = opened;
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
   revoke();
   const audited = authorizationDenials(fixture.auditSink).length;
-  await panel.getByLabel("Existing person’s Principal ID").fill("prn_regrant-share-target");
+  const sent = requests.length;
+  await panel.getByLabel("Existing person’s Principal ID").fill(principalId);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel
     .getByText("Sharing policy requires Installation administration.", { exact: false })
     .waitFor();
   await waitForIdleFetches(page);
-  return { ...opened, panel, audited };
+  return { ...opened, panel, audited, sent };
 }
 
 function permissionReads(requests: Requests, namespaceId: string, permissionsPath: string) {
@@ -2645,16 +2643,11 @@ test("A revoke the Access tab settles takes away administrator controls without 
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const account = await fixture.createNamespaceMember("revoked-controls", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
@@ -2908,18 +2901,13 @@ test("A revoke that settles during a page load leaves the Namespace list to that
   await fixture.createNamespace("Administered team", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("moving-lister", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const listReads = (from: number) =>
     requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   await accessTab.click();
   await page.getByText("Current policy loaded.", { exact: true }).waitFor();
@@ -2964,6 +2952,32 @@ test("A revoke that settles during a page load leaves the Namespace list to that
 // it; the page learns of that only from a later read. Her own grant is Agent read, so her
 // permission answer changes from an administrator's to a reader's: no Stop, no Delete and a
 // read-only draft.
+async function loginAsRevocableAdministrator(
+  t: TestContext,
+  fixture: ConsoleFixture,
+  account: Pick<
+    Awaited<ReturnType<ConsoleFixture["createNamespaceMember"]>>,
+    "principal" | "credentials"
+  >,
+  target: {
+    namespaceId: NamespaceFixture["id"];
+    agentId: AgentFixture["id"];
+    version: Parameters<typeof detailUrl>[3];
+  },
+) {
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, target.namespaceId, target.agentId, target.version, "configuration")),
+    account.credentials,
+  );
+  return { page, requests, revoke };
+}
+
 async function openAsRevocableAdministrator(t: TestContext, name: string, version = "active") {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2971,17 +2985,11 @@ async function openAsRevocableAdministrator(t: TestContext, name: string, versio
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("x"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const account = await fixture.createNamespaceMember("reread", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  const shown = version === "draft" ? "draft" : revision.id;
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, shown, "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: version === "draft" ? "draft" : revision.id,
+  });
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
   const stop = stopAgentButton(page);
   await waitForEnabled(stop);

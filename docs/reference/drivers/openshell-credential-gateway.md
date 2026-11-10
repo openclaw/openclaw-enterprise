@@ -126,10 +126,11 @@ native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
 `openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
-explicitly authorizes the Installation's [shared model provider](kubernetes-compute/model-provider.md).
-The source supplies `api_key` and cannot select a route. Authorization is immutable;
-replace the source when changing it. Unknown fields, malformed URLs, and destination
-mismatches fail before Secret reads. Existing `base_url` records fail for inference
+explicitly authorizes another endpoint. The [revision model provider](kubernetes-compute/model-provider.md)
+selects the route; attachment checks it against that authorization. The source
+supplies `api_key`. Authorization is immutable; replace the source when changing it.
+Unknown fields and malformed URLs fail registration before Secret reads. Destination
+mismatches fail deployment and attachment before credential delivery. Existing `base_url` records fail for inference
 but remain readable and deletable under the existing permission and reference checks.
 Gateway destinations retain the exact-DNS, HTTPS, nonzero-port, and `/v1` path rules.
 
@@ -264,8 +265,9 @@ it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
 
 Compute selects a named HTTPS Responses provider for API-key Codex. For a
 source-backed PAT, startup writes the placeholder to the native auth file and
-runs `codex login status`. Native OpenClaw reads its API-key placeholder through
-node-local model configuration. Selected models use the shared provider endpoint and API selector.
+runs `codex login status`; [serving-process authentication](openshell-sandbox/harness-providers.md#harness-observation)
+is checked separately. Native OpenClaw reads its API-key placeholder through
+node-local model configuration. Models use the shared provider endpoint and API selector.
 
 ## Trust requirements
 

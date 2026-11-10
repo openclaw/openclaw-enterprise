@@ -77,7 +77,9 @@ Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and
 generation, and the API refuses later races. Reload stale drafts; after an
 unknown outcome, successfully reload saved state before retrying. Invalid JSON
-and failed saves retain text for correction.
+and failed saves retain text for correction. A save conflict keeps focus and text
+selection if you moved to another control while saving. If you stayed on
+**Checking Configuration…**, focus moves to **Reload draft**.
 Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
@@ -96,6 +98,11 @@ from the running version's; neither catalog proves installation or runtime
 access. Existing
 selections and **Plugin selections JSON** remain editable when browsing is
 unavailable.
+
+If **Plugin selections JSON** contains a number too large in magnitude to save,
+such as `1e400`, the Console keeps the draft and asks you to correct it before
+saving or editing it in the picker. You can still browse the catalog if it is
+available. The Plugin Driver still validates its own policy fields when you save.
 
 An open Slack approver search keeps its query and results when you return to the
 browser tab and still have Agent access. Moving to another Console control closes

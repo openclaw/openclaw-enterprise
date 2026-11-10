@@ -7,7 +7,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { listen } from "./listen.mjs";
-import { relaySockets } from "./socket-relay.mjs";
+import { relaySockets } from "./socket-relay.ts";
 
 // The client side of the relay. With `hold`, each write completes only when the test
 // releases it, as when a slow reader keeps the kernel send buffer full and Node queues the

@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
+import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import {
   imageTestOptions,
   runDocker,
