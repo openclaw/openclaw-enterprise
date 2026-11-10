@@ -743,6 +743,30 @@
                   { "const": "deleting", "type": "string" }
                 ]
               },
+              "staticKeyGrant": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": { "type": "string" },
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "connectionTemplateId",
+                  "connectionTemplateVersion",
+                  "baseUrl",
+                  "protocol"
+                ],
+                "type": "object"
+              },
               "status": {
                 "additionalProperties": false,
                 "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
@@ -968,7 +992,56 @@
         "additionalProperties": false,
         "properties": {
           "createdAt": { "type": "string" },
-          "current": { "$ref": "#/components/schemas/def-14" },
+          "current": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/def-14" },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+                  "createdAt": { "type": "string" },
+                  "destinations": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "host": { "type": "string" },
+                        "method": { "const": "POST", "type": "string" },
+                        "path": { "type": "string" },
+                        "port": { "type": "integer" }
+                      },
+                      "required": ["host", "port", "path", "method"],
+                      "type": "object"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "mode": { "const": "static_bearer", "type": "string" },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  },
+                  "templateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "version": { "minimum": 1, "type": "integer" }
+                },
+                "required": [
+                  "mode",
+                  "baseUrl",
+                  "protocol",
+                  "templateId",
+                  "version",
+                  "createdAt",
+                  "destinations"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
           "id": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -980,7 +1053,7 @@
           }
         },
         "required": ["displayName", "id", "current", "createdAt"],
-        "title": "OAuth connection template",
+        "title": "Connection template",
         "type": "object"
       },
       "def-2": {
@@ -11286,6 +11359,30 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "baseUrl": {
+                        "maxLength": 2048,
+                        "pattern": "^https://[^\\s/]",
+                        "type": "string"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "protocol": {
+                        "anyOf": [
+                          { "const": "openai-responses", "type": "string" },
+                          { "const": "openai-completions", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["displayName", "mode", "baseUrl", "protocol"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
                       "authorizationParameters": {
                         "additionalProperties": { "maxLength": 1024, "type": "string" },
                         "maxProperties": 32,
@@ -12089,6 +12186,26 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "baseUrl": {
+                        "maxLength": 2048,
+                        "pattern": "^https://[^\\s/]",
+                        "type": "string"
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "mode": { "const": "static_bearer", "type": "string" },
+                      "protocol": {
+                        "anyOf": [
+                          { "const": "openai-responses", "type": "string" },
+                          { "const": "openai-completions", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["mode", "baseUrl", "protocol"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
                       "authorizationParameters": {
                         "additionalProperties": { "maxLength": 1024, "type": "string" },
                         "maxProperties": 32,
@@ -12469,6 +12586,7 @@
                                         },
                                         "type": "array"
                                       },
+                                      "staticKeyBaseUrlConfig": { "type": "string" },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -12898,6 +13016,7 @@
                                         },
                                         "type": "array"
                                       },
+                                      "staticKeyBaseUrlConfig": { "type": "string" },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -13649,6 +13768,992 @@
           }
         },
         "summary": "Inspect selected Driver accepted startup values and configuration schemas",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listModelProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "baseUrl": {
+                            "maxLength": 2048,
+                            "pattern": "^https://",
+                            "type": "string"
+                          },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "defaultModelId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                            "type": "string"
+                          },
+                          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "id": {
+                            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "models": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "contextWindow": { "minimum": 1, "type": "integer" },
+                                "cost": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "cacheRead": { "minimum": 0, "type": "number" },
+                                    "cacheWrite": { "minimum": 0, "type": "number" },
+                                    "input": { "minimum": 0, "type": "number" },
+                                    "output": { "minimum": 0, "type": "number" }
+                                  },
+                                  "required": ["input", "output", "cacheRead", "cacheWrite"],
+                                  "type": "object"
+                                },
+                                "id": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                                  "type": "string"
+                                },
+                                "maxTokens": { "minimum": 1, "type": "integer" },
+                                "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                              },
+                              "required": ["id"],
+                              "type": "object"
+                            },
+                            "maxItems": 256,
+                            "minItems": 1,
+                            "type": "array"
+                          },
+                          "protocol": {
+                            "anyOf": [
+                              { "const": "openai-responses", "type": "string" },
+                              { "const": "openai-completions", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "displayName",
+                          "baseUrl",
+                          "protocol",
+                          "models",
+                          "connectionTemplateId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List Installation model providers",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createModelProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "models": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "contextWindow": { "minimum": 1, "type": "integer" },
+                        "cost": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "cacheRead": { "minimum": 0, "type": "number" },
+                            "cacheWrite": { "minimum": 0, "type": "number" },
+                            "input": { "minimum": 0, "type": "number" },
+                            "output": { "minimum": 0, "type": "number" }
+                          },
+                          "required": ["input", "output", "cacheRead", "cacheWrite"],
+                          "type": "object"
+                        },
+                        "id": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                          "type": "string"
+                        },
+                        "maxTokens": { "minimum": 1, "type": "integer" },
+                        "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                      },
+                      "required": ["id"],
+                      "type": "object"
+                    },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                        "connectionTemplateId": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "defaultModelId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                          "type": "string"
+                        },
+                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "id": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "models": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "contextWindow": { "minimum": 1, "type": "integer" },
+                              "cost": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "cacheRead": { "minimum": 0, "type": "number" },
+                                  "cacheWrite": { "minimum": 0, "type": "number" },
+                                  "input": { "minimum": 0, "type": "number" },
+                                  "output": { "minimum": 0, "type": "number" }
+                                },
+                                "required": ["input", "output", "cacheRead", "cacheWrite"],
+                                "type": "object"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                                "type": "string"
+                              },
+                              "maxTokens": { "minimum": 1, "type": "integer" },
+                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["id"],
+                            "type": "object"
+                          },
+                          "maxItems": 256,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "protocol": {
+                          "anyOf": [
+                            { "const": "openai-responses", "type": "string" },
+                            { "const": "openai-completions", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "displayName",
+                        "baseUrl",
+                        "protocol",
+                        "models",
+                        "connectionTemplateId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Create an Installation model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/model-providers/{modelProviderId}": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "getModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                        "connectionTemplateId": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "defaultModelId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                          "type": "string"
+                        },
+                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "id": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "models": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "contextWindow": { "minimum": 1, "type": "integer" },
+                              "cost": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "cacheRead": { "minimum": 0, "type": "number" },
+                                  "cacheWrite": { "minimum": 0, "type": "number" },
+                                  "input": { "minimum": 0, "type": "number" },
+                                  "output": { "minimum": 0, "type": "number" }
+                                },
+                                "required": ["input", "output", "cacheRead", "cacheWrite"],
+                                "type": "object"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                                "type": "string"
+                              },
+                              "maxTokens": { "minimum": 1, "type": "integer" },
+                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["id"],
+                            "type": "object"
+                          },
+                          "maxItems": 256,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "protocol": {
+                          "anyOf": [
+                            { "const": "openai-responses", "type": "string" },
+                            { "const": "openai-completions", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "displayName",
+                        "baseUrl",
+                        "protocol",
+                        "models",
+                        "connectionTemplateId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Read a model provider",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "put": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "updateModelProvider",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "mpr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "modelProviderId",
+            "required": true,
+            "schema": {
+              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "baseUrl": "https://inference.example.com/v1",
+                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "defaultModelId": "research-model",
+                    "displayName": "Research inference",
+                    "models": [{ "id": "research-model" }],
+                    "protocol": "openai-responses"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "defaultModelId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                    "type": "string"
+                  },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "models": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "contextWindow": { "minimum": 1, "type": "integer" },
+                        "cost": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "cacheRead": { "minimum": 0, "type": "number" },
+                            "cacheWrite": { "minimum": 0, "type": "number" },
+                            "input": { "minimum": 0, "type": "number" },
+                            "output": { "minimum": 0, "type": "number" }
+                          },
+                          "required": ["input", "output", "cacheRead", "cacheWrite"],
+                          "type": "object"
+                        },
+                        "id": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                          "type": "string"
+                        },
+                        "maxTokens": { "minimum": 1, "type": "integer" },
+                        "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                      },
+                      "required": ["id"],
+                      "type": "object"
+                    },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "protocol": {
+                    "anyOf": [
+                      { "const": "openai-responses", "type": "string" },
+                      { "const": "openai-completions", "type": "string" }
+                    ]
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "baseUrl",
+                  "protocol",
+                  "models",
+                  "connectionTemplateId"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "baseUrl": "https://inference.example.com/v1",
+                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "defaultModelId": "research-model",
+                        "displayName": "Research inference",
+                        "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "models": [{ "id": "research-model" }],
+                        "protocol": "openai-responses"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                        "connectionTemplateId": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "defaultModelId": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                          "type": "string"
+                        },
+                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "id": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "models": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "contextWindow": { "minimum": 1, "type": "integer" },
+                              "cost": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "cacheRead": { "minimum": 0, "type": "number" },
+                                  "cacheWrite": { "minimum": 0, "type": "number" },
+                                  "input": { "minimum": 0, "type": "number" },
+                                  "output": { "minimum": 0, "type": "number" }
+                                },
+                                "required": ["input", "output", "cacheRead", "cacheWrite"],
+                                "type": "object"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                                "type": "string"
+                              },
+                              "maxTokens": { "minimum": 1, "type": "integer" },
+                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["id"],
+                            "type": "object"
+                          },
+                          "maxItems": 256,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "protocol": {
+                          "anyOf": [
+                            { "const": "openai-responses", "type": "string" },
+                            { "const": "openai-completions", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "displayName",
+                        "baseUrl",
+                        "protocol",
+                        "models",
+                        "connectionTemplateId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Replace model provider settings",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14473,6 +15578,7 @@
                                         },
                                         "type": "array"
                                       },
+                                      "staticKeyBaseUrlConfig": { "type": "string" },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -14990,6 +16096,10 @@
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "name": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -15162,6 +16272,10 @@
                               },
                               "id": {
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
                               "name": {
@@ -15505,6 +16619,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -15787,6 +16905,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -17921,6 +19043,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -19322,6 +20448,10 @@
                     },
                     "type": "object"
                   },
+                  "modelProviderId": {
+                    "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
                   "name": {
                     "description": "The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`.",
                     "maxLength": 200,
@@ -19676,6 +20806,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -20114,6 +21248,10 @@
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "name": {
                               "maxLength": 200,
                               "minLength": 1,
@@ -20286,6 +21424,10 @@
                             },
                             "id": {
                               "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "name": {
@@ -20471,7 +21613,8 @@
                 "additionalProperties": false,
                 "anyOf": [
                   { "required": ["configurationId"] },
-                  { "required": ["gatewayManagedMode"] }
+                  { "required": ["gatewayManagedMode"] },
+                  { "required": ["modelProviderId"] }
                 ],
                 "properties": {
                   "backendId": {
@@ -20609,6 +21752,15 @@
                             "type": "object"
                           }
                         ]
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "modelProviderId": {
+                    "anyOf": [
+                      {
+                        "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
                       },
                       { "type": "null" }
                     ]
@@ -20942,6 +22094,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -21870,6 +23026,10 @@
                                 { "const": "embedded", "type": "string" },
                                 { "const": "dedicated", "type": "string" }
                               ]
+                            },
+                            "modelProviderId": {
+                              "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             },
                             "overrides": {
                               "additionalProperties": {},
@@ -28759,6 +29919,10 @@
                                   { "const": "dedicated", "type": "string" }
                                 ]
                               },
+                              "modelProviderId": {
+                                "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "overrides": {
                                 "additionalProperties": {},
                                 "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
@@ -29120,6 +30284,10 @@
                                     { "const": "embedded", "type": "string" },
                                     { "const": "dedicated", "type": "string" }
                                   ]
+                                },
+                                "modelProviderId": {
+                                  "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
                                 },
                                 "overrides": {
                                   "additionalProperties": {},
@@ -31854,6 +33022,10 @@
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
                         "name": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -32569,6 +33741,10 @@
                         },
                         "id": {
                           "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "modelProviderId": {
+                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "name": {
@@ -35605,6 +36781,30 @@
                               { "const": "deleting", "type": "string" }
                             ]
                           },
+                          "staticKeyGrant": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "baseUrl": { "type": "string" },
+                              "connectionTemplateId": {
+                                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                              "protocol": {
+                                "anyOf": [
+                                  { "const": "openai-responses", "type": "string" },
+                                  { "const": "openai-completions", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connectionTemplateId",
+                              "connectionTemplateVersion",
+                              "baseUrl",
+                              "protocol"
+                            ],
+                            "type": "object"
+                          },
                           "status": {
                             "additionalProperties": false,
                             "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
@@ -35804,6 +37004,11 @@
                     "maxProperties": 32,
                     "type": "object"
                   },
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -38690,6 +39895,218 @@
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/model-providers": {
+      "get": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "listUsableModelProviders",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "defaultModelId": "research-model",
+                          "displayName": "Research inference",
+                          "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                          "models": [{ "id": "research-model" }],
+                          "protocol": "openai-responses"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "baseUrl": {
+                            "maxLength": 2048,
+                            "pattern": "^https://",
+                            "type": "string"
+                          },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "defaultModelId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                            "type": "string"
+                          },
+                          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "id": {
+                            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "models": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "contextWindow": { "minimum": 1, "type": "integer" },
+                                "cost": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "cacheRead": { "minimum": 0, "type": "number" },
+                                    "cacheWrite": { "minimum": 0, "type": "number" },
+                                    "input": { "minimum": 0, "type": "number" },
+                                    "output": { "minimum": 0, "type": "number" }
+                                  },
+                                  "required": ["input", "output", "cacheRead", "cacheWrite"],
+                                  "type": "object"
+                                },
+                                "id": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+                                  "type": "string"
+                                },
+                                "maxTokens": { "minimum": 1, "type": "integer" },
+                                "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+                              },
+                              "required": ["id"],
+                              "type": "object"
+                            },
+                            "maxItems": 256,
+                            "minItems": 1,
+                            "type": "array"
+                          },
+                          "protocol": {
+                            "anyOf": [
+                              { "const": "openai-responses", "type": "string" },
+                              { "const": "openai-completions", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "displayName",
+                          "baseUrl",
+                          "protocol",
+                          "models",
+                          "connectionTemplateId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List the model providers available when creating an Agent",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
         ]
       }
     },

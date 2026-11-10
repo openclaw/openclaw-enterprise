@@ -192,6 +192,15 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
+const modelProviderSettings = {
+  displayName: "Research inference",
+  baseUrl: "https://inference.example.com/v1",
+  protocol: "openai-responses",
+  models: [{ id: "research-model" }],
+  defaultModelId: "research-model",
+  connectionTemplateId,
+};
+const modelProvider = { ...modelProviderSettings, id: id("mpr") };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
   displayName: "Example provider client",
@@ -257,6 +266,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
@@ -307,6 +317,8 @@ export const requestExamples = {
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
+  createModelProvider: modelProviderSettings,
+  updateModelProvider: modelProviderSettings,
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,
@@ -422,6 +434,11 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  createModelProvider: modelProvider,
+  updateModelProvider: modelProvider,
+  getModelProvider: modelProvider,
+  listModelProviders: [modelProvider],
+  listUsableModelProviders: [modelProvider],
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {

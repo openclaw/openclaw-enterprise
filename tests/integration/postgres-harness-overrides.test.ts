@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRevision, EgressRoute } from "../../packages/contracts/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
+import { exerciseHarnessOverrides, exerciseNamedProvider } from "../helpers/harness-overrides.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -18,6 +18,7 @@ test(
       { appFactory: postgresApp },
       true,
     );
+    await exerciseNamedProvider(fixture);
     assert.ok("pool" in fixture);
     // A fresh State reader and Compute instance cannot reconstruct old routes from new defaults.
     const restarted = new PostgresPlatformState(fixture.pool);

@@ -31,6 +31,7 @@ import type { createFixtureFetch } from "../preview-rules.mts";
 import type { servePluginDiscovery } from "../plugin-discovery-fixture.mts";
 
 type CreateAgentScenario = {
+  oauthCatalog?: string;
   group: "Pages/Create Agent";
   name: string;
   path: typeof create;
@@ -2589,6 +2590,26 @@ export const createAgentOutcomeScenarios = {
     ],
     description:
       "A Preset with a saved service account token keeps its OpenAI provider and Codex harness fixed because the credential requires Codex. Start without a Preset to choose OpenClaw with an API key.",
+  },
+  createSavedModelProvider: {
+    group: "Pages/Create Agent",
+    name: "Saved model provider",
+    path: create,
+    oauthCatalog: "inference",
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: form,
+    description:
+      "Choose Internal vLLM, then its approved Research inference key. The model picker offers the two catalog entries with qwen3-8b selected by default.",
+  },
+  createSavedModelProviderMissingKey: {
+    group: "Pages/Create Agent",
+    name: "Saved model provider without a credential",
+    path: create,
+    oauthCatalog: "inference-empty-keys",
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: form,
+    description:
+      "Choose Internal vLLM. Register a key for its connection template in Credentials before creating the Agent.",
   },
   createModels: {
     group: "Pages/Create Agent",

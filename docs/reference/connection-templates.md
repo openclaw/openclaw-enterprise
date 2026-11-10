@@ -1,8 +1,16 @@
-# OAuth connection templates and clients
+# Connection templates and OAuth clients
 
 Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. A registration inherits the selected template’s availability, issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
 
 In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client or choose **Create template and register OAuth client**.
+
+## Approve a static inference key
+
+An Installation administrator can create a static Bearer template with `POST /connection-templates`. Set `mode` to `static_bearer` and supply a display name, inference base URL, and protocol. The saved version shows the exact HTTPS host, port, path, and POST method that can receive the key. A change to the route creates a new version.
+
+Create a reusable provider with `POST /model-providers`. Supply its display name, base URL, protocol, model list, optional default model ID, and the ID of an Installation-wide template that approves that route. To update the provider, replace its settings with `PUT /model-providers/{modelProviderId}`. An Agent creator can read this catalog at `GET /namespaces/{namespaceId}/model-providers`.
+
+When a Credential Driver supports static templates, the credential owner selects a Namespace Secret and approves the displayed template version. Submit its ID and version as `connectionTemplateId` and `connectionTemplateVersion` when creating the Credential Source. OCC rejects a stale approval. Editing a template leaves existing keys bound to their approved requests.
 
 ## Register a client
 

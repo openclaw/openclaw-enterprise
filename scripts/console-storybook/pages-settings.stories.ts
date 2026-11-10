@@ -49,3 +49,8 @@ export const StorageUnavailable = {
   ...story("settingsStorageUnavailable"),
   name: "Browser storage unavailable",
 };
+
+export const ProviderCatalog = {
+  ...story("settingsProviderCatalog"),
+  name: "Manage model providers",
+};

@@ -163,6 +163,9 @@ export type {
   ConnectionEndpoint,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  ConnectionTemplateSettings,
+  ConnectionTemplateVersion,
+  StaticKeyTemplateValues,
   OAuthConnectionTemplateVersion,
   ConnectionSession,
   SavedConnection,
@@ -415,6 +418,14 @@ export interface ResourceRef extends Scope {
   readonly id: string;
 }
 
+export type {
+  ModelProvider,
+  ModelProviderSettings,
+  ModelProviderModel,
+  InferenceProtocol,
+  StaticKeyGrant,
+} from "./model-providers.ts";
+export { inferenceKeyDestination, normalizeInferenceBaseUrl } from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;
@@ -535,6 +546,8 @@ export interface CredentialSourceFieldSpec {
 
 /** One entry in a Credential Gateway implementation's catalog. */
 export interface CredentialSourceType {
+  /** The Driver can enforce this source's immutable static Bearer grant. */
+  readonly staticKeyBaseUrlConfig?: string;
   /** Device login defers the first mint to the selected Credential Refresh Driver. */
   readonly deviceAuthorization?: { readonly harnessId: string };
   readonly type: string;
@@ -563,6 +576,7 @@ export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapabi
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export type CredentialSource = CredentialSourceOwner & {
+  readonly staticKeyGrant?: import("./model-providers.ts").StaticKeyGrant;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -575,6 +589,7 @@ export type CredentialSource = CredentialSourceOwner & {
 };
 
 export interface CredentialSourceMetadata {
+  readonly staticKeyGrant?: import("./model-providers.ts").StaticKeyGrant;
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
@@ -1039,6 +1054,8 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Installation provider selected for future deployments. */
+  readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;
@@ -1119,6 +1136,8 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
+  /** Catalog identity at admission; execution uses the saved settings below. */
+  readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;
   /** Requested settings, normalized by the selected Compute Driver. */
   readonly overrides?: Readonly<Record<string, unknown>>;

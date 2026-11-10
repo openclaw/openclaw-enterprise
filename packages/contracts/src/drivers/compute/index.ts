@@ -13,6 +13,7 @@ import type {
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -326,6 +327,15 @@ export interface ComputeDriver extends Driver {
   normalizeHarnessOverrides?(
     overrides: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,

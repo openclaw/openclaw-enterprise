@@ -1,3 +1,5 @@
+import type { InferenceProtocol } from "./model-providers.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -57,6 +59,20 @@ export interface ConnectionTemplateValues {
   readonly observed?: McpAuthorizationMetadata;
 }
 
+export interface StaticKeyTemplateValues {
+  readonly mode: "static_bearer";
+  readonly baseUrl: string;
+  readonly protocol: InferenceProtocol;
+  readonly destinations: readonly (ConnectionEndpoint & { readonly method: "POST" })[];
+}
+export type ConnectionTemplateSettings = ConnectionTemplateValues | StaticKeyTemplateValues;
+export type ConnectionTemplateVersion =
+  | OAuthConnectionTemplateVersion
+  | (StaticKeyTemplateValues & {
+      readonly templateId: string;
+      readonly version: number;
+      readonly createdAt: string;
+    });
 export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues {
   readonly templateId: string;
   readonly version: number;
@@ -67,7 +83,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -213,9 +229,17 @@ function sameDestinations(
 
 /** True when `next` changes a value a person approved, so it needs a new version. */
 export function connectionValuesChanged(
-  current: Readonly<ConnectionTemplateValues>,
-  next: Readonly<ConnectionTemplateValues>,
+  current: Readonly<ConnectionTemplateSettings>,
+  next: Readonly<ConnectionTemplateSettings>,
 ): boolean {
+  if (current.mode === "static_bearer" || next.mode === "static_bearer") {
+    return (
+      current.mode !== "static_bearer" ||
+      next.mode !== "static_bearer" ||
+      current.baseUrl !== next.baseUrl ||
+      current.protocol !== next.protocol
+    );
+  }
   return (
     current.mode !== next.mode ||
     current.mcp?.serverUrl !== next.mcp?.serverUrl ||

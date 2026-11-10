@@ -265,6 +265,10 @@ export const agents = occSchema.table(
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
     configurationId: text("configuration_id").notNull(),
+    modelProviderId: text("model_provider_id").references(() => modelProviders.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
@@ -295,6 +299,9 @@ export const agents = occSchema.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    index("agents_model_provider")
+      .on(table.modelProviderId)
+      .where(sql`${table.modelProviderId} IS NOT NULL`),
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
     unique("agents_namespace_id_id_service_principal_id_unique").on(
@@ -494,6 +501,10 @@ export const credentialSources = occSchema.table(
     name: collatedText("name").notNull(),
     type: text("type").notNull(),
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
+    staticTemplateId: text("static_template_id"),
+    staticTemplateVersion: integer("static_template_version"),
+    staticBaseUrl: text("static_base_url"),
+    staticProtocol: text("static_protocol"),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
@@ -501,6 +512,21 @@ export const credentialSources = occSchema.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    foreignKey({
+      name: "credential_source_static_key_grant",
+      columns: [
+        table.staticTemplateId,
+        table.staticTemplateVersion,
+        table.staticBaseUrl,
+        table.staticProtocol,
+      ],
+      foreignColumns: [
+        staticKeyTemplateVersions.templateId,
+        staticKeyTemplateVersions.version,
+        staticKeyTemplateVersions.baseUrl,
+        staticKeyTemplateVersions.protocol,
+      ],
+    }).onDelete("restrict"),
     check(
       "credential_sources_egress_valid",
       sql`CASE WHEN ${table.type} = 'credential-free-repository-metadata' THEN
@@ -2428,17 +2454,32 @@ export const connectionTemplates = occSchema.table(
     }),
     displayName: collatedText("display_name").notNull(),
     currentVersion: integer("current_version").notNull(),
+    staticKey: boolean("static_key").notNull().default(false),
+    installationStaticTemplateId: text("installation_static_template_id")
+      .generatedAlwaysAs(sql`CASE WHEN namespace_id IS NULL AND static_key THEN id END`)
+      .unique(),
+    currentOAuthVersion: integer("current_oauth_version").generatedAlwaysAs(
+      sql`CASE WHEN NOT static_key THEN current_version END`,
+    ),
+    currentStaticVersion: integer("current_static_version").generatedAlwaysAs(
+      sql`CASE WHEN static_key THEN current_version END`,
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
     // Migration 0067 defers this ownership cycle until commit.
     foreignKey({
-      name: "connection_templates_current_version_exists",
-      columns: [table.id, table.currentVersion],
+      name: "connection_templates_current_oauth_version",
+      columns: [table.id, table.currentOAuthVersion],
       foreignColumns: [
         oauthConnectionTemplateVersions.templateId,
         oauthConnectionTemplateVersions.version,
       ],
+    }),
+    foreignKey({
+      name: "connection_templates_current_static_version",
+      columns: [table.id, table.currentStaticVersion],
+      foreignColumns: [staticKeyTemplateVersions.templateId, staticKeyTemplateVersions.version],
     }),
     check(
       "connection_templates_id_format",
@@ -2452,6 +2493,37 @@ export const connectionTemplates = occSchema.table(
     check("connection_templates_current_version_positive", sql`${table.currentVersion} >= 1`),
   ],
 );
+
+export const staticKeyTemplateVersions = occSchema.table(
+  "static_key_template_versions",
+  {
+    templateId: text("template_id")
+      .notNull()
+      .references(() => connectionTemplates.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    baseUrl: text("base_url").notNull(),
+    protocol: text("protocol").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({ columns: [table.templateId, table.version] }),
+    unique().on(table.templateId, table.version, table.baseUrl, table.protocol),
+  ],
+);
+
+export const modelProviders = occSchema.table("model_providers", {
+  id: text("id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  baseUrl: text("base_url").notNull(),
+  protocol: text("protocol").notNull(),
+  models: jsonb("models")
+    .$type<readonly import("@openclaw-enterprise/contracts").ModelProviderModel[]>()
+    .notNull(),
+  defaultModelId: text("default_model_id"),
+  connectionTemplateId: text("connection_template_id")
+    .notNull()
+    .references(() => connectionTemplates.installationStaticTemplateId, { onDelete: "restrict" }),
+});
 
 export const oauthConnectionTemplateVersions = occSchema.table(
   "oauth_connection_template_versions",

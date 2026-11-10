@@ -545,7 +545,8 @@ function operationTarget(
       : { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
-    (operation.operationId === "createAgent" ||
+    (operation.operationId === "listUsableModelProviders" ||
+      operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
@@ -2321,7 +2322,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           actorId: context.actorId,
           request,
           reply,
-          mutationEvent: (resourceId) =>
+          mutationEvent: (details) =>
             event(
               operation,
               request,
@@ -2331,9 +2332,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               {
                 outcome: "success",
-                details: resourceId.startsWith("ccr_")
-                  ? { oauthClientId: resourceId }
-                  : { connectionTemplateId: resourceId },
+                details,
               },
             ),
         });

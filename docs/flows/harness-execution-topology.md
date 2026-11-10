@@ -75,7 +75,11 @@ its snapshot contains the OCC identity, credential kind, and opaque Secret refer
 `KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
 admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
 `validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
-the provider.
+the provider. For an Agent with a saved Model Provider, OCC reads its catalog during
+admission. Kubernetes Compute projects the selected models and their admin-supplied
+metadata into the revision. OCC checks the source's approved template and route
+before queuing work. The worker uses the saved Harness settings and Configuration
+for each attempt.
 
 ### 2. Claim work and realize the approved topology
 

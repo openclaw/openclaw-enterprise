@@ -42,6 +42,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `namespace_id`
 - `name`
 - `configuration_id`
+- `model_provider_id` (optional Installation provider selected for deployment)
 - `backend_id`
 - `execution_mode`
 - `gateway_managed_mode`
@@ -142,13 +143,27 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 
 ### `connection_templates`
 
-Stores the scope and current version of each OAuth connection template.
+Stores the scope, authentication kind, and current version of each connection template.
 
 - `id`
 - `namespace_id`
 - `display_name`
 - `current_version`
 - `created_at`
+
+- `static_key`, `current_static_version`, `current_oauth_version`, `installation_static_template_id`
+
+### `static_key_template_versions`
+
+Pins an inference key's approved POST route.
+
+- `template_id`, `version`, `base_url`, `protocol`, `created_at`
+
+### `model_providers`
+
+Stores the Installation provider catalog and its approved template references.
+
+- `id`, `display_name`, `base_url`, `protocol`, `models`, `default_model_id`, `connection_template_id`
 
 ### `oauth_connection_template_versions`
 
@@ -222,6 +237,7 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
+- `static_template_id`, `static_template_version`, `static_base_url`, `static_protocol` (approved static-key grant)
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
 - `driver_id` (Gateway and Proxy sources)
 - `state`
