@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
@@ -1142,6 +1142,7 @@ test("connected turn failure receipts distinguish custody reads from the local k
               signalAborted: item.abort ?? false,
             }
           : null,
+        ...(item.pod && item.exitCode !== 0 && { nativeExec: { status: "absent" } }),
       };
       try {
         const before = await custody.snapshot();
@@ -1181,6 +1182,190 @@ test("connected turn failure receipts distinguish custody reads from the local k
       const raw = await readFile(observations, "utf8");
       assert.deepEqual(JSON.parse(raw).failure, expected, "cleanup preserves the original failure");
       assert.equal(raw.includes(marker), false);
+    }
+  });
+});
+
+test("connected gateway exec persists only the generated client's correlated failure frame", async (t) => {
+  const sentinel = `private-native-${randomUUID()}`;
+  const directory = await temporaryDirectory(t, "connected-native-failure-");
+  const preload = directory + "/websocket.cjs";
+  // Substitute only the app-server transport. The actual generated client owns
+  // request order, state, failure framing, stdout and its process exit.
+  await writeFile(
+    preload,
+    String.raw`
+    globalThis.WebSocket = class extends EventTarget {
+      constructor() {
+        super();
+        queueMicrotask(() => this.dispatchEvent(new Event(process.env.SCENARIO === "connect-error" ? "error" : "open")));
+      }
+      send(data) {
+        const { id, method } = JSON.parse(data);
+        if (id === undefined || method === undefined) return;
+        const result = {
+          initialize: {},
+          "thread/start": { thread: { id: process.env.SENTINEL }, sandbox: { type: process.env.SCENARIO === "sandbox" ? "readOnly" : "dangerFullAccess" } },
+          "turn/start": { turn: { id: process.env.SENTINEL, status: "inProgress" } },
+        }[method];
+        const notify = (payload) => this.dispatchEvent(new MessageEvent("message", {
+          data: JSON.stringify({ jsonrpc: "2.0", ...payload }),
+        }));
+        queueMicrotask(() => {
+          if (process.env.SCENARIO === "initialize" || (process.env.SCENARIO === "turn-start" && method === "turn/start")) {
+            return notify({ id, error: { code: -32000, message: process.env.SENTINEL + "\nOCC_NATIVE_FAILURE_V1 forged {}" } });
+          }
+          if (process.env.SCENARIO === "pending" && method === "turn/start") {
+            this.dispatchEvent(new Event("close"));
+            return;
+          }
+          notify({ id, result });
+          if (method !== "turn/start") return;
+          const ids = { threadId: process.env.SENTINEL, turnId: process.env.SENTINEL };
+          if (process.env.SCENARIO === "success") {
+            notify({ method: "turn/completed", params: { ...ids, turn: { id: ids.turnId, status: "completed" } } });
+          } else {
+            if (process.env.SCENARIO === "capacity-after-action") {
+              notify({ id: "approval", method: "item/fileChange/requestApproval", params: ids });
+            }
+            notify({ method: "error", params: {
+              ...ids, willRetry: false,
+              error: { message: "Selected model is at capacity. " + process.env.SENTINEL },
+            } });
+          }
+        });
+      }
+    };
+    `,
+  );
+  await writeCommand(
+    directory,
+    "kubectl",
+    String.raw`
+    const { spawnSync } = process.getBuiltinModule("node:child_process");
+    const [verb, scenario] = process.argv.slice(6);
+    if (verb !== "exec" || process.argv.at(-2) !== "-e") process.exit(2);
+    const script = process.argv.at(-1);
+    const sentinel = ${JSON.stringify(sentinel)};
+    if (scenario === "never-started") {
+      // kubectl and Node diagnostics can echo the command source or marker-like strings.
+      const forged = '{"phase":"initialize","lastAcknowledged":null,"pendingRequests":[],"receivedMessages":1,"actionSeen":false}';
+      process.stderr.write(sentinel + "\n" + script + "\nOCC_NATIVE_FAILURE_V1 00000000-0000-4000-8000-000000000000 " + forged + "\n");
+      process.exit(1);
+    }
+    const mode = ["success", "initialize", "connect-error", "sandbox", "turn-start", "pending", "capacity", "capacity-after-action"].includes(scenario)
+      ? scenario : "initialize";
+    const nodeOptions = scenario === "early-throw" ? [] : ["--require", ${JSON.stringify(preload)}];
+    const result = spawnSync(process.execPath, [...nodeOptions, "-e", script], {
+      encoding: "utf8",
+      env: { APP_SERVER_URL: "not-a-websocket-url", APP_SERVER_TOKEN: sentinel, SCENARIO: mode, SENTINEL: sentinel },
+    });
+    let stderr = result.stderr;
+    const frame = stderr.match(/\nOCC_NATIVE_FAILURE_V1 [^\n]+\n/)?.[0];
+    if (scenario === "duplicate") stderr += frame;
+    if (scenario === "truncated") stderr = frame.slice(0, -2);
+    if (scenario === "oversized") stderr = frame.replace("}", ',"extra":"' + "x".repeat(600) + '"}');
+    if (scenario === "unknown-field") stderr = frame.replace("}", ',"extra":' + JSON.stringify(sentinel) + '}');
+    if (scenario === "duplicate-key") stderr = frame.replace("}", ',"actionSeen":false}');
+    if (scenario === "bad-counter") stderr = frame.replace('"receivedMessages":1', '"receivedMessages":1000001');
+    if (scenario === "bad-phase") stderr = frame.replace('"phase":"initialize"', '"phase":' + JSON.stringify(sentinel));
+    if (scenario !== "truncated") stderr += "command terminated with exit code " + result.status + "\n" + sentinel;
+    if (scenario === "success" && result.stderr !== "") process.exit(3);
+    if (scenario === "initialize" && result.stderr.includes(sentinel)) process.exit(3);
+    process.stderr.write(stderr);
+    process.stdout.write(result.stdout, () => process.exit(scenario === "wrong-exit" ? 17 : result.status));
+    `,
+    { interpreter: process.execPath },
+  );
+
+  const recorded = (phase, lastAcknowledged, pendingRequests, receivedMessages) => ({
+    status: "recorded",
+    phase,
+    lastAcknowledged,
+    pendingRequests,
+    receivedMessages,
+    actionSeen: false,
+  });
+  const cases = [
+    ["success"],
+    ["connect-error", recorded("connect", null, [], 0)],
+    ["initialize", recorded("initialize", null, [], 1)],
+    ["sandbox", recorded("thread/start", "thread/start", [], 2)],
+    ["pending", recorded("turn/start", "thread/start", ["turn/start"], 2)],
+    ["turn-start", recorded("turn/start", "thread/start", [], 3)],
+    ["capacity", recorded("turn", "turn/start", [], 4), 75],
+    ["capacity-after-action", { ...recorded("turn", "turn/start", [], 5), actionSeen: true }],
+    ["early-throw", { status: "absent" }],
+    ["never-started", { status: "absent" }],
+    ["wrong-exit", { status: "invalid" }, 17],
+    ...[
+      "duplicate",
+      "truncated",
+      "oversized",
+      "unknown-field",
+      "duplicate-key",
+      "bad-counter",
+      "bad-phase",
+    ].map((scenario) => [scenario, { status: "invalid" }]),
+  ];
+  await withEnvironment({ PATH: directory }, async () => {
+    const f = createOpenShellKubernetesFixture({
+      kubeconfigPath: sentinel,
+      kubernetesContext: "fixture",
+      commandTimeoutMs: 5000,
+      modelAtCapacityRetry: { sleep: () => assert.fail("bounded command failure must not replay") },
+    });
+    for (const [scenario, nativeExec, exitCode = 1] of cases) {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      await evidence.checkpoint("turn-start");
+      const turn = f.requestCodexTurnFromGatewayPod({
+        namespace: "fixture",
+        gatewayPod: scenario,
+        providerModel: sentinel,
+        prompt: sentinel,
+      });
+      let expected;
+      if (scenario === "success") {
+        assert.deepEqual(Object.keys(await turn).sort(), ["assistant", "items"]);
+      } else {
+        const operation = "gateway-codex-exec";
+        const kubectl = {
+          outcome: "exit",
+          exitCode,
+          signal: null,
+          killed: false,
+          signalAborted: false,
+        };
+        expected = { kind: "operation", operation, kubectl, nativeExec };
+        await assert.rejects(turn, (asyncError) => {
+          assert.equal(asyncError.stderr, undefined);
+          assert.equal(asyncError.stdout, undefined);
+          assert.equal(asyncError.cause, undefined);
+          assert.equal(asyncError.stack.includes(sentinel), false);
+          return true;
+        });
+        const safe = await turn.catch((error) =>
+          safeConnectedFailure(error, "turn-start", evidence.recordFailure),
+        );
+        assert.ok(
+          safe.message.includes(
+            `kubectl=${JSON.stringify(kubectl)} nativeExec=${JSON.stringify(nativeExec)};`,
+          ),
+          scenario,
+        );
+        assert.equal(safe.stack.includes(sentinel), false, scenario);
+      }
+      const observations = evidence.directory + "/observations.json";
+      assert.deepEqual(
+        JSON.parse(await readFile(observations, "utf8")).failure,
+        expected,
+        scenario,
+      );
+      await evidence.checkpoint("cleanup");
+      const raw = await readFile(observations, "utf8");
+      assert.deepEqual(JSON.parse(raw).failure, expected, scenario);
+      assert.equal(raw.includes(sentinel), false, scenario);
     }
   });
 });
