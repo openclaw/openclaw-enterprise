@@ -1406,7 +1406,10 @@ export class ControllerWorker {
     const bound = this.repositoryAdmission?.policy;
     if (
       this.repositoryAdmission !== undefined &&
-      (bound !== this.repositoryPolicy || typeof bound?.resolveBindings !== "function")
+      ((this.repositoryAdmission.policyMode === "built-in"
+        ? this.repositoryPolicy !== undefined
+        : bound !== this.repositoryPolicy) ||
+        typeof bound?.resolveBindings !== "function")
     ) {
       throw new Error("The bound repository admission owner is not selected or unavailable.");
     }

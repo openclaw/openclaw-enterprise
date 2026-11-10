@@ -81,12 +81,15 @@ evidence/baseline aliases are rejected. Other edits and image provenance remain 
 
 Resume binds evidence path, device and inode. Aliases share its lock. Runtime upgrades separately lock their sibling dispatch journal.
 
-`matches_yaml` compares ordered candidate YAML mappings, including images, with
-the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-before protected-setting projections. Unusable inputs or unwritable evidence cause
-`Cannot compare upgrade YAML`. Only Slack directory proxy, curated Codex
-PluginDriver selection and wrapping one registration in an array may change before
-image selection. Immutable reference switches require string mapping keys. Startup validates the candidate controller; broker checks compare references, not referenced contents.
+`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+and live mappings, then validates candidates. Invalid input or unwritable
+evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
+protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
+and wrapping one registration in an array. Removing empty
+`agentNativeAdmin.sharedCookieDomain` changes only the baseline projection;
+the live comparison remains exact. Immutable reference switches require
+string keys. Startup validates the controller; broker checks references,
+not contents.
 
 Runtime upgrades require complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
@@ -122,12 +125,12 @@ Changed immutable data requires a successor. For changed mutable data, a Kuberne
 self-review checks update access to the named Secret. A completed denial stops
 preparation. An inconclusive review warns and continues. Replacement still
 requires update permission.
-After Helm's server dry run, `scripts/upgrade-startup-preflight.mjs` copies
-API/worker images, environment, mounts and service accounts into single-completion,
-single-Pod Jobs with the candidate Installation Secret, no retries and the selected
-deadline. `preflight_startup` verifies Job UID and child ownership: missing children
-wait; replacements or multiple children refuse preparation. Job completion is
-required; Job failure overrides child success.
+Rendered Certificates must pass server-side dry-run admission before startup Jobs.
+`scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
+mounts and service accounts into single-Pod Jobs with the candidate Secret,
+no retries and the selected deadline. `preflight_startup` verifies Job UID and
+child ownership. It waits for children and refuses replacements or
+multiple children. Job failure overrides child success.
 
 An API Pod with a theme first calls
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme`. Invalid bundles

@@ -39,7 +39,7 @@ import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
-import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const executeFile = promisify(execFile);
@@ -125,6 +125,17 @@ const yqRaw = (value) => (value === undefined || value === null ? "null" : Strin
 // yq's `//`: the alternative replaces a missing, null or false value.
 const yqOr = (value, alternative) =>
   value === undefined || value === null || value === false ? alternative : value;
+
+const testCertificate = {
+  apiVersion: "cert-manager.io/v1",
+  kind: "Certificate",
+  metadata: { name: "gateway-certificate", namespace: "system" },
+  spec: {
+    secretName: "gateway-tls",
+    dnsNames: ["gateway.example.test"],
+    issuerRef: { name: "gateway-issuer", kind: "Issuer" },
+  },
+};
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
@@ -668,6 +679,31 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("apply") && args.includes("--dry-run=server")) {
+      assert.ok(args.includes("--server-side"));
+      assert.ok(args.includes("--force-conflicts"));
+      assert.ok(args.includes("--field-manager=occ-upgrade-preflight"));
+      assert.equal(fileArg("--namespace"), "system");
+      const submitted = JSON.parse(readFileSync(fileArg("--filename"), "utf8"));
+      assert.equal(submitted.apiVersion, "v1");
+      assert.equal(submitted.kind, "List");
+      assert.ok(submitted.items.length > 0);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      if (state.realChart) {
+        for (const item of submitted.items) {
+          assert.equal(item.apiVersion, "cert-manager.io/v1");
+          assert.equal(item.kind, "Certificate");
+        }
+      } else {
+        assert.deepEqual(submitted.items, [testCertificate]);
+        log("certificate-admission");
+      }
+      if (take("refuse-certificate-admission")) {
+        return fail(1, "certificate webhook refused dry-run");
+      }
+      return io.exit(0);
+    }
     if (args.includes("create") && args.includes("--raw")) {
       assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
       const review = JSON.parse(await io.readInput());
@@ -1837,6 +1873,7 @@ async function fixture(
     recoveryHooks = false,
     initializationResources,
     preflightPolicy = false,
+    certificate = false,
     preflightFault = null,
     kubernetesNamespaces = [],
     kubernetesDenied = false,
@@ -2043,6 +2080,7 @@ async function fixture(
     inventoryNamespaces,
     names,
     configurationValues,
+    ...(certificate ? { recoveryCandidateResources: [testCertificate] } : {}),
     olderDraftRules,
     unavailableDraftResolver,
     version: 1,
@@ -2683,6 +2721,20 @@ test("controller compatibility preserves Agent continuity through interrupted up
   assert.equal((await f.state()).worker, 1);
 });
 
+async function assertCompatibilityReceiptRejected(t, change) {
+  const f = await fixture(t, { controllerOnly: true });
+  const receipt = controllerCompatibilityResults();
+  change(receipt);
+  const path = join(f.directory, "compatibility.json");
+  await writeFile(path, JSON.stringify(receipt));
+  await assert.rejects(
+    f.run("--controller-compatibility-results", path),
+    /controller compatibility receipt must pass/,
+  );
+  assert.deepEqual(await f.events(), []);
+  return f;
+}
+
 test("controller compatibility rejects unqualified evidence before changing writers", async (t) => {
   const changes = {
     "missing IAM activation": (r) => (r.files[0].tests[0].name = "Another passing case"),
@@ -2711,16 +2763,7 @@ test("controller compatibility rejects unqualified evidence before changing writ
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      const f = await assertCompatibilityReceiptRejected(subtest, change);
       assert.equal((await f.state()).api, 1);
       assert.equal((await f.state()).worker, 1);
       assert.equal(existsSync(join(f.evidence, "prepared")), false);
@@ -2737,16 +2780,7 @@ test("controller compatibility rejects contradictory runner summaries", async (t
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
@@ -2766,16 +2800,7 @@ test("controller compatibility rejects passing summaries with explicit failure e
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
@@ -3590,6 +3615,77 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   await f.run("--resume");
   assert.equal((await f.state()).version, 2);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
+  for (const mode of [
+    "remove empty",
+    "remove aliased empty",
+    "remove nonempty",
+    "change domain",
+    "add empty",
+    "baseline drift",
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(t, { controllerOnly: true });
+      const baseline = await yamlFile(join(f.directory, "values.json"));
+      baseline.agentNativeAdmin = { domain: "agents.example.test" };
+      if (mode !== "add empty") {
+        baseline.agentNativeAdmin.sharedCookieDomain =
+          mode === "remove nonempty" ? "example.test" : "";
+      }
+      if (mode === "remove aliased empty") {
+        baseline.api ??= {};
+        baseline.api.channelDirectoryProxyUrl = "";
+      }
+      for (const file of ["values.json", "live-values"]) {
+        await writeFile(join(f.directory, file), JSON.stringify(baseline));
+      }
+      if (mode === "remove aliased empty") {
+        // A saved YAML alias and Helm's resolved value describe the same baseline.
+        const { agentNativeAdmin, ...settings } = baseline;
+        const saved = dumpYaml({ ...settings, agentNativeAdmin })
+          .replace(/channelDirectoryProxyUrl: (?:''|"")/, 'channelDirectoryProxyUrl: &empty ""')
+          .replace(/sharedCookieDomain: (?:''|"")/, "sharedCookieDomain: *empty");
+        await writeFile(join(f.directory, "values.json"), saved);
+      }
+      const candidate = structuredClone(baseline);
+      delete candidate.agentNativeAdmin.sharedCookieDomain;
+      if (mode === "change domain") {
+        candidate.agentNativeAdmin.domain = "other.example.test";
+      } else if (mode === "add empty") {
+        candidate.agentNativeAdmin.sharedCookieDomain = "";
+      } else if (mode === "baseline drift") {
+        // Removing the obsolete field from the live baseline must not bypass drift detection.
+        await writeFile(join(f.directory, "values.json"), JSON.stringify(candidate));
+      }
+      const path = join(f.directory, "cookie-candidate.json");
+      await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
+      if (mode === "remove empty" || mode === "remove aliased empty") {
+        // Exercise the normal helper through Helm submission; the retained baseline
+        // must remain attributable while the submitted candidate drops the invalid field.
+        await f.run("--candidate-values", path);
+        const before = await yamlFile(join(f.evidence, "before-live-values.yaml"));
+        const after = await yamlFile(join(f.directory, "live-values"));
+        assert.deepEqual(before, baseline);
+        assert.deepEqual(after.agentNativeAdmin, candidate.agentNativeAdmin);
+        assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+        assert.equal((await f.state()).helmSubmissions, 1);
+      } else {
+        await assert.rejects(
+          f.run("--candidate-values", path),
+          mode === "baseline drift"
+            ? /protected Helm values differ from the live release/
+            : /candidate values change a protected setting/,
+        );
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual([state.api, state.worker], [1, 1]);
+        assert.equal(state.helmSubmissions ?? 0, 0);
+        assert.equal(state.preflight, undefined);
+      }
+    });
+  }
 });
 
 test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
@@ -7448,6 +7544,32 @@ test("a staged retry with replaced local values still cannot replace the publish
   assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
   assert.equal((await f.state()).helmSubmissions, 1);
   assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+});
+
+test("certificate admission refusal leaves the incumbent controllers running", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.failNext("refuse-certificate-admission");
+  await assert.rejects(f.run(), /certificate admission preflight failed/);
+  assert.deepEqual(await f.events(), ["certificate-admission"]);
+  const state = await f.state();
+  assert.equal(state.api, 1);
+  assert.equal(state.worker, 1);
+  assert.equal(state.version, 1);
+  assert.equal(
+    await readFile(join(f.evidence, "preflight-certificates.err"), "utf8"),
+    "certificate webhook refused dry-run\n",
+  );
+});
+
+test("successful certificate admission precedes shutdown and Helm submission", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.run();
+  assert.deepEqual(await f.events(), [
+    "certificate-admission",
+    "scale-api",
+    "scale-worker",
+    "migration",
+  ]);
 });
 
 test("failed attempt preparation preserves native dry-run diagnostics before stopping writers", async (t) => {
