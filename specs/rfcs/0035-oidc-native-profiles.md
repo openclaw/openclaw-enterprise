@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Partially implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -25,7 +25,9 @@ per-person Gateway configuration is required.
 
 **The decision is to delegate identity and request authority to OCC while keeping
 profiles in OpenClaw.** This needs a native authentication extension and a
-Compute Driver contract change. The RFC is submitted; implementation is in progress and runtime qualification remains pending.
+Compute Driver contract change. The code is implemented; the
+[plan](../plans/0035-oidc-native-profiles.md#delivery-record) records qualification
+and review separately from this proposed decision.
 
 ## Why the current paths are insufficient
 
@@ -187,6 +189,11 @@ extension, Compute integration, and live proof. This RFC was submitted for human
 review in [PR #5320](https://github.com/openclaw/openclaw-enterprise/pull/5320)
 before Driver implementation. Qualify the native extension before enabling OCE
 delegation. The proposal's status does not claim acceptance or completed runtime proof.
+
+The [plan's delivery record](../plans/0035-oidc-native-profiles.md#delivery-record)
+records the implementation and a dated verification checkpoint. The
+[native access reference](../../docs/reference/agent-native-admin.md) and
+[Compute reference](../../docs/reference/drivers/compute.md) own current behavior.
 
 ## Manual Notes
 
