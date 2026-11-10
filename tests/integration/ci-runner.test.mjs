@@ -179,6 +179,83 @@ function run(root, args, env = {}, { timeout } = {}) {
   });
 }
 
+test("checkout build failures retain safe process details through the CI reporter", async (t) => {
+  const root = await fixture(t);
+  const path = "tests/integration/build-failure.test.mjs";
+  const statePath = join(root, "state/build.jsonl");
+  const resultsPath = join(root, "results/build.json");
+  const provider = pathToFileURL(join(repositoryRoot, "tests/helpers/dev-up-model-provider.mjs"));
+  // This canary is deliberately not an environment secret. The helper must
+  // omit child output before the existing reporter/redaction boundary.
+  const privateOutput = "private-checkout-build-output";
+  await writePrepare(root);
+  await writeSingleLaneManifest(root, "build-failure", [{ path }], {});
+  await writeFile(
+    join(root, path),
+    `import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import test from "node:test";
+import { createDevUpModelProvider } from ${JSON.stringify(provider.href)};
+const execute = promisify(execFile);
+test("failed checkout builds", async () => {
+  const provider = createDevUpModelProvider({
+    directory: ${JSON.stringify(join(root, "provider"))},
+    cluster: "unused",
+    environment: { OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker", DOCKER_HOST: "unix:///unused.sock" },
+    run: async (command, args) => {
+      if (command !== "docker") {
+        return execute(command, args, { cwd: ${JSON.stringify(repositoryRoot)} });
+      }
+      // Only registry/image bookkeeping is simulated. Both failures below
+      // come from actual child processes; no Docker or cluster is started.
+      if (args[1] === "inspect") {
+        throw Object.assign(new Error("not found"), {
+          stderr: "Error response from daemon: No such " + args[0] + ": " + args[2],
+        });
+      }
+      if (args[0] === "run") {
+        return { stdout: "", stderr: "" };
+      }
+      assert.equal(args[0], "buildx");
+      const tag = args[args.indexOf("--tag") + 1];
+      const exit = tag.includes("/controller:") ? 23 : 47;
+      return execute(process.execPath, ["-e", "console.error(" + JSON.stringify(${JSON.stringify(privateOutput)}) + "); process.exit(" + exit + ")"]);
+    },
+  });
+  try {
+    await provider.prepare();
+    assert.fail("builds should fail");
+  } catch (error) {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map(({ code }) => code), [23, 47]);
+    assert.ok(error.errors.every(({ stderr }) => stderr.includes(${JSON.stringify(privateOutput)})));
+    throw error;
+  }
+});
+`,
+  );
+  const result = run(root, laneArgs(root, "build-failure", statePath, resultsPath));
+  assert.equal(result.status, 1, result.stderr);
+  const raw = await readFile(resultsPath, "utf8");
+  const details = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const summary = JSON.parse(raw);
+  assert.equal(summary.counts.failed, 1);
+  const message = summary.files[0].tests[0].error.message;
+  assert.match(
+    message,
+    /controller: exit=23 code=unknown signal=unknown killed=false elapsedMs=\d+ budgetMs=600000/,
+  );
+  assert.match(
+    message,
+    /runtime: exit=47 code=unknown signal=unknown killed=false elapsedMs=\d+ budgetMs=600000/,
+  );
+  assert.equal(JSON.parse(details).failures[0].tests[0].message, message);
+  for (const output of [raw, details, result.stdout, result.stderr]) {
+    assert.equal(output.includes(privateOutput), false);
+  }
+});
+
 test("installed Skipper failure summary reads the actual runner result without exposing errors", async (t) => {
   for (const scenario of [
     "assertion",

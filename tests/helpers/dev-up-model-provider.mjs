@@ -268,8 +268,49 @@ export function createDevUpModelProvider({
         : // Reuse the installer's selected builder without passing hosted cache
           // credentials into the test. Local runs retain the engine builder.
           ["--builder", env.BUILDX_BUILDER || "default"];
+    const build = async (role, tag, args, { timeout: budgetMs }) => {
+      const started = performance.now();
+      try {
+        await create(tag, args, { timeout: budgetMs });
+      } catch (error) {
+        // Only fixed labels and process metadata enter CI output. The original
+        // errors retain their private command output for local inspection.
+        const exit =
+          Number.isInteger(error?.code) && error.code >= 0 && error.code <= 255
+            ? error.code
+            : "unknown";
+        const code = [
+          "ENOENT",
+          "EACCES",
+          "ENOMEM",
+          "EAGAIN",
+          "ABORT_ERR",
+          "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        ].includes(error?.code)
+          ? error.code
+          : "unknown";
+        const signal = [
+          "SIGTERM",
+          "SIGKILL",
+          "SIGABRT",
+          "SIGSEGV",
+          "SIGPIPE",
+          "SIGINT",
+          "SIGHUP",
+        ].includes(error?.signal)
+          ? error.signal
+          : "unknown";
+        const killed = typeof error?.killed === "boolean" ? error.killed : "unknown";
+        const elapsedMs = Math.round(performance.now() - started);
+        throw new Error(
+          `${role}: exit=${exit} code=${code} signal=${signal} killed=${killed} elapsedMs=${elapsedMs} budgetMs=${budgetMs}`,
+          { cause: error },
+        );
+      }
+    };
     const builds = await Promise.allSettled([
-      create(
+      build(
+        "controller",
         controllerTag,
         [
           "buildx",
@@ -291,7 +332,8 @@ export function createDevUpModelProvider({
         ],
         { timeout: 600_000 },
       ),
-      create(
+      build(
+        "runtime",
         baseTag,
         [
           "buildx",
@@ -317,7 +359,10 @@ export function createDevUpModelProvider({
       .filter((result) => result.status === "rejected")
       .map((result) => result.reason);
     if (failures.length) {
-      throw new AggregateError(failures, "Checkout image builds failed");
+      throw new AggregateError(
+        failures.map((failure) => failure.cause),
+        `Checkout image builds failed: ${failures.map((failure) => failure.message).join("; ")}`,
+      );
     }
     const context = join(directory, "runtime-trust");
     await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });

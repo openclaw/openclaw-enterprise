@@ -250,6 +250,74 @@ test("provider builds checkout images with the selected installer builder", asyn
   await fixture.cleanup();
 });
 
+test("checkout build failures identify failed roles without exposing child output", async (t) => {
+  const privateOutput = "private-build-output-canary";
+  const controllerError = Object.assign(new Error(privateOutput), {
+    code: 23,
+    signal: null,
+    killed: false,
+    stdout: privateOutput,
+    stderr: privateOutput,
+  });
+  const runtimeError = Object.assign(new Error(privateOutput), {
+    code: null,
+    signal: "SIGKILL",
+    killed: true,
+  });
+  const malformedError = Object.assign(new Error(privateOutput), {
+    code: privateOutput,
+    signal: privateOutput,
+    killed: privateOutput,
+  });
+  for (const [name, failures, expected] of [
+    [
+      "controller only",
+      { controller: controllerError },
+      ["controller: exit=23 code=unknown signal=unknown killed=false"],
+    ],
+    [
+      "both builds",
+      { controller: controllerError, runtime: runtimeError },
+      [
+        "controller: exit=23 code=unknown signal=unknown killed=false",
+        "runtime: exit=unknown code=unknown signal=SIGKILL killed=true",
+      ],
+    ],
+    [
+      "unrecognized metadata",
+      { runtime: malformedError },
+      ["runtime: exit=unknown code=unknown signal=unknown killed=unknown"],
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { fixture } = await scenario(t, {
+        beforeBuild: ({ name }) => {
+          const role = name.includes("/controller:") ? "controller" : "runtime";
+          if (failures[role]) {
+            throw failures[role];
+          }
+        },
+      });
+      await assert.rejects(fixture.prepare(), (error) => {
+        assert.ok(error instanceof AggregateError);
+        // Local callers keep the original errors; the CI message keeps only
+        // failed roles and known process metadata, even with hostile fields.
+        assert.deepEqual(error.errors, Object.values(failures));
+        error.errors.forEach((cause, index) => assert.equal(cause, Object.values(failures)[index]));
+        assert.deepEqual(
+          error.message
+            .replace(/^Checkout image builds failed: /, "")
+            .split("; ")
+            .map((message) => message.replace(/ elapsedMs=\d+ budgetMs=600000$/, "")),
+          expected,
+        );
+        assert.equal(error.message.includes(privateOutput), false);
+        return true;
+      });
+    });
+  }
+});
+
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {
   const { fixture, readJournal, objects } = await scenario(t, {
     failAfterCreate: true,
