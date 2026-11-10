@@ -86,10 +86,7 @@ To select these scenarios locally through the QA matrix, prepare their OpenShell
 fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
-`public-egress` reuses its [connected scenario](../public-egress.md) against a
-separately prepared Kubernetes Installation. Select `Codex` and `kubernetes`
-explicitly. Hosted advisory jobs do not supply its fresh credential custody,
-controlled public endpoint, or coordinated configuration rollout.
+For `public-egress`, select `Codex` and `kubernetes` and [prepare credentials, receiver, and rollout](../public-egress.md) outside hosted QA.
 
 The OpenClaw `model-ui` case checks the example Console theme through sign-in
 and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
