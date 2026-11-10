@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import { realpathSync, statSync } from "node:fs";
@@ -814,8 +815,6 @@ function clientSelectors(source, diagnostics) {
 }
 
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
-const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -892,38 +891,6 @@ function signInProvider(source, name, diagnostics) {
       nonempty: false,
     });
   }
-  // GitHub's organization and team allowlist (RFC-0061), as the chart and API accept it.
-  if (source.allowedOrgs !== undefined) {
-    rendered.allowedOrgs = stringArray(source, [...path, "allowedOrgs"], diagnostics, {
-      validate: (value) => githubOrganization.test(value),
-      description: "a lowercase GitHub organization login such as acme",
-      nonempty: false,
-    });
-  }
-  if (source.allowedTeams !== undefined) {
-    rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
-      validate: (value) => githubTeam.test(value),
-      description: "a lowercase org/team-slug entry such as acme/platform",
-      nonempty: false,
-    });
-  }
-  if ((rendered.allowedOrgs?.length ?? 0) + (rendered.allowedTeams?.length ?? 0) > 10) {
-    diagnostics.errors.push(
-      "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
-    );
-  }
-  if (source.autoEnrollGroupId !== undefined) {
-    rendered.autoEnrollGroupId = optionalString(
-      source,
-      [...path, "autoEnrollGroupId"],
-      diagnostics,
-    );
-    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
-      diagnostics.errors.push(
-        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
-      );
-    }
-  }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
       validate: isIpv4Cidr,
@@ -996,12 +963,19 @@ function renderOidc(source, diagnostics) {
   if (displayName !== undefined) {
     rendered.displayName = displayName;
   }
+  if (source.enrollment !== undefined) {
+    try {
+      rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
+    } catch (error) {
+      diagnostics.errors.push(`controlPlane.oidc.enrollment: ${error.message}`);
+    }
+  }
   return rendered;
 }
 
-// Mirrors the chart's auth.github/auth.google/auth.oidc checks. Activation is one-way, so every
+// Mirrors the chart's auth.google/auth.oidc checks. Activation is one-way, so every
 // profile rerender after activation must keep rendering these values.
-function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics) {
+function renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics) {
   // The scheme as URL parsing reads it, like the API: HTTPS:// and surrounding spaces pass.
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
@@ -1009,7 +983,7 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId is required with controlPlane.google or controlPlane.oidc.",
     );
   } else {
     recoveryUserId = asString(controlPlane, ["controlPlane", "recoveryUserId"], diagnostics, {
@@ -1029,9 +1003,6 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   return {
     recoveryUserId,
     ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
-    ...(controlPlane.github === undefined
-      ? {}
-      : { github: signInProvider(github, "github", diagnostics) }),
     ...(controlPlane.google === undefined
       ? {}
       : { google: signInProvider(google, "google", diagnostics) }),
@@ -1180,7 +1151,6 @@ function buildInput(rawInput, diagnostics) {
       "observabilityUrl",
       "recoveryUserId",
       "passwordSignIn",
-      "github",
       "google",
       "oidc",
       "trustedProxy",
@@ -1241,21 +1211,11 @@ function buildInput(rawInput, diagnostics) {
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
   closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
-  const github = section(controlPlane, "github", diagnostics, false);
-  closed(
-    github,
-    "controlPlane.github",
-    [
-      "secretName",
-      "clientIdKey",
-      "clientSecretKey",
-      "allowedOrgs",
-      "allowedTeams",
-      "autoEnrollGroupId",
-      "egressCidrs",
-    ],
-    diagnostics,
-  );
+  if (controlPlane.github !== undefined) {
+    diagnostics.errors.push(
+      "controlPlane.github was removed; use controlPlane.oidc.enrollment. See docs/guides/deploy/oidc-upgrade.md.",
+    );
+  }
   const google = section(controlPlane, "google", diagnostics, false);
   closed(
     google,
@@ -1268,6 +1228,7 @@ function buildInput(rawInput, diagnostics) {
     oidc,
     "controlPlane.oidc",
     [
+      "enrollment",
       "issuer",
       "authorizationUrl",
       "tokenUrl",
@@ -1309,7 +1270,6 @@ function buildInput(rawInput, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1324,7 +1284,6 @@ const chartSecrets = {
   auth: "occ-auth",
 };
 const signInSecretDefaults = {
-  github: "occ-github-login",
   google: "occ-google-login",
   oidc: "occ-oidc-login",
 };
@@ -1474,7 +1433,6 @@ function buildRendered(profile, parsed, diagnostics) {
     loggingCollector,
     managedServiceAccounts,
     presets,
-    github,
     google,
     oidc,
     trustedProxy,
@@ -1508,12 +1466,9 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: httpOrigin,
     description: "an absolute HTTP(S) origin URL without a path, query, fragment, or user info",
   });
-  const externalSignIn =
-    controlPlane.github !== undefined ||
-    controlPlane.google !== undefined ||
-    controlPlane.oidc !== undefined;
+  const externalSignIn = controlPlane.google !== undefined || controlPlane.oidc !== undefined;
   const signIn = externalSignIn
-    ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
+    ? renderExternalSignIn(controlPlane, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
   // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails
@@ -1527,12 +1482,12 @@ function buildRendered(profile, parsed, diagnostics) {
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.recoveryUserId requires controlPlane.google or controlPlane.oidc.",
     );
   }
   if (!externalSignIn && controlPlane.passwordSignIn !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
+      "controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc.",
     );
   }
   const sessionMode =
@@ -1548,18 +1503,14 @@ function buildRendered(profile, parsed, diagnostics) {
   validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
   if (
     sessionMode === "host-only-exchange" &&
-    (controlPlane.github === undefined ||
-      controlPlane.google !== undefined ||
-      controlPlane.oidc !== undefined)
+    (controlPlane.oidc === undefined || controlPlane.google !== undefined)
   ) {
     diagnostics.errors.push(
-      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
     );
   }
   const agentNativeAdmin = {
-    enabled:
-      sessionMode === "host-only-exchange" ||
-      (controlPlane.github === undefined && controlPlane.google === undefined),
+    enabled: controlPlane.google === undefined,
     domain: agentNativeAdminDomain.toLowerCase(),
     ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
   };
@@ -2194,7 +2145,7 @@ function buildRendered(profile, parsed, diagnostics) {
     );
     if (signIn.passwordSignIn === "recovery-only") {
       diagnostics.prerequisites.push(
-        "A GitHub, Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
+        "A Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
       );
     }
   }
@@ -2247,6 +2198,16 @@ function buildRendered(profile, parsed, diagnostics) {
     `Run helm upgrade --install ${releaseName} deploy/helm/openclaw-enterprise --namespace ${namespace} --values values.yaml.`,
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
+
+  const backendIds = new Set();
+  for (const backend of installation.backend) {
+    if (backendIds.has(backend.id)) {
+      diagnostics.errors.push(
+        `Generated Backend IDs must be unique; repository.backendId ${JSON.stringify(backend.id)} is already used by another configured Backend.`,
+      );
+    }
+    backendIds.add(backend.id);
+  }
 
   // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
   // the DNS egress rule needs every merged label. A null deletes the default for a selector

@@ -213,15 +213,14 @@ Historical revisions remain readable after source deletion.
 The worker rechecks the deploying actor's and Agent's
 `credential_source:operate` (`AUTHORIZATION_DENIED`), the selected Gateway/Proxy
 snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
-For a Proxy-owned `openai/api_key` Harness snapshot, Worker and Compute require
-the ready source's inference binding to match current Backend and provider
-generations. Bundled Kubernetes Compute supports this path for dedicated Codex
-with an admitted egress plan. Before its first cluster read, Compute checks the saved model
-endpoint against source consent and the bound route's origin and path.
-Both refuse mismatches without Gateway fallback. Public deploys still record the Gateway.
+A Proxy-owned `openai/api_key` snapshot requires a ready inference binding with
+current Backend and provider generations. Bundled Kubernetes requires
+dedicated Codex and an admitted egress plan. Before cluster access, Compute checks
+the saved endpoint against source consent and the route's origin and path.
+Worker and Compute refuse mismatches without Gateway fallback. Public deploys
+still record Gateway ownership.
 Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
-`CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
-snapshot checks before
+`CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached. Compute rechecks before
 [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
 `apps/controller/src/composition/installation-config.ts` shares the internal

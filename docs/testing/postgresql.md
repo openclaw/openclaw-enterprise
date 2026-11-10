@@ -96,17 +96,17 @@ live gateway. Four optional Configuration cases also require
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 version-worker tests and therefore require prepared ownership.
 
-## GitHub human sign-in
+## OIDC human sign-in
 
 With a fresh migrated `OCC_TEST_DATABASE_URL` and the
 [Playwright browser](local.md#console-browser-checks), run:
 
 ```sh
-node --test tests/integration/postgres-github-sign-in.test.mjs
+node --test tests/integration/postgres-oidc-sign-in.test.mjs
 ```
 
 The database case skips without the URL and fails without the browser. Provider
-responses are fixtures; a pass does not prove live GitHub registration or HTTPS
+responses are fixtures; a pass does not prove live IdP registration or HTTPS
 cookies. Password and other provider scenarios are in the `postgres-auth` lane.
 
 ## PostgreSQL test environment

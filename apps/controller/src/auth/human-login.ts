@@ -1,12 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { AuthPrincipalSeed } from "@openclaw-enterprise/iam";
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import type { AuthPrincipalSeed, AccountEnrollmentRole } from "@openclaw-enterprise/iam";
 import { APIError, type BetterAuthPlugin } from "better-auth";
 import { createAuthEndpoint } from "better-auth/api";
 import { deleteSessionCookie, setSessionCookie } from "better-auth/cookies";
-import { github } from "better-auth/social-providers";
-import { authorizationCodeRequest, getOAuth2Tokens } from "better-auth/oauth2";
 import type { DBAdapter, DBAdapterInstance } from "better-auth/adapters";
 import {
   LOGIN_RECEIPT_LIFETIME_SECONDS,
@@ -33,19 +30,9 @@ import {
   oidcAuthorizationURL,
   oidcNonce,
   oidcProviderId,
-  type OidcLoginConfiguration,
+  type ResolvedOidcLoginConfiguration,
 } from "./oidc.ts";
-import {
-  ProviderUnavailableError,
-  providerExchangeFailure,
-  providerJSON,
-  providerEmailAddresses,
-  providerMembership,
-  rejected,
-  type MembershipEndpoint,
-  type ProviderExchange,
-  type ProviderFailure,
-} from "./provider-transport.ts";
+import { rejected, type ProviderExchange, type ProviderFailure } from "./provider-transport.ts";
 import { admissionKey, keyedAdmission } from "./admission.ts";
 import {
   issueKnownDevice,
@@ -54,139 +41,10 @@ import {
   knownDeviceFromCookieHeader,
 } from "./known-device.ts";
 
-/**
- * RFC-0061: the GitHub organizations and `org/team` slugs whose active members may sign in
- * with GitHub. Lowercased, without duplicates, present only when non-empty; absent means any
- * attached GitHub identity may sign in.
- */
-export interface GitHubMembershipAllowlist {
-  readonly allowedOrgs?: readonly string[];
-  readonly allowedTeams?: readonly string[];
-}
-
-interface GitHubEnrollmentConfiguration {
-  readonly autoEnrollGroupId?: string;
-}
-
-export interface GitHubLoginConfiguration
-  extends GitHubMembershipAllowlist, GitHubEnrollmentConfiguration {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  readonly recoveryUserId: string;
-}
-
-// GitHub organization logins (letters, digits, hyphens; up to 39) and team slugs. Every
-// entry costs one or two GitHub requests per sign-in within the shared deadline.
-const organizationPattern = /^[a-z0-9][a-z0-9-]{0,38}$/;
-const teamSlugPattern = /^[a-z0-9][a-z0-9_-]{0,99}$/;
-const allowlistLimit = 10;
-
-function allowlistEntries(
-  value: string | undefined,
-  name: string,
-  valid: (entry: string) => boolean,
-  shape: string,
-): string[] {
-  if (value === undefined || value.trim().length === 0) {
-    return [];
-  }
-  const entries = value.split(",").map((entry) => entry.trim().toLowerCase());
-  if (entries.some((entry) => !valid(entry))) {
-    throw new Error(`${name} must be a comma-separated list of ${shape}.`);
-  }
-  return [...new Set(entries)];
-}
-
-export function githubLoginConfiguration(
-  environment: Readonly<Record<string, string | undefined>>,
-): GitHubLoginConfiguration | undefined {
-  const clientId = environment.OCC_AUTH_GITHUB_CLIENT_ID;
-  const clientSecret = environment.OCC_AUTH_GITHUB_CLIENT_SECRET;
-  const recoveryUserId = environment.OCC_AUTH_GITHUB_RECOVERY_USER_ID;
-  const autoEnrollGroupId = environment.OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID;
-  const allowedOrgs = allowlistEntries(
-    environment.OCC_AUTH_GITHUB_ALLOWED_ORGS,
-    "OCC_AUTH_GITHUB_ALLOWED_ORGS",
-    (entry) => organizationPattern.test(entry),
-    "GitHub organization logins",
-  );
-  const allowedTeams = allowlistEntries(
-    environment.OCC_AUTH_GITHUB_ALLOWED_TEAMS,
-    "OCC_AUTH_GITHUB_ALLOWED_TEAMS",
-    (entry) => {
-      const parts = entry.split("/");
-      return (
-        parts.length === 2 && organizationPattern.test(parts[0]!) && teamSlugPattern.test(parts[1]!)
-      );
-    },
-    "org/team-slug entries",
-  );
-  // The recovery user ID alone may belong to another provider; see humanLoginConfiguration.
-  // An allowlist without the client is a configuration error, never a silent no-op.
-  if (
-    clientId === undefined &&
-    clientSecret === undefined &&
-    allowedOrgs.length === 0 &&
-    allowedTeams.length === 0 &&
-    !autoEnrollGroupId
-  ) {
-    return undefined;
-  }
-  if (
-    typeof clientId !== "string" ||
-    clientId.trim().length === 0 ||
-    typeof clientSecret !== "string" ||
-    clientSecret.trim().length === 0 ||
-    typeof recoveryUserId !== "string" ||
-    recoveryUserId.trim().length === 0
-  ) {
-    throw new Error("GitHub sign-in requires client ID, client secret and recovery user ID.");
-  }
-  if (allowedOrgs.length + allowedTeams.length > allowlistLimit) {
-    throw new Error(
-      `OCC_AUTH_GITHUB_ALLOWED_ORGS and OCC_AUTH_GITHUB_ALLOWED_TEAMS list at most ${allowlistLimit} entries together.`,
-    );
-  }
-  validateEnrollmentConfiguration({ autoEnrollGroupId, allowedTeams, allowedOrgs });
-  return {
-    clientId,
-    clientSecret,
-    recoveryUserId,
-    ...(allowedOrgs.length === 0 ? {} : { allowedOrgs }),
-    ...(allowedTeams.length === 0 ? {} : { allowedTeams }),
-    ...(autoEnrollGroupId ? { autoEnrollGroupId } : {}),
-  };
-}
-
-function validateEnrollmentConfiguration(config: {
-  readonly autoEnrollGroupId?: string | undefined;
-  readonly allowedTeams?: readonly string[];
-  readonly allowedOrgs?: readonly string[];
-}): void {
-  if (
-    config.autoEnrollGroupId &&
-    (!isNonEmptyString(config.autoEnrollGroupId) ||
-      !config.allowedTeams?.length ||
-      config.allowedOrgs?.length)
-  ) {
-    throw new Error(
-      "OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID requires a valid Group ID, allowed teams and no allowed organizations.",
-    );
-  }
-}
-
-interface ProviderClient {
-  readonly clientId: string;
-  readonly clientSecret: string;
-}
-
-type GitHubClient = ProviderClient & GitHubMembershipAllowlist & GitHubEnrollmentConfiguration;
-
 export interface HumanLoginProviders {
   readonly recoveryUserId: string;
-  readonly github?: GitHubClient;
   readonly google?: GoogleLoginConfiguration;
-  readonly oidc?: OidcLoginConfiguration;
+  readonly oidc?: ResolvedOidcLoginConfiguration;
   /** `recovery-only` admits only the recovery account's password; absent admits every one. */
   readonly passwordSignIn?: "recovery-only";
 }
@@ -217,250 +75,8 @@ export function digest(value: string): string {
 function secret(): string {
   return randomBytes(32).toString("base64url");
 }
-const tokenEndpoint = "https://github.com/login/oauth/access_token";
-const profileEndpoint = "https://api.github.com/user";
-
 // The audited callback denials whose code the controller turns into a Console reason.
-export const MEMBERSHIP_DENIALS = ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_UNAVAILABLE"] as const;
-type MembershipDenial = (typeof MEMBERSHIP_DENIALS)[number];
-export const CALLBACK_DENIALS = [
-  ...MEMBERSHIP_DENIALS,
-  "ACCOUNT_DISABLED",
-  "PROVIDER_UNAVAILABLE",
-] as const;
-
-// GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
-const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
-
-function organizationMembershipEndpoint(organization: string): MembershipEndpoint {
-  return `https://api.github.com/user/memberships/orgs/${encodeURIComponent(organization)}` as MembershipEndpoint;
-}
-
-function teamMembershipEndpoint(
-  organization: string,
-  team: string,
-  login: string,
-): MembershipEndpoint {
-  return `https://api.github.com/orgs/${encodeURIComponent(organization)}/teams/${encodeURIComponent(team)}/memberships/${encodeURIComponent(login)}` as MembershipEndpoint;
-}
-
-function membershipFailure(error: unknown, signal: AbortSignal): ProviderFailure {
-  if (error instanceof ProviderUnavailableError) {
-    return error.failure;
-  }
-  return { step: "membership", cause: signal.aborted ? "timeout" : "network" };
-}
-
-/**
- * RFC-0061: whether the person holding `headers`' user token is an active member of a listed
- * organization or team. Organizations are read first, in order; a team is read only for an
- * active member of its organization, so a non-member's team answer never needs interpreting.
- * The first match admits, even after another lookup failed. No match with a failed lookup is
- * unavailability, never "not a member".
- */
-async function githubMembership(
-  allowlist: GitHubMembershipAllowlist,
-  headers: Readonly<Record<string, string>>,
-  login: unknown,
-  signal: AbortSignal,
-): Promise<{ readonly admitted: boolean; readonly failure?: ProviderFailure }> {
-  const organizations = new Map<string, boolean | ProviderUnavailableError>();
-  let failure: ProviderFailure | undefined;
-  async function activeIn(organization: string): Promise<boolean> {
-    let known = organizations.get(organization);
-    if (known === undefined) {
-      try {
-        known = await providerMembership(
-          organizationMembershipEndpoint(organization),
-          { headers },
-          signal,
-        );
-      } catch (error) {
-        known = new ProviderUnavailableError(membershipFailure(error, signal));
-      }
-      organizations.set(organization, known);
-    }
-    if (known instanceof ProviderUnavailableError) {
-      throw known;
-    }
-    return known;
-  }
-  // Past the shared deadline every lookup would fail at once; record the timeout and stop.
-  function expired(): boolean {
-    if (signal.aborted) {
-      failure ??= { step: "membership", cause: "timeout" };
-    }
-    return signal.aborted;
-  }
-  for (const organization of allowlist.allowedOrgs ?? []) {
-    if (expired()) {
-      break;
-    }
-    try {
-      if (await activeIn(organization)) {
-        return { admitted: true };
-      }
-    } catch (error) {
-      failure ??= membershipFailure(error, signal);
-    }
-  }
-  for (const entry of allowlist.allowedTeams ?? []) {
-    if (expired()) {
-      break;
-    }
-    const [organization, team] = entry.split("/") as [string, string];
-    try {
-      if (!(await activeIn(organization))) {
-        continue;
-      }
-      if (typeof login !== "string" || !loginPattern.test(login)) {
-        throw new ProviderUnavailableError({ step: "membership", cause: "malformed_response" });
-      }
-      if (
-        await providerMembership(
-          teamMembershipEndpoint(organization, team, login),
-          { headers },
-          signal,
-        )
-      ) {
-        return { admitted: true };
-      }
-    } catch (error) {
-      failure ??= membershipFailure(error, signal);
-    }
-  }
-  return failure === undefined ? { admitted: false } : { admitted: false, failure };
-}
-
-function hasAllowlist(config: GitHubMembershipAllowlist): boolean {
-  return (config.allowedOrgs?.length ?? 0) + (config.allowedTeams?.length ?? 0) > 0;
-}
-
-async function exchangeGithubSubject(
-  config: GitHubClient,
-  code: string,
-  codeVerifier: string,
-  redirectURI: string,
-  deadlineMs = 10_000,
-): Promise<ProviderExchange> {
-  const deadline = performance.now() + deadlineMs;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deadlineMs);
-  timer.unref();
-  try {
-    const request = await authorizationCodeRequest({
-      code,
-      codeVerifier,
-      redirectURI,
-      options: { clientId: config.clientId, clientSecret: config.clientSecret },
-      tokenEndpoint,
-    });
-    const data = await providerJSON(
-      tokenEndpoint,
-      { method: "POST", ...request },
-      controller.signal,
-      "token",
-    );
-    if ("error" in data) {
-      throw rejected();
-    }
-    const tokens = getOAuth2Tokens(data);
-    if (typeof tokens.accessToken !== "string" || !tokens.accessToken) {
-      throw rejected();
-    }
-    const headers = {
-      authorization: `Bearer ${tokens.accessToken}`,
-      "User-Agent": "OpenClaw-Enterprise",
-      accept: "application/vnd.github+json",
-    };
-    const profile = await providerJSON(profileEndpoint, { headers }, controller.signal, "profile");
-    controller.signal.throwIfAborted();
-    const subject = githubSubject(profile.id);
-    if (!subject) {
-      throw rejected();
-    }
-    const login =
-      typeof profile.login === "string" && loginPattern.test(profile.login)
-        ? profile.login
-        : undefined;
-    if (hasAllowlist(config)) {
-      // Before the account lookup: a refusal says nothing about which OCE accounts exist.
-      const membership = await githubMembership(config, headers, profile.login, controller.signal);
-      if (!membership.admitted) {
-        return membership.failure === undefined
-          ? { denial: "MEMBERSHIP_REQUIRED", subject, login }
-          : { denial: "MEMBERSHIP_UNAVAILABLE", subject, login, failure: membership.failure };
-      }
-    }
-    if (config.autoEnrollGroupId !== undefined) {
-      // Team membership uses a mutable login; bind it back to the same authenticated identity.
-      const confirmed = await providerJSON(
-        profileEndpoint,
-        { headers },
-        controller.signal,
-        "profile",
-      );
-      controller.signal.throwIfAborted();
-      if (githubSubject(confirmed.id) !== subject || confirmed.login !== login) {
-        throw rejected();
-      }
-    }
-    return {
-      subject,
-      login,
-      ...(config.autoEnrollGroupId === undefined
-        ? {}
-        : {
-            enrollment: {
-              groupId: config.autoEnrollGroupId,
-              // The request-scoped closure retains the token only until this callback finishes.
-              // Existing attached accounts never need email permission or an email request.
-              profile: () => githubEnrollmentProfile(headers, login ?? subject, deadline),
-            },
-          }),
-    };
-  } catch (error) {
-    // Never expose provider response bodies, token values or request credentials.
-    return providerExchangeFailure(error, controller.signal);
-  } finally {
-    clearTimeout(timer);
-    controller.abort();
-  }
-}
-
-async function githubEnrollmentProfile(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-  deadline: number,
-): Promise<{ email: string; name: string }> {
-  const remaining = deadline - performance.now();
-  if (remaining <= 0) {
-    throw new ProviderUnavailableError({ step: "email", cause: "timeout" });
-  }
-  const signal = AbortSignal.timeout(Math.max(1, Math.floor(remaining)));
-  const addresses = await providerEmailAddresses({ headers }, signal);
-  const primary = addresses.filter(
-    (entry): entry is { email: string; verified: boolean } =>
-      typeof entry === "object" && entry !== null && "primary" in entry && entry.primary === true,
-  );
-  if (
-    primary.length !== 1 ||
-    primary[0]!.verified !== true ||
-    typeof primary[0]!.email !== "string"
-  ) {
-    throw rejected();
-  }
-  const email = primary[0]!.email.trim().toLowerCase();
-  if (
-    !email.isWellFormed() ||
-    email.includes("\0") ||
-    email.includes("\uFFFD") ||
-    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
-  ) {
-    throw rejected();
-  }
-  return { email, name };
-}
+export const CALLBACK_DENIALS = ["ACCOUNT_DISABLED", "PROVIDER_UNAVAILABLE"] as const;
 
 function cookieLifetime(createdAt: Date, expiresAt: Date, startedAt: number): number {
   // Subtract the entire call's elapsed time, conservatively covering the DB round trip.
@@ -474,44 +90,9 @@ function cookieLifetime(createdAt: Date, expiresAt: Date, startedAt: number): nu
   return remaining;
 }
 
-function githubSubject(value: unknown): string | undefined {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
-  }
-  return typeof value === "string" && /^[1-9][0-9]{0,19}$/.test(value) ? value : undefined;
-}
-
-/** The GitHub provider instance: a new client ID is a new instance. */
-export function githubProviderId(config: Pick<ProviderClient, "clientId">): string {
-  return `github:${digest(config.clientId)}`;
-}
-
 /** The Google provider instance: a new client ID is a new instance. */
 export function googleProviderId(config: Pick<GoogleLoginConfiguration, "clientId">): string {
   return `google:${digest(config.clientId)}`;
-}
-
-function githubProvider(
-  config: GitHubClient,
-  baseURL: string,
-  deadlineMs: number | undefined,
-): ExternalProvider {
-  const providerId = githubProviderId(config);
-  const callbackURL = new URL("/api/auth/providers/github/callback", baseURL).href;
-  const provider = github({
-    clientId: config.clientId,
-    clientSecret: config.clientSecret,
-    disableDefaultScope: true,
-  });
-  return {
-    providerId,
-    attemptProviderId: `${providerId}:${digest(config.clientSecret)}`,
-    callbackURL,
-    authorizationURL: (_secret, state, codeVerifier) =>
-      provider.createAuthorizationURL({ state, codeVerifier, redirectURI: callbackURL }),
-    exchange: (_secret, code, codeVerifier) =>
-      exchangeGithubSubject(config, code, codeVerifier, callbackURL, deadlineMs),
-  };
 }
 
 function googleProvider(
@@ -541,7 +122,7 @@ function googleProvider(
 }
 
 function oidcProvider(
-  config: OidcLoginConfiguration,
+  config: ResolvedOidcLoginConfiguration,
   baseURL: string,
   deadlineMs: number | undefined,
 ): ExternalProvider {
@@ -549,7 +130,7 @@ function oidcProvider(
   const callbackURL = new URL("/api/auth/providers/oidc/callback", baseURL).href;
   return {
     providerId,
-    attemptProviderId: `${providerId}:${digest(config.clientSecret)}`,
+    attemptProviderId: `${providerId}:${digest(config.clientSecret)}:${config.enrollment?.policyId ?? digest("null")}`,
     callbackURL,
     authorizationURL: (secret, state, codeVerifier) =>
       oidcAuthorizationURL(config, state, codeVerifier, callbackURL, oidcNonce(secret, state)),
@@ -565,14 +146,17 @@ function oidcProvider(
   };
 }
 
-export type ExternalProviderName = "github" | "google" | "oidc";
+export type ExternalProviderName = "google" | "oidc";
 
 // Authorization codes are opaque and provider-sized; Entra ID's run past 1,024 characters.
 const authorizationCodeLimit = 4096;
 
 export interface HumanLoginAdmissionOptions {
   /** Native IAM composition supplies a Principal with no direct grants for enrollment. */
-  readonly enrollmentPrincipal?: (account: { readonly id: string }) => AuthPrincipalSeed;
+  readonly enrollmentPrincipal?: (
+    account: { readonly id: string },
+    role?: AccountEnrollmentRole | null,
+  ) => AuthPrincipalSeed;
   /**
    * True when `x-occ-client-ip` was resolved through a configured trusted proxy. Without
    * one it is the socket peer, which every browser behind an ingress shares, so the external
@@ -602,17 +186,11 @@ export function createHumanLogin(
   baseURL: string,
   admission: HumanLoginAdmissionOptions = {},
 ) {
-  if (config.github === undefined && config.google === undefined && config.oidc === undefined) {
+  if (config.google === undefined && config.oidc === undefined) {
     throw new Error("Guarded human sign-in requires a configured external sign-in provider.");
   }
   const { providerDeadlineMs } = admission;
-  if (config.github !== undefined) {
-    validateEnrollmentConfiguration(config.github);
-  }
-  if (
-    config.github?.autoEnrollGroupId !== undefined &&
-    admission.enrollmentPrincipal === undefined
-  ) {
+  if (config.oidc?.enrollment !== undefined && admission.enrollmentPrincipal === undefined) {
     throw new Error("Automatic enrollment requires native IAM Principal composition.");
   }
   if (
@@ -624,12 +202,8 @@ export function createHumanLogin(
   const proofScope = new AsyncLocalStorage<{
     proof?: HumanAuthenticationProof;
     result?: { attemptId: string; expiresAt?: number };
-    audit?: { provider: "github"; subject: string; login?: string | undefined; attemptId: string };
+    audit?: { provider: ExternalProviderName; subject: string; attemptId: string };
   }>();
-  const githubLogin =
-    config.github === undefined
-      ? undefined
-      : githubProvider(config.github, baseURL, providerDeadlineMs);
   const googleLogin =
     config.google === undefined
       ? undefined
@@ -709,22 +283,6 @@ export function createHumanLogin(
       });
     }
     throw rejected();
-  }
-
-  // A GitHub allowlist refusal names the authenticated subject in the audit and its reason in
-  // the response code, which the controller turns into the Console's advice.
-  async function refuseMembership(
-    provider: ExternalProviderName,
-    reason: MembershipDenial,
-    subject: string,
-    login: string | undefined,
-    attemptId: string,
-  ): Promise<never> {
-    await state.recordDenied(reason, provider, { subject, login }, { attemptId });
-    throw APIError.fromStatus("UNAUTHORIZED", {
-      message: "Authentication was not accepted.",
-      code: reason,
-    });
   }
 
   // The provider authenticated this identity and it is attached to a disabled account. Only
@@ -988,23 +546,8 @@ export function createHumanLogin(
                 stateValue,
               );
               if ("denial" in exchange) {
-                if (
-                  exchange.denial === "PROVIDER_UNAVAILABLE" ||
-                  exchange.denial === "MEMBERSHIP_UNAVAILABLE"
-                ) {
+                if (exchange.denial === "PROVIDER_UNAVAILABLE") {
                   providerUnavailable(provider, name, exchange.failure);
-                }
-                if (
-                  exchange.denial === "MEMBERSHIP_REQUIRED" ||
-                  exchange.denial === "MEMBERSHIP_UNAVAILABLE"
-                ) {
-                  return refuseMembership(
-                    name,
-                    exchange.denial,
-                    exchange.subject,
-                    exchange.login,
-                    attemptId,
-                  );
                 }
                 return rejectExternal(name, exchange.denial, attemptId);
               }
@@ -1013,81 +556,61 @@ export function createHumanLogin(
                 exchange.subject,
                 attempt.createdAt,
               );
-              if (exchange.enrollment !== undefined && !(snapshot && "disabled" in snapshot)) {
+              if (snapshot === undefined) {
+                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
+                  subject: exchange.subject,
+                });
+              }
+              const enrollment = exchange.enrollment;
+              if (enrollment !== undefined && !("disabled" in snapshot)) {
                 let account;
-                if (
-                  snapshot === undefined &&
-                  !(await state.hasExternalMethod(provider.providerId, exchange.subject))
-                ) {
-                  try {
-                    const profile = await exchange.enrollment.profile();
-                    const prepared = {
-                      id: randomUUID(),
-                      credentialId: randomUUID(),
-                      ...profile,
-                      passwordHash: await ctx.context.password.hash(
-                        randomBytes(48).toString("base64url"),
-                      ),
-                    };
-                    account = { prepared };
-                  } catch (error) {
-                    if (error instanceof ProviderUnavailableError) {
-                      providerUnavailable(provider, name, error.failure);
-                      return rejectExternal(name, "PROVIDER_UNAVAILABLE", attemptId);
-                    }
-                    if (error instanceof APIError) {
-                      return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
-                        subject: exchange.subject,
-                        login: exchange.login,
-                      });
-                    }
-                    throw error;
+                if ("missing" in snapshot) {
+                  if (!enrollment.createAccount.enabled || enrollment.profile === undefined) {
+                    return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
+                      subject: exchange.subject,
+                    });
                   }
+                  const prepared = {
+                    id: randomUUID(),
+                    credentialId: randomUUID(),
+                    ...enrollment.profile,
+                    passwordHash: await ctx.context.password.hash(
+                      randomBytes(48).toString("base64url"),
+                    ),
+                  };
+                  account = {
+                    prepared,
+                    seed: admission.enrollmentPrincipal!(prepared, enrollment.createAccount.role),
+                  };
                 }
                 try {
                   snapshot = await state.enrollExternal({
                     providerId: provider.providerId,
                     subject: exchange.subject,
-                    groupId: exchange.enrollment.groupId,
+                    groupIds: enrollment.groupIds,
+                    role: enrollment.createAccount.role,
+                    policyId: enrollment.policyId,
                     attemptCreatedAt: attempt.createdAt,
-                    ...(account === undefined
-                      ? {}
-                      : {
-                          account: {
-                            prepared: account.prepared,
-                            seed: admission.enrollmentPrincipal!(account.prepared),
-                          },
-                        }),
+                    ...(account === undefined ? {} : { account }),
                   });
                 } catch (error) {
                   if (error instanceof ResourceConflictError) {
                     return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
                       subject: exchange.subject,
-                      login: exchange.login,
                     });
                   }
                   throw error;
                 }
               }
-              if (!snapshot) {
-                return rejectExternal(
-                  name,
-                  "EXTERNAL_IDENTITY_REJECTED",
-                  attemptId,
-                  name === "github"
-                    ? { subject: exchange.subject, login: exchange.login }
-                    : undefined,
-                );
+              if (snapshot === undefined || "missing" in snapshot) {
+                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
+                  subject: exchange.subject,
+                });
               }
               if ("disabled" in snapshot) {
-                return refuseDisabled(
-                  name,
-                  snapshot.userId,
-                  attemptId,
-                  name === "github"
-                    ? { subject: exchange.subject, login: exchange.login }
-                    : undefined,
-                );
+                return refuseDisabled(name, snapshot.userId, attemptId, {
+                  subject: exchange.subject,
+                });
               }
               const startedAt = performance.now();
               const result: { attemptId: string; expiresAt?: number } = { attemptId };
@@ -1095,16 +618,7 @@ export function createHumanLogin(
                 {
                   proof: snapshot.proof,
                   result,
-                  ...(name === "github"
-                    ? {
-                        audit: {
-                          provider: "github" as const,
-                          subject: exchange.subject,
-                          login: exchange.login,
-                          attemptId,
-                        },
-                      }
-                    : {}),
+                  audit: { provider: name, subject: exchange.subject, attemptId },
                 },
                 () => ctx.context.internalAdapter.createSession(snapshot.user.id, false),
               );
@@ -1191,8 +705,6 @@ export function createHumanLogin(
       ),
     };
   }
-  const githubEndpoints =
-    githubLogin === undefined ? undefined : externalProviderEndpoints("github", githubLogin);
   const googleEndpoints =
     googleLogin === undefined ? undefined : externalProviderEndpoints("google", googleLogin);
   const oidcEndpoints =
@@ -1292,13 +804,6 @@ export function createHumanLogin(
           return ctx.json({ success: true });
         },
       ),
-      ...(githubEndpoints === undefined
-        ? {}
-        : {
-            oceGithubStart: githubEndpoints.start,
-            oceGithubCallback: githubEndpoints.callback,
-            oceGithubResult: githubEndpoints.result,
-          }),
       ...(googleEndpoints === undefined
         ? {}
         : {
@@ -1318,7 +823,6 @@ export function createHumanLogin(
   return {
     plugin,
     database,
-    ...(githubLogin === undefined ? {} : { githubProviderId: githubLogin.providerId }),
     ...(googleLogin === undefined ? {} : { googleProviderId: googleLogin.providerId }),
     ...(oidcLogin === undefined || config.oidc === undefined
       ? {}

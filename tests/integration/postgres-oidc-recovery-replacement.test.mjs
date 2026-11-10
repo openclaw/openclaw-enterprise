@@ -7,8 +7,8 @@ import {
   changeAccount,
   clientAddresses,
   consoleOrigin as origin,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   memoryLogger,
   readAccount,
   signedInHeaders,
@@ -25,22 +25,23 @@ const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
 // Online recovery replacement (#520): the reserved password lane follows the stored
 // designation at once, and a controller restarted with the original
-// OCC_AUTH_GITHUB_RECOVERY_USER_ID keeps that designation instead of the seed.
+// OCC_AUTH_RECOVERY_USER_ID keeps that designation instead of the seed.
 test(
   "online recovery replacement moves the reserved lane and survives a restart with the original seed",
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+    const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
       {
+        oidc: true,
         email: "replacement-recovery@example.test",
         password: "replacement-member-password",
         secrets: {
           "occ-auth/secret": "replacement-auth-test-secret-at-least-32-bytes",
-          "occ-github-login/client-id": "replacement-client-id",
-          "occ-github-login/client-secret": "replacement-client-secret",
+          "occ-oidc-login/client-id": "replacement-client-id",
+          "occ-oidc-login/client-secret": "replacement-client-secret",
         },
       },
     );
@@ -56,7 +57,7 @@ test(
         member: { email: "replacement-member@example.test" },
       },
     });
-    app = await composeApp(githubUpgradeSettings(admin.id), {
+    app = await composeApp(oidcUpgradeSettings(admin.id), {
       passwordSlowLaneFloors: slowLane,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
@@ -72,9 +73,15 @@ test(
         ({ user_id }) => user_id,
       );
 
-    // The second administrator works through GitHub while it is up.
-    await assertProviderAttached(app, adminHeaders, second.id, "github", secondSubject);
-    const { callback } = await githubSignIn(app, origin, secondSubject, address());
+    // The second administrator works through OIDC while it is up.
+    await assertProviderAttached(app, adminHeaders, second.id, "oidc", secondSubject);
+    const { callback } = await oidcSignIn(
+      app,
+      origin,
+      oidc,
+      { subject: String(secondSubject) },
+      address(),
+    );
     assert.equal(callback.headers.location, "/console/", callback.body);
     const secondHeaders = {
       cookie: cookieHeaderFromSetCookie(callback.headers["set-cookie"]),
@@ -187,7 +194,7 @@ test(
         await app.close();
         app = undefined;
         const log = memoryLogger();
-        app = await composeApp(githubUpgradeSettings(admin.id), {
+        app = await composeApp(oidcUpgradeSettings(admin.id), {
           logger: log.logger,
           passwordSlowLaneFloors: slowLane,
         });

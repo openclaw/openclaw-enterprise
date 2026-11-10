@@ -5398,15 +5398,19 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
   });
 });
 
-test("audit fails when a referenced lane cannot be loaded", async (t) => {
-  const root = await fixture(t);
+async function auditManifest(root, { lanes, fileDurations, groups = { ci: Object.keys(lanes) } }) {
   await writeJson(join(root, "manifest.json"), {
     version: 1,
-    lanes: { missing: "./missing-lane.json" },
-    groups: { ci: ["missing"] },
+    ...(fileDurations === undefined ? {} : { fileDurations }),
+    lanes,
+    groups,
   });
+  return run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+}
 
-  const missing = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+test("audit fails when a referenced lane cannot be loaded", async (t) => {
+  const root = await fixture(t);
+  const missing = await auditManifest(root, { lanes: { missing: "./missing-lane.json" } });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
   assert.equal(missing.stdout, "");
@@ -5415,8 +5419,7 @@ test("audit fails when a referenced lane cannot be loaded", async (t) => {
 test("audit rejects obsolete manifest selectors", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/pattern.test.mjs"), "import 'node:test';\n");
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       obsolete: {
         files: [
@@ -5428,12 +5431,8 @@ test("audit rejects obsolete manifest selectors", async (t) => {
         ],
       },
     },
-    groups: {
-      ci: ["obsolete"],
-    },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.message).sort(), [
@@ -5447,8 +5446,7 @@ test("audit rejects invalid file concurrency marks", async (t) => {
   for (const name of ["one", "two"]) {
     await writeFile(join(root, `tests/integration/${name}.test.mjs`), "import 'node:test';\n");
   }
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       marks: {
         fileConcurrency: 0,
@@ -5469,10 +5467,8 @@ test("audit rejects invalid file concurrency marks", async (t) => {
         ],
       },
     },
-    groups: { ci: ["marks"] },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   assert.deepEqual(
     JSON.parse(result.stdout)
@@ -5697,13 +5693,10 @@ test("audit rejects an unusable file duration table", async (t) => {
     files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
   });
   const audit = async (fileDurations) => {
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
+    const result = await auditManifest(root, {
       fileDurations,
       lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
-      groups: { ci: ["one"] },
     });
-    const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
     assert.equal(result.status, 1, result.stdout);
     return JSON.parse(result.stdout).issues.map((entry) => entry.message);
   };
@@ -5730,8 +5723,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
   await mkdir(join(root, "tests/docs"), { recursive: true });
   await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       one: {
         files: [
@@ -5754,7 +5746,6 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [

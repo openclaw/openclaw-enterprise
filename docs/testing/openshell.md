@@ -159,7 +159,7 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
 
 Each command selects one case and skips the other. Both check setup, Workspace
 reconciliation, and cleanup. Kubernetes also checks browser access and a model
-reply from a real Agent, using a GitHub protocol fixture. Compose uses a
+reply from a real Agent, using an OIDC protocol fixture. Compose uses a
 synthetic credential without calling a model. Both default to Docker. Set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` for Podman.
 

@@ -46,11 +46,14 @@ for credential permissions and [authorization](authorization.md) for grants.
 
 ### Unreadable saved settings
 
-For unreadable saved settings, Agent and Agent revision list/detail GETs omit them
+Agent list/detail and revision detail GETs omit unreadable saved settings
 without defaults, keep readable metadata and siblings, and add
 `configurationReadError` with `code: "SAVED_CONFIGURATION_UNREADABLE"` and the
-affected `field`. Authorization and strict mutation/runtime validation are unchanged;
-query failures still fail requests. See the
+affected `field`. Revision summaries have no error field: they preserve the recorded
+Harness identity, version and mode, omitting overrides or resolved configuration
+when those settings were not recorded. Opening such a revision returns the
+metadata-only detail response. Authorization and strict mutation/runtime validation
+are unchanged; query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
 ## Deployment status

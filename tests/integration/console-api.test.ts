@@ -1852,12 +1852,11 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(crossSiteNoOrigin.response.status, 403);
   assert.equal(errorBody(crossSiteNoOrigin.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
-  // Without the GitHub profile the session key still only narrows the cookie session.
+  // Without an external sign-in profile the session key still only narrows the cookie session.
   const providers = await fixture.rawRequest("GET", "/api/auth/providers");
   const providersBody: unknown = JSON.parse(providers.text);
   assert.ok(Check(Type.Object({ data: Type.Unknown() }), providersBody));
   assert.deepEqual(providersBody.data, {
-    github: false,
     google: false,
     oidc: false,
     password: true,
@@ -1970,8 +1969,8 @@ test("every /api/auth operation that takes a body answers the 400, 413 and 415 i
         return [{ method: method.toUpperCase(), path, operation }];
       }),
     );
-  // Fourteen such operations exist today; an empty scan would prove nothing.
-  assert.ok(operations.length >= 14, `found ${operations.length} operations`);
+  // Twelve such operations exist today; an empty scan would prove nothing.
+  assert.ok(operations.length >= 12, `found ${operations.length} operations`);
   // An Installation administrator with a trusted Origin passes admission, so each refusal
   // comes from the body itself: the declared size before parsing, then the media type, then
   // the operation's schema.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
+import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import {
   issueKnownDevice,
@@ -259,7 +259,11 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     },
     {
       recoveryUserId: "guarded-recovery",
-      github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+      google: {
+        clientId: "guarded-client",
+        clientSecret: "guarded-client-secret",
+        allowedDomains: [],
+      },
     },
     baseURL,
   );
@@ -304,7 +308,11 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
     },
     {
       recoveryUserId: "guarded-recovery",
-      github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+      google: {
+        clientId: "guarded-client",
+        clientSecret: "guarded-client-secret",
+        allowedDomains: [],
+      },
     },
     baseURL,
   );
@@ -318,11 +326,11 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
     humanLogin,
   });
   const result = () =>
-    send(auth.githubResult, {
+    send(auth.googleResult, {
       id: "req_provider_limit",
       ip: "127.0.0.1",
       method: "POST",
-      url: "/api/auth/providers/github/result",
+      url: "/api/auth/providers/google/result",
       headers: { origin: baseURL },
       body: { attemptId: "a".repeat(43) },
     });
@@ -331,7 +339,7 @@ test("guarded profile: a spent provider result budget says to wait a minute, wit
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const refused = await result();
     assert.equal(refused.status, 401, JSON.stringify(refused.payload));
-    assert.equal(refused.payload.error.message, "GitHub sign-in could not be confirmed.");
+    assert.equal(refused.payload.error.message, "Google sign-in could not be confirmed.");
   }
   const limited = await result();
   assert.equal(limited.status, 429, JSON.stringify(limited.payload));
@@ -483,7 +491,11 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
     },
     {
       recoveryUserId: "guarded-recovery",
-      github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+      google: {
+        clientId: "guarded-client",
+        clientSecret: "guarded-client-secret",
+        allowedDomains: [],
+      },
     },
     baseURL,
   );
@@ -549,7 +561,11 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
             },
             {
               recoveryUserId: "guarded-recovery",
-              github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+              google: {
+                clientId: "guarded-client",
+                clientSecret: "guarded-client-secret",
+                allowedDomains: [],
+              },
               ...(profile === "recovery-only" ? { passwordSignIn: "recovery-only" } : {}),
             },
             baseURL,
@@ -650,7 +666,11 @@ for (const passwordSignIn of ["all", "recovery-only"]) {
       {
         recoveryUserId: "guarded-recovery",
         passwordSignIn,
-        github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+        google: {
+          clientId: "guarded-client",
+          clientSecret: "guarded-client-secret",
+          allowedDomains: [],
+        },
       },
       baseURL,
     );
