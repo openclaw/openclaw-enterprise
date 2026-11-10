@@ -575,19 +575,10 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
     },
     groups: { ci: ["baseline"] },
   });
-  const args = (lane) => [
-    "run",
-    lane,
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    `state/${lane}.jsonl`,
-    "--results",
-    `results/${lane}.json`,
+  const args = (lane, selector = selectedPath) => [
+    ...laneArgs(root, lane, `state/${lane}.jsonl`, `results/${lane}.json`),
     "--file",
-    selectedPath,
+    selector,
   ];
   for (const lane of ["baseline", "single"]) {
     const result = run(root, args(lane));
@@ -633,7 +624,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
     "tests/integration/unknown.test.mjs",
     "tests/integration/../integration/first.test.mjs",
   ]) {
-    const invalid = run(root, [...args("baseline").slice(0, -1), path]);
+    const invalid = run(root, args("baseline", path));
     assert.equal(invalid.status, 1, invalid.stderr);
     const rejected = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
     assert.deepEqual(rejected.files, []);
@@ -705,18 +696,7 @@ test(
        throw new Error("second failure");
      });\n`,
     );
-    const args = [
-      "run",
-      "sample",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/lane.jsonl",
-      "--results",
-      "results/sample.json",
-    ];
+    const args = laneArgs(root, "sample", "state/lane.jsonl", "results/sample.json");
     const child = spawn(process.execPath, [runnerPath, ...args], {
       env: runnerEnv({ GITHUB_ACTIONS: "true" }),
     });
@@ -1234,18 +1214,7 @@ waitingTest(
     const started = Date.now();
     const result = await runAsync(
       root,
-      [
-        "run",
-        "orphan",
-        "--manifest",
-        "manifest.json",
-        "--root",
-        root,
-        "--state",
-        statePath,
-        "--results",
-        join(root, "results/orphan.json"),
-      ],
+      laneArgs(root, "orphan", statePath, join(root, "results/orphan.json")),
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
       { timeout: 60_000, execArgv: heldClock(started, [waiting]) },
     );
@@ -1312,18 +1281,12 @@ test(
 
     const result = run(
       root,
-      [
-        "run",
-        "leftover",
-        "--manifest",
-        "manifest.json",
-        "--root",
+      laneArgs(
         root,
-        "--state",
+        "leftover",
         join(root, "state/leftover.json"),
-        "--results",
         join(root, "results/leftover.json"),
-      ],
+      ),
       { CI_RUNNER_ORPHAN_RECORD: recordPath },
     );
 
@@ -2376,27 +2339,12 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   });
 
-  const result = run(
-    root,
-    [
-      "run",
-      "redacted",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/redacted.jsonl",
-      "--results",
-      resultsPath,
-    ],
-    {
-      // Public runner metadata stays readable; the runner strips OCC_TEST_* from
-      // the test child, so only its own second pass can redact this value.
-      GITHUB_REPOSITORY_OWNER: "openclaw-public-owner",
-      OCC_TEST_STRIPPED_VALUE: "strippedjobvalue42",
-    },
-  );
+  const result = run(root, laneArgs(root, "redacted", "state/redacted.jsonl", resultsPath), {
+    // Public runner metadata stays readable; the runner strips OCC_TEST_* from
+    // the test child, so only its own second pass can redact this value.
+    GITHUB_REPOSITORY_OWNER: "openclaw-public-owner",
+    OCC_TEST_STRIPPED_VALUE: "strippedjobvalue42",
+  });
 
   assert.equal(result.status, 1);
   const details = await readFile(join(root, "state/redacted.jsonl.diagnostics.json"), "utf8");
@@ -3497,18 +3445,7 @@ test("policy probe diagnostics preserve first-match failure and omit model conte
     lanes: { policy: { files: [{ path: "tests/integration/policy.test.mjs" }] } },
     groups: { ci: ["policy"] },
   });
-  const result = run(root, [
-    "run",
-    "policy",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "policy", statePath, resultsPath));
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].error.cause.code, "ERR_ASSERTION");
@@ -3655,18 +3592,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     groups: { ci: ["details"] },
   });
 
-  const result = run(root, [
-    "run",
-    "details",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "details", statePath, resultsPath));
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -3802,18 +3728,7 @@ test("run retains redacted Skill exercise and restoration failures within its me
   });
 
   // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
-  const result = run(root, [
-    "run",
-    "restoration",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "restoration", statePath, resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const summaryText = await readFile(resultsPath, "utf8");
   const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
@@ -4049,18 +3964,7 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
     lanes: { conversation: { files: [{ path: "tests/integration/conversation.test.mjs" }] } },
     groups: { ci: ["conversation"] },
   });
-  const result = run(root, [
-    "run",
-    "conversation",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "conversation", statePath, resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const summaryText = await readFile(resultsPath, "utf8");
   const detailText = await readFile(`${statePath}.diagnostics.json`, "utf8");
@@ -4254,18 +4158,7 @@ waitingTest(
     const started = Date.now();
     const result = await runAsync(
       root,
-      [
-        "run",
-        "hang",
-        "--manifest",
-        "manifest.json",
-        "--root",
-        root,
-        "--state",
-        statePath,
-        "--results",
-        resultsPath,
-      ],
+      laneArgs(root, "hang", statePath, resultsPath),
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000" },
       { timeout: 60_000, execArgv: heldClock(started, [printed]) },
     );
@@ -4337,18 +4230,7 @@ waitingTest("run records a timeout that came before any test started", async (t)
 
   const result = await runAsync(
     root,
-    [
-      "run",
-      "stuck",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      statePath,
-      "--results",
-      join(root, "results/stuck.json"),
-    ],
+    laneArgs(root, "stuck", statePath, join(root, "results/stuck.json")),
     { CI_RUNNER_TEST_TIMEOUT_MS: "2000" },
   );
 
@@ -4424,18 +4306,7 @@ waitingTest(
     const started = Date.now();
     const result = await runAsync(
       root,
-      [
-        "run",
-        "deadline",
-        "--manifest",
-        "manifest.json",
-        "--root",
-        root,
-        "--state",
-        statePath,
-        "--results",
-        resultsPath,
-      ],
+      laneArgs(root, "deadline", statePath, resultsPath),
       // No per-file timeout: the default (60 minutes) is far past the deadline.
       {
         CI_RUNNER_TEST_TIMEOUT_MS: "",
@@ -4949,18 +4820,7 @@ test("run records a preparation failure's redacted message in the diagnostics re
     groups: { ci: ["prepare"] },
   });
 
-  const result = run(root, [
-    "run",
-    "prepare",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "prepare", statePath, resultsPath));
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -5550,18 +5410,7 @@ test("run shares slots only between audited parallel files and runs the rest alo
     },
     groups: { ci: ["shared"] },
   });
-  const args = (name) => [
-    "run",
-    "shared",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    `state/${name}.jsonl`,
-    "--results",
-    `results/${name}.json`,
-  ];
+  const args = (name) => laneArgs(root, "shared", `state/${name}.jsonl`, `results/${name}.json`);
   const env = { CI_RUNNER_PROBE_DIR: running, CI_RUNNER_FILE_CONCURRENCY: "2" };
 
   const result = run(root, args("shared"), env);
@@ -5897,18 +5746,10 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
       "",
     ].join("\n"),
   );
-  const produced = run(root, [
-    "run",
-    "docker-model",
-    "--manifest",
-    "manifest.json",
-    "--root",
+  const produced = run(
     root,
-    "--state",
-    "state/docker-model.json",
-    "--results",
-    "results/docker-model.json",
-  ]);
+    laneArgs(root, "docker-model", "state/docker-model.json", "results/docker-model.json"),
+  );
   assert.equal(produced.status, 0, produced.stderr);
 
   const passed = run(root, aggregateArgs);
@@ -6334,18 +6175,7 @@ test("a failed local setup reports only paired outcomes", async (t) => {
     lanes: { measure: { files: [{ path: testPath }] } },
     groups: { ci: ["measure"] },
   });
-  const result = run(root, [
-    "run",
-    "measure",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/runtime-outcomes.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "measure", "state/runtime-outcomes.jsonl", resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const artifact = await readFile(resultsPath, "utf8");
   const measurements = JSON.parse(artifact).files[0].measurements;
@@ -6537,18 +6367,7 @@ test("reject ambiguous or non-failure startup records", async (t) => {
     groups: { ci: ["intake"] },
   });
   const results = join(root, "results/intake.json");
-  const result = run(root, [
-    "run",
-    "intake",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/intake.jsonl",
-    "--results",
-    results,
-  ]);
+  const result = run(root, laneArgs(root, "intake", "state/intake.jsonl", results));
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(await readFile(results, "utf8"));
   assert.deepEqual(
@@ -7475,18 +7294,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     groups: { ci: ["measure"] },
   });
 
-  const result = run(root, [
-    "run",
-    "measure",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/measurements.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
@@ -7797,18 +7605,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     (await readFile(fixtureFile, "utf8")) +
       '\ntest("fails after receipts", () => { throw new Error("controlled failure"); });\n',
   );
-  const failed = run(root, [
-    "run",
-    "measure",
-    "--manifest",
-    "manifest.json",
-    "--root",
+  const failed = run(
     root,
-    "--state",
-    "state/failed-measurements.json",
-    "--results",
-    resultsPath,
-  ]);
+    laneArgs(root, "measure", "state/failed-measurements.json", resultsPath),
+  );
   assert.equal(failed.status, 1, failed.stderr);
   const failedArtifact = await readFile(resultsPath, "utf8");
   const diagnostics = await readFile(
@@ -8088,18 +7888,10 @@ for (const scenario of [
       join(root, "scripts/ci/prepare.mjs"),
       `export async function prepareFile() { throw Object.assign(new Error(), ${JSON.stringify(payload)}); }\n`,
     );
-    const result = run(root, [
-      "run",
-      "preparation",
-      "--manifest",
-      "manifest.json",
-      "--root",
+    const result = run(
       root,
-      "--state",
-      "state/lane.json",
-      "--results",
-      "results/preparation.json",
-    ]);
+      laneArgs(root, "preparation", "state/lane.json", "results/preparation.json"),
+    );
     assert.equal(result.status, 1, result.stderr);
     const artifact = await readFile(join(root, "results/preparation.json"), "utf8");
     const summary = JSON.parse(artifact);

@@ -89,7 +89,7 @@ and `FILE` with a JSON file path. `--file` requires local JSON, not stdin or YAM
 | `occ agent recover-first-deployment ID --configuration ID --generation N --key KEY`       | Reads the original receipt without deploying. A missing receipt does not authorize a retry.                                                                                                                                                                                                                                                                                                       |
 | `occ agent revision AGENT_ID REVISION_ID`                                                 | Reads an exact revision and its Harness settings with `agent_revision:read`. Structured output preserves the API response, including saved-configuration read errors.                                                                                                                                                                                                                             |
 | `occ agent revisions ID`                                                                  | Lists version summaries newest first, with generation, deployment status, and `*` on the active version. Ended work shows `superseded` or `stopped`. `--limit` accepts 1–100 (default 50); `--cursor` reads older versions. A failed continuation notice makes the command unsuccessful.                                                                                                          |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]`                                          | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest version you can read, and says on stderr how it relates to the selected version. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`                                          | Shows recorded deployment status, errors, warnings, and redeployment notices. Defaults to the latest readable revision and explains the selection on stderr. With Agent read access, shows desired state and active revision. JSON and YAML include `currentAgent`, with `activeRevisionId: null` when no revision is active.                                                                     |
 | `occ agent runtime-credentials get ID`                                                    | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`                                              | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
 | `occ agent credential-withdrawal request ID SOURCE_ID`                                    | Revokes a credential source from the Agent's selected version; see [withdrawal](credential-sources/withdrawal.md).                                                                                                                                                                                                                                                                                |
@@ -131,23 +131,22 @@ mode, selected version and queued or claimed deployment work.
 All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
 `--release`. Use the CLI matching the chart. Output is text.
 
-- `occ installation install` requires Helm, `kubectl`, a local `--chart`
-  (directory or archive, up to 64 MiB, no symlinks), `--values` (up to 4 MiB)
-  and a new `--receipt` directory. It snapshots inputs and syncs the intent
-  before one Helm install. If writing the receipt notice to stdout returns an
-  error, it exits unsuccessfully with the receipt path, preserves `intent.json`,
-  and neither creates `dispatch.json` nor starts Helm install. See
-  [receipt handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
-  Use Secret release storage and unset `HELM_KUBE*`
-  overrides. Credentials must work without interactive input. Helm applies
-  `--wait-timeout` per operation (default `5m`, positive, at most `24h`).
-  A successful install exit records Helm success. Check the Job separately.
-- `occ installation doctor` reports the named Job. `plan` adds next steps.
+- `occ installation install` requires Helm, `kubectl`, local `--chart`
+  (directory/archive, up to 64 MiB, no symlinks), `--values` (up to 4 MiB),
+  and a new `--receipt` directory. It snapshots inputs and syncs intent before
+  one Helm install. A receipt-notice write failure returns the receipt path,
+  preserves `intent.json`, and stops before `dispatch.json` or Helm.
+  Use Secret release storage, unset `HELM_KUBE*`, and use noninteractive
+  credentials. Helm's per-operation `--wait-timeout` defaults to `5m`
+  (positive, at most `24h`). A final report write failure fails the command
+  without changing Helm's saved outcome. Check the Job separately and inspect
+  the original receipt before retrying.
+- `occ installation doctor` reports the named Job; `plan` adds next steps.
   Optional `--receipt` requires the original target, install marker and captured
   UID for exit zero on completion. Alternatively, use `--expect-job-uid` for a
-  recorded UID. With neither flag, exit zero describes the current Job only.
-  Both commands are read-only. Report delivery failure makes the command
-  unsuccessful, including when the Job completed. [Interpret receipt files and resume an interrupted installation](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+  recorded UID. Without either, exit zero describes the current Job only.
+  Both are read-only; report write failure fails even a completed Job.
+  See [receipt handoff and recovery](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 
 ## Runtime status and logs
 

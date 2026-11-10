@@ -74,7 +74,7 @@ An IdP outage looks different depending on when the IdP fails:
   audit row has reason `PROVIDER_UNAVAILABLE`, and the API logs
   `authentication.provider-unavailable-warning` at WARN with the failing `step` and
   `cause`, such as `timeout`, `connect_refused` or `client_rejected`; see the
-  [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+  [external sign-in reference](../../reference/authentication/external-sign-in.md#external-sign-in-profile).
 
 During an outage, existing sessions keep working, and so does password sign-in for the
 recovery administrator (and for everyone under `passwordSignIn: all`). Sign-in recovers

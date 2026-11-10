@@ -92,63 +92,62 @@ graph TD
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
 `listRepositoryOptions` checks Namespace create or exact Agent update permission
-and Compute availability. Bundled listing uses the bound GitHub catalog;
-programmatic listing uses the registered Repo Driver. Reject stale owner results. Deploy checks the Harness. An empty Namespace catalog yields `[]`;
-absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
+and Compute availability. Bundled listings use the bound GitHub catalog. Programmatic
+listings use the registered Repo Driver. Both reject stale owner results. Deploy checks the exact Harness. Empty Namespace catalogs return `[]`.
+Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` uses the bound Installation policy for explicit/inherited saves,
-refusing mismatches, or the registered Repo Driver when unbound. Database checks bindings. Only fresh, empty drafts tolerate
-classified outages. The catalog omits sender metadata, credentials and provider descriptions.
+`repositorySettings` rejects explicit or inherited saves that mismatch bound
+Installation policy. Unbound saves use the registered Repo Driver. The database
+checks bindings. Only fresh, empty drafts tolerate classified outages. Catalogs
+omit sender metadata, credentials and provider descriptions.
 
-Save Configuration; reuse after known Agent rejections. Retry selection after a successful, nonempty reload. After unknown
-outcomes, read the saved Agent and Configuration.
+Save Configuration first. Known Agent rejection permits reuse. Retry only after
+successful reload and nonempty repository selection. Resolve unknown outcomes by
+reading stored Agent and Configuration.
 
 Requests carry refs and optional profiles, never tokens or grant IDs.
-Nonempty selections without a bound built-in policy or selected Repo Driver return `409 RESOURCE_CONFLICT`.
-OCC preserves selection order. GitHub defaults legacy profiles to `git-write`
-without provider or control-socket calls.
+Without bound built-in policy or a selected Repo Driver, nonempty selections return
+`409 RESOURCE_CONFLICT`. OCC preserves order. GitHub defaults legacy profiles
+to `git-write` without provider or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
-requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
+requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
 installation, repository, duration, full Namespace profile policy, exact permissions
-and optional normalized push-ref allowlist. One grant per binding; installations
-can supply several repositories. Omitted updates preserve selections; `[]` clears them.
+and optional normalized push-ref allowlist. Each binding gets one grant. Installations
+can supply several repositories. Omission preserves selections. `[]` clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects GitHub policy with a registry-matched Backend ID.
-Startup snapshots validated policy before loading packages or registries; that snapshot
-determines policy construction and protected Driver identity.
-`packages/occ/src/index.ts:OpenClawController.forInstallation` binds the owner,
-rejecting missing or mismatched ownership. `repository.policyMode: built-in` omits
-public Repo Driver registration; separate registration is refused.
-Startup rejects `drivers.repo`.
+matches GitHub Backend and registry IDs. It snapshots policy before loading packages
+or registries, preserving the protected Driver identity.
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner.
+File-based `repository` selects the built-in policy. Optional `repository.policyMode: built-in`
+leaves identity unchanged. Startup rejects other modes, `drivers.repo`, and separate public
+Repo Drivers. Programmatic registration remains available.
 
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
 owns OpenShell parsing and chart constraints.
 
-Bound `OpenClawController.admitRepositoryCredentials` requires `resolveBindings`; unbound controllers call `RepositoryPolicyDriver.resolve`.
-OCC checks Compute topology and freezes Driver identity, grants and a deadline
-unchanged by renewal or recovery. `validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
+`OpenClawController.admitRepositoryCredentials` calls `resolveBindings` when bound and
+`RepositoryPolicyDriver.resolve` otherwise. OCC checks Compute topology
+and freezes Driver identity, grants and deadline across renewals and recovery.
+`validateRepositoryBrokerNetworkProxy` rejects broker-blocking Codex settings.
 
-After approval lookup, changed bound ownership returns 503 without calling it;
-unbound deploys recheck their Driver. Denial or binding/scope changes prevent
-revision creation.
+After approval lookup, changed bound ownership returns 503 before invocation.
+Unbound deploys recheck their Driver. Denial or binding/scope changes block revision creation.
 
-Protected `repository.preparedGitHub` uses installed Sandbox/Credential Proxy
-Driver. Finite sessions need no native sender, control socket, broker CA or
-session files.
+Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
+Driver. Finite sessions need no native sender, control socket, broker CA or session files.
 
 `repository.nativeSender` selects `GitHubNativeRepositorySender`, which owns native
-sessions and files without an App key. Drain accepted
-work on its original owner before cutover. Cleanup uses recorded identity
-without resolving policy or restoring authority. The worker's prepared provider
-issues and holds credentials.
+sessions and files without an App key. Before cutover, drain accepted work on its
+original owner. Cleanup uses recorded identity without resolving policy or restoring
+authority. The worker's prepared provider issues and holds credentials.
 
 ### 3. Record ownership before opening a session
 

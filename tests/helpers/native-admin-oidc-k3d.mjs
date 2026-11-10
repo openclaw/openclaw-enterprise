@@ -10,42 +10,83 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
-// Serialized into this test's API Pod. Only the external GitHub protocol is
+// Serialized into this test's API Pod. Only the external OIDC protocol is
 // simulated; the installed authentication, session, IAM and browser exchange run normally.
-function installGithubFixture({ subject, callbackUrl }) {
+async function installOidcFixture({ subject, callbackUrl, clientId, clientSecret, issuer }) {
   const originalFetch = globalThis.fetch;
-  const token = `ghu_fixture_${subject}`;
+  const key = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const jwk = {
+    ...(await crypto.subtle.exportKey("jwk", key.publicKey)),
+    kid: "native-fixture",
+    alg: "RS256",
+    use: "sig",
+  };
   const json = (body, status = 200) =>
     new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" },
     });
   globalThis.fetch = async (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : input);
-    if (url.href === "https://github.com/login/oauth/access_token") {
-      const request = new Request(input, init);
-      const body = new URLSearchParams(await request.text());
-      if (
-        request.method !== "POST" ||
-        body.get("code") !== `subject-${subject}` ||
-        body.get("redirect_uri") !== callbackUrl
-      ) {
-        return json({ error: "bad_verification_code" }, 400);
-      }
-      return json({ access_token: token, token_type: "bearer" });
+    const request = new Request(input, init);
+    if (request.url === `${issuer}/jwks`) {
+      return json({ keys: [jwk] });
     }
-    if (url.href === "https://api.github.com/user") {
-      const request = new Request(input, init);
-      return request.method === "GET" && request.headers.get("authorization") === `Bearer ${token}`
-        ? json({ id: Number(subject), login: `fixture-${subject}` })
-        : json({}, 401);
+    if (request.url !== `${issuer}/token`) {
+      return originalFetch(input, init);
     }
-    return originalFetch(input, init);
+    const body = new URLSearchParams(await request.text());
+    let grant;
+    try {
+      grant = JSON.parse(Buffer.from(body.get("code") ?? "", "base64url").toString());
+    } catch {
+      return json({ error: "invalid_grant" }, 400);
+    }
+    const challenge = Buffer.from(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(body.get("code_verifier") ?? ""),
+      ),
+    ).toString("base64url");
+    if (
+      request.method !== "POST" ||
+      body.get("grant_type") !== "authorization_code" ||
+      body.get("redirect_uri") !== callbackUrl ||
+      body.get("client_id") !== clientId ||
+      body.get("client_secret") !== clientSecret ||
+      grant.challenge !== challenge ||
+      !grant.nonce
+    ) {
+      return json({ error: "invalid_grant" }, 400);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const unsigned = `${encode({ alg: "RS256", kid: jwk.kid, typ: "JWT" })}.${encode({ iss: issuer, sub: subject, aud: clientId, nonce: grant.nonce, iat: now, exp: now + 300 })}`;
+    const signature = Buffer.from(
+      await crypto.subtle.sign(
+        "RSASSA-PKCS1-v1_5",
+        key.privateKey,
+        new TextEncoder().encode(unsigned),
+      ),
+    ).toString("base64url");
+    return json({
+      token_type: "Bearer",
+      access_token: "native-fixture-access",
+      id_token: `${unsigned}.${signature}`,
+    });
   };
 }
 
 /** Upgrade only the caller's disposable dev-up release; its normal teardown owns all resources. */
-export async function enableInstalledGithubNativeAdmin({
+export async function enableInstalledOidcNativeAdmin({
   t,
   cluster,
   stateDirectory,
@@ -91,19 +132,20 @@ export async function enableInstalledGithubNativeAdmin({
     );
   const before = await values();
   assert.equal(before.auth.baseUrl, consoleOrigin);
-  assert.equal(before.auth.github.enabled, false);
   assert.equal(before.auth.google.enabled, false);
   assert.equal(before.auth.oidc.enabled, false);
   assert.equal(before.agentNativeAdmin.enabled, true);
   assert.equal(before.agentNativeAdmin.domain, agentDomain);
   assert.equal(before.gatewayRouting.sandbox.enabled, false);
 
-  const directory = await temporaryDirectory(t, "oce-native-github-");
+  const directory = await temporaryDirectory(t, "oce-native-oidc-");
   const subject = String(randomInt(10_000_000, 99_999_999));
   const clientId = `fixture-native-${randomUUID()}`;
-  const secretName = `native-github-${randomUUID()}`;
-  const callbackUrl = `${consoleOrigin}/api/auth/providers/github/callback`;
-  const secret = join(directory, "github-secret.json");
+  const secretName = `native-oidc-${randomUUID()}`;
+  const issuer = "https://idp.example.test";
+  const clientSecret = `fixture-secret-${randomUUID()}`;
+  const callbackUrl = `${consoleOrigin}/api/auth/providers/oidc/callback`;
+  const secret = join(directory, "oidc-secret.json");
   await writeFile(
     secret,
     JSON.stringify({
@@ -111,7 +153,7 @@ export async function enableInstalledGithubNativeAdmin({
       kind: "Secret",
       metadata: { name: secretName, namespace },
       type: "Opaque",
-      stringData: { "client-id": clientId, "client-secret": `fixture-secret-${randomUUID()}` },
+      stringData: { "client-id": clientId, "client-secret": clientSecret },
     }),
     { mode: 0o600 },
   );
@@ -120,13 +162,17 @@ export async function enableInstalledGithubNativeAdmin({
   const expected = structuredClone(before);
   expected.auth.recoveryUserId = recoveryUserId;
   expected.auth.passwordSignIn = "recovery-only";
-  Object.assign(expected.auth.github, {
+  Object.assign(expected.auth.oidc, {
     enabled: true,
     secretName,
     clientIdKey: "client-id",
     clientSecretKey: "client-secret",
-    allowedOrgs: [],
-    allowedTeams: [],
+    issuer,
+    authorizationUrl: `${issuer}/authorize`,
+    tokenUrl: `${issuer}/token`,
+    jwksUrl: `${issuer}/jwks`,
+    tokenAuth: "client_secret_post",
+    displayName: "Test SSO",
     // No provider network is needed. Do not widen this test's API Internet access.
     egressCidrs: ["192.0.2.1/32"],
   });
@@ -135,7 +181,7 @@ export async function enableInstalledGithubNativeAdmin({
   await writeFile(valuesFile, JSON.stringify(expected), { mode: 0o600 });
 
   const preload = `data:text/javascript,${encodeURIComponent(
-    `(${installGithubFixture.toString()})(${JSON.stringify({ subject, callbackUrl })});`,
+    `await (${installOidcFixture.toString()})(${JSON.stringify({ subject, callbackUrl, clientId, clientSecret, issuer })});`,
   )}`;
   const renderer = join(directory, "provider-renderer.mjs");
   await writeFile(
@@ -161,7 +207,7 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
     { mode: 0o700 },
   );
   // Helm records both the normal chart configuration and the isolated provider
-  // preload. This is not a launcher GitHub mode or a production injection setting.
+  // preload. This is not a launcher OIDC mode or a production injection setting.
   await run(helm, [
     "upgrade",
     release,
@@ -196,7 +242,7 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
   assert.deepEqual(api.args.slice(0, 2), ["--import", preload]);
   const configured = Object.fromEntries(api.env.map((entry) => [entry.name, entry]));
   for (const [name, value] of Object.entries({
-    OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
+    OCC_AUTH_RECOVERY_USER_ID: recoveryUserId,
     OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
     OCC_AGENT_NATIVE_ADMIN_SESSION_MODE: "host-only-exchange",
   })) {
@@ -204,8 +250,8 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
   }
   assert.equal(configured.OCC_AUTH_COOKIE_DOMAIN, undefined);
   for (const [name, key] of [
-    ["OCC_AUTH_GITHUB_CLIENT_ID", "client-id"],
-    ["OCC_AUTH_GITHUB_CLIENT_SECRET", "client-secret"],
+    ["OCC_AUTH_OIDC_CLIENT_ID", "client-id"],
+    ["OCC_AUTH_OIDC_CLIENT_SECRET", "client-secret"],
   ]) {
     assert.deepEqual(configured[name]?.valueFrom?.secretKeyRef, { name: secretName, key });
   }
@@ -220,14 +266,22 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
     controllerImage: api.image,
     async authorizeRoute(route) {
       const url = new URL(route.request().url());
-      assert.equal(url.origin + url.pathname, "https://github.com/login/oauth/authorize");
+      assert.equal(url.origin + url.pathname, `${issuer}/authorize`);
       assert.equal(url.searchParams.get("client_id"), clientId);
       assert.equal(url.searchParams.get("redirect_uri"), callbackUrl);
       const state = url.searchParams.get("state");
       assert.ok(state);
       const callback = new URL(callbackUrl);
       callback.searchParams.set("state", state);
-      callback.searchParams.set("code", `subject-${subject}`);
+      callback.searchParams.set(
+        "code",
+        Buffer.from(
+          JSON.stringify({
+            nonce: url.searchParams.get("nonce"),
+            challenge: url.searchParams.get("code_challenge"),
+          }),
+        ).toString("base64url"),
+      );
       await route.fulfill({ status: 302, headers: { location: callback.href }, body: "" });
     },
   };

@@ -88,9 +88,10 @@ test(
       pool,
       state,
       iamDriver,
-      github: {
+      google: {
         clientId: "cookie-test-client",
         clientSecret: "cookie-test-secret",
+        allowedDomains: [],
         recoveryUserId,
       },
     });
@@ -138,7 +139,7 @@ test(
       ownKey,
     );
     // Protected API narrowing is proved with the full composition in
-    // postgres-github-sign-in.test.mjs; this fixture owns the HTTPS session route.
+    // postgres-google-sign-in.test.mjs; this fixture owns the HTTPS session route.
     const plain = await inspect("/api/auth/session", { cookie: ownCookie });
     assert.equal(plain.json().data.user.id, recoveryUserId);
     assert.equal(
