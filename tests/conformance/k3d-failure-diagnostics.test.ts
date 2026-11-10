@@ -6,7 +6,7 @@ import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
 import {
   codexTurnTrace,
   observeSandboxProbe,
-  podFailureDiagnostic,
+  podFailureDiagnostic as diagnosePodFailure,
   tokenEchoDigest,
   tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
@@ -17,7 +17,23 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Synthetic values only; none is a real credential.
 const syntheticSecret = "synthetic-diagnostic-secret-0123456789";
-const secrets = failureSecrets([{ SYNTHETIC_SECRET: syntheticSecret }]);
+function diagnosticSecrets(environment: Record<string, string>): [string, string][] {
+  const values: unknown = failureSecrets([environment]);
+  assert.ok(Array.isArray(values));
+  const entries: unknown[] = values;
+  assert.ok(
+    entries.every(
+      (entry): entry is [string, string] =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    ),
+  );
+  return entries;
+}
+
+const secrets = diagnosticSecrets({ SYNTHETIC_SECRET: syntheticSecret });
 
 // A hook Job Pod like finding 1574's: the migration init container failed, so the main
 // container never started, and the Pod did not become ready.
@@ -92,17 +108,46 @@ const events = [
   },
 ];
 
+type DiagnosticPod = {
+  metadata: typeof postgresPod.metadata;
+  status: Record<string, unknown>;
+};
+type DiagnosticEvent = Pick<
+  (typeof events)[number],
+  "type" | "reason" | "involvedObject" | "message"
+>;
+type Kubectl = (...args: string[]) => Promise<string>;
+
+async function podFailureDiagnostic(options: {
+  kubectl: Kubectl;
+  namespace: string;
+  selector?: string;
+  eventPrefix?: string;
+  logLabels?: Record<string, string>;
+  secrets?: [string, string][];
+  budgets?: { events?: number; logs?: number };
+}): Promise<string> {
+  const result: unknown = await Reflect.apply(diagnosePodFailure, undefined, [options]);
+  assert.ok(typeof result === "string");
+  return result;
+}
+
 function fakeKubectl({
   pods = [hookPod, postgresPod],
   events: items = events,
   logs = {},
   fail = {},
+}: {
+  pods?: readonly DiagnosticPod[];
+  events?: readonly DiagnosticEvent[];
+  logs?: Record<string, string>;
+  fail?: Record<string, string>;
 } = {}) {
-  const calls = [];
-  const kubectl = async (...args) => {
+  const calls: string[][] = [];
+  const kubectl: Kubectl = async (...args) => {
     calls.push(args);
     const [, verb, kindOrPod] = args;
-    if (fail[verb] !== undefined) {
+    if (verb !== undefined && fail[verb] !== undefined) {
       throw new Error(fail[verb]);
     }
     if (verb === "get" && kindOrPod === "pods") {
@@ -190,6 +235,7 @@ test("a rollout diagnostic reads only its Pods' events and no logs without log l
     eventPrefix: "obs-1234-initialization",
     secrets,
   });
+  assert.ok(calls[0]);
   assert.deepEqual(calls[0].slice(1), [
     "get",
     "pods",
@@ -244,6 +290,7 @@ test("a restarted container that waits again has its previous run's logs read", 
     /"state":\{"waiting":"CrashLoopBackOff","message":"back-off 20s"\},"last":\{"terminated":"Error","exitCode":2\}/,
   );
   const logs = calls.find(([, verb]) => verb === "logs");
+  assert.ok(logs);
   assert.equal(logs.at(-1), "--previous");
   assert.match(
     detail,
@@ -280,7 +327,7 @@ test("newer Pods do not crowd the logged hook Pod out of the diagnostic", async 
 
 test("an event or turn error that names a credential is dropped whole", async () => {
   const { kubectl } = fakeKubectl({ pods: [] });
-  const leaky = async (...args) =>
+  const leaky: Kubectl = async (...args) =>
     args[2] === "events"
       ? JSON.stringify({
           items: [
@@ -388,7 +435,7 @@ test("the event and log budgets keep the newest entries", async () => {
 });
 
 test("events are ordered by when they were last observed, across timestamp precision", async () => {
-  const event = (reason, times) => ({
+  const event = <T extends object>(reason: string, times: T) => ({
     ...times,
     type: "Normal",
     reason,
@@ -429,14 +476,14 @@ test("events are ordered by when they were last observed, across timestamp preci
 });
 
 test("a stalled pod diagnostic gives way to its deadline and starts no read after it", async () => {
-  const calls = [];
-  const result = await withinDiagnosticDeadline(
+  const calls: string[][] = [];
+  const result: unknown = await withinDiagnosticDeadline(
     () =>
       podFailureDiagnostic({
-        kubectl: (...args) => {
+        kubectl: (...args: string[]) => {
           calls.push(args);
           // Never settles, like a read on a stalled API server.
-          return new Promise(() => {});
+          return new Promise<string>(() => {});
         },
         namespace: "oce-stalled",
       }),
@@ -444,14 +491,14 @@ test("a stalled pod diagnostic gives way to its deadline and starts no read afte
   );
   assert.equal(result, "\nDiagnostic timed out");
   assert.equal(calls.length, 1);
-  const late = [];
-  let abandoned;
-  const settled = await withinDiagnosticDeadline(
+  const late: string[][] = [];
+  let abandoned: Promise<string> | undefined;
+  const settled: unknown = await withinDiagnosticDeadline(
     () => {
       abandoned = (async () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         return podFailureDiagnostic({
-          kubectl: async (...args) => {
+          kubectl: async (...args: string[]) => {
             late.push(args);
             return "{}";
           },
@@ -519,6 +566,7 @@ test("a failed Helm install's error gains the hook Job Pod's logs through kubect
       line,
     );
   }
+  assert.ok(recorded[2]);
   assert.match(
     recorded[2],
     /logs obs-1234-initialization-abcde .*--container migration --tail=200$/,
@@ -636,7 +684,10 @@ test("a long turn trace keeps its start and end", () => {
 test("OpenShell settles observed commands before deciding whether to ask for another probe", async (t) => {
   const nonce = "fixture-probe";
   const probe = { command: `cd /work && bash ${nonce}.sh ${syntheticSecret}`, id: "probe" };
-  const event = (phase, item) => ({
+  const event = (
+    phase: "started" | "completed",
+    item: { id: string; command?: string; exitCode?: number },
+  ) => ({
     method: `item/${phase}`,
     params: { item: { type: "commandExecution", ...item } },
   });
@@ -669,7 +720,7 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
     ["completion without exit status", [[start, event("completed", probe)]], "unknown"],
     ["unrelated command, then completed probe", [[unrelated], [start, end]], "completed"],
     ["no probe observed in three turns", [[], [], []], "absent"],
-  ]) {
+  ] as const) {
     await t.test(name, async () => {
       let calls = 0;
       const observation = observeSandboxProbe({
@@ -687,13 +738,14 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
         },
       });
       if (expected === "unknown") {
-        await assert.rejects(observation, (error) => {
+        await assert.rejects(observation, (error: unknown) => {
+          assert.ok(error instanceof Error);
           assert.match(error.message, /outcome is unknown; not sending another turn/);
           assert.ok(!error.message.includes(syntheticSecret), "do not expose command text");
           return true;
         });
       } else {
-        const { run, traces } = await observation;
+        const { run, traces }: { run?: unknown; traces: string[] } = await observation;
         assert.equal(run, expected === "completed" ? end.params.item : undefined);
         assert.equal(traces.length, expected === "completed" ? calls - 1 : calls);
       }
@@ -707,8 +759,8 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
 const echoUrl = "http://token-echo.oce-token-echo-1.svc:8080/tool-a";
 const syntheticToolToken = "oce-tool-synthetic-0123456789abcdef";
 const syntheticPlaceholder = "openshell:resolve:env:v3_OCE_TOOL_A_TOKEN";
-const echoSecrets = failureSecrets([{ TOOL_TOKEN_0: syntheticToolToken }]);
-const echoCommand = (aggregatedOutput, exitCode = 0) => ({
+const echoSecrets = diagnosticSecrets({ TOOL_TOKEN_0: syntheticToolToken });
+const echoCommand = (aggregatedOutput: string, exitCode = 0) => ({
   type: "commandExecution",
   command: `/bin/bash -lc 'curl -sS --max-time 20 -H "Authorization: Bearer $OCE_TOOL_A" ${echoUrl}'`,
   exitCode,
@@ -723,12 +775,16 @@ test("a token echo call that prints no JSON fails naming the command and its red
     `placeholder ${syntheticPlaceholder}\n` +
     `{"path":"/tool-a","digest":"${sha256}"}\n` +
     "x".repeat(5_000);
-  const reply = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
+  const reply: unknown = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
+  assert.ok(typeof reply === "object" && reply !== null);
   // The refresh phase's checks read it as a reply with no token; the tool checks fail on it.
   assert.deepEqual(Object.keys(reply), ["unparsed", "shown"]);
+  assert.ok("unparsed" in reply && typeof reply.unparsed === "string");
+  const unparsed = reply.unparsed;
   assert.throws(
     () => tokenEchoDigest(reply),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.equal(error.name, "AssertionError");
       assert.match(error.message, /^the token echo call must print JSON: `/);
       assert.ok(error.message.includes(`${echoUrl}'\``), "names the command");
@@ -739,7 +795,7 @@ test("a token echo call that prints no JSON fails naming the command and its red
       for (const hidden of [syntheticToolToken, syntheticPlaceholder, sha256]) {
         assert.equal(JSON.stringify(error).includes(hidden), false, hidden);
         assert.equal(error.message.includes(hidden), false, hidden);
-        assert.equal(reply.unparsed.includes(hidden), false, hidden);
+        assert.equal(unparsed.includes(hidden), false, hidden);
       }
       return true;
     },
@@ -748,14 +804,20 @@ test("a token echo call that prints no JSON fails naming the command and its red
 });
 
 test("a token echo reply gives its digest, and OpenShell's refusal is shown without one", () => {
-  const echoed = tokenEchoReply(
+  const echoed: unknown = tokenEchoReply(
     [echoCommand(`{"path":"/tool-a","digest":"${sha256}","placeholder":false,"length":43}\n`)],
     echoUrl,
     echoSecrets,
   );
   assert.equal(tokenEchoDigest(echoed), sha256);
+  assert.ok(
+    typeof echoed === "object" &&
+      echoed !== null &&
+      "shown" in echoed &&
+      typeof echoed.shown === "string",
+  );
   assert.equal(echoed.shown.includes(sha256), false, "digests are compared, never shown");
-  const refused = tokenEchoReply(
+  const refused: unknown = tokenEchoReply(
     [
       echoCommand(
         '{"error":"credential_unavailable","message":"Credential placeholder could not be resolved"}',
@@ -765,5 +827,11 @@ test("a token echo reply gives its digest, and OpenShell's refusal is shown with
     echoSecrets,
   );
   assert.equal(tokenEchoDigest(refused), undefined);
+  assert.ok(
+    typeof refused === "object" &&
+      refused !== null &&
+      "shown" in refused &&
+      typeof refused.shown === "string",
+  );
   assert.match(refused.shown, /\(exit 0\) printed \{"error":"credential_unavailable"/);
 });
