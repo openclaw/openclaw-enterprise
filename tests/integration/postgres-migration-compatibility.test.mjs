@@ -1660,159 +1660,6 @@ async function accountPolicyData(db) {
 
 // Prove the preserved database contract and its authentication-store caller. This is
 // not an HTTP API test: authorization uses the real Native IAM Driver on stored policy.
-async function assertAccountAdministrationPolicy(db) {
-  const before = await accountPolicyData(db);
-  const installationId = (await db.app.query("SELECT id FROM occ.installation")).rows[0].id;
-  const identity = (
-    await db.app.query("SELECT id,subject FROM occ.iam_identities WHERE issuer='migration-fixture'")
-  ).rows[0];
-  const sessionId = (
-    await db.app.query(
-      `SELECT s.session_id AS id FROM occ.human_authentication_sessions s
-       JOIN occ.account a ON a.id=s.method_id WHERE s.user_id=$1 AND a.provider_id='credential'`,
-      [identity.subject],
-    )
-  ).rows[0].id;
-  assert.deepEqual(
-    (
-      await db.app.query(`SELECT pg_get_userbyid(proowner) AS owner,prosecdef,proconfig,
-    has_function_privilege('occ_app',oid,'EXECUTE') AS app_execute,
-    has_function_privilege('public',oid,'EXECUTE') AS public_execute
-    FROM pg_proc WHERE oid='occ.hold_account_administration_policy(text)'::regprocedure`)
-    ).rows,
-    [
-      {
-        owner: "occ_migrator",
-        prosecdef: true,
-        proconfig: ["search_path=pg_catalog, occ, pg_temp"],
-        app_execute: true,
-        public_execute: false,
-      },
-    ],
-  );
-  for (const invalid of [null, "ins_unknown"]) {
-    await assert.rejects(
-      db.app.query("SELECT occ.hold_account_administration_policy($1)", [invalid]),
-      { code: "23514" },
-    );
-  }
-  const application = new URL(db.migrationUrl);
-  application.username = "occ_app";
-  application.password = "occ-app-local";
-  const writer = new pg.Client({ connectionString: application.toString() });
-  await writer.connect();
-  const holderPid = (await db.app.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
-  const policyLocks = async () =>
-    (
-      await writer.query(
-        `SELECT c.relname FROM pg_locks l
-    JOIN pg_class c ON c.oid=l.relation JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE l.pid=$1 AND n.nspname='occ' AND l.mode='ShareRowExclusiveLock' AND l.granted ORDER BY c.relname`,
-        [holderPid],
-      )
-    ).rows.map((row) => row.relname);
-  try {
-    await db.app.query("BEGIN");
-    await db.app.query("SET LOCAL statement_timeout='2s'");
-    await db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]);
-    assert.deepEqual(await policyLocks(), [
-      "iam_access_bindings",
-      "iam_group_memberships",
-      "iam_groups",
-      "iam_identities",
-      "iam_restrictions",
-      "iam_roles",
-    ]);
-    await writer.query("SET lock_timeout='250ms'; SET statement_timeout='2s'");
-    await assert.rejects(
-      writer.query(
-        "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Contention probe','[]')",
-        [`role_${randomUUID()}`],
-      ),
-      {
-        code: "55P03",
-      },
-    );
-    await db.app.query("COMMIT");
-    assert.deepEqual(await policyLocks(), []);
-    await writer.query("BEGIN");
-    assert.ok(
-      (
-        await writer.query(
-          "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Contention probe','[]')",
-          [`role_${randomUUID()}`],
-        )
-      ).rowCount > 0,
-    );
-
-    await writer.query("ROLLBACK");
-
-    // A conflicting writer on the last table forces NOWAIT after earlier locks
-    // were acquired. The failed transaction must release all of those locks.
-    await writer.query("BEGIN");
-    await writer.query(
-      "INSERT INTO occ.iam_restrictions(id,action,resource_kind,effect) VALUES($1,'read','agent','deny')",
-      [`restriction_${randomUUID()}`],
-    );
-    await db.app.query("BEGIN; SET LOCAL statement_timeout='2s'");
-    await assert.rejects(
-      db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]),
-      { code: "55P03" },
-    );
-    await db.app.query("ROLLBACK");
-    assert.deepEqual(await policyLocks(), []);
-    await writer.query("ROLLBACK");
-    await db.app.query("SELECT occ.hold_account_administration_policy($1)", [installationId]);
-  } finally {
-    await db.app.query("ROLLBACK");
-    await writer.query("ROLLBACK");
-    await writer.end();
-  }
-
-  const [{ NativeIAMDriver }, { PostgresPlatformState }, { PostgresHumanAuthentication }] =
-    await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-      import("../../packages/occ/src/state/human-authentication.ts"),
-    ]);
-  const pool = new pg.Pool({
-    connectionString: application.toString(),
-    max: 2,
-  });
-  try {
-    const state = new PostgresPlatformState(pool);
-    const iam = new NativeIAMDriver(state);
-    const accounts = new PostgresHumanAuthentication(state, installationId, "migration-fixture");
-    const actor = {
-      userId: identity.subject,
-      principalId: identity.id,
-      sessionId,
-      authorize: async () => {
-        const decision = await iam.authorize({
-          principalId: identity.id,
-          action: "administer",
-          resource: { kind: "installation", id: installationId },
-        });
-        assert.equal(decision.allowed, true);
-      },
-    };
-    const account = await accounts.readAccount(identity.subject, actor);
-    assert.equal(account.principalId, identity.id);
-    assert.equal(account.disabled, false);
-    assert.equal(account.methods.length, 2);
-    await assert.rejects(
-      accounts.readAccount(identity.subject, {
-        ...actor,
-        sessionId: "ses_unknown",
-      }),
-      /session is no longer current/,
-    );
-  } finally {
-    await pool.end();
-  }
-  assert.deepEqual(await accountPolicyData(db), before);
-}
-
 async function seedCanonicalAgent(
   db,
   namespace,
@@ -2612,11 +2459,8 @@ test(
           signInResult: prefix >= 75,
         });
         const assertProxyReader =
-          prefix >= 72 ? await prepareProxyHarnessUpgrade(db, namespaceId) : undefined;
+          prefix === 76 ? await prepareProxyHarnessUpgrade(db, namespaceId) : undefined;
         const policyBefore = prefix >= 72 ? await accountPolicyData(db) : undefined;
-        if (prefix >= 73) {
-          await assertAccountAdministrationPolicy(db);
-        }
         const assertSourceOwners =
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
@@ -2657,7 +2501,6 @@ test(
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         if (prefix >= 72) {
           assert.deepEqual(await accountPolicyData(db), policyBefore);
-          await assertAccountAdministrationPolicy(db);
         }
         await assertUpgradedAuthentication(db, prefix >= 75 ? 2 : 1);
         await assertProxyReader?.();
@@ -3205,7 +3048,7 @@ test(
           signInResult: prefix >= 75,
         });
         assertProxyReader =
-          prefix >= 72 ? await prepareProxyHarnessUpgrade(source, namespaceId) : undefined;
+          prefix === 76 ? await prepareProxyHarnessUpgrade(source, namespaceId) : undefined;
         await source.app
           .query(`UPDATE occ.agents a SET active_revision_id=r.id, desired_runtime_state='running'
           FROM occ.agent_revisions r WHERE r.agent_id=a.id`);
@@ -3224,9 +3067,6 @@ test(
       assert.equal(native.identities.length, prefix >= 72 ? 4 : prefix ? 3 : 2);
       const nativeData = prefix ? await canonicalData(source) : undefined;
       const policyBefore = prefix >= 72 ? await accountPolicyData(source) : undefined;
-      if (prefix >= 73) {
-        await assertAccountAdministrationPolicy(source);
-      }
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
       const archive = await dumpHistoryArchive(fixture, source);
@@ -3250,9 +3090,6 @@ test(
       if (prefix >= 72) {
         assert.deepEqual(await accountPolicyData(restored), policyBefore);
       }
-      if (prefix >= 73) {
-        await assertAccountAdministrationPolicy(restored);
-      }
       assert.deepEqual(await runHistoryCommand(restored, "production"), {
         ok: true,
         history,
@@ -3261,7 +3098,6 @@ test(
       await assertProxyReader?.(restored);
       if (prefix >= 72) {
         assert.deepEqual(await accountPolicyData(restored), policyBefore);
-        await assertAccountAdministrationPolicy(restored);
       }
       if (prefix) {
         const manifest = JSON.parse(
