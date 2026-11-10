@@ -373,6 +373,7 @@ export async function composePostgresDevelopment(
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    drivers?.repositoryTransport?.connectRestartObservation?.(pool);
     await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));

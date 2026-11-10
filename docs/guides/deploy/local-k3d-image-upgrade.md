@@ -150,8 +150,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
-For a runtime upgrade, also save `occ --output json installation deployment-inventory`
-before and after the change; that operation requires the runtime upgrade permissions.
+For every upgrade, save `occ --output json installation deployment-inventory`
+before and after the change using the [required inventory permissions](production-upgrade.md#prepare-the-release).
 Keep inventories private. Check data and backups with the database and storage
 owners; object names alone do not prove retention.
 

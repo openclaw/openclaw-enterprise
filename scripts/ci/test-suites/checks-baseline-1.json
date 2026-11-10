@@ -128,6 +128,7 @@
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/credential-free-metadata-grant.test.ts",
+    "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
@@ -226,6 +227,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-network-policy.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
@@ -588,6 +592,7 @@
         "Responses output text assembled across parts and messages cannot reveal selected material",
         "Responses assistant projections protect independent items and seeded deltas",
         "Responses incremental text snapshots cannot reveal selected material",
+        "Responses follow-up replays assistant text with empty provider metadata",
         "signed Responses Plan projections protect completed and response-wide streamed text",
         "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
         "protected admission refuses an Agent's network policy additions instead of dropping them",
@@ -721,6 +726,15 @@
       ]
     },
     {
+      "path": "tests/integration/agent-grant-rehearsal.test.ts",
+      "expectedTests": [
+        "grant rehearsal rejects a cached or wrong Git object",
+        "grant rehearsal requires a fresh denial without origin traffic or object arrival",
+        "grant rehearsal requires a new model turn on the original Agent session",
+        "grant rehearsal fails when an adapter returns after Git refusal"
+      ]
+    },
+    {
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
@@ -770,6 +784,12 @@
         "selected repository issuance sends every selected stable ID and explicit permissions",
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
+    },
+    {
+      "path": "tests/conformance/topology-controller-manifests.test.ts",
+      "expectedTests": [
+        "controller topology keeps API-only fixture inputs separate from the worker"
       ]
     }
   ]

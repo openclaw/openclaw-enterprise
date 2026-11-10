@@ -135,11 +135,11 @@ export function signInScenarios({
       passwordRecoveryOnly: true,
       rules: [{ path: "/api/auth/providers", method: "GET", delayMs: 5000 }],
       description:
-        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with OIDC or Google. Delayed discovery keeps an empty password form visible if the user has already focused it.",
+        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with OIDC or Google. The password form stays behind Recovery sign-in while provider discovery is pending.",
       steps: [
-        "Open or reset the story and immediately Tab to Email without entering text. When providers appear, Email stays focused and the recovery hint appears.",
-        "Type a demo email: the form remains usable without submitting a password request.",
-        "Reset and wait without focusing the form. Discovery hides it behind Recovery sign-in; select that button to reveal it.",
+        "Open or reset the story. Checking sign-in methods and Recovery sign-in appear; Email and Password are hidden. When discovery finishes, the provider buttons appear and the form stays hidden.",
+        "Reset and immediately select Recovery sign-in. Email gains focus and remains focused when discovery finishes, with the recovery hint visible.",
+        "Type a demo email: the explicitly opened form remains usable without submitting a password request.",
       ],
     },
     recoveryOnlyForm: {
@@ -265,9 +265,13 @@ export function signInScenarios({
       name: "Provider discovery unavailable",
       path: "/console/login",
       signedOut: true,
-      rules: [{ path: "/api/auth/providers", status: 503 }],
+      rules: [{ path: "/api/auth/providers", status: 503, delayMs: 5000 }],
       description:
         "Failed provider discovery leaves the password form usable without provider buttons.",
+      steps: [
+        "Immediately Tab to Recovery sign-in without activating it. When discovery fails, the password form appears and Email receives keyboard focus.",
+        "Type a demo email. If you move focus away while waiting instead, the form appears without taking focus back.",
+      ],
     },
     loginError: {
       group: "Pages/Sign in",

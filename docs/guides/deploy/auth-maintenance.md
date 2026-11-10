@@ -79,11 +79,13 @@ or load balancer does.
   addresses, or serve the same host name on a private listener and point operator
   machines at it with a DNS override (a hosts entry, or `curl --resolve`).
 
-A `kubectl port-forward` to the API cannot verify sign-in. The API Service speaks plain
-HTTP behind your ingress, the session cookie is `Secure` with the `__Host-` prefix, the
-API compares `Origin` exactly, and an IdP returns the browser to the registered
-redirect URI on the canonical host, never to a forwarded port. Use a port-forward only
-for reads that need no session, such as `GET /api/auth/providers`.
+Do not use `kubectl port-forward` directly to the production API Pod or Service.
+The API binds the Pod IP, while port-forward connects through Pod loopback, so even
+reads that need no session, such as `GET /api/auth/providers`, cannot connect.
+Use the restricted canonical HTTPS origin above for these reads and sign-in checks.
+Session cookies require HTTPS. Starting external sign-in requires an `Origin` that
+exactly matches `OCC_AUTH_BASE_URL`; the identity provider returns the browser to
+its registered redirect URI on the canonical host.
 
 ## Run the command
 

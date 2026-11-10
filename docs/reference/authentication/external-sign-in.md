@@ -93,9 +93,9 @@ startup and Helm refuse it otherwise, and any other value.
 Every other email, existing or not, receives the ordinary `401` bad-credential
 answer after the same password hashing, audited as `INVALID_CREDENTIALS`; no
 account is read, so the answer reveals nothing. `GET /api/auth/providers`
-reports `password: false`, and the Console shows provider buttons with the
-password form behind **Recovery sign-in**. During a provider outage only the
-recovery account can sign in.
+reports `password: false`. The Console keeps the password form behind
+**Recovery sign-in** while discovering sign-in methods, then adds the configured
+provider buttons. During a provider outage only the recovery account can sign in.
 
 An account without an identity for a configured provider cannot sign in until an
 administrator attaches one. Each startup with `recovery-only` logs

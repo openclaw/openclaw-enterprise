@@ -51,7 +51,13 @@ inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
 claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
 Each prepares its own shared resources and runs its assigned manifest files
-serially. The Full Integration Aggregate requires both results for the same
+serially. Each full lane includes source-build cases. The action selects one
+job-owned builder for the lane, and preparation passes that builder and
+`SOURCE_DATE_EPOCH=0` to its tests. The shared stack's image build populates that
+builder even if the Docker engine already holds the image; there is no separate
+warm build. Later installer builds still compile from the checked-out source and
+can reuse matching layers. Explicit image overrides do not populate a build
+cache. The Full Integration Aggregate requires both results for the same
 checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
@@ -71,7 +77,45 @@ Python toolchains. Its receipt records capacity and removal duration. An explici
 selected installed browser is validated by a sandboxed launch and page evaluation;
 these jobs do not install an unused Playwright browser alongside it.
 
+## Select candidate images and charts
+
+For local preparation of the `openshell` lane, preload the candidate images
+into the selected Docker engine. Select all six inputs together:
+
+- `OCC_TEST_OPENSHELL_SOURCE_REVISION`: the full lowercase Git commit.
+- `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, and
+  `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`: named references with SHA-256 digests.
+- `OCC_TEST_OPENSHELL_HELM_CHART` and
+  `OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART`: absolute paths to
+  `deploy/helm/openshell` and `deploy/helm/openshell-workspace` in one checkout.
+
+The checkout's HEAD must match the selected commit. Both chart directories must
+contain exactly that commit's files, contents, and executable modes. Symlinks
+and added files, including ignored files, are rejected. Each image's
+`org.opencontainers.image.revision` label must match the same commit.
+These checks establish source consistency; retain the image builder's provenance
+and smoke-test receipts separately.
+
+Preflight reads the gateway chart with Helm from a temporary copy of the
+verified files. It removes that copy and rejects an incomplete or mismatched
+selection before creating cluster resources. Preparation retains verified
+copies in the run's private cluster directory for Helm and the prepared
+scenarios. Lane cleanup removes them. The prepared environment records the
+source revision and the gateway chart copy's `appVersion`. The gateway scenario
+uses that version to verify the installed StatefulSet's version label.
+Scenarios that run their own installer prepare their own inputs. Without a
+candidate selection, preparation uses the pinned release charts and images.
+A mirror reference with the same released image digest keeps this release path.
+An image with a different digest requires the complete candidate selection.
+
 ## Interpret timing and proof
+
+OpenShell lifecycle tests print live stage progress with their lane and file:
+`openshell-stage installation started`, followed by `passed` or `failed` when the
+operation settles. Later stages identify model, policy and credential checks.
+A lone `started` message identifies the operation still running or interrupted;
+it does not establish failure or completion. Progress contains fixed categories
+only. Final timing receipts and test results remain the completion evidence.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native

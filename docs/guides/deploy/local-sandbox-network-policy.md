@@ -35,8 +35,11 @@ and the installed workspace dependencies are required for Driver validation.
 
 Supplied rules append to the generated rules. Model Credential Source profiles,
 workspace transport, filesystem/process policy, and Kubernetes NetworkPolicies
-retain their existing owners. The added rules apply to all Agents using this
-development Sandbox Driver, rather than one Agent or chat session.
+retain their existing owners. These rules are Driver defaults, not per-Agent
+grants. Protected executions use their admitted policy instead. Only explicitly
+named [Codex artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules)
+that pass admission checks carry over from these defaults. Adding a Node or npm
+rule here alone does not grant protected executions package access.
 
 The parsed rules are saved in private `state.json` and rendered into
 `installation.yaml`, which supplies the same configuration to OCC API and worker.
@@ -49,6 +52,37 @@ Inspect current decisions using the Agent's existing Sandbox Logs view or
 [Agent logs](../topics/agent-logs.md) for permissions, retention, and follow limits,
 and the [startup flow](../../flows/openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 for implementation ownership.
+
+## Enable protected npm reads
+
+In the Installation YAML for a protected, dedicated Codex Agent with repository
+access, add this rule under `drivers.sandbox.configuration.policy`. Append the
+name and rule to any existing entries.
+
+```yaml
+codexArtifactRuleNames: [node-packages]
+networkPolicies:
+  - name: node-packages
+    binaries:
+      - path: /usr/local/bin/node
+    endpoints:
+      - host: registry.npmjs.org
+        ports: [443]
+        protocol: rest
+        enforcement: enforce
+        access: read_only
+```
+
+Use `/usr/local/bin/node` as the sole binary and `registry.npmjs.org:443` as
+the sole endpoint. Leave `tls` unset for verified inspection. The Driver
+allows encoded slashes on all otherwise authorized read-only paths on this
+endpoint, including npm scoped package metadata. Keep this endpoint separate
+from Codex artifact and model routes. Kubernetes egress must also permit
+HTTPS to the registry.
+
+Deploy a new Agent revision after applying the Installation configuration.
+Run `npm view @types/node@24.0.0 version --registry=https://registry.npmjs.org`
+in the Agent workspace. A successful read prints `24.0.0`.
 
 ## Delegate per-Agent additions
 

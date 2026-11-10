@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -80,7 +80,7 @@ func TestHangs(t *testing.T) {
   },
 };
 
-async function fixtureModule(t) {
+async function fixtureModule(t: TestContext) {
   const root = await temporaryDirectory(t, "ci-go-test-");
   await writeFile(join(root, "go.mod"), `module ${modulePath}\n\ngo 1.21\n`);
   for (const [name, files] of Object.entries(packages)) {
@@ -93,8 +93,11 @@ async function fixtureModule(t) {
   return root;
 }
 
-async function goTest(cwd, { env = {}, args = [] } = {}) {
-  const options = {
+async function goTest(
+  cwd: string,
+  { env = {}, args = [] }: { env?: NodeJS.ProcessEnv; args?: string[] } = {},
+) {
+  const options: ExecFileOptionsWithStringEncoding = {
     cwd,
     encoding: "utf8",
     timeout: 120_000,
@@ -114,6 +117,9 @@ async function goTest(cwd, { env = {}, args = [] } = {}) {
     );
     return { code: 0, stdout, stderr };
   } catch (error) {
+    assert.ok(error instanceof Error);
+    assert.ok("signal" in error && "code" in error && "stdout" in error && "stderr" in error);
+    assert.ok(typeof error.stdout === "string" && typeof error.stderr === "string");
     assert.equal(error.signal, null, `go-test.ts was killed: ${error.stderr}`);
     return { code: error.code, stdout: error.stdout, stderr: error.stderr };
   }

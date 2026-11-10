@@ -12,6 +12,7 @@ import {
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { registerTopologyLaunchCases } from "./topology-launch-cases.ts";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
@@ -683,3 +684,5 @@ test("the archive guard fails when a bundled default changes without archiving i
     `archive/default-codex/${shipped}.json is missing for a superseded default-codex.json.`,
   ]);
 });
+
+registerTopologyLaunchCases();

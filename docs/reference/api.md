@@ -3098,6 +3098,7 @@ Get the complete authorized Agent deployment inventory
 | `data.namespaces[].agents[].desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.namespaces[].agents[].executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.namespaces[].agents[].id` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaces[].agents[].repositoryWorkerRestart` | `"original-worker-required" or "reverification-supported" or "not-applicable" or "unknown"` | No | — |
 | `data.namespaces[].agents[].status` | `"active" or "deleting"` | Yes | — |
 | `data.namespaces[].id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaces[].status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
