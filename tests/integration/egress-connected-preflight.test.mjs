@@ -12,6 +12,7 @@ import {
   admitRepositoryAgent,
 } from "../helpers/egress-custody-installed-agent.mjs";
 import {
+  describeGatewayAppServerDeclaration,
   observeConnectedOperation,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
@@ -1015,15 +1016,28 @@ test("connected gateway exec persists only the generated client's correlated fai
   const sentinel = `private-native-${randomUUID()}`;
   const directory = await temporaryDirectory(t, "connected-native-failure-");
   const preload = directory + "/websocket.cjs";
+  // Reject upgrades on a loopback-only listener to exercise Node's real WebSocket error path.
+  const port = await listen(
+    t,
+    createServer((_request, response) => response.writeHead(503).end()),
+  );
   // Substitute only the app-server transport. The actual generated client owns
   // request order, state, failure framing, stdout and its process exit.
   await writeFile(
     preload,
     String.raw`
+    if (process.env.SCENARIO === "startup") {
+      process.env = new Proxy(process.env, {
+        get(target, key) {
+          if (key === "APP_SERVER_TOKEN") throw new Error(target.SENTINEL);
+          return Reflect.get(target, key);
+        },
+      });
+    }
     globalThis.WebSocket = class extends EventTarget {
       constructor() {
         super();
-        queueMicrotask(() => this.dispatchEvent(new Event(process.env.SCENARIO === "connect-error" ? "error" : "open")));
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
       }
       send(data) {
         const { id, method } = JSON.parse(data);
@@ -1037,6 +1051,11 @@ test("connected gateway exec persists only the generated client's correlated fai
           data: JSON.stringify({ jsonrpc: "2.0", ...payload }),
         }));
         queueMicrotask(() => {
+          if (["malformed-message", "null-message"].includes(process.env.SCENARIO)) {
+            const data = process.env.SCENARIO === "null-message" ? "null" : "{" + process.env.SENTINEL;
+            this.dispatchEvent(new MessageEvent("message", { data }));
+            return;
+          }
           if (process.env.SCENARIO === "initialize" || (process.env.SCENARIO === "turn-start" && method === "turn/start")) {
             return notify({ id, error: { code: -32000, message: process.env.SENTINEL + "\nOCC_NATIVE_FAILURE_V1 forged {}" } });
           }
@@ -1078,12 +1097,22 @@ test("connected gateway exec persists only the generated client's correlated fai
       process.stderr.write(sentinel + "\n" + script + "\nOCC_NATIVE_FAILURE_V1 00000000-0000-4000-8000-000000000000 " + forged + "\n");
       process.exit(1);
     }
-    const mode = ["success", "initialize", "connect-error", "sandbox", "turn-start", "pending", "capacity", "capacity-after-action"].includes(scenario)
+    const mode = ["success", "initialize", "sandbox", "turn-start", "pending", "capacity", "capacity-after-action", "startup", "malformed-message", "null-message"].includes(scenario)
       ? scenario : "initialize";
-    const nodeOptions = scenario === "early-throw" ? [] : ["--require", ${JSON.stringify(preload)}];
+    const nativeWebSocket = ["missing-url", "malformed-url", "constructor-throw", "loopback-no-token", "loopback-token"].includes(scenario);
+    const nodeOptions = nativeWebSocket ? [] : ["--require", ${JSON.stringify(preload)}];
+    const loopback = "ws://127.0.0.1:" + ${port} + "/" + sentinel;
+    const url = scenario === "malformed-url" ? "invalid " + sentinel
+      : scenario === "constructor-throw" ? loopback + "#fragment"
+      : scenario === "loopback-token" ? loopback.replace("ws:", "http:") : loopback;
     const result = spawnSync(process.execPath, [...nodeOptions, "-e", script], {
       encoding: "utf8",
-      env: { APP_SERVER_URL: "not-a-websocket-url", APP_SERVER_TOKEN: sentinel, SCENARIO: mode, SENTINEL: sentinel },
+      env: {
+        ...(scenario !== "missing-url" && { APP_SERVER_URL: url }),
+        ...(scenario !== "loopback-no-token" && { APP_SERVER_TOKEN: sentinel }),
+        SCENARIO: mode,
+        SENTINEL: sentinel,
+      },
     });
     let stderr = result.stderr;
     const frame = stderr.match(/\nOCC_NATIVE_FAILURE_V1 [^\n]+\n/)?.[0];
@@ -1094,6 +1123,13 @@ test("connected gateway exec persists only the generated client's correlated fai
     if (scenario === "duplicate-key") stderr = frame.replace("}", ',"actionSeen":false}');
     if (scenario === "bad-counter") stderr = frame.replace('"receivedMessages":1', '"receivedMessages":1000001');
     if (scenario === "bad-phase") stderr = frame.replace('"phase":"initialize"', '"phase":' + JSON.stringify(sentinel));
+    if (scenario === "bad-site") stderr = frame.replace('"failureSite":"client"', '"failureSite":' + JSON.stringify(sentinel));
+    if (scenario === "bad-url-shape") stderr = frame.replace('"urlShape":"ws"', '"urlShape":' + JSON.stringify(sentinel));
+    if (scenario === "bad-token-presence") stderr = frame.replace('"tokenPresent":true', '"tokenPresent":' + JSON.stringify(sentinel));
+    if (["startup", "missing-url", "malformed-url", "constructor-throw", "malformed-message", "null-message"].includes(scenario) &&
+        frame && (result.stderr !== frame || result.stdout !== "")) {
+      process.exit(3);
+    }
     if (scenario !== "truncated") stderr += "command terminated with exit code " + result.status + "\n" + sentinel;
     if (scenario === "success" && result.stderr !== "") process.exit(3);
     if (scenario === "initialize" && result.stderr.includes(sentinel)) process.exit(3);
@@ -1103,24 +1139,41 @@ test("connected gateway exec persists only the generated client's correlated fai
     { interpreter: process.execPath },
   );
 
-  const recorded = (phase, lastAcknowledged, pendingRequests, receivedMessages) => ({
+  const recorded = (
+    phase,
+    lastAcknowledged,
+    pendingRequests,
+    receivedMessages,
+    failureSite = "client",
+    urlShape = "ws",
+    tokenPresent = true,
+  ) => ({
     status: "recorded",
     phase,
     lastAcknowledged,
     pendingRequests,
     receivedMessages,
     actionSeen: false,
+    failureSite,
+    urlShape,
+    tokenPresent,
   });
   const cases = [
     ["success"],
-    ["connect-error", recorded("connect", null, [], 0)],
+    ["missing-url", recorded("connect", null, [], 0, "configuration", "missing")],
+    ["malformed-url", recorded("connect", null, [], 0, "configuration", "malformed")],
+    ["constructor-throw", recorded("connect", null, [], 0, "websocket-constructor")],
+    ["startup", recorded("connect", null, [], 0, "startup", "ws", null)],
+    ["loopback-no-token", recorded("connect", null, [], 0, "websocket-error", "ws", false)],
+    ["loopback-token", recorded("connect", null, [], 0, "websocket-error", "http")],
+    ["malformed-message", recorded("initialize", null, ["initialize"], 1, "message-decode")],
+    ["null-message", recorded("initialize", null, ["initialize"], 1, "message-decode")],
     ["initialize", recorded("initialize", null, [], 1)],
     ["sandbox", recorded("thread/start", "thread/start", [], 2)],
-    ["pending", recorded("turn/start", "thread/start", ["turn/start"], 2)],
+    ["pending", recorded("turn/start", "thread/start", ["turn/start"], 2, "websocket-close")],
     ["turn-start", recorded("turn/start", "thread/start", [], 3)],
     ["capacity", recorded("turn", "turn/start", [], 4), 75],
     ["capacity-after-action", { ...recorded("turn", "turn/start", [], 5), actionSeen: true }],
-    ["early-throw", { status: "absent" }],
     ["never-started", { status: "absent" }],
     ["wrong-exit", { status: "invalid" }, 17],
     ...[
@@ -1131,8 +1184,29 @@ test("connected gateway exec persists only the generated client's correlated fai
       "duplicate-key",
       "bad-counter",
       "bad-phase",
+      "bad-site",
+      "bad-url-shape",
+      "bad-token-presence",
     ].map((scenario) => [scenario, { status: "invalid" }]),
   ];
+  const pod = {
+    metadata: { annotations: { "kubectl.kubernetes.io/default-container": "gateway" } },
+    spec: {
+      containers: [
+        { name: "sidecar", env: [{ name: "APP_SERVER_URL", value: sentinel }] },
+        {
+          name: "gateway",
+          env: [
+            { name: "APP_SERVER_URL", value: `wss://${sentinel}.invalid/${sentinel}` },
+            {
+              name: "APP_SERVER_TOKEN",
+              valueFrom: { secretKeyRef: { name: sentinel, key: "token" } },
+            },
+          ],
+        },
+      ],
+    },
+  };
   await withEnvironment({ PATH: directory }, async () => {
     const f = createOpenShellKubernetesFixture({
       kubeconfigPath: sentinel,
@@ -1143,7 +1217,11 @@ test("connected gateway exec persists only the generated client's correlated fai
     for (const [scenario, nativeExec, exitCode = 1] of cases) {
       const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
       t.after(() => rm(evidence.directory, { recursive: true, force: true }));
-      await evidence.checkpoint("turn-start");
+      const noFrame = scenario === "never-started";
+      await evidence.checkpoint(
+        "turn-start",
+        noFrame ? { gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(pod) } : {},
+      );
       const turn = f.requestCodexTurnFromGatewayPod({
         namespace: "fixture",
         gatewayPod: scenario,
@@ -1177,16 +1255,21 @@ test("connected gateway exec persists only the generated client's correlated fai
           safe.message.includes(
             `kubectl=${JSON.stringify(kubectl)} nativeExec=${JSON.stringify(nativeExec)};`,
           ),
-          scenario,
+          scenario + ": " + safe.message,
         );
         assert.equal(safe.stack.includes(sentinel), false, scenario);
       }
       const observations = evidence.directory + "/observations.json";
-      assert.deepEqual(
-        JSON.parse(await readFile(observations, "utf8")).failure,
-        expected,
-        scenario,
-      );
+      const beforeCleanup = JSON.parse(await readFile(observations, "utf8"));
+      assert.deepEqual(beforeCleanup.failure, expected, scenario);
+      if (noFrame) {
+        assert.deepEqual(beforeCleanup.phases.at(-1).gatewayAppServerDeclaration, {
+          urlSource: "literal",
+          urlShape: "wss",
+          tokenSource: "reference",
+          tokenNonEmpty: null,
+        });
+      }
       await evidence.checkpoint("cleanup");
       const raw = await readFile(observations, "utf8");
       assert.deepEqual(JSON.parse(raw).failure, expected, scenario);

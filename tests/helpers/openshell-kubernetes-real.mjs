@@ -21,6 +21,7 @@ import {
 } from "./kubernetes-real.mjs";
 
 import {
+  appServerUrlShape,
   nativeFailureMarker,
   observeConnectedOperation,
   rememberKubectlOutcome,
@@ -1562,14 +1563,8 @@ export function createOpenShellKubernetesFixture({
     const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
       const nativeTag = ${JSON.stringify(nativeTag)};
-      const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
-      const appServerToken = ${
-        appServerTokenPath === undefined
-          ? "process.env.APP_SERVER_TOKEN"
-          : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
-      };
-      // While a command's terminal is awaited, running out of time leaves its outcome unknown.
-      const timeout = setTimeout(() => commandDeadline ? unknownCommandOutcome() : fail(new Error("Codex harness turn timed out")), ${timeoutMs});
+      let timeout, socket;
+      let urlShape = "unknown", tokenPresent = null;
       const pending = new Map();
       const items = [];
       const pendingCommands = new Map();
@@ -1639,7 +1634,7 @@ export function createOpenShellKubernetesFixture({
       }
 
       // Diagnostics only: the caller never decides from stderr whether to run the turn again.
-      function writeFailure(error, retrySafe) {
+      function writeFailure(error, retrySafe, failureSite = "client") {
         clearTimeout(timeout);
         if (nativeTag !== undefined) {
           // Write the entire bounded frame before process.exit. Never mix a remote
@@ -1649,6 +1644,7 @@ export function createOpenShellKubernetesFixture({
             const record = {
               phase, lastAcknowledged, pendingRequests: [...pending.values()].map(({ method }) => method),
               receivedMessages: Math.min(receivedMessages, 1000000), actionSeen,
+              failureSite, urlShape, tokenPresent,
             };
             require("node:fs").writeSync(2, "\n" + marker + " " + JSON.stringify(record) + "\n");
           } catch {
@@ -1671,8 +1667,8 @@ export function createOpenShellKubernetesFixture({
         }));
       }
 
-      function fail(error) {
-        writeFailure(error, false);
+      function fail(error, failureSite) {
+        writeFailure(error, false, failureSite);
         process.exit(1);
       }
 
@@ -1684,9 +1680,9 @@ export function createOpenShellKubernetesFixture({
         process.stdout.write(${JSON.stringify(modelAtCapacityReceipt)}, () => process.exit(${modelAtCapacityExitCode}));
       }
 
-      function unknownCommandOutcome() {
+      function unknownCommandOutcome(failureSite) {
         const unknown = "Codex command outcome is unknown; not sending another turn";
-        fail(new Error(finalError === undefined ? unknown : finalError.message + "\n" + unknown));
+        fail(new Error(finalError === undefined ? unknown : finalError.message + "\n" + unknown), failureSite);
       }
 
       function waitForCommandDeadline() {
@@ -1719,9 +1715,33 @@ export function createOpenShellKubernetesFixture({
         });
       }
 
-      const socket = new WebSocket(appServerUrl, {
-        headers: { authorization: "Bearer " + appServerToken },
-      });
+      let appServerUrl, appServerToken;
+      try {
+        appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
+        if (nativeTag !== undefined) urlShape = (${appServerUrlShape.toString()})(appServerUrl);
+        appServerToken = ${
+          appServerTokenPath === undefined
+            ? "process.env.APP_SERVER_TOKEN"
+            : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
+        };
+        if (nativeTag !== undefined) tokenPresent = Boolean(appServerToken);
+      } catch (error) {
+        if (nativeTag === undefined) throw error;
+        fail(error, "startup");
+      }
+
+      // While a command's terminal is awaited, running out of time leaves its outcome unknown.
+      timeout = setTimeout(() => commandDeadline ? unknownCommandOutcome() : fail(new Error("Codex harness turn timed out")), ${timeoutMs});
+      try {
+        socket = new WebSocket(appServerUrl, {
+          headers: { authorization: "Bearer " + appServerToken },
+        });
+      } catch (error) {
+        if (nativeTag === undefined) throw error;
+        const failureSite = ["missing", "empty", "malformed"].includes(urlShape)
+          ? "configuration" : "websocket-constructor";
+        fail(error, failureSite);
+      }
 
       socket.addEventListener("open", async () => {
         try {
@@ -1768,7 +1788,16 @@ export function createOpenShellKubernetesFixture({
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
         receivedMessages += 1;
-        const message = JSON.parse(String(data));
+        let message;
+        try {
+          message = JSON.parse(String(data));
+          if (nativeTag !== undefined && message === null) {
+            throw new TypeError("Codex harness message is null");
+          }
+        } catch (error) {
+          if (nativeTag === undefined) throw error;
+          return fail(error, "message-decode");
+        }
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
         const item = params?.item;
@@ -1887,13 +1916,13 @@ export function createOpenShellKubernetesFixture({
       });
       socket.addEventListener("error", () => {
         if (finished) return;
-        if (commandDeadline) return unknownCommandOutcome();
-        fail(new Error("Codex harness connection failed"));
+        if (commandDeadline) return unknownCommandOutcome("websocket-error");
+        fail(new Error("Codex harness connection failed"), "websocket-error");
       });
       socket.addEventListener("close", () => {
         if (finished) return;
-        if (commandDeadline) return unknownCommandOutcome();
-        fail(new Error("Codex harness connection closed before completion"));
+        if (commandDeadline) return unknownCommandOutcome("websocket-close");
+        fail(new Error("Codex harness connection closed before completion"), "websocket-close");
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];

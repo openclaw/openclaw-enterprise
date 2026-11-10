@@ -25,6 +25,78 @@ const acknowledgementsByPhase = new Map([
   ["turn", ["turn/start"]],
 ]);
 
+const urlShapes = new Set([
+  "unknown",
+  "missing",
+  "empty",
+  "malformed",
+  "ws",
+  "wss",
+  "http",
+  "https",
+  "other",
+]);
+const failureSites = new Set([
+  "startup",
+  "configuration",
+  "websocket-constructor",
+  "websocket-error",
+  "websocket-close",
+  "message-decode",
+  "client",
+]);
+
+// Also embedded in the generated client. Classify the input without changing
+// what is passed to WebSocket or retaining any part of the URL.
+export function appServerUrlShape(value) {
+  if (value === undefined) {
+    return "missing";
+  }
+  if (value === "") {
+    return "empty";
+  }
+  try {
+    const scheme = new URL(value).protocol;
+    return ["ws:", "wss:", "http:", "https:"].includes(scheme) ? scheme.slice(0, -1) : "other";
+  } catch {
+    return "malformed";
+  }
+}
+
+export function describeGatewayAppServerDeclaration(pod) {
+  const containers = pod.spec.containers;
+  const defaultContainer = pod.metadata.annotations?.["kubectl.kubernetes.io/default-container"];
+  const container =
+    containers.find(({ name }) => name === defaultContainer) ??
+    (containers.length === 1 ? containers[0] : undefined);
+  if (container === undefined) {
+    return null;
+  }
+  const describe = (name, classify) => {
+    const entry = container.env?.findLast((entry) => entry.name === name);
+    if (entry === undefined) {
+      return {
+        source: container.envFrom?.length ? "env-from-possible" : "not-declared",
+        value: null,
+      };
+    }
+    if (entry.valueFrom !== undefined) {
+      return { source: "reference", value: null };
+    }
+    const value = entry.value ?? "";
+    // Kubernetes may expand a literal using other environment variables.
+    return { source: "literal", value: value.includes("$(") ? null : classify(value) };
+  };
+  const url = describe("APP_SERVER_URL", appServerUrlShape);
+  const token = describe("APP_SERVER_TOKEN", Boolean);
+  return {
+    urlSource: url.source,
+    urlShape: url.value,
+    tokenSource: token.source,
+    tokenNonEmpty: token.value,
+  };
+}
+
 function readNativeFailure(stderr, tag, clientExit) {
   const marker = nativeFailureMarker + tag;
   const start = stderr?.indexOf(marker) ?? -1;
@@ -46,8 +118,16 @@ function readNativeFailure(stderr, tag, clientExit) {
   }
   try {
     const encoded = stderr.slice(payload, end);
-    const { phase, lastAcknowledged, pendingRequests, receivedMessages, actionSeen } =
-      JSON.parse(encoded);
+    const {
+      phase,
+      lastAcknowledged,
+      pendingRequests,
+      receivedMessages,
+      actionSeen,
+      failureSite,
+      urlShape,
+      tokenPresent,
+    } = JSON.parse(encoded);
     if (
       !acknowledgementsByPhase.get(phase)?.includes(lastAcknowledged) ||
       !Array.isArray(pendingRequests) ||
@@ -59,11 +139,23 @@ function readNativeFailure(stderr, tag, clientExit) {
       !Number.isSafeInteger(receivedMessages) ||
       receivedMessages < 0 ||
       receivedMessages > 1_000_000 ||
-      typeof actionSeen !== "boolean"
+      typeof actionSeen !== "boolean" ||
+      !failureSites.has(failureSite) ||
+      !urlShapes.has(urlShape) ||
+      (tokenPresent !== null && typeof tokenPresent !== "boolean")
     ) {
       return invalid;
     }
-    const record = { phase, lastAcknowledged, pendingRequests, receivedMessages, actionSeen };
+    const record = {
+      phase,
+      lastAcknowledged,
+      pendingRequests,
+      receivedMessages,
+      actionSeen,
+      failureSite,
+      urlShape,
+      tokenPresent,
+    };
     // Re-encode only the closed schema. Unknown or duplicate keys and noncanonical
     // values must never survive a mixed stderr stream.
     return JSON.stringify(record) === encoded ? { status: "recorded", ...record } : invalid;

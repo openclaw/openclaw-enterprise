@@ -339,13 +339,13 @@ Pod specs and ConfigMaps for synthetic provider credential leaks.
 Retain `.build/egress-connected/runtime-<uuid>/`. It records atomic checkpoints,
 resource IDs and bounded observations. Each controller attempt starts with an
 operation ID and unknown outcome. A response alone leaves the effect uncertain.
-`failure` records the operation and local kubectl outcome when available. Bounded
-Gateway exec reports `failure.nativeExec` as `recorded`, `absent` or `invalid`.
-Its phase is a local client step and its last acknowledged RPC identifies
-confirmed progress. Missing evidence leaves remote startup uncertain.
-Diagnostics omit raw output and never authorize replay. The terminal error
-preserves these facts if ledger writing fails. The deployed checkpoint
-identifies the admitted source's public owner capability.
+The ledger records the failed operation and `failure.kubectl` outcome.
+`failure.nativeExec` is `recorded`, `absent` or `invalid`. A frame gives client step,
+last acknowledged RPC, failure site, URL shape and nonempty token presence.
+Missing frames leave startup uncertain. The pre-turn Pod declarations leave
+effective inputs unknown. The terminal error preserves bounded failure facts
+without raw output or replay authority. The deployed checkpoint records public
+owner capability.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 then removes supporting resources and closes the provider. Reconcile missing Sandbox

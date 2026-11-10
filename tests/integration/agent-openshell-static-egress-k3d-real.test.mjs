@@ -25,6 +25,7 @@ import {
   observeControllerUpgrade,
 } from "../helpers/egress-controller-upgrade.mjs";
 import {
+  describeGatewayAppServerDeclaration,
   observeConnectedOperation,
   safeConnectedFailure,
 } from "../helpers/egress-connected-failure.mjs";
@@ -334,6 +335,7 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
   const turn = async (phase, expected = "completed") => {
     const nonce = `OCE-EGRESS-${randomUUID()}`;
     await checkpoint("turn-start", {
+      gatewayAppServerDeclaration: describeGatewayAppServerDeclaration(gatewayPods[0]),
       phase,
       nonce,
       upstreamBefore: provider.observations.length,
