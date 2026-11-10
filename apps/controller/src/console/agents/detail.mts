@@ -706,9 +706,9 @@ export async function renderAgentDetail(
     return page;
   }
 
-  async function readPermissions(requireConfirmation = false): Promise<Permissions> {
+  async function readPermissions(validateSummary = false): Promise<Permissions> {
     const answer = await request(`${path}/permissions`, { expectedStatus: 200 });
-    if (requireConfirmation && !isAgentPermissionSummary(answer)) {
+    if (validateSummary && !isAgentPermissionSummary(answer)) {
       throw new Error("Invalid Agent permission response");
     }
     return answer as Permissions;
@@ -724,14 +724,19 @@ export async function renderAgentDetail(
   // refocus starts with restricted controls unless this view's permission read confirms them.
   let callerPermissions: Permissions | null = null;
   let callerPermissionsSettled = false;
-  let foregroundPermissionScope: (() => boolean) | undefined;
+  let foregroundPermissionGeneration = 0;
+  let pendingForegroundPermissionScope: (() => boolean) | undefined;
   const callerPermissionsRead: Promise<Permissions | null> = readPermissions(confirmPermissions)
     .catch(() => (confirmPermissions ? unconfirmedPermissions : null))
-    .then((permissions) =>
-      foregroundPermissionScope === undefined
-        ? (callerPermissions = permissions)
-        : latestPermissionsRead,
-    )
+    .then((permissions) => {
+      if (foregroundPermissionGeneration !== 0) {
+        return latestPermissionsRead;
+      }
+      if (context.isCurrent() && appliedReread === 0) {
+        callerPermissions = permissions;
+      }
+      return callerPermissions;
+    })
     .finally(() => {
       callerPermissionsSettled = true;
     });
@@ -4496,19 +4501,20 @@ export async function renderAgentDetail(
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
     if (recheck) {
-      foregroundPermissionScope = recheck.isCurrent;
+      ++foregroundPermissionGeneration;
+      pendingForegroundPermissionScope = recheck.isCurrent;
     }
-    const foreground = foregroundPermissionScope;
-    const scope = foreground?.() ? foreground : undefined;
-    const requireConfirmation = confirmPermissions || foreground !== undefined;
+    // Reads that predate admission stay superseded after the pending scope is cleared.
+    const generation = foregroundPermissionGeneration;
+    const foreground = pendingForegroundPermissionScope;
     const superseded = () =>
-      foregroundPermissionScope !== foreground ||
-      (requireConfirmation && reread < permissionsRereads);
+      generation !== foregroundPermissionGeneration ||
+      (foreground !== undefined && reread < permissionsRereads);
     const apply = (permissions: Permissions) => {
       if (superseded()) {
         return latestPermissionsRead;
       }
-      if (context.isCurrent() && (scope?.() ?? true) && reread > appliedReread) {
+      if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
         appliedReread = reread;
         callerPermissions = permissions;
         if (
@@ -4531,18 +4537,19 @@ export async function renderAgentDetail(
         nativeAdmin.launch.inert =
           permissions?.administer === false && permissions.operate === false;
       }
-      return permissions;
+      return callerPermissions;
     };
-    const read = readPermissions(requireConfirmation).then(apply, () => {
+    const read = readPermissions(true).then(apply, () => {
       if (superseded()) {
         return latestPermissionsRead;
       }
-      return requireConfirmation ? apply(unconfirmedPermissions) : previous;
+      return foreground === undefined ? previous : apply(unconfirmedPermissions);
     });
     latestPermissionsRead = read;
     permissionsReadSettled = false;
     const settle = () => {
       if (latestPermissionsRead === read) {
+        pendingForegroundPermissionScope = undefined;
         permissionsReadSettled = true;
       }
     };

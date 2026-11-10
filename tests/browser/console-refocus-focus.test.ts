@@ -1278,6 +1278,59 @@ for (const recover of [false, true]) {
   });
 }
 
+test("a failed sharing refresh retains permissions confirmed on Agent refocus", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const permissionsPath = `${agentPath}/permissions`;
+  const permissionsUrl = fixture.origin + permissionsPath;
+
+  await tagView(page);
+  const confirmed = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await confirmed;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept");
+  await save.click({ trial: true });
+
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const refresh = sharing.getByRole("button", { name: "Refresh sharing", exact: true });
+  await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(permissionsPath), 1);
+
+  // Only the Agent permission summary probes Delete. The Controller reports that decision's
+  // outage while Refresh sharing runs as an ordinary reread after foreground admission.
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const reread = responseTo(page, "GET", permissionsUrl);
+      await refresh.click();
+      assert.equal((await reread).status(), 503);
+      await waitForEnabled(refresh);
+      await waitForIdleFetches(page);
+    },
+  );
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+  const actionable = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.equal(readCount(permissionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(actionable, true, "a failed ordinary reread must retain the confirmed Save grant");
+  assert.equal(await editor.inputValue(), draft);
+});
+
 test("Agent refocus keeps Save gated on a replacement view after a permission outage", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replacement Agent refocus");
   const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
