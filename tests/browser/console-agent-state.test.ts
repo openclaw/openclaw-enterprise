@@ -1475,11 +1475,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const observability = page.getByRole("link", { name: "Observability", exact: true });
   const driverSchemas = page.getByRole("heading", { name: "Installation Driver configuration" });
   const unlisted = page.getByText(BOUND_SECRET_UNLISTED, { exact: true });
-  const adminDenials = () =>
-    authorizationDenials(
-      fixture.auditSink,
-      /^openclaw\.(observability|backends|iam|secrets|installation|connection_templates|oauth_clients)\./,
-    );
+  const adminDenials = () => authorizationDenials(fixture.auditSink);
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
   const agentUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const pages = {
@@ -1501,6 +1497,10 @@ test("Installation-administration reads after a revoke are refused and audited o
       await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
       await waitForIdleFetches(page);
       assert.equal(await driverSchemas.count(), 0);
+      assert.equal(
+        await page.getByRole("heading", { name: "Model providers", exact: true }).count(),
+        0,
+      );
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     templates: async () => {

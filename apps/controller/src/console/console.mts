@@ -2390,9 +2390,12 @@ async function loadPage({
       return;
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView(session.user));
+      const view = shell.view;
+      const account = settingsView(session.user);
+      view.append(account);
       if (installationAdmin) {
-        shell.view.append(
+        viewState.administrationEnded.add(() => view.replaceChildren(account));
+        view.append(
           renderModelProviders({ request: viewRequest, isCurrent: viewIsCurrent }),
           renderInstallationConfigurations({
             request,
