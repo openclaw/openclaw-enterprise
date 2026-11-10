@@ -344,7 +344,7 @@ describes accepted selectors.
 
 ## Changelog
 
-- 2026-11-10 22:18: Identify Docker request aborts without changing cancellation or cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
+- 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
 
 - 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
 

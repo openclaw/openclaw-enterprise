@@ -1733,6 +1733,23 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       signal,
       () =>
         new Promise<unknown>((resolve, reject) => {
+          const rejectRequest = (error: Error) => {
+            if (signal.aborted && Object.is(error.cause, signal.reason)) {
+              const operation =
+                requestOperations.find(
+                  ([name, route]) =>
+                    route.test(path) && (name !== "volume-create" || method === "POST"),
+                )?.[0] ?? "other";
+              const verb = ["GET", "POST", "PUT", "DELETE"].includes(method) ? method : "OTHER";
+              const reason =
+                ownerSignal?.aborted && Object.is(signal.reason, ownerSignal.reason)
+                  ? "caller cancellation"
+                  : "request timeout";
+              // Only native HTTP errors are annotated; a pre-aborted caller keeps its own reason.
+              error.message = `Docker ${verb} ${operation}: ${reason} after ${Math.round(performance.now() - started)} ms (request timeout ${timeoutMs} ms; deadline ${new Date(deadline).toISOString()}).`;
+            }
+            reject(error);
+          };
           const payload =
             body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body);
           const request = httpRequest(
@@ -1754,7 +1771,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             (response) => {
               const chunks: Buffer[] = [];
               let responseBytes = 0;
-              response.once("error", reject);
+              response.once("error", rejectRequest);
               const contentLength = response.headers["content-length"];
               if (
                 typeof contentLength === "string" &&
@@ -1796,25 +1813,13 @@ ${WORKSPACE_SETUP_RUNTIME}`,
               });
             },
           );
-          request.once("error", reject);
+          request.once("error", rejectRequest);
           if (payload !== undefined) {
             request.write(payload);
           }
           request.end();
         }),
-    ).catch((error: unknown) => {
-      if (error instanceof Error && signal.aborted && error.cause === signal.reason) {
-        const operation = requestOperations.find(([, route]) => route.test(path))?.[0] ?? "other";
-        const verb = ["GET", "POST", "PUT", "DELETE"].includes(method) ? method : "OTHER";
-        const reason =
-          ownerSignal?.aborted && signal.reason === ownerSignal.reason
-            ? "caller cancellation"
-            : "request timeout";
-        // Retain the exact AbortError, including its code and original cancellation cause.
-        error.message = `Docker ${verb} ${operation}: ${reason} after ${Math.round(performance.now() - started)} ms (request timeout ${timeoutMs} ms; deadline ${new Date(deadline).toISOString()}).`;
-      }
-      throw error;
-    });
+    );
   }
 }
 

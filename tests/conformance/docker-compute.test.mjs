@@ -28,6 +28,8 @@ import { syncBuiltinESMExports } from "node:module";
 let mode = "reset";
 let cancel;
 let transportError;
+let nativeRequests = 0;
+let timeoutReceived;
 const paths = [];
 const server = http.createServer((request, response) => {
   assert.equal(request.method, "GET");
@@ -35,6 +37,7 @@ const server = http.createServer((request, response) => {
   if (request.url === "/_ping") {
     response.end("OK");
   } else if (request.url === "/version" && mode !== "success" && mode !== "caller") {
+    if (mode === "timeout") timeoutReceived = Date.now();
     // A reset rejects promptly; an unfinished body reaches the real request deadline.
     response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
     response.write('{"Platform":');
@@ -56,6 +59,7 @@ const server = http.createServer((request, response) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const nativeRequest = http.request;
 http.request = (options, callback) => {
+  nativeRequests += 1;
   assert.equal(options.socketPath, "/var/run/docker.sock");
   const request = nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, (response) => {
     response.once("error", (error) => { transportError = error; });
@@ -68,8 +72,25 @@ syncBuiltinESMExports();
 let timer;
 try {
   const { DockerComputeDriver } = await import(process.argv[1]);
-  const { withComputeOperationDeadline } = await import(new URL("../operation-context.ts", process.argv[1]));
+  const { withComputeAbortSignal, withComputeOperationDeadline } = await import(new URL("../operation-context.ts", process.argv[1]));
   const driver = new DockerComputeDriver({ images: { gateway: "private-image-selection:local", agent: "private-image-selection:local" } });
+  // Cancelling after entering the owner scope must not inspect or rewrite the raw reason.
+  const selfCaused = new Error("original cancellation");
+  selfCaused.cause = selfCaused;
+  const accessorCause = new Error("original cancellation");
+  Object.defineProperty(accessorCause, "cause", { get() { throw new Error("cause must not be read"); } });
+  for (const reason of [selfCaused, accessorCause]) {
+    const controller = new AbortController();
+    await assert.rejects(withComputeAbortSignal(controller.signal, () => {
+      controller.abort(reason);
+      return driver.preflight();
+    }), (error) => {
+      assert.equal(error, reason);
+      assert.equal(error.message, "original cancellation");
+      return true;
+    });
+    assert.equal(nativeRequests, 0, "pre-aborted owner must not open an HTTP request");
+  }
   const result = await Promise.race([
     driver.preflight().then(() => ({ status: "resolved" }), (error) => ({ status: "rejected", code: error.code })),
     new Promise((resolve) => { timer = setTimeout(() => resolve({ status: "pending" }), 1_500); }),
@@ -79,6 +100,7 @@ try {
   clearTimeout(timer);
 
   mode = "timeout";
+  const timeoutStarted = Date.now();
   await assert.rejects(driver.preflight(), (error) => {
     assert.equal(error, transportError, "preserve the original transport error");
     assert.equal(error.name, "AbortError");
@@ -87,33 +109,36 @@ try {
     const diagnostic = /^Docker GET version: request timeout after (\d+) ms \(request timeout 10000 ms; deadline ([^)]+)\)\.$/.exec(error.message);
     assert.ok(diagnostic, error.message);
     assert.ok(Number(diagnostic[1]) >= 10_000);
-    assert.ok(Number.isFinite(Date.parse(diagnostic[2])));
+    const deadline = Date.parse(diagnostic[2]);
+    assert.ok(deadline >= timeoutStarted + 10_000 - 100);
+    assert.ok(deadline <= timeoutReceived + 10_000 + 100);
     return true;
   });
 
   mode = "caller";
-  const controller = new AbortController();
-  const reason = new Error("private-owner-cancellation-detail");
-  const deadlineAt = new Date(Date.now() + 5_000).toISOString();
-  cancel = () => controller.abort(reason);
-  await assert.rejects(
-    withComputeOperationDeadline({ signal: controller.signal, deadlineAt }, () => driver.preflight()),
-    (error) => {
-      assert.equal(error, transportError, "do not replace the caller's transport error");
-      assert.equal(error.code, "ABORT_ERR");
-      assert.equal(error.name, "AbortError");
-      assert.equal(error.cause, reason);
-      assert.match(error.message, /^Docker GET image-inspect: caller cancellation after \d+ ms/);
-      assert.ok(error.message.includes("request timeout 10000 ms; deadline " + deadlineAt));
-      assert.doesNotMatch(error.message, /private-image-selection|private-owner-cancellation-detail/);
-      return true;
-    },
-  );
+  for (const reason of [new Error("private-owner-cancellation-detail"), NaN]) {
+    const controller = new AbortController();
+    const deadlineAt = new Date(Date.now() + 5_000).toISOString();
+    cancel = () => controller.abort(reason);
+    await assert.rejects(
+      withComputeOperationDeadline({ signal: controller.signal, deadlineAt }, () => driver.preflight()),
+      (error) => {
+        assert.equal(error, transportError, "do not replace the caller's transport error");
+        assert.equal(error.code, "ABORT_ERR");
+        assert.equal(error.name, "AbortError");
+        assert.equal(error.cause, reason);
+        assert.match(error.message, /^Docker GET image-inspect: caller cancellation after \d+ ms/);
+        assert.ok(error.message.includes("request timeout 10000 ms; deadline " + deadlineAt));
+        assert.doesNotMatch(error.message, /private-image-selection|private-owner-cancellation-detail/);
+        return true;
+      },
+    );
+  }
 
-  // Neither failed call may leave the Driver cancelled: later qualification still succeeds.
+  // Failed calls must not leave the Driver cancelled: later qualification still succeeds.
   mode = "success";
   await driver.preflight();
-  assert.deepEqual(paths, ["/_ping", "/version", "/_ping", "/version", "/_ping", "/version", "/images/private-image-selection%3Alocal/json", "/_ping", "/version", "/images/private-image-selection%3Alocal/json", "/images/private-image-selection%3Alocal/json"]);
+  assert.deepEqual(paths, ["/_ping", "/version", "/_ping", "/version", "/_ping", "/version", "/images/private-image-selection%3Alocal/json", "/_ping", "/version", "/images/private-image-selection%3Alocal/json", "/_ping", "/version", "/images/private-image-selection%3Alocal/json", "/images/private-image-selection%3Alocal/json"]);
 } finally {
   clearTimeout(timer);
   http.request = nativeRequest;
