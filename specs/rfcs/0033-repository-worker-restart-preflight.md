@@ -147,7 +147,7 @@ a pre-stop guarantee retroactively.
 
 The [linked implementation plan](../plans/0033-repository-worker-restart-preflight.md)
 records the implementation in [#5003](https://github.com/openclaw/openclaw-enterprise/pull/5003),
-its verification and remaining review/CI work. The separate
+its verification and remaining delivery work. The separate
 [production tooling plan](../plans/0050-production-deployment-tooling.md) leaves
 Driver contracts unchanged; this RFC owns their extension. No renewal redesign,
 trust relaxation, database migration or second deployment mechanism is included.
@@ -155,11 +155,11 @@ trust relaxation, database migration or second deployment mechanism is included.
 At candidate `bd26aa1e`, two native PostgreSQL journeys passed with separate
 API and worker instances over the same database:
 
-1. The [repository-owner journey](../../tests/integration/postgres-openshell-standing-cold-worker.test.ts)
+1. The [repository-owner journey](https://github.com/openclaw/openclaw-enterprise/blob/bd26aa1e8e43dd9c9b8bc5504344888ec7e887e9/tests/integration/postgres-openshell-standing-cold-worker.test.ts)
    reads `original-worker-required` while the original worker is healthy, checks
    unchanged custody, fences, issuance and work, then exercises the existing
    replacement and terminal outcome.
-2. The [revision lifecycle journey](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs)
+2. The [revision lifecycle journey](https://github.com/openclaw/openclaw-enterprise/blob/bd26aa1e8e43dd9c9b8bc5504344888ec7e887e9/tests/integration/postgres-worker-agent-revision-stop.test.mjs)
    normally admits a no-repository revision and reads `not-applicable` through a
    separately authenticated API. Namespace ownership loss yields `unknown`;
    restoration restores allowance. Recognized unreadable historical configuration
@@ -168,16 +168,17 @@ API and worker instances over the same database:
 
 Each journey passed once without failures or skips, including scoped cleanup.
 The unreadable-history assertion failed with HTTP 503 before the correction.
-At parent `6665c7f7`, [shell integrations](../../tests/integration/production-image-upgrade-recovery.test.mjs)
+At parent `6665c7f7`, [shell integrations](https://github.com/openclaw/openclaw-enterprise/blob/6665c7f7e3c8ef13f8d7eb8962749840ff82f6c5/tests/integration/production-image-upgrade-recovery.test.mjs)
 covered pre-stop fleet drift, unavailable inventory after partial shutdown,
 no replay and reconciliation of unknown dispatch. Generic positive helper input
 verifies only its consumer contract, not a bundled cold-transfer producer.
 
 Infrastructure records, workload transport, Gateway/supervisor peers and test
 password hashing were controlled. Live cluster, installed upgrade,
-model/provider execution and cold transfer remain outside this proof. Final
-review and final-head CI remain pending; the plan distinguishes these from
-completed local checks.
+model/provider execution and cold transfer remain outside this proof. Independent
+source review at `bd26aa1e` closed the original finding with no open P0–P3 findings.
+The plan records later hosted CI separately. This RFC remains Proposed; its
+review and CI do not establish implementation merge or deployment.
 
 Keeping only the post-replacement diagnostic discovers risk after interruption.
 Inferring safety from profile names or warm Git success cannot establish cold
