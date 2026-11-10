@@ -133,6 +133,7 @@ jobs:
                 const quota = values[0].match(/^(max|[1-9][0-9]*) ([1-9][0-9]*)$/);
                 if (!quota) { throw new Error("Unknown CPU limit"); }
                 if (quota[1] !== "max") { buildCpus = Math.min(buildCpus, Number(quota[1]) / Number(quota[2])); }
+                if (!/^[0-9]+$/.test(values[1])) { throw new Error("Unknown memory usage"); }
                 const used = Number(values[1]);
                 if (!Number.isSafeInteger(used) || used < 0) { throw new Error("Unknown memory usage"); }
                 for (const limit of values.slice(2)) {

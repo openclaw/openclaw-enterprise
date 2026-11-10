@@ -155,6 +155,8 @@ test("native runtime compilation uses spare capacity without overruling runner s
     { name: "spare ARM capacity", expected: 8 },
     { name: "visible root memory pressure", rootHigh: 40 * GiB, rootUsed: 12 * GiB, expected: 4 },
     { name: "visible root CPU quota", rootQuota: "800000 100000", expected: 4 },
+    { name: "blank root memory usage", rootHigh: 40 * GiB, rootUsed: " \t", expected: 4 },
+    { name: "valid zero root memory usage", rootHigh: 40 * GiB, rootUsed: 0, expected: 8 },
     {
       name: "delegated root is current cgroup",
       cgroup: "0::/",
