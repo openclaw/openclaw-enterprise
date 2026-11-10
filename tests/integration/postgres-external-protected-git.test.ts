@@ -615,7 +615,11 @@ function externalGitJourney(
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
       !lostRotation && scope !== "repository"
-        ? await installationOrigin(t, namespaceId)
+        ? await installationOrigin(
+            t,
+            namespaceId,
+            builtIn ? { tokenLifetimeMs: 300_000, maximumIssues: 2 } : undefined,
+          )
         : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
       broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
@@ -790,10 +794,11 @@ function externalGitJourney(
     // The short-lived local issuer makes rotation observable without changing stored deadlines.
     const { issuerCaPath, ...preparedConfig } = drivers.preparedRepositoryGit;
     const issuerCa = Buffer.from(await readPublicCaBundle(issuerCaPath!));
-    const startOwner = () =>
+    const startOwner = (startWorker = true) =>
       startPreparedGitHubGitOwner({
         ...repositoryOwner,
         ...preparedConfig,
+        startWorker,
         ca: issuerCa,
         pool: f.observerPool,
         registry: repositoryRegistry,
@@ -1101,13 +1106,18 @@ function externalGitJourney(
         kind: "agent",
         values: createHarnessConfiguration("codex", "fixture"),
       });
+      const foreignTraffic = () => ({
+        issues: gh.issuesOfTokens.length,
+        git: origin.traffic(),
+        api: broad!.installation.traffic(),
+      });
+      const before = foreignTraffic();
       const foreignCatalog = await authenticated(
         "GET",
         `/namespaces/${foreign.id}/agents/repository-options`,
       );
       assert.equal(foreignCatalog.statusCode, 200, foreignCatalog.body);
       assert.deepEqual(foreignCatalog.json().data, []);
-      const before = { issues: gh.issuesOfTokens.length, traffic: origin.traffic() };
       const denied = await authenticated("POST", `/namespaces/${foreign.id}/agents`, {
         configurationId: foreignConfig.id,
         name: "Foreign policy",
@@ -1119,7 +1129,7 @@ function externalGitJourney(
       assert.equal(denied.json().error.code, "INVALID_REQUEST");
       assert.match(denied.json().error.message, /approved for this Namespace and profile/);
       assert.deepEqual(await controller.listAgents(who, foreign.id), []);
-      assert.deepEqual({ issues: gh.issuesOfTokens.length, traffic: origin.traffic() }, before);
+      assert.deepEqual(foreignTraffic(), before);
     }
     const approvalId = randomUUID();
     const { id: configurationId } = await controller.createConfiguration(who, {
@@ -2207,9 +2217,8 @@ function externalGitJourney(
       const providerTraffic = () => ({
         ...traffic(),
         // Token Service retirement is lifecycle traffic, not a workload send.
-        apiRequests: broad?.installation.apiRequests.filter(
-          ({ path }) => path !== "/installation/token",
-        ).length,
+        apiRequests: broad?.installation.traffic().workloadRequests,
+        issuerRequests: broad?.installation.traffic().issuerRequests,
         issues: gh.issuesOfTokens.length,
       });
       // Withdraw between worker passes, and snapshot the provider once none is running. A pass
@@ -2231,7 +2240,8 @@ function externalGitJourney(
         await prepared.close();
         drivers = await loadWorkerDrivers(owner);
         assert.equal(drivers.repositoryPolicy, undefined);
-        prepared = await startOwner();
+        // Drive the real owner's maintenance explicitly for the due-renewal comparison below.
+        prepared = await startOwner(false);
         transport = await bindRepositoryGitTransport(
           drivers,
           prepared.protectedGit,
@@ -2269,6 +2279,51 @@ function externalGitJourney(
         );
         await settleRevisionMaintenance(f, revision);
         committed = await receiptCount();
+      }
+      // Only the scheduling timestamp changes. The provider's real five-minute expiry is
+      // already inside the production ten-minute renewal window; no authority or deadline is edited.
+      const makeRenewalDue = async () => {
+        const result = await pool.query(
+          "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE enabled AND source #>> '{session,revisionId}'=$1",
+          [revision.id],
+        );
+        assert.equal(result.rowCount, 1);
+        assert.ok(Date.parse(second.expiresAt) > Date.now());
+        assert.ok(Date.parse(second.expiresAt) < Date.now() + 600_000);
+      };
+      const materialCounts = async () => ({
+        attempts: (
+          await pool.query(
+            `SELECT count(*)::int AS n FROM occ.prepared_github_attempts a
+             JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source #>> '{session,revisionId}'=$1`,
+            [revision.id],
+          )
+        ).rows[0].n,
+        installs: peer.delivery.installs,
+      });
+      if (builtIn) {
+        const beforeRenewal = providerTraffic();
+        await makeRenewalDue();
+        await prepared.maintain();
+        second = await waitFor(
+          "authorized due renewal installs distinct material",
+          () => {
+            const settled = peer.delivery.settled;
+            return settled?.materialVersion !== first.materialVersion ? settled : undefined;
+          },
+          25_000,
+        );
+        assert.equal(
+          broad!.installation.traffic().issuerRequests,
+          beforeRenewal.issuerRequests! + 1,
+        );
+        assert.equal(gh.issuesOfTokens.length, beforeRenewal.issues + 1);
+        assert.deepEqual(await materialCounts(), { attempts: 2, installs: 2 });
+        await transfer(await origin.addCommit());
+        committed = await receiptCount();
+        await settleRevisionMaintenance(f, revision);
+        await makeRenewalDue();
       }
       if (sourceBeforeStop) {
         // The supplier applies an optional-source withdrawal, but its reply and
@@ -2532,6 +2587,7 @@ function externalGitJourney(
         return;
       }
       const before = providerTraffic();
+      const materialBeforeWithdrawal = builtIn ? await materialCounts() : undefined;
       const decisions = peer.decisions.length;
       if (reducible) {
         peer.reduction.loseReply = true;
@@ -2588,6 +2644,11 @@ function externalGitJourney(
           approvalId,
           expectedGeneration: 1,
         });
+      }
+      if (builtIn) {
+        // The same due custody pass that just renewed under approval must now refuse issuance.
+        await prepared.maintain();
+        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
       }
       const denied = await fetch(true);
       assert.deepEqual(
@@ -2750,6 +2811,21 @@ function externalGitJourney(
           revision.id,
         );
       }
+      // The worker keeps running. A maintenance pass that starts after the withdrawal must
+      // neither prepare nor reach the provider.
+      await nextMaintenancePass(f, revision, completions);
+      assertNoPreparationAfterWithdrawal();
+      assert.deepEqual(
+        providerTraffic(),
+        before,
+        "withdrawal through maintenance reaches no issuer or workload provider endpoint",
+      );
+      if (builtIn) {
+        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
+        t.diagnostic(
+          `due renewal: authorized issuance=1, withdrawn issuance=0; provider ingress ${JSON.stringify(before)} -> ${JSON.stringify(providerTraffic())}; lifecycle traffic ${JSON.stringify(broad!.installation.traffic())}`,
+        );
+      }
       if (broad) {
         await broad.installation.verifyTokenStillWorks();
       } else {
@@ -2759,19 +2835,9 @@ function externalGitJourney(
         assert.equal(live.revoked, false);
         assert.equal(await receiptCount(), 2);
       }
-      // The worker keeps running. A maintenance pass that starts after the withdrawal must
-      // neither prepare nor reach the provider.
-      const settledTraffic = providerTraffic();
-      await nextMaintenancePass(f, revision, completions);
-      assertNoPreparationAfterWithdrawal();
-      assert.deepEqual(
-        providerTraffic(),
-        settledTraffic,
-        "maintenance after withdrawal reaches no provider",
-      );
       t.diagnostic(
         broad
-          ? "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted; a later maintenance pass did not prepare"
+          ? "installation tokens, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal with no issuer or workload-provider request through a later maintenance pass, then direct proof the same token was still accepted"
           : "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests; a later maintenance pass did not prepare",
       );
     } catch (error) {

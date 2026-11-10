@@ -10,13 +10,18 @@ last_verified: "2026-11-04"
 
 From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
 workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
-[prepared PostgreSQL setup](./postgresql.md#revision-worker-tests), selecting
-`tests/integration/postgres-external-protected-git.test.ts` in place of the
-revision-worker file. Keep the generated environment file: each case copies the
-migrated template and runs as the limited application role. Run:
+[prepared PostgreSQL setup](./postgresql.md#revision-worker-tests). Inside its
+cleanup-trapped subshell, replace the `run-tests` command with these commands.
+Each case copies the migrated template and runs as the limited application role.
+Clearing stale overrides ensures it uses this run's prepared database:
 
 ```sh
-node --env-file="$PG_WORKER_RUN_DIR/test.env" --test tests/integration/postgres-external-protected-git.test.ts
+node scripts/ci/prepare.mjs --lane postgres-application \
+  --file tests/integration/postgres-external-protected-git.test.ts \
+  --state "$PG_RUN_DIR/state.json" --github-env "$PG_RUN_DIR/test.env"
+env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
+  -u OPENCLAW_ENTERPRISE_CI_PREFIX node --env-file="$PG_RUN_DIR/test.env" --test \
+  tests/integration/postgres-external-protected-git.test.ts
 ```
 
 Require every selected case to pass without skips. The installation journeys fetch a
@@ -24,7 +29,7 @@ previously absent object, push a new commit, create and update a PR, then push a
 second distinct commit to the same branch. They read the same PR through the
 authorized API route and compare its head ref with the exact commit in the real
 bare origin. They also require rejection of a provider-protected ref and fresh
-Git denial after withdrawal, with no provider traffic, while the same token
+Git denial after withdrawal, with no issuance or workload traffic, while the same token
 still works directly at the controlled provider. Git and PostgreSQL are real;
 the installed external Driver, workload, placement and GitHub API are fixtures.
 
@@ -32,9 +37,12 @@ The built-in policy case signs in a persisted account through Fastify,
 creates and deploys an Agent without a public Repo Driver, and refuses the same
 repository in an otherwise authorized foreign Namespace before issuance or Git
 traffic. It restarts the Worker and custody owner, fetches a new commit through
-the original revision, then withdraws approval and requires fresh fetch and push
-to fail without issuance or provider traffic. This is local protocol and
-persistence proof, not an installed OpenShell or live GitHub qualification.
+the original revision, then proves a due renewal issues and installs new material
+while approved. After withdrawal, the same due custody pass must issue nothing;
+fresh fetch and push fail before issuer or workload-provider ingress. Intentional
+token retirement is counted separately from workload traffic. This is local
+protocol and persistence proof, not an installed OpenShell or live GitHub
+qualification.
 
 Run the separate conversation proof with `OCC_TEST_STANDING_GIT_CODEX` set to the
 absolute path of the shipped Codex executable and the same database prerequisites:
