@@ -10,7 +10,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
-    "tests/conformance/startup-environment-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
@@ -20,7 +20,7 @@
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.mjs",
     "tests/integration/cli-release.test.mjs",
-    "tests/integration/container-resume.test.mjs",
+    "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
     "tests/integration/repository-credential-operator-recovery.test.ts",
@@ -28,8 +28,8 @@
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.mjs",
-    "tests/integration/password-sign-in-audit.test.mjs",
-    "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/password-sign-in-audit.test.ts",
+    "tests/integration/ci-impact-gate.test.ts",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
@@ -38,22 +38,23 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
-    "tests/integration/password-sign-in-admission.test.mjs",
+    "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.mjs",
     "tests/conformance/slack-channel-directory.test.mjs",
-    "tests/conformance/bounded-response-reads.test.mjs",
+    "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
-    "tests/integration/known-device-cookie.test.mjs",
+    "tests/integration/known-device-cookie.test.ts",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.mjs",
     "tests/conformance/plugin-driver.test.mjs",
-    "tests/integration/ci-image-reconciliation.test.mjs",
+    "tests/integration/ci-image-reconciliation.test.ts",
     "tests/conformance/repository-runtime-material.test.mjs",
     "tests/integration/repository-credentials-server-timeout.test.mjs",
     "tests/integration/protected-repository-metadata-read.test.mjs",
@@ -62,8 +63,9 @@
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
-    "tests/integration/ci-image-pull.test.mjs",
-    "tests/integration/ci-download-pinned.test.mjs",
+    "tests/integration/ci-image-pull.test.ts",
+    "tests/integration/ci-download-pinned.test.ts",
+    "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
@@ -85,7 +87,7 @@
     "tests/integration/plugin-driver-real-preflight.test.mjs",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
-    "tests/integration/password-sign-in-policy.test.mjs",
+    "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
@@ -101,13 +103,13 @@
     "tests/conformance/repository-credentials-sessions.test.mjs",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
-    "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
-    "tests/conformance/node-test-summary.test.mjs",
+    "tests/conformance/node-test-summary.test.ts",
     "tests/conformance/repository-material-store.test.mjs",
-    "tests/conformance/plugin-runtime-templates.test.mjs",
-    "tests/integration/ci-logging.test.mjs",
-    "tests/integration/ci-go-test.test.mjs",
+    "tests/conformance/plugin-runtime-templates.test.ts",
+    "tests/integration/ci-logging.test.ts",
+    "tests/integration/ci-go-test.test.ts",
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
@@ -119,8 +121,8 @@
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
-    "tests/integration/container-promote.test.mjs",
-    "tests/conformance/controller-stop-yields.test.mjs",
+    "tests/integration/container-promote.test.ts",
+    "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
@@ -228,7 +230,10 @@
       "path": "tests/integration/ci-runner.test.mjs"
     },
     {
-      "path": "tests/integration/ci-impact-gate.test.mjs"
+      "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-impact-gate.test.ts"
     },
     {
       "path": "tests/integration/metrics-monitoring-readiness.test.mjs",
@@ -256,7 +261,7 @@
       "path": "tests/integration/runtime-image-failure-output.test.mjs"
     },
     {
-      "path": "tests/integration/ci-image-reconciliation.test.mjs"
+      "path": "tests/integration/ci-image-reconciliation.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
@@ -265,7 +270,7 @@
       "path": "tests/integration/ci-prepare-k3d.test.mjs"
     },
     {
-      "path": "tests/integration/ci-image-pull.test.mjs"
+      "path": "tests/integration/ci-image-pull.test.ts"
     },
     {
       "path": "tests/integration/ci-image-config-digest.test.mjs"
@@ -277,10 +282,13 @@
       "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
     },
     {
-      "path": "tests/integration/ci-keycloak.test.mjs"
+      "path": "tests/integration/ci-keycloak.test.ts"
     },
     {
-      "path": "tests/integration/ci-download-pinned.test.mjs"
+      "path": "tests/integration/ci-download-pinned.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"
@@ -289,10 +297,10 @@
       "path": "tests/integration/ci-openshell.test.mjs"
     },
     {
-      "path": "tests/integration/ci-logging.test.mjs"
+      "path": "tests/integration/ci-logging.test.ts"
     },
     {
-      "path": "tests/integration/ci-go-test.test.mjs"
+      "path": "tests/integration/ci-go-test.test.ts"
     },
     {
       "path": "tests/integration/container-release.test.mjs"
@@ -304,10 +312,10 @@
       ]
     },
     {
-      "path": "tests/integration/container-resume.test.mjs"
+      "path": "tests/integration/container-resume.test.ts"
     },
     {
-      "path": "tests/integration/container-promote.test.mjs"
+      "path": "tests/integration/container-promote.test.ts"
     },
     {
       "path": "tests/conformance/ssh-compute.test.mjs"
@@ -316,13 +324,13 @@
       "path": "tests/integration/ssh-compute-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
+      "path": "tests/conformance/runtime-probe-cpu-counter.test.ts"
     },
     {
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
     },
     {
-      "path": "tests/conformance/node-test-summary.test.mjs"
+      "path": "tests/conformance/node-test-summary.test.ts"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
@@ -337,7 +345,7 @@
       "path": "tests/conformance/slack-channel-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/bounded-response-reads.test.mjs"
+      "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
       "path": "tests/conformance/slack-proxy-reset.test.mjs"
@@ -355,7 +363,7 @@
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
-      "path": "tests/conformance/plugin-runtime-templates.test.mjs"
+      "path": "tests/conformance/plugin-runtime-templates.test.ts"
     },
     {
       "path": "tests/integration/plugin-driver-startup.test.mjs"
@@ -404,7 +412,7 @@
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
     {
-      "path": "tests/conformance/startup-environment-boundary.test.mjs"
+      "path": "tests/conformance/startup-environment-boundary.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"
@@ -596,19 +604,19 @@
       "path": "tests/integration/oidc-login-transport.test.mjs"
     },
     {
-      "path": "tests/integration/password-sign-in-policy.test.mjs"
+      "path": "tests/integration/password-sign-in-policy.test.ts"
     },
     {
       "path": "tests/integration/client-address.test.mjs"
     },
     {
-      "path": "tests/integration/password-sign-in-admission.test.mjs"
+      "path": "tests/integration/password-sign-in-admission.test.ts"
     },
     {
-      "path": "tests/integration/password-sign-in-audit.test.mjs"
+      "path": "tests/integration/password-sign-in-audit.test.ts"
     },
     {
-      "path": "tests/integration/known-device-cookie.test.mjs"
+      "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
       "path": "tests/conformance/postgres-auth-binding.test.mjs"
@@ -620,7 +628,7 @@
       "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
     },
     {
-      "path": "tests/conformance/controller-stop-yields.test.mjs"
+      "path": "tests/conformance/controller-stop-yields.test.ts"
     },
     {
       "path": "tests/integration/dev-up-model-provider.test.mjs"
@@ -628,6 +636,9 @@
     {
       "path": "tests/integration/egress-connected-preflight.test.mjs",
       "expectedTests": [
+        "connected response evidence survives cleanup without retaining untrusted fields",
+        "connected response evidence preserves uncertainty after decoding and transport failures",
+        "connected response headers cannot retain known credentials as request IDs",
         "connected database selection rejects missing, remote and redirected observers before effects",
         "connected receipt observation preserves proto3 zero and uint64 precision",
         "connected failed-turn observation rejects partial text without a completed message",

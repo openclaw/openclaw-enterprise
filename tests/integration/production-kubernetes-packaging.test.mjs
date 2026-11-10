@@ -2378,7 +2378,7 @@ test(
           image: repositoryCredentialValues["repositoryCredentials.image"],
           serviceName: "broker",
           hostname: "broker.openclaw-system.svc",
-          backendId: "github-primary",
+          backendId: "github-$$(BACKEND)",
           registryConfigMapName: "repository-registry-v1",
           serviceConfigSecretName: "repository-config",
           appKeySecretName: "repository-app-key",
@@ -2412,7 +2412,7 @@ test(
       serviceName: "broker",
       namespace: "openclaw-system",
       release: "oce",
-      backendId: "github-primary",
+      backendId: "github-$$(BACKEND)",
     });
   },
 );
@@ -2557,7 +2557,7 @@ exit 93
       helm: `#!/usr/bin/env bash
 case "$1 $2" in
   'get values') cat "$TEST_LIVE_VALUES" ;;
-  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
+  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"name":"oce","namespace":"openclaw-system","version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
   'template oce') exec "$TEST_REAL_HELM" "$@" ;;
   'upgrade --install') exit 47 ;;
   *) exit 91 ;;
@@ -2857,7 +2857,7 @@ test(
   },
 );
 
-test("the chart refuses repository backend IDs the controller refuses", tooling, async () => {
+test("the chart validates scalar and literal repository backend IDs", tooling, async () => {
   const message =
     /repositoryCredentials\.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
   for (const backendId of [
@@ -2883,12 +2883,27 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
     /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
     "101 emoji",
   );
-  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+  for (const [backendId, argument] of [
+    [123, "123"],
+    [true, "true"],
+    ["123", "123"],
+    ["true", "true"],
+    ["github-primary", "github-primary"],
+    ["😀".repeat(100), "😀".repeat(100)],
+    ["github-$", "github-$$"],
+    ["github-$$", "github-$$$$"],
+    ["github-$(BACKEND)", "github-$$(BACKEND)"],
+    ["github-$$(BACKEND)", "github-$$$$(BACKEND)"],
+  ]) {
+    // Scalars use normal --set typing; strings retain the explicit string override.
     const objects = await resources(
       (
-        await render(repositoryCredentialValues, {
-          strings: { "repositoryCredentials.backendId": backendId },
-        })
+        await render(
+          { ...repositoryCredentialValues, "repositoryCredentials.backendId": backendId },
+          typeof backendId === "string"
+            ? { strings: { "repositoryCredentials.backendId": backendId } }
+            : {},
+        )
       ).stdout,
     );
     const broker = objects
@@ -2897,7 +2912,11 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
           kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
       )
       .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
-    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+    assert.equal(
+      broker.args[broker.args.indexOf("--backend-id") + 1],
+      argument,
+      JSON.stringify(backendId),
+    );
   }
 });
 
@@ -3131,14 +3150,14 @@ test(
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
     assert.deepEqual(tenantApiRole.rules, tenantApiRules());
-    // Only the unbound tenant-worker role can reconcile and remove an Agent-owned claim.
+    // Only the unbound tenant-worker role can list owned gateway claims and reconcile claims.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),
       [
         {
           apiGroups: [""],
           resources: ["persistentvolumeclaims"],
-          verbs: ["get", "create", "patch", "delete"],
+          verbs: ["get", "list", "create", "patch", "delete"],
         },
       ],
     );
@@ -6453,7 +6472,7 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
 test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
-  async () => {
+  async (t) => {
     const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
@@ -6470,7 +6489,7 @@ test(
         `${key}=${value}`,
       );
     }
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
     const selectorValues = join(directory, "selector.yaml");
     await writeFile(
       selectorValues,
@@ -6480,7 +6499,6 @@ test(
       render({}, { valuesFiles: [selectorValues] }),
       ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
     );
-    await rm(directory, { recursive: true, force: true });
     const { stdout } = await render(
       {},
       {

@@ -551,6 +551,17 @@ function lifecycleCommand(fake, invocation, io) {
     } else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") {
       exit(1);
     } else if (
+      args[0] === "ps" &&
+      state.compose &&
+      args.includes("label=com.docker.compose.service=browser-proxy")
+    ) {
+      output("browser-proxy-container-id");
+    } else if (args[0] === "run" && args.includes("-p")) {
+      output("[1000,1000]");
+    } else if (args[0] === "run" && args.includes("CHOWN")) {
+      // This command fixture covers launcher lifecycle, not filesystem custody.
+      // The real Compose QA workflow exercises the non-root TLS reader.
+    } else if (
       args[0] === "ps" ||
       (["volume", "network"].includes(args[0]) && args[1] === "ls") ||
       args[0] === "build" ||
@@ -564,6 +575,8 @@ function lifecycleCommand(fake, invocation, io) {
         output("exited");
       } else if (args.includes("{{.State.ExitCode}}")) {
         output("0");
+      } else if (args.at(-1) === "browser-proxy-container-id") {
+        output(JSON.stringify({ image: "sha256:" + "a".repeat(64), user: "node" }));
       } else {
         fail("unexpected inspect: " + args.join(" "));
       }

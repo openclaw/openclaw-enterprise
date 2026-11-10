@@ -3219,6 +3219,7 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    let deployFeedbackIsSecretRefusal = false;
     // A refusal only Kubernetes Compute gives, with its step (checkComputeEntryKeys).
     let computeEntryKeyRefusal: { readonly message: string; readonly step: string } | null = null;
     let computeEntryKeyChecking = false;
@@ -3663,13 +3664,18 @@ export async function renderAgentDetail(
             (credentials?.canDeploy() || credentials?.checkingGrants()) === true);
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
+      const secretReason = deploySecretsOperateReason(deploySecretsDenied);
+      if (deployFeedbackIsSecretRefusal) {
+        // This alert follows the current Secret permission answer, including a grant on refocus.
+        setText(deployFeedback, secretReason);
+        deployFeedbackIsSecretRefusal = Boolean(secretReason);
+      }
       if (!deployPending) {
         if (callerPermissions?.deploy === false) {
           deployStatus.textContent = AGENT_DEPLOY_DENIED;
-        } else if (deploySecretsOperateReason(deploySecretsDenied)) {
-          const reason = deploySecretsOperateReason(deploySecretsDenied);
+        } else if (secretReason) {
           // A refused deployment's alert already says it.
-          const deployReason = deployFeedback.textContent === reason ? "" : reason;
+          const deployReason = deployFeedback.textContent === secretReason ? "" : secretReason;
           deployStatus.textContent = rejectedAccess
             ? [modelCredentialRejectedReadOnly(rejectedAccess), deployReason]
                 .filter(Boolean)
@@ -3969,6 +3975,7 @@ export async function renderAgentDetail(
     const deploy = button(
       "Deploy new version",
       async () => {
+        deployFeedbackIsSecretRefusal = false;
         deployFeedback.textContent = "";
         deploy.disabled = true;
         deployPending = true;
@@ -4099,9 +4106,12 @@ export async function renderAgentDetail(
           if (!context.isCurrent()) {
             return;
           }
-          deployFeedback.textContent =
-            (deniedSecrets && deploySecretsOperateReason(deniedSecrets)) ||
-            deployFailureText(error, submitted);
+          deployFeedbackIsSecretRefusal = Boolean(
+            deniedSecrets && deploySecretsOperateReason(deniedSecrets),
+          );
+          if (!deployFeedbackIsSecretRefusal) {
+            deployFeedback.textContent = deployFailureText(error, submitted);
+          }
           if (
             !submitted ||
             deployRefusedBeforeAdmission(error) ||

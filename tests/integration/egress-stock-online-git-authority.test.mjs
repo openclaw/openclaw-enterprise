@@ -311,7 +311,7 @@ test(
 );
 
 test(
-  "stock draft preconditions require exact canonical body and give the durable owner fresh server identities",
+  "stock admits the shipped gh scoped draft and requires current owner authorization",
   { timeout: 10000 },
   async (t) => {
     const approvals = [];
@@ -336,12 +336,22 @@ test(
       draft: true,
       maintainer_can_modify: false,
     };
+    // gh 2.103.2 sent these visible headers in an offline capture of the draft POST
+    // with TZ=Etc/UTC and --input -. OpenShell omits credentials and wire framing.
+    const timeZone = { name: "time-zone", value: "Etc/UTC" };
     const draft = (value) => {
       const q = request(
         "/repos/example/project/pulls",
         "POST",
         Buffer.from(typeof value === "string" ? value : JSON.stringify(value)),
-        [{ name: "content-type", value: "application/json" }],
+        [
+          { name: "user-agent", value: "GitHub CLI 2.103.2" },
+          { name: "accept", value: "*/*" },
+          { name: "content-type", value: "application/json" },
+          timeZone,
+          { name: "x-github-api-version", value: "2026-03-10" },
+          { name: "accept-encoding", value: "gzip" },
+        ],
       );
       q.target.host = "api.github.com";
       return q;
@@ -365,13 +375,16 @@ test(
         reason_code: "request_not_allowed",
       });
     }
+    assert.equal(approvals.length, 0);
+    const q = draft(payload);
+    const admitted = await invoke(client, "EvaluateHttpRequest", q, bearer);
+    assert.equal(admitted.decision, 1, "the captured gh request must reach the owner");
+    assert.equal(admitted.has_body ?? false, false);
+    assert.deepEqual(admitted.header_mutations ?? [], []);
     assert.deepEqual(
       new Set(denials.map(({ reason, reasonCode }) => `${reason}:${reasonCode}`)),
       new Set(["draft_rejected:request_not_allowed"]),
     );
-    assert.equal(approvals.length, 0);
-    const q = draft(payload);
-    assert.equal(await evaluate(q), 1);
     const first = approvals[0];
     assert.equal(first.operation, "create-draft-pull");
     assert.deepEqual(
@@ -387,6 +400,27 @@ test(
     assert.match(
       first.pull.operationId,
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    const otherTimeZone = q.headers.map((header) =>
+      header === timeZone ? { ...header, value: "America/New_York" } : header,
+    );
+    for (const invalid of [
+      { ...q, headers: otherTimeZone },
+      { ...q, headers: [...q.headers, timeZone] },
+      { ...q, target: { ...q.target, path: "/repos/example/other/pulls" } },
+      { ...q, target: { ...q.target, method: "GET" } },
+      { ...q, target: { ...q.target, query: "page=1" } },
+      { ...q, target: { ...q.target, host: "github.com" } },
+    ]) {
+      assert.deepEqual(await invoke(client, "EvaluateHttpRequest", invalid, bearer), {
+        decision: 2,
+        reason_code: "request_not_allowed",
+      });
+    }
+    assert.equal(
+      approvals.length,
+      1,
+      "invalid requests must be refused before owner authorization",
     );
     // The durable owner's refusal is final; this RPC neither retries nor claims a PR outcome.
     allow = false;

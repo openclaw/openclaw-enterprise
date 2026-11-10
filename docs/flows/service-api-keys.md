@@ -196,8 +196,8 @@ schedule rotation.
 
 ## Debugging and Verification
 
-- [HTTP integration](../../tests/integration/service-api-keys.test.mjs):
-  `node --test tests/integration/service-api-keys.test.mjs` exercises real
+- [HTTP integration](../../tests/integration/service-api-keys.test.ts):
+  `node --test tests/integration/service-api-keys.test.ts` exercises real
   Fastify, Better Auth memory storage, and native IAM. It covers valid,
   invalid, expired, revoked, unauthorized, and cross-Namespace requests;
   IAM-authorized service-key management; session preservation; Agent exclusion;
