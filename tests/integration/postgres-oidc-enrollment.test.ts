@@ -10,6 +10,7 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
+  defaultInstallSettings,
   fakeOidc,
   oidcSignIn,
   oidcUpgradeSettings,
@@ -53,6 +54,36 @@ test(
       admin: { id: string; email: string; password: string };
       accounts: { existing: { id: string; email: string } };
     };
+    await t.test(
+      "password-only recipient search finds a provisioned Installation Principal",
+      async () => {
+        app = await composeApp(defaultInstallSettings);
+        try {
+          const headers = await signedInHeaders(app, origin, admin, address());
+          const { existing } = accounts;
+          const principal = (await state.loadNativeIAMState()).identities.find(
+            (identity) => identity.kind === "principal" && identity.subject === existing.id,
+          );
+          assert.ok(principal);
+          const result = await app.inject({
+            method: "POST",
+            url: "/api/auth/sharing-recipients/search",
+            headers,
+            payload: { prefix: "existing-enrollment" },
+          });
+          assert.equal(result.statusCode, 200, result.body);
+          assert.deepEqual(result.json().data, [
+            {
+              principalId: principal.id,
+              name: existing.email,
+              email: existing.email,
+            },
+          ]);
+        } finally {
+          await app.close();
+        }
+      },
+    );
     const settings = oidcUpgradeSettings(admin.id);
     app = await composeApp(settings);
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
@@ -217,7 +248,30 @@ test(
       }
     });
     await t.test("disabled linked accounts remain disabled", async () => {
+      const path = "/api/auth/sharing-recipients/search";
+      const search = (prefix: string) =>
+        app.inject({
+          method: "POST",
+          url: path,
+          headers: adminHeaders,
+          payload: { prefix },
+        });
+      const enabled = await search("new member");
+      assert.equal(enabled.statusCode, 200, enabled.body);
+      assert.deepEqual(enabled.json().data, [
+        {
+          principalId,
+          name: "New member",
+          email: "new-enrollment@example.test",
+        },
+      ]);
       assert.equal((await changeAccount(app, adminHeaders, memberId, "disable")).statusCode, 200);
+      const disabled = await search("new-enrollment");
+      assert.equal(disabled.statusCode, 200, disabled.body);
+      assert.deepEqual(disabled.json().data, []);
+      const disabledByName = await search("new member");
+      assert.equal(disabledByName.statusCode, 200, disabledByName.body);
+      assert.deepEqual(disabledByName.json().data, []);
       const result = await login("new-member", {
         email: "replacement@example.test",
         email_verified: true,

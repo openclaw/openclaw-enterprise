@@ -96,6 +96,64 @@ function noSecretProviderFields(backend: unknown) {
   assert.equal(backend.type, "chatgpt");
 }
 
+test("sharing recipient search discloses bounded human matches only to the Installation administrator", async (t) => {
+  const names = Array.from(
+    { length: 11 },
+    (_, index) => `Teammate-${String(index).padStart(2, "0")}`,
+  );
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    provisionedPeople: names,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sharing scope");
+  const member = await fixture.createNamespaceMember("agent-administrator", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["administer", "agent"],
+  ]);
+  const session = await fixture.signIn(member.credentials);
+  const path = "/api/auth/sharing-recipients/search";
+  const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  const before = (await fixture.request("GET", bindingsPath)).data;
+
+  const search = (prefix: string) => fixture.request("POST", path, { body: { prefix } });
+  const expected = fixture.provisionedAccounts.slice(0, 10).map(({ credentials, principal }) => ({
+    principalId: principal.id,
+    name: credentials.name,
+    email: credentials.email.toLowerCase(),
+  }));
+  const capped = await search(" teammate- ");
+  assert.equal(capped.status, 200);
+  assert.deepEqual(capped.data, expected);
+  assert.deepEqual((await search("teammate-01-")).data, [expected[1]]);
+  assert.deepEqual((await search("no such teammate")).data, []);
+  assert.deepEqual((await search("te%")).data, []);
+  assertApiError(await search("t"), 400, "INVALID_REQUEST");
+  assertApiError(await search(" t "), 400, "INVALID_REQUEST");
+  assertApiError(await search(" ".repeat(3)), 400, "INVALID_REQUEST");
+  assertApiError(await search("t".repeat(121)), 400, "INVALID_REQUEST");
+  assertApiError(
+    await fixture.request("POST", path, { session, body: { prefix: "team" } }),
+    403,
+    "FORBIDDEN",
+  );
+  assertApiError(
+    await fixture.request("POST", path, { session: null, body: { prefix: "team" } }),
+    401,
+    "UNAUTHENTICATED",
+  );
+  assertApiError(
+    await fixture.request("POST", path, {
+      headers: { origin: "https://untrusted.localhost" },
+      body: { prefix: "team" },
+    }),
+    403,
+    "FORBIDDEN",
+  );
+  assert.deepEqual((await fixture.request("GET", bindingsPath)).data, before);
+});
+
 test("console Backend API returns only safe Installation-admin summaries", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

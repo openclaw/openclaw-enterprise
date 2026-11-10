@@ -256,6 +256,7 @@ test("Share Agent refusals", async (t) => {
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
     const [recipient] = fixture.provisionedAccounts;
     assert.ok(recipient, "Share recipient was provisioned");
+    await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
     await panel.getByLabel("Existing person’s Principal ID").fill(recipient.principal.id);
     await panel.getByRole("checkbox").check();
     return { page, panel };

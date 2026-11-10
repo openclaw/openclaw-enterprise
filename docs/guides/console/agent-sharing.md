@@ -9,7 +9,10 @@ runtime prerequisites, and limits.
 ## Share the Agent
 
 1. Open **Agents**, select the Agent, and open its **Access** tab.
-2. Enter the existing person's **Principal ID**.
+2. Enter the first two or more characters of a person's name or email in
+   **Search existing people**. Select the person from the list, or use the arrow
+   keys and press **Enter**. Check the selected name and email. If you have the
+   exact ID, choose **Enter a Principal ID instead**.
 3. Review the full native administration warning and select the acknowledgment.
 4. Choose **Share Agent** and read each reported step.
 

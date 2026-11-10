@@ -249,6 +249,8 @@ export const RevisionCredentialsMissing = {
 };
 
 export const Sharing = { ...story("agentSharing") };
+export const SharingSearchUnavailable = { ...story("agentSharingSearchUnavailable") };
+export const SharingNoMatches = { ...story("agentSharingNoMatches") };
 export const SharingRequiredFields = { ...story("agentSharingRequiredFields") };
 export const PluginsRequiredFields = { ...story("agentPluginsRequiredFields") };
 export const AuthenticationRequiredFields = { ...story("agentAuthenticationRequiredFields") };

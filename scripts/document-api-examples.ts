@@ -15,6 +15,7 @@ const cursorExamples: Record<string, string | undefined> = {
 };
 const rateLimitCodes: Record<string, string | undefined> = {
   createAuthAccount: "RATE_LIMITED",
+  searchAgentSharingRecipients: "RATE_LIMITED",
   signInEmail: "RATE_LIMITED",
   completeNamespaceConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",

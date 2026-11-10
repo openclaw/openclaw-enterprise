@@ -8,7 +8,11 @@ import {
 } from "../errors.ts";
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
-import type { AuditEvent } from "@openclaw-enterprise/contracts";
+import {
+  SHARING_RECIPIENT_SEARCH_LIMIT,
+  type AuditEvent,
+  type SharingRecipient,
+} from "@openclaw-enterprise/contracts";
 import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";
 
 export interface HumanAuthenticationActor {
@@ -1266,6 +1270,59 @@ export class PostgresHumanAuthentication {
       [],
       "session-hold",
     );
+  }
+
+  async searchSharingRecipients(
+    prefix: string,
+    actor: HumanAuthenticationActor,
+    profile: "password" | "guarded" | "recovery-only",
+  ): Promise<SharingRecipient[]> {
+    return this.state.transactReadCommitted(async (unit) => {
+      if (profile === "password") {
+        if (!(await unit.installations.holdAuthenticationSession(actor.sessionId, actor.userId))) {
+          throw new CallerStateDeniedError("The sharing session is no longer current.");
+        }
+        await actor.authorize({});
+      } else {
+        await this.guardActor(unit, actor, []);
+        await this.guardAuthority(unit, actor);
+      }
+      const rows = await this.query(
+        unit,
+        `SELECT p.id AS principal_id, u.name, CASE WHEN u.email_verified THEN u.email END AS email
+         FROM occ."user" u
+         JOIN occ.iam_identities p ON p.subject = u.id AND p.issuer = $2 AND p.kind = 'principal'
+           AND p.namespace_id IS NULL AND p.agent_id IS NULL
+         LEFT JOIN occ.human_authentication_accounts h ON h.user_id = u.id
+         WHERE (starts_with(lower(u.name), lower($3))
+              OR (u.email_verified AND starts_with(lower(u.email), lower($3))))
+           AND (($4 = 'password' AND h.user_id IS NULL)
+              OR (h.installation_id = $1 AND h.principal_id = p.id AND NOT h.disabled))
+           AND EXISTS (
+             SELECT 1 FROM occ.account m WHERE m.user_id = u.id
+               AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> ''
+                   AND ($4 <> 'recovery-only' OR EXISTS (
+                     SELECT 1 FROM occ.human_authentication_recovery r WHERE r.user_id = u.id
+                   )))
+                 OR ($4 <> 'password' AND m.identity_only AND m.provider_id = ANY($5::text[])))
+           )
+         ORDER BY lower(u.name) COLLATE "C", u.id COLLATE "C"
+         LIMIT $6`,
+        [
+          this.installationId,
+          this.issuer,
+          prefix,
+          profile,
+          this.externalProviderIds,
+          SHARING_RECIPIENT_SEARCH_LIMIT,
+        ],
+      );
+      return rows.map((row) => ({
+        principalId: row.principal_id as string,
+        name: row.name as string,
+        ...(typeof row.email === "string" ? { email: row.email } : {}),
+      }));
+    });
   }
 
   /** Present state under the same guards; this is not an operation-result receipt. */

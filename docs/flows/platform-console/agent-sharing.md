@@ -17,7 +17,7 @@ See the [parent flow](../platform-console.md) and the
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
+- `apps/controller/src/console/agents/access.mts:renderAgentAccess` renders the
   sharing panel on Agent detail's Access tab.
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
   that tab first opens.
@@ -30,7 +30,9 @@ See the [parent flow](../platform-console.md) and the
 graph TD
   A["Access tab mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
   B -->|policy denied| K["Keep other Agent panels available"]
-  B --> C["Submit share for an existing Principal"]
+  B --> S["Search enabled human accounts in this Installation"]
+  S --> C["Submit share for an existing Principal"]
+  B --> C
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/administer Role"]
@@ -46,7 +48,7 @@ graph TD
 
 ### 1. Mount the panel and read policy
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 The Access tab mounts sharing independently of version/configuration reads and
 native admission. Agent detail leaves the tab out when the console's Installation-access
@@ -65,9 +67,23 @@ person lacks Installation administration, the policy is read again only if the
 Namespace answer reports it, so administration granted again applies without a
 page reload; otherwise the tab gives way to Configuration with no audited read.
 
-### 2. Serialize Role and binding writes
+### 2. Find an existing Principal
 
-`apps/controller/src/console/agents/access.mjs:matchesRole`
+`apps/controller/src/console/agents/access.mts:recipientSearch`
+
+The Console sends the prefix in a read-only POST to
+`/api/auth/sharing-recipients/search`. The Controller checks the current human
+session, trusted Origin, and Installation administration. Authentication
+matches stored names and verified emails to their Installation Principals.
+The Console discards stale answers when the reader edits the search or leaves
+the panel. Selecting a result shows the person's name and email and stores the
+exact Principal ID for submission. Switching entry modes clears the selected
+recipient and acknowledgment. The share requires acknowledgment and a separate
+submit.
+
+### 3. Serialize Role and binding writes
+
+`apps/controller/src/console/agents/access.mts:matchesRole`
 
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
@@ -79,7 +95,7 @@ resource on each write. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
 
-### 3. Hold the page while writes run
+### 4. Hold the page while writes run
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
@@ -95,9 +111,9 @@ also covers a draft's writes, makes `beforeunload` in `console.mjs` ask before a
 reload or tab close. The hold ends when the last request settles. At worst that is
 five requests of up to 15 s each, about 75 s. Session expiry and sign-out still leave.
 
-### 4. Remove one explicit binding
+### 5. Remove one explicit binding
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 Removal addresses only the selected Agent binding. The request client's existing
 success envelope handling also accepts the API's empty `204` deletion response.

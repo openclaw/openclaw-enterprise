@@ -2386,6 +2386,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   const shared = panel.getByText("Agent access is shared.", { exact: false });
   const recipient = fixture.provisionedAccounts[0];
   assert.ok(recipient);
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(recipient.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -2536,6 +2537,7 @@ async function shareRefusedAfterRevoke(
   revoke();
   const audited = authorizationDenials(fixture.auditSink).length;
   const sent = requests.length;
+  await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
   await panel.getByLabel("Existing person’s Principal ID").fill(principalId);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();

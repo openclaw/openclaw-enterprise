@@ -81,7 +81,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 23 operations |
+| [Authentication](#authentication) | 24 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
@@ -125,6 +125,7 @@ the paths.
 | [`POST /api/auth/service-keys`](#post-apiauthservicekeys) | Issue a service API key |
 | [`DELETE /api/auth/service-keys/{keyId}`](#delete-apiauthservicekeyskeyid) | Revoke a service API key |
 | [`GET /api/auth/session`](#get-apiauthsession) | Inspect authentication without revealing session tokens |
+| [`POST /api/auth/sharing-recipients/search`](#post-apiauthsharingrecipientssearch) | Find existing people to share an Agent with |
 | [`POST /api/auth/sign-in/email`](#post-apiauthsigninemail) | Sign in with email and password |
 | [`POST /api/auth/sign-out`](#post-apiauthsignout) | Sign out of the current session |
 
@@ -1347,6 +1348,87 @@ Example response
 ```json
 {
   "data": null,
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/sharing-recipients/search`
+
+<span id="post-apiauthsharingrecipientssearch"></span>
+
+Find existing people to share an Agent with
+
+**Operation ID:** `searchAgentSharingRecipients`
+
+**Permissions:** Read-only, requires a human Installation administrator's current session and trusted Origin. Searches enabled human accounts in this Installation by a case-insensitive name or verified email prefix of 2 to 120 characters after trimming. Returns at most 10 distinct Principals, ordered by normalized name with a stable tie-breaker.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `prefix` | `string` | Yes | min length: 2; max length: 120 |
+
+Example request
+```json
+{
+  "prefix": "avery"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too many recipient searches; wait for Retry-After |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | max items: 10 |
+| `data[].email` | `string` | No | — |
+| `data[].name` | `string` | Yes | — |
+| `data[].principalId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "email": "avery.lee@example.com",
+      "name": "Avery Lee",
+      "principalId": "prn_00000000-0000-4000-8000-000000000003"
+    }
+  ],
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }

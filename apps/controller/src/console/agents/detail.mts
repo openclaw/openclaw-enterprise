@@ -4601,6 +4601,9 @@ export async function renderAgentDetail(
   async function renderTab({ activated = false } = {}) {
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
+      if (mountedTab.id === "access") {
+        accessPanel?.closeRecipientSearch();
+      }
       mountedTab.resumeDrafts = resumeDrafts;
       for (const input of content.querySelectorAll<HTMLInputElement>('input[type="password"]')) {
         if (input.value) {

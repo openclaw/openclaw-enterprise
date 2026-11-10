@@ -1726,6 +1726,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
       await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
       if (variant === "sharing") {
         const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+        await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
         await panel.getByLabel("Existing person’s Principal ID").fill("typed-principal");
       } else {
         await page.locator(".content form:not(.agent-access-form)").first().waitFor();
@@ -2233,6 +2234,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -2600,6 +2602,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
     const principal = panel.getByLabel("Existing person’s Principal ID");
     const writes = () =>
       nonAuthWriteRequests(requests).filter((request) => request.path.includes("/iam/"));
@@ -2699,6 +2702,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    await panel.getByRole("button", { name: "Enter a Principal ID instead" }).click();
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     const share = panel.getByRole("button", { name: "Share Agent", exact: true });
