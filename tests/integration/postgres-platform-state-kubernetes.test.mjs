@@ -381,7 +381,8 @@ stateCase(
 
     const persistedRevision = await pool.query(
       `SELECT agent.id AS agent_id, agent.namespace_id, agent.active_revision_id,
-              revision.id AS revision_id, revision.revision_number, revision.admitted_spec
+              revision.id AS revision_id, revision.revision_number, revision.network_egress_mode,
+              revision.admitted_spec
        FROM occ.agents AS agent
        JOIN occ.agent_revisions AS revision
          ON revision.namespace_id = agent.namespace_id AND revision.agent_id = agent.id
@@ -393,11 +394,11 @@ stateCase(
     assert.equal(persistedRevision.rows[0].namespace_id, namespace.data.id);
     assert.equal(persistedRevision.rows[0].revision_id, revision.id);
     assert.equal(Number(persistedRevision.rows[0].revision_number), 1);
+    assert.equal(persistedRevision.rows[0].network_egress_mode, "restricted");
     assert.deepEqual(persistedRevision.rows[0].admitted_spec, {
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
-      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(firstValues, first.data.name)),
       harness_auth: {
         method: "api_key",
@@ -895,7 +896,7 @@ stateCase(
 
     const persistedRevisions = await pool.query(
       `SELECT revision.id, revision.namespace_id, revision.agent_id,
-              revision.revision_number, revision.admitted_spec,
+              revision.revision_number, revision.network_egress_mode, revision.admitted_spec,
               agent.service_principal_id
        FROM occ.agent_revisions AS revision
        JOIN occ.agents AS agent
@@ -904,11 +905,11 @@ stateCase(
       [primary.id],
     );
     assert.equal(persistedRevisions.rowCount, 2);
+    assert.equal(persistedRevisions.rows[0].network_egress_mode, "restricted");
     assert.deepEqual(persistedRevisions.rows[0].admitted_spec, {
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
-      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(persistedConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
@@ -919,11 +920,11 @@ stateCase(
       compute: persistedCompute(persistedRevisions.rows[0].admitted_spec, firstRevision.compute),
       execution_admission: { version: 2, mode: "unprotected" },
     });
+    assert.equal(persistedRevisions.rows[1].network_egress_mode, "restricted");
     assert.deepEqual(persistedRevisions.rows[1].admitted_spec, {
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
-      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(replacementConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",

@@ -1131,6 +1131,7 @@ function sandboxResponse(
   }
   const spec = asRecord(sandbox?.spec);
   const status = asRecord(sandbox?.status);
+  const admission = asRecord(status?.configuration_admission);
   // Gateway-owned restart state (pinned gateway SandboxStatus fields 9 and 14).
   const exitCode = status?.exit_code;
   const restartCount = status?.restart_count;
@@ -1146,9 +1147,13 @@ function sandboxResponse(
     labels: stringMap(metadata?.labels, "Sandbox labels"),
     annotations: stringMap(metadata?.annotations, "Sandbox annotations"),
     ...(spec === undefined ? {} : { spec: Object.freeze({ ...spec }) }),
+    // The supervisor can reject startup before it activates any configuration.
+    ...(admission &&
+      (status?.configuration_activated === true || admission.state === 3) && {
+        configurationAdmission: admission,
+      }),
     ...(status?.configuration_activated === true &&
-      asRecord(status.configuration_admission) && {
-        configurationAdmission: asRecord(status.configuration_admission)!,
+      admission && {
         mainProcessInstanceId:
           typeof status.main_process_instance_id === "string"
             ? status.main_process_instance_id

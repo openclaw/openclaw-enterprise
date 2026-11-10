@@ -1070,6 +1070,7 @@ test("a selected Google account keeps its request guard alongside an independent
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   let created;
   let observedGuard = true;
+  let effectivePublic = false;
   const credentialedHosts = new Set();
   let endpoint = configuration.gateway.managedPluginMiddleware;
   const provider = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
@@ -1113,6 +1114,9 @@ test("a selected Google account keeps its request guard alongside an independent
     routes[independentProvider.name] = independentProvider;
     if (!observedGuard) {
       policy.network_middlewares = {};
+    }
+    if (effectivePublic) {
+      policy.allow_unconfigured_public_tcp = true;
     }
     return {
       workspace,
@@ -1160,6 +1164,11 @@ test("a selected Google account keeps its request guard alongside an independent
   await assert.rejects(provision, /bypass the managed plugin/);
   delete revision.sandboxPolicy;
   await provision();
+  // The same effective configuration used for the managed policies must keep
+  // a restricted revision from accepting an explicit public override.
+  effectivePublic = true;
+  await assert.rejects(provision, /public network egress for a restricted Agent revision/);
+  effectivePublic = false;
   assert.ok(created.spec.providers.includes(openShellProviderName(sourceId)));
   assert.ok(created.spec.providers.includes(slack.ref));
   const slackNetwork = created.spec.policy.network_policies["oce-slack-mcp"];
@@ -1330,6 +1339,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   requirements.environment.push({ name: "SLACK_MCP_TOKEN", value: "arbitrary-unbound-value" });
   let created;
   let broadenEffective = false;
+  let effectivePublic = false;
   let updateCount = 0;
   client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
     created = {
@@ -1354,6 +1364,9 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     }
     if (broadenEffective) {
       policy.network_policies.unexpected = { endpoints: [{ host: "mcp.slack.com", port: 443 }] };
+    }
+    if (effectivePublic) {
+      policy.allow_unconfigured_public_tcp = true;
     }
     return {
       workspace,
@@ -1388,6 +1401,9 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   assert.equal(created, undefined);
   requestScope.port = 443;
   await provision();
+  effectivePublic = true;
+  await assert.rejects(provision, /public network egress for a restricted Agent revision/);
+  effectivePublic = false;
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
   assert.deepEqual(route.endpoints[0].ports, [443]);
@@ -2377,11 +2393,17 @@ test("OpenShell requires matching applied network egress evidence before accepti
     // These adjacent generations collide if converted to JavaScript Number.
     ["distinct large generations", "9007199254740992", "9007199254740993", false],
   ];
-  for (const mode of ["public", "restricted"]) {
-    await t.test(mode, async (t) => {
+  for (const [label, mode, qualified] of [
+    ["qualified public", "public", true],
+    ["qualified restricted", "restricted", true],
+    ["stock restricted", "restricted", false],
+  ]) {
+    await t.test(label, async (t) => {
       const gateway = workspaceGatewayClient();
       let creates = 0;
       let sandbox;
+      let activated = true;
+      let configReads = 0;
       const startupAdmission = {
         instance_id: "supervisor-one",
         state: 2,
@@ -2435,12 +2457,29 @@ test("OpenShell requires matching applied network egress evidence before accepti
                 resource_version: sandbox.resourceVersion,
               },
               spec: sandbox.spec,
-              status: { configuration_activated: true, configuration_admission: admission },
+              status: { configuration_activated: activated, configuration_admission: admission },
             },
           });
         },
         GetSandboxConfig(_call, callback) {
+          configReads++;
+          if (!qualified) {
+            // Stock Sandbox access needs sandbox:read. GetSandboxConfig needs config:read.
+            callback({ code: grpc.status.PERMISSION_DENIED, details: "config:read is required" });
+            return;
+          }
           callback(null, effective);
+        },
+        GetSandboxPolicyStatus(_call, callback) {
+          callback(null, {
+            revision: {
+              status: status.state,
+              version: status.version,
+              policy_hash: status.policyHash,
+              policy: status.policy,
+            },
+            active_version: status.activeVersion,
+          });
         },
       });
       const port = await new Promise((resolve, reject) =>
@@ -2455,9 +2494,9 @@ test("OpenShell requires matching applied network egress evidence before accepti
       });
       gateway.getSandbox = wireClient.getSandbox.bind(wireClient);
       gateway.getSandboxConfig = wireClient.getSandboxConfig.bind(wireClient);
-      gateway.getPolicyStatus = async () => status;
+      gateway.getPolicyStatus = wireClient.getPolicyStatus.bind(wireClient);
       const options = sandboxInstallation().drivers.sandbox.configuration;
-      if (mode === "public") {
+      if (qualified) {
         options.gateway.publicNetworkEgress = "qualified";
       }
       const driver = openShellDriver(gateway, options);
@@ -2569,6 +2608,51 @@ test("OpenShell requires matching applied network egress evidence before accepti
         status = { ...loaded, state: terminal };
         await expectEvidence("failed", /failed to load/);
       }
+      const pending = { ...loaded, state: "POLICY_STATUS_PENDING", activeVersion: 3 };
+      status = pending;
+      // Startup refusal can be recorded before the supervisor activates configuration
+      // or reports the source policy loaded.
+      activated = false;
+      admission = {
+        ...accepted,
+        state: 3,
+        error: "configuration rejected",
+        applied_allow_unconfigured_public_tcp: undefined,
+      };
+      await t.test("refused configuration while source is pending", async () => {
+        await expectEvidence("failed", /refused/);
+      });
+      await t.test("refusal from an older policy version", async () => {
+        admission = { ...admission, policy_version: 3 };
+        await expectEvidence("pending");
+      });
+      if (qualified) {
+        await t.test("refusal from an older configuration of the same policy", async () => {
+          admission = { ...admission, policy_version: 4, provider_env_revision: "3" };
+          await expectEvidence("pending");
+        });
+        await t.test(
+          "current effective configuration refusal while source is pending",
+          async () => {
+            admission = undefined;
+            effective = {
+              ...configuration,
+              configuration_error: "invalid effective configuration",
+            };
+            await expectEvidence("failed", /refused/);
+          },
+        );
+        await t.test(
+          "effective configuration refusal from a different policy version",
+          async () => {
+            effective = { ...effective, version: 3 };
+            await expectEvidence("pending");
+          },
+        );
+      }
+      activated = true;
+      admission = accepted;
+      effective = configuration;
       status = {
         ...loaded,
         policy: { ...candidate, allow_unconfigured_public_tcp: mode !== "public" },
@@ -2656,17 +2740,24 @@ test("OpenShell requires matching applied network egress evidence before accepti
         const { allow_unconfigured_public_tcp: _mode, ...stockPolicy } = candidate;
         status = { ...loaded, policy: stockPolicy };
         admission = { ...accepted, applied_allow_unconfigured_public_tcp: undefined };
-        effective = { policy: stockPolicy };
+        effective = { ...configuration, policy: stockPolicy };
         await expectEvidence("applied");
-        effective = {
-          ...configuration,
-          policy_source: 2,
-          policy: { allow_unconfigured_public_tcp: true },
-        };
-        await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+        if (qualified) {
+          effective = {
+            ...configuration,
+            policy_source: 2,
+            policy: { allow_unconfigured_public_tcp: true },
+          };
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+          status = { ...pending, policy: stockPolicy };
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+          status = { ...loaded, policy: stockPolicy };
+        }
         delete revision.networkEgressMode;
-        await expectEvidence("failed", /public network egress for a restricted Agent revision/);
-        effective = { policy: stockPolicy };
+        if (qualified) {
+          await expectEvidence("failed", /public network egress for a restricted Agent revision/);
+        }
+        effective = { ...configuration, policy: stockPolicy };
         await expectEvidence("applied");
         admission = { ...accepted, applied_allow_unconfigured_public_tcp: true };
         await expectEvidence("failed", /public network egress for a restricted Agent revision/);
@@ -2674,6 +2765,9 @@ test("OpenShell requires matching applied network egress evidence before accepti
       }
       await expectEvidence("applied");
       assert.equal(creates, 1, "pending or failed evidence never creates a replacement Sandbox");
+      if (!qualified) {
+        assert.equal(configReads, 0, "stock restricted readiness uses the scoped Sandbox reads");
+      }
     });
   }
 });

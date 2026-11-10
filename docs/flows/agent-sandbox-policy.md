@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-10"
-last_updated_session: "authoring-run/062d67f8-0c28-45c5-b686-8f803c523eec"
+last_updated_session: "authoring-run/1a7de99b-a5f3-44b1-92df-450db81e2e5d"
 ---
 
 # Agent sandbox policy flow
@@ -142,13 +142,19 @@ mode. OpenShell treats omission as restricted.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
 compile `allow_unconfigured_public_tcp`; managed routes and artifact grants stay
 independent. The proxy compares configuration before wiring.
-`apps/controller/src/drivers/sandbox/openshell.ts:observeNetworkEgress` uses the
-same evidence for provisioning and live application. Restricted mode accepts
-the omitted stock applied bit and refuses explicit public mode in the effective
-policy or supervisor report. Public mode requires the applied bit, loaded
-policy version, and matching effective hash and instance. Provider composition
-can change the effective hash. Both uint64 generations must match exactly,
-with omission representing zero.
+`apps/controller/src/drivers/sandbox/openshell.ts:observeNetworkEgress` checks
+supervisor admission and source policy status during provisioning and live
+application. Stock restricted revisions use `sandbox:read` for these checks.
+Qualified installations read effective configuration with `config:read`.
+Managed plugin and MCP checks during provisioning use that same read.
+
+A refusal for the observed policy version fails before the Driver waits for
+source policy load. When the Driver reads effective configuration, it matches
+the supervisor report to that configuration's instance, hash, and both
+generation fields. An omitted uint64 generation represents zero. Provider
+composition can change the effective hash. Restricted mode refuses an explicit
+public setting in either report. Public mode requires the applied bit and a
+loaded source policy version with matching effective evidence.
 
 After confirmed creation or adoption, `provisionHarness` reports
 `SandboxPolicyObservationPendingError` for convergence. Compute preserves the
@@ -283,6 +289,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 22:37: Check current configuration refusals during policy load and preserve scoped stock Sandbox reads. (authoring-run/1a7de99b-a5f3-44b1-92df-450db81e2e5d - 88f7d233b3)
 
 - 2026-11-10 22:09: Trace the public capability check and shared applied-policy decisions. (authoring-run/062d67f8-0c28-45c5-b686-8f803c523eec - a16f9c65decd6f3b24f52514a9e1040dfc08096b)
 
