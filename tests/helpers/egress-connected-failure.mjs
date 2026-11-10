@@ -67,7 +67,15 @@ export function rememberCustodyOutcome(error, value) {
 export async function safeConnectedFailure(error, stage, recordFailure) {
   // Only fixed source names and bounded V8 coordinates can reach the reporter.
   const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : "";
-  const frame = stack.match(
+  // V8 prefixes the frames with the complete Error string, including message
+  // newlines. That untrusted prefix cannot choose a source location.
+  const headers = error instanceof Error ? [Error.prototype.toString.call(error)] : [];
+  if (error instanceof Error && typeof error.code === "string") {
+    headers.push(`${error.name} [${error.code}]: ${error.message}`);
+  }
+  const header = headers.find((value) => stack.startsWith(value + "\n"));
+  const frames = header === undefined ? "" : stack.slice(header.length + 1);
+  const frame = frames.match(
     /^ +at [^\n]*[/\\](agent-openshell-static-egress-k3d-real\.test|egress-(?:connected-inputs|custody-observations|installed-(?:agent|resource-cleanup|stack)|managed-workload-exec|supplier-custody-transitions)|openshell-kubernetes-real)\.mjs:(\d{1,5}):(\d{1,4})(?:\))?$/m,
   );
   const location = frame ? `${frame[1]}.mjs:${frame[2]}:${frame[3]}` : "external-operation";

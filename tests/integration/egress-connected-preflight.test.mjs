@@ -982,6 +982,44 @@ test("custody failures retain bounded last observations without supplier payload
       private: marker,
     },
   };
+  await t.test("multiline failure messages cannot choose the reported source frame", async () => {
+    const spoofed = "egress-supplier-custody-transitions.mjs:12345:1234";
+    for (const kind of ["operation", "assertion"]) {
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            const message = marker + "\n    at /untrusted/" + spoofed;
+            if (kind === "assertion") {
+              assert.fail(message);
+            }
+            throw new Error(message);
+          },
+        },
+      });
+      let failure;
+      try {
+        await custody.snapshot();
+      } catch (error) {
+        failure = error;
+      }
+      assert.ok(failure instanceof Error);
+      const safe = await safeConnectedFailure(failure, "turn-result");
+      assert.match(safe.message, /egress-supplier-custody-transitions\.mjs:\d+:\d+/);
+      assert.equal(safe.message.includes(spoofed), false);
+      assert.equal(safe.message.includes(marker), false);
+    }
+    // A stack with no usable frame keeps the fixed fallback.
+    assert.match(
+      (await safeConnectedFailure(new Error(marker), "turn-result")).message,
+      /\(external-operation\)/,
+    );
+  });
+
   await t.test("non-Error rejection stays unchanged", async () => {
     const custody = createCustodyTransitions({
       workspace: "workspace",
