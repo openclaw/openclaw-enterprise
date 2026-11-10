@@ -99,7 +99,8 @@ PostgreSQL migration and application suites own separate servers; each Kubernete
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
-`runtime-artifact` supplies `image-lanes` (CI), `image-lanes-same-sha` (Full Integration), and First Agent Smoke. Aggregates require producer and consumer success; unrelated lanes run independently.
+`runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
+and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
 
 The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 

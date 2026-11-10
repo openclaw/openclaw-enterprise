@@ -3299,7 +3299,7 @@ if (args[0] === "pull") {
       assert.equal(result.status, 1, lane);
       assertStderrMatch(
         result.stderr,
-        /Runtime artifacts are supported only by the ordinary image lanes/,
+        /Runtime artifacts are supported only by Docker Model Runtime and the ordinary image lanes/,
         lane,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
