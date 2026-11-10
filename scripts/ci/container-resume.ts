@@ -38,7 +38,7 @@ async function verifyPreparation(env: NodeJS.ProcessEnv) {
   const comparison = { status: property(comparisonResponse, "status") };
   assert.ok(comparison.status === "ahead" || comparison.status === "identical");
   await verifyEnvironment();
-  const workflowCiAttempt: unknown = await verifyCi({
+  const workflowCiAttempt = await verifyCi({
     ...env,
     SOURCE_SHA: env.GITHUB_WORKFLOW_SHA,
     CI_RUN_ID: env.WORKFLOW_CI_RUN_ID,
@@ -115,8 +115,8 @@ async function verifyPreparation(env: NodeJS.ProcessEnv) {
     );
     const artifact = { id: property(artifactResponse, "id") as number };
     assert.ok(Number.isSafeInteger(artifact.id) && artifact.id > 0);
-    const digest = property(artifactResponse, "digest");
-    assert.match((digest ?? "") as string, /^sha256:[a-f0-9]{64}$/);
+    const digest = (property(artifactResponse, "digest") ?? "") as string;
+    assert.match(digest, /^sha256:[a-f0-9]{64}$/);
     return { image, id: String(artifact.id), name, digest };
   });
   return { artifacts: selected, workflowCiAttempt };
@@ -139,10 +139,10 @@ async function resume(directory: string | undefined, env: NodeJS.ProcessEnv) {
       "utf8",
     ),
   );
-  const ciRunId = property(controller, "ciRunId");
-  assert.match((ciRunId ?? "") as string, /^[1-9][0-9]*$/);
-  const ciAttempt = property(controller, "ciAttempt");
-  assert.match((ciAttempt ?? "") as string, /^[1-9][0-9]*$/);
+  const ciRunId = (property(controller, "ciRunId") ?? "") as string;
+  assert.match(ciRunId, /^[1-9][0-9]*$/);
+  const ciAttempt = (property(controller, "ciAttempt") ?? "") as string;
+  assert.match(ciAttempt, /^[1-9][0-9]*$/);
   assert.match(
     env.NODE_BASE_IMAGE ?? "",
     /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/,
@@ -164,7 +164,7 @@ async function resume(directory: string | undefined, env: NodeJS.ProcessEnv) {
     );
     await verifyCi({ ...env, CI_RUN_ID: producer.ciRunId, CI_ATTEMPT: producer.ciAttempt });
   };
-  const published: unknown = await publishPrepared(directory, env, producer, verify);
+  const published: unknown[] = await publishPrepared(directory, env, producer, verify);
   const receipt = {
     schemaVersion: 1,
     preparation,
