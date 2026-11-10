@@ -58,28 +58,42 @@ type ApiResult = {
 type Api = ReturnType<typeof createOccApi>;
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
+const retainInputs = "Keep the original bundle and map, if present.";
+const resumeOperation = "reconcile any earlier writes before resuming the original operation.";
+const recoverOcc = `${retainInputs} Correct the OCC endpoint and ${resumeOperation}`;
+const recoverInput = `${retainInputs} Correct the indicated input and ${resumeOperation}`;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-function requireRecord(value: unknown): Resource {
+function requireRecord(value: unknown, location: string, recovery = recoverInput): Resource {
   if (!isRecord(value) || Array.isArray(value)) {
-    throw new TypeError("Expected an object in tenant migration data");
+    throw new InvalidMigrationDataError(`${location}; expected an object. ${recovery}`);
   }
   return value;
 }
 
-function requireArray(value: unknown): unknown[] {
+function requireArray(value: unknown, location: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new TypeError("Expected an array in tenant migration data");
+    throw new InvalidMigrationDataError(`${location}; expected an array. ${recoverInput}`);
   }
   return value;
 }
 
-function identity(value: Resource): { id: string; name: string } {
+function* bundleRecords(namespace: Resource, field: string) {
+  const location = `bundle namespaces[].${field}`;
+  for (const [index, item] of requireArray(namespace[field], location).entries()) {
+    yield requireRecord(item, `${location}[${index}]`);
+  }
+}
+
+function identity(value: Resource, path: string): { id: string; name: string } {
   const { id, name } = value;
   if (typeof id !== "string" || typeof name !== "string") {
-    throw new TypeError("Expected a string ID and name in the OCC resource");
+    throw new InvalidMigrationDataError(
+      `GET ${path.slice(0, 240)}: invalid OCC resource; expected string id and name fields. ${recoverOcc}`,
+    );
   }
   return { id, name };
 }
@@ -138,6 +152,7 @@ const usage = `Usage:
 Environment: OCC_URL, OCC_SERVICE_KEY_FILE, optional OCC_CA_BUNDLE.`;
 
 export class SplitLayoutError extends Error {}
+class InvalidMigrationDataError extends SplitLayoutError {}
 
 /** An OCC API client over a fetch function. `fetchImpl(url, init)` returns a Response. */
 export function createOccApi({
@@ -185,8 +200,8 @@ export function createOccApi({
       result.status !== 204 &&
       result.data === undefined
     ) {
-      throw new SplitLayoutError(
-        `${method} ${path}: HTTP ${result.status} returned no data envelope`,
+      throw new InvalidMigrationDataError(
+        `${method} ${path.slice(0, 240)}: HTTP ${result.status} returned no data envelope. ${recoverOcc}`,
       );
     }
     return result;
@@ -199,11 +214,38 @@ const list = async (api: Api, path: string): Promise<Resource[]> => {
   const { data } = await api.expect("GET", path);
   if (!Array.isArray(data)) {
     throw new SplitLayoutError(
-      `GET ${path.slice(0, 240)}: invalid OCC collection response; expected an array in data. Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile any earlier writes before resuming the original operation.`,
+      `GET ${path.slice(0, 240)}: invalid OCC collection response; expected an array in data. ${recoverOcc}`,
     );
   }
-  return data.map(requireRecord);
+  const items: unknown[] = data;
+  return items.map((item, index) => {
+    if (!isRecord(item) || Array.isArray(item)) {
+      throw new InvalidMigrationDataError(
+        `GET ${path.slice(0, 240)}: invalid OCC collection response; expected an object in data[${index}]. ${recoverOcc}`,
+      );
+    }
+    return item;
+  });
 };
+
+async function readOccResource(api: Api, method: "GET" | "POST", path: string, body?: unknown) {
+  const { data } = await api.expect(method, path, body);
+  return requireRecord(
+    data,
+    `${method} ${path.slice(0, 240)}: invalid OCC response data`,
+    recoverOcc,
+  );
+}
+
+function responseId(resource: Resource, location: string, field = "id"): string {
+  const value = resource[field];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new InvalidMigrationDataError(
+      `${location.slice(0, 240)}: invalid OCC response data; expected a nonempty string in ${field}. ${recoverOcc}`,
+    );
+  }
+  return value;
+}
 
 /** Reads every Namespace's tenant resources into a bundle. Read-only. */
 export async function exportTenants(
@@ -212,12 +254,12 @@ export async function exportTenants(
 ): Promise<ExportBundle> {
   const namespaces: Tenant[] = [];
   for (const namespace of await list(api, "/namespaces")) {
-    const namespaceIdentity = identity(namespace);
+    const namespaceIdentity = identity(namespace, "/namespaces");
     const base = ns(namespaceIdentity.id);
     const agents = [];
     const configurationIds = new Set<unknown>();
     for (const listed of await list(api, `${base}/agents`)) {
-      const agent = requireRecord((await api.expect("GET", `${base}/agents/${listed.id}`)).data);
+      const agent = await readOccResource(api, "GET", `${base}/agents/${listed.id}`);
       configurationIds.add(agent.configurationId);
       const workspaceFiles: Record<string, string> = {};
       const unreadWorkspaceFiles = [];
@@ -241,24 +283,27 @@ export async function exportTenants(
     }
     const configurations = [];
     for (const id of configurationIds) {
-      const { data } = await api.expect("GET", `${base}/configurations/${id}`);
-      configurations.push(requireRecord(data));
+      configurations.push(await readOccResource(api, "GET", `${base}/configurations/${id}`));
     }
     // The Preset list carries summaries; each template is on the exact Preset read.
     const presets = [];
     for (const { id } of await list(api, `${base}/presets`)) {
-      const { data } = await api.expect("GET", `${base}/presets/${encodeURIComponent(String(id))}`);
-      presets.push(requireRecord(data));
+      const path = `${base}/presets/${encodeURIComponent(String(id))}`;
+      presets.push(await readOccResource(api, "GET", path));
     }
     const tenant: Tenant = {
       ...namespaceIdentity,
-      secrets: (await list(api, `${base}/secrets`)).map(identity),
+      secrets: (await list(api, `${base}/secrets`)).map((secret) =>
+        identity(secret, `${base}/secrets`),
+      ),
       credentialSources: await list(api, `${base}/credential-sources`),
       configurations,
       presets,
       roles: await list(api, `${base}/iam/roles`),
       accessBindings: await list(api, `${base}/iam/access-bindings`),
-      serviceAccounts: (await list(api, `${base}/service-accounts`)).map(identity),
+      serviceAccounts: (await list(api, `${base}/service-accounts`)).map((account) =>
+        identity(account, `${base}/service-accounts`),
+      ),
       agents,
     };
     namespaces.push(tenant);
@@ -311,11 +356,19 @@ export async function discardTenants(
     sleep = defaultSleep,
   }: DiscardOptions = {},
 ) {
-  const namespaces = bundle.namespaces.map(requireRecord);
+  const namespaces = bundle.namespaces.map((value, index) =>
+    requireRecord(value, `bundle namespaces[${index}]`),
+  );
   const unread = namespaces.flatMap((namespace) =>
-    requireArray(namespace.agents)
-      .filter((agent) => requireArray(requireRecord(agent).unreadWorkspaceFiles ?? []).length > 0)
-      .map((agent) => `${namespace.name}/${requireRecord(agent).name}`),
+    Array.from(bundleRecords(namespace, "agents"))
+      .filter(
+        (agent) =>
+          requireArray(
+            agent.unreadWorkspaceFiles ?? [],
+            "bundle namespaces[].agents[].unreadWorkspaceFiles",
+          ).length > 0,
+      )
+      .map((agent) => `${namespace.name}/${agent.name}`),
   );
   if (unread.length > 0 && !allowUnreadWorkspaceFiles) {
     throw new SplitLayoutError(
@@ -326,8 +379,8 @@ export async function discardTenants(
   for (const namespace of namespaces) {
     const base = ns(namespace.id);
     const exported = new Set(
-      [...requireArray(namespace.agents), ...requireArray(namespace.secrets)].map(
-        (item) => requireRecord(item).id,
+      [...bundleRecords(namespace, "agents"), ...bundleRecords(namespace, "secrets")].map(
+        ({ id }) => id,
       ),
     );
     const live = [...(await list(api, `${base}/agents`)), ...(await list(api, `${base}/secrets`))];
@@ -340,8 +393,7 @@ export async function discardTenants(
   }
   for (const namespace of namespaces) {
     const base = ns(namespace.id);
-    for (const item of requireArray(namespace.agents)) {
-      const agent = requireRecord(item);
+    for (const agent of bundleRecords(namespace, "agents")) {
       await api.expect("DELETE", `${base}/agents/${agent.id}`, undefined, [200, 202, 204, 404]);
       log(`deleting Agent ${agent.name} (${agent.id})`);
     }
@@ -353,23 +405,18 @@ export async function discardTenants(
     if (!gone) {
       throw new SplitLayoutError(`${namespace.name}: Agents still present after ${timeoutMs} ms`);
     }
-    const children: [string, unknown][] = [
-      ["iam/access-bindings", namespace.accessBindings],
-      ["service-accounts", namespace.serviceAccounts],
-      ["presets", namespace.presets],
-      ["configurations", namespace.configurations],
-      ["credential-sources", namespace.credentialSources],
-      ["secrets", namespace.secrets],
-      ["iam/roles", namespace.roles],
-    ];
-    for (const [kind, items] of children) {
-      for (const item of requireArray(items)) {
-        await api.expect(
-          "DELETE",
-          `${base}/${kind}/${requireRecord(item).id}`,
-          undefined,
-          [200, 202, 204, 404],
-        );
+    const children = [
+      ["iam/access-bindings", "accessBindings"],
+      ["service-accounts", "serviceAccounts"],
+      ["presets", "presets"],
+      ["configurations", "configurations"],
+      ["credential-sources", "credentialSources"],
+      ["secrets", "secrets"],
+      ["iam/roles", "roles"],
+    ] as const;
+    for (const [kind, field] of children) {
+      for (const { id } of bundleRecords(namespace, field)) {
+        await api.expect("DELETE", `${base}/${kind}/${id}`, undefined, [200, 202, 204, 404]);
       }
     }
     const deleted = await api.call("DELETE", base);
@@ -451,10 +498,11 @@ function secretValue(secretValues: unknown, namespaceName: unknown, secretName: 
 /** Checks a bundle and its Secret values before anything is created. Returns the problems. */
 export function checkImport(bundle: Bundle, secretValues: unknown) {
   const problems = [];
-  for (const namespaceValue of bundle.namespaces) {
-    const namespace = requireRecord(namespaceValue);
-    for (const secretValueEntry of requireArray(namespace.secrets)) {
-      const secret = requireRecord(secretValueEntry);
+  for (const [index, namespaceValue] of bundle.namespaces.entries()) {
+    const location = `bundle namespaces[${index}]`;
+    const namespace = requireRecord(namespaceValue, location);
+    for (const secretValueEntry of requireArray(namespace.secrets, `${location}.secrets`)) {
+      const secret = requireRecord(secretValueEntry, `${location}.secrets[]`);
       if (typeof secretValue(secretValues, namespace.name, secret.name) !== "string") {
         problems.push(`no value for Secret ${namespace.name}/${secret.name}`);
       }
@@ -484,15 +532,19 @@ export async function importTenants(
   }: ImportOptions = {},
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
-  const allNamespaces = bundle.namespaces.map(requireRecord);
+  const allNamespaces = bundle.namespaces.map((value, index) =>
+    requireRecord(value, `bundle namespaces[${index}]`),
+  );
   const namespaces = allNamespaces.filter(({ name }) => !skip.includes(name));
   const targetName = (namespace: Resource) => ownValue(names, namespace.name) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
   if (problems.length > 0) {
     throw new SplitLayoutError(problems.join("\n"));
   }
-  const importState = requireRecord(state);
-  const ids = new Map<unknown, unknown>(Object.entries(requireRecord(importState.ids)));
+  const importState = requireRecord(state, "ID map (--map)");
+  const ids = new Map<unknown, unknown>(
+    Object.entries(requireRecord(importState.ids, "ID map (--map).ids")),
+  );
   // Each source tenant must keep a separate destination, including on a resumed import.
   // Otherwise adopting an empty Namespace can silently merge tenants before any API conflict.
   const targets = new Map<unknown, unknown>();
@@ -506,7 +558,7 @@ export async function importTenants(
     }
     targets.set(name, namespace.name);
   }
-  const record = (oldId: unknown, newId: unknown) => {
+  const record = (oldId: unknown, newId: string) => {
     ids.set(oldId, newId);
     importState.ids = Object.fromEntries(ids);
     save(state);
@@ -548,7 +600,10 @@ export async function importTenants(
     }
     const name = targetName(namespace);
     const same = existing.find((live) => live.name === name);
-    if (same !== undefined && !Object.values(requireRecord(importState.ids)).includes(same.id)) {
+    if (
+      same !== undefined &&
+      !Object.values(requireRecord(importState.ids, "ID map (--map).ids")).includes(same.id)
+    ) {
       // Only an empty live Namespace is safe to fill: adopting a populated one would merge
       // the bundle into someone else's Secrets and Agents.
       const base = ns(same.id);
@@ -576,10 +631,15 @@ export async function importTenants(
           `POST /namespaces: HTTP ${result.status} ${error?.code ?? "UNKNOWN"}`,
         );
       }
-      created = requireRecord(result.data);
+      created = requireRecord(
+        result.data,
+        "POST /namespaces: invalid OCC response data",
+        recoverOcc,
+      );
     }
-    record(namespace.id, created.id);
-    log(`${same ? "reusing" : "created"} Namespace ${name}: ${created.id}`);
+    const id = responseId(created, same ? "GET /namespaces" : "POST /namespaces");
+    record(namespace.id, id);
+    log(`${same ? "reusing" : "created"} Namespace ${name}: ${id}`);
   }
   // One short shared wait: a Namespace stays provisioning until its RoleBindings exist.
   const notReady = async () => {
@@ -617,22 +677,22 @@ export async function importTenants(
       if (ids.has(oldId)) {
         return ids.get(oldId);
       }
+      const path = `${base}/${kind}`;
       const same =
-        name === undefined
-          ? undefined
-          : (await list(api, `${base}/${kind}`)).find((item) => item.name === name);
+        name === undefined ? undefined : (await list(api, path)).find((item) => item.name === name);
       if (same) {
-        record(oldId, same.id);
-        log(`reusing existing ${label}: ${same.id} (left unchanged)`);
-        return same.id;
+        const id = responseId(same, `GET ${path}`);
+        record(oldId, id);
+        log(`reusing existing ${label}: ${id} (left unchanged)`);
+        return id;
       }
-      const data = requireRecord((await api.expect("POST", `${base}/${kind}`, body)).data);
-      record(oldId, data.id);
-      log(`created ${label}: ${data.id}`);
-      return data.id;
+      const data = await readOccResource(api, "POST", path, body);
+      const id = responseId(data, `POST ${path}`);
+      record(oldId, id);
+      log(`created ${label}: ${id}`);
+      return id;
     };
-    for (const item of requireArray(namespace.secrets)) {
-      const secret = requireRecord(item);
+    for (const secret of bundleRecords(namespace, "secrets")) {
       await create(
         secret.id,
         "secrets",
@@ -641,8 +701,7 @@ export async function importTenants(
         secret.name,
       );
     }
-    for (const item of requireArray(namespace.credentialSources)) {
-      const source = requireRecord(item);
+    for (const source of bundleRecords(namespace, "credentialSources")) {
       await create(
         source.id,
         "credential-sources",
@@ -653,8 +712,7 @@ export async function importTenants(
     }
     // Configurations have no name to adopt by: a run interrupted between creating one and
     // saving its ID leaves an unused copy behind, which is harmless.
-    for (const item of requireArray(namespace.configurations)) {
-      const configuration = requireRecord(item);
+    for (const configuration of bundleRecords(namespace, "configurations")) {
       await create(
         configuration.id,
         "configurations",
@@ -663,8 +721,7 @@ export async function importTenants(
       );
     }
     // Preset Harness authentication can refer to these accounts; map them before templates.
-    for (const item of requireArray(namespace.serviceAccounts)) {
-      const account = requireRecord(item);
+    for (const account of bundleRecords(namespace, "serviceAccounts")) {
       await create(
         account.id,
         "service-accounts",
@@ -673,8 +730,7 @@ export async function importTenants(
         account.name,
       );
     }
-    for (const item of requireArray(namespace.presets)) {
-      const preset = requireRecord(item);
+    for (const preset of bundleRecords(namespace, "presets")) {
       const template = structuredClone(preset.template);
       const templateAgent = isRecord(template) ? template.agent : undefined;
       if (isRecord(templateAgent) && templateAgent.harnessAuth !== undefined) {
@@ -689,15 +745,14 @@ export async function importTenants(
       );
     }
     const liveRoles = await list(api, `${base}/iam/roles`);
-    for (const item of requireArray(namespace.roles)) {
-      const role = requireRecord(item);
+    for (const role of bundleRecords(namespace, "roles")) {
       if (ids.has(role.id)) {
         continue;
       }
       const same =
         role.name === undefined ? undefined : liveRoles.find(({ name }) => name === role.name);
       if (same) {
-        record(role.id, same.id);
+        record(role.id, responseId(same, `GET ${base}/iam/roles`));
         continue;
       }
       await create(
@@ -707,14 +762,12 @@ export async function importTenants(
         `Role ${namespace.name}/${role.name ?? role.id}`,
       );
     }
-    for (const item of requireArray(namespace.agents)) {
-      const agent = requireRecord(item);
+    for (const agent of bundleRecords(namespace, "agents")) {
       if (ids.has(agent.id)) {
         if (agent.servicePrincipalId && !ids.has(agent.servicePrincipalId)) {
-          const data = requireRecord(
-            (await api.expect("GET", `${base}/agents/${ids.get(agent.id)}`)).data,
-          );
-          record(agent.servicePrincipalId, data.servicePrincipalId);
+          const path = `${base}/agents/${ids.get(agent.id)}`;
+          const data = await readOccResource(api, "GET", path);
+          record(agent.servicePrincipalId, responseId(data, `GET ${path}`, "servicePrincipalId"));
         }
         continue;
       }
@@ -726,38 +779,44 @@ export async function importTenants(
           },
           ids,
         ),
+        "remapped bundle namespaces[].agents[]",
       );
       if (body.harnessAuth === undefined || body.harnessAuth === null) {
         delete body.harnessAuth;
       }
       if (Array.isArray(agent.repositoryBindings) && agent.repositoryBindings.length > 0) {
         body.repositoryBindings = agent.repositoryBindings.map((binding: unknown) =>
-          pick(requireRecord(binding), ["repositoryRef", "profile"]),
+          pick(requireRecord(binding, "bundle namespaces[].agents[].repositoryBindings[]"), [
+            "repositoryRef",
+            "profile",
+          ]),
         );
       }
       const workspaceFiles = agent.workspaceFiles;
-      if (workspaceFiles != null && Object.keys(requireRecord(workspaceFiles)).length > 0) {
+      if (
+        workspaceFiles != null &&
+        Object.keys(requireRecord(workspaceFiles, "bundle namespaces[].agents[].workspaceFiles"))
+          .length > 0
+      ) {
         body.initialWorkspaceFiles = workspaceFiles;
       }
       const same = (await list(api, `${base}/agents`)).find(({ name }) => name === agent.name);
-      const data = requireRecord(
-        same
-          ? (await api.expect("GET", `${base}/agents/${same.id}`)).data
-          : (await api.expect("POST", `${base}/agents`, body)).data,
-      );
+      const method = same ? "GET" : "POST";
+      const path = same ? `${base}/agents/${same.id}` : `${base}/agents`;
+      const data = await readOccResource(api, method, path, same ? undefined : body);
       if (same && data.configurationId !== body.configurationId) {
         throw new SplitLayoutError(
           `Agent ${namespace.name}/${agent.name} already exists here with another Configuration; ` +
             "delete it or import into another Namespace",
         );
       }
-      if (agent.servicePrincipalId && data.servicePrincipalId) {
-        record(agent.servicePrincipalId, data.servicePrincipalId);
+      const location = `${method} ${path}`;
+      const id = responseId(data, location);
+      if (agent.servicePrincipalId) {
+        record(agent.servicePrincipalId, responseId(data, location, "servicePrincipalId"));
       }
-      record(agent.id, data.id);
-      log(
-        `${same ? "reusing existing" : "created"} Agent ${namespace.name}/${agent.name}: ${data.id}`,
-      );
+      record(agent.id, id);
+      log(`${same ? "reusing existing" : "created"} Agent ${namespace.name}/${agent.name}: ${id}`);
     }
     const liveBindings = new Map(
       (await list(api, `${base}/iam/access-bindings`)).map((binding) => [
@@ -765,8 +824,7 @@ export async function importTenants(
         binding,
       ]),
     );
-    for (const item of requireArray(namespace.accessBindings)) {
-      const binding = requireRecord(item);
+    for (const binding of bundleRecords(namespace, "accessBindings")) {
       if (ids.has(binding.id)) {
         continue;
       }
@@ -788,9 +846,11 @@ export async function importTenants(
         pick(binding, ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"]),
         ids,
       );
-      const live = liveBindings.get(bindingKey(requireRecord(body)));
+      const live = liveBindings.get(
+        bindingKey(requireRecord(body, "remapped bundle namespaces[].accessBindings[]")),
+      );
       if (live) {
-        record(binding.id, live.id);
+        record(binding.id, responseId(live, `GET ${base}/iam/access-bindings`));
         continue;
       }
       try {
@@ -801,7 +861,7 @@ export async function importTenants(
           `access binding ${namespace.name}/${binding.id}`,
         );
       } catch (error) {
-        if (!(error instanceof SplitLayoutError)) {
+        if (!(error instanceof SplitLayoutError) || error instanceof InvalidMigrationDataError) {
           throw error;
         }
         // For example a binding to an Agent's own Role that the new Agent did not get.
@@ -809,24 +869,24 @@ export async function importTenants(
       }
     }
     if (deploy) {
-      for (const item of requireArray(namespace.agents)) {
-        const agent = requireRecord(item);
+      for (const agent of bundleRecords(namespace, "agents")) {
         if (
           agent.desiredRuntimeState !== "running" ||
-          requireArray(importState.deployed).includes(agent.id)
+          requireArray(importState.deployed, "ID map (--map).deployed").includes(agent.id)
         ) {
           continue;
         }
         try {
-          await api.expect("POST", `${base}/agents/${ids.get(agent.id)}/deploy`);
+          const path = `${base}/agents/${ids.get(agent.id)}/deploy`;
+          responseId(await readOccResource(api, "POST", path), `POST ${path}`);
         } catch (error) {
-          if (!(error instanceof SplitLayoutError)) {
+          if (!(error instanceof SplitLayoutError) || error instanceof InvalidMigrationDataError) {
             throw error;
           }
           failedDeploys.push(`${namespace.name}/${agent.name}: ${error.message}`);
           continue;
         }
-        requireArray(importState.deployed).push(agent.id);
+        requireArray(importState.deployed, "ID map (--map).deployed").push(agent.id);
         save(state);
         log(`deploying Agent ${namespace.name}/${agent.name}`);
       }

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { OpenClawController, type PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -457,6 +460,74 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     }),
     /Namespace team-a restored already exists and holds Agents or Secrets; add --rename/u,
   );
+
+  // Simulate an accepted deploy with a lost response envelope at the importer's HTTP
+  // boundary. This checks the resume state without starting a runtime.
+  const rollout = structuredClone(bundle);
+  const rolloutAgent = rollout.namespaces
+    .find(({ id }) => id === seeded.namespace.id)
+    ?.agents.find(({ id }) => id === seeded.agent.id);
+  assert.ok(rolloutAgent);
+  rolloutAgent.desiredRuntimeState = "running";
+  const deployPath = `${base}/agents/${saved.ids[seeded.agent.id]}/deploy`;
+  let deployRequests = 0;
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      if (init.method === "POST" && new URL(url).pathname === deployPath) {
+        deployRequests += 1;
+        return Response.json({}, { status: 202 });
+      }
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  const deployState = structuredClone(saved);
+  await assert.rejects(importTenants(api, rollout, values, { ...options, state: deployState }), {
+    message:
+      `POST ${deployPath}: HTTP 202 returned no data envelope. ` +
+      "Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile " +
+      "any earlier writes before resuming the original operation.",
+  });
+  assert.equal(deployRequests, 1);
+  assert.deepEqual(deployState, saved);
+});
+
+test("export command reports an invalid Namespace response without writing a bundle", async (t) => {
+  const directory = temporaryDirectorySync(t, "split-layout-tenants-");
+  const keyFile = join(directory, "key.json");
+  const output = join(directory, "bundle.json");
+  const key = "service-key-from-file";
+  writeFileSync(keyFile, JSON.stringify({ data: { key } }));
+
+  // A successful HTTP status can still carry invalid inventory from a misconfigured endpoint.
+  const requests: [string | undefined, string | undefined, string | string[] | undefined][] = [];
+  const server = createServer((request, response) => {
+    requests.push([request.method, request.url, request.headers["x-api-key"]]);
+    response.writeHead(200, { "content-type": "application/json" }).end('{"data":[null]}');
+  });
+  await listen(t, server);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const command = fileURLToPath(new URL("../../scripts/split-layout-tenants.ts", import.meta.url));
+  await assert.rejects(
+    promisify(execFile)(process.execPath, [command, "export", "--out", output], {
+      env: {
+        ...process.env,
+        OCC_URL: `http://127.0.0.1:${address.port}`,
+        OCC_SERVICE_KEY_FILE: keyFile,
+      },
+    }),
+    {
+      code: 1,
+      stderr:
+        "GET /namespaces: invalid OCC collection response; expected an object in data[0]. " +
+        "Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile " +
+        "any earlier writes before resuming the original operation.\n",
+    },
+  );
+  assert.deepEqual(requests, [["GET", "/namespaces", key]]);
+  assert.equal(existsSync(output), false);
+  assert.equal(existsSync(`${output}.partial`), false);
 });
 
 test("import command exits 4 while bindings need manual recovery, again on rerun", async (t) => {
@@ -467,6 +538,8 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   const key = "service-key-from-file";
   writeFileSync(join(directory, "key.json"), JSON.stringify({ data: { key } }));
   writeFileSync(join(directory, "values.json"), JSON.stringify({ "team-a": { "model-key": "v" } }));
+  let malformedBindingBody: string | undefined;
+  let bindingCreated: boolean;
 
   // A thin loopback adapter, not the production listener: it checks that the command sends
   // the service key from OCC_SERVICE_KEY_FILE, then forwards the request to the real app as
@@ -488,8 +561,19 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
         : {},
       ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
     });
+    const body = await answer.text();
     response.writeHead(answer.status, { "content-type": "application/json" });
-    response.end(await answer.text());
+    if (
+      malformedBindingBody !== undefined &&
+      request.method === "POST" &&
+      request.url?.endsWith("/iam/access-bindings") &&
+      answer.status === 201
+    ) {
+      bindingCreated = true;
+      response.end(malformedBindingBody);
+      return;
+    }
+    response.end(body);
   });
   await listen(t, server);
   const address = server.address();
@@ -565,6 +649,28 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
     lines.some((line) => line.includes("access binding not re-created: team-a/group-grant: ")),
     lines.join("\n"),
   );
+
+  // OCC created the binding. A lost response envelope leaves its saved ID unknown, so
+  // the operator must reconcile it before resuming instead of treating it as rejected.
+  const malformedCases = [
+    ["missing-data", "{}", "HTTP 201 returned no data envelope."],
+    ["missing-id", '{"data":{}}', "invalid OCC response data; expected a nonempty string in id."],
+  ] as const;
+  for (const [name, body, error] of malformedCases) {
+    const destination = await created(fixture, "/namespaces", { name });
+    await markReady(fixture, destination.id);
+    malformedBindingBody = body;
+    bindingCreated = false;
+    await assert.rejects(run(name, []), {
+      message:
+        `POST /namespaces/${destination.id}/iam/access-bindings: ${error} ` +
+        "Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile " +
+        "any earlier writes before resuming the original operation.",
+    });
+    assert.equal(bindingCreated, true);
+    assert.equal(savedIds(name)[seeded.namespace.id], destination.id);
+    assert.equal(savedIds(name)[seeded.binding.id], undefined);
+  }
 });
 
 test("import refuses overlapping tenant destinations before changing the map or target", async () => {
