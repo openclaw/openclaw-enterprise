@@ -1626,16 +1626,42 @@ function outputTail() {
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
+  // A blank before a marker is its separator, even across chunks or stderr.
+  // Keep its position, but do not let it evict an ordinary line until classified.
+  let pendingStdoutBlank;
+  const settleStdoutBlank = () => {
+    if (pendingStdoutBlank?.index < 0) {
+      omitted += 1;
+    }
+    pendingStdoutBlank = undefined;
+  };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
-    if (lines.length > limit) {
-      omitted += lines.length - outputTailLines;
-      lines.splice(0, lines.length - outputTailLines);
+    const pendingIndex = pendingStdoutBlank?.index ?? -1;
+    const count = lines.length - Number(pendingIndex >= 0);
+    if (count > limit) {
+      const excess = count - outputTailLines;
+      const removed = excess + Number(pendingIndex >= 0 && pendingIndex < excess);
+      omitted += excess;
+      lines.splice(0, removed);
+      if (pendingStdoutBlank) {
+        pendingStdoutBlank.index -= removed;
+      }
     }
   };
   const push = (line) => {
     if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      if (pendingStdoutBlank?.index >= 0) {
+        lines.splice(pendingStdoutBlank.index, 1);
+      }
+      pendingStdoutBlank = undefined;
       return;
+    }
+    if (line.startsWith("stdout: ")) {
+      settleStdoutBlank();
+      if (line === "stdout: ") {
+        pendingStdoutBlank = { index: lines.length };
+      }
     }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
@@ -1672,6 +1698,7 @@ function outputTail() {
           push(`${stream}: ${partial[stream]}`);
         }
       }
+      settleStdoutBlank();
       trim(outputTailLines);
       return { lines, omitted };
     },

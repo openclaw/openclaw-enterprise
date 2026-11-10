@@ -771,6 +771,8 @@ test("live progress " + "x".repeat(1024 * 1024), async (context) => {
     });
   });
   context.after(() => watcher.close());
+  // Fill the tail through its batch boundary, retaining a real blank and an unfinished line.
+  await write(Array.from({ length: 798 }, (_, i) => "useful line " + i).join("\\n") + "\\n\\nunfinished ordinary output");
   emitOpenShellProgress("installation", "started");
   await released;
   emitOpenShellProgress("installation", "passed");
@@ -850,6 +852,13 @@ test("failed stage", async () => {
       { kind: "openshell-stage", stage: "installation", outcome: "passed", elapsedMs: 123 },
     ]);
     const diagnostics = await readFile(join(root, "state/progress.jsonl.diagnostics.json"), "utf8");
+    const tail = JSON.parse(diagnostics).failures[0].output;
+    assert.deepEqual(tail.lines, [
+      ...Array.from({ length: 398 }, (_, index) => `stdout: useful line ${index + 400}`),
+      "stdout: ",
+      "stdout: unfinished ordinary output",
+    ]);
+    assert.equal(tail.omittedLines, 400);
     for (const output of [stdout, stderr, artifact, diagnostics]) {
       assert.doesNotMatch(output, /private-\w+-canary/);
     }
@@ -3030,6 +3039,36 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   assert.equal(tail.lines.at(-1), "stdout: no newline");
   assert.equal(tail.lines[0], "stdout: bulk 601");
   assert.equal(tail.omitted, 605);
+
+  // A split marker can arrive after stderr has already pushed its separator out
+  // of the tail. Only an ordinary blank contributes to the omitted-line count.
+  for (const marker of [true, false]) {
+    const events = [
+      { type: "test:stdout", data: { message: marker ? "\nopenclaw-ci-" : "\n" } },
+      {
+        type: "test:stderr",
+        data: { message: Array.from({ length: 801 }, (_, i) => `err ${i}\n`).join("") },
+      },
+      {
+        type: "test:stdout",
+        data: {
+          message: marker
+            ? 'progress {"kind":"openshell-stage","stage":"installation","outcome":"started"}\n'
+            : "resumed\n",
+        },
+      },
+      { type: "test:fail", data: { name: "case" } },
+    ];
+    const result = (await render(events)).at(-1).data;
+    assert.deepEqual(result.lines, [
+      ...Array.from(
+        { length: marker ? 400 : 399 },
+        (_, i) => `stderr: err ${i + (marker ? 401 : 402)}`,
+      ),
+      ...(marker ? [] : ["stdout: resumed"]),
+    ]);
+    assert.equal(result.omitted, marker ? 401 : 403);
+  }
 
   const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
   const decisive = `${"x".repeat(700)}\nAuthorization: Basic c2hvcnQ=\nprobe code MODEL_PROBE_CPU_STARVED key jobonlyopaque123`;
