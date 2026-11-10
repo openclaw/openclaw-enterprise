@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, open, stat, truncate, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type RequestListener } from "node:http";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.ts";
 import {
@@ -18,7 +18,10 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
 
-function pullFailure(stderr, properties = {}) {
+function pullFailure(
+  stderr: string,
+  properties: { timedOut?: boolean; stdout?: string | Buffer; stderr?: string | Buffer } = {},
+) {
   return Object.assign(new Error(`docker pull ${image} failed: ${stderr}`), {
     stderr,
     exitCode: 1,
@@ -76,9 +79,9 @@ test("image pulls retry only registry and network blips", () => {
   );
 });
 
-function scriptedPull(outcomes) {
-  const calls = [];
-  const execFile = async (command, args, options) => {
+function scriptedPull(outcomes: Error[]) {
+  const calls: { command: string; args: string[]; options: { timeoutMs: number } }[] = [];
+  const execFile = async (command: string, args: string[], options: { timeoutMs: number }) => {
     calls.push({ command, args, options });
     const outcome = outcomes[calls.length - 1];
     if (outcome instanceof Error) {
@@ -90,8 +93,8 @@ function scriptedPull(outcomes) {
 }
 
 test("pullImage retries transient failures with backoff and a per-attempt timeout", async () => {
-  const sleeps = [];
-  const logs = [];
+  const sleeps: number[] = [];
+  const logs: string[] = [];
   const { calls, execFile } = scriptedPull([
     pullFailure("toomanyrequests: You have reached your pull rate limit."),
     pullFailure("", { timedOut: true }),
@@ -100,7 +103,9 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
   await pullImage(image, {
     execFile,
     docker: "podman",
-    sleep: async (ms) => sleeps.push(ms),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
     log: (message) => logs.push(message),
   });
 
@@ -111,6 +116,7 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
     assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
+  assert.ok(logs[1] !== undefined && logs[3] !== undefined);
   assert.match(logs[1], /toomanyrequests.*attempt 2\/4/);
   assert.match(logs[3], /timed out after 120000 ms.*attempt 3\/4/);
 });
@@ -139,8 +145,8 @@ setInterval(() => {}, 1000);
     { mode: 0o700 },
   );
   const runChild = promisify(execFileCallback);
-  const failures = [];
-  const logs = [];
+  const failures: Error[] = [];
+  const logs: string[] = [];
   await assert.rejects(
     pullImage(image, {
       docker,
@@ -152,7 +158,14 @@ setInterval(() => {}, 1000);
           return await runChild(command, args, { timeout: timeoutMs });
         } catch (error) {
           // Adapt Node's actual timeout marker to the caller's existing contract.
-          error.timedOut = error.killed;
+          assert.ok(
+            error instanceof Error &&
+              "killed" in error &&
+              typeof error.killed === "boolean" &&
+              "signal" in error &&
+              (typeof error.signal === "string" || error.signal === null),
+          );
+          Object.assign(error, { timedOut: error.killed });
           failures.push(error);
           throw error;
         }
@@ -162,7 +175,12 @@ setInterval(() => {}, 1000);
     (error) => error === failures.at(-1),
   );
   assert.equal(failures.length, 2);
-  assert.ok(failures.every((error) => error.killed && error.signal === "SIGTERM"));
+  assert.ok(
+    failures.every(
+      (error) =>
+        "killed" in error && error.killed && "signal" in error && error.signal === "SIGTERM",
+    ),
+  );
   const diagnostics = logs.filter((line) => line.startsWith("Image pull attempt "));
   assert.equal(diagnostics.length, 2, "retain the final attempt even when no retry follows");
   for (const [index, diagnostic] of diagnostics.entries()) {
@@ -182,18 +200,18 @@ setInterval(() => {}, 1000);
 
 test("pullImage never reports a truncated line as layer progress", async () => {
   const complete = "\nbbbbbbbbbbbb: Pull complete\n";
-  for (const encode of [(value) => value, (value) => Buffer.from(value)]) {
+  for (const encode of [(value: string) => value, (value: string) => Buffer.from(value)]) {
     for (const [prefix, first, retained] of [
       ["a".repeat(20), `${"a".repeat(44)}: Downloading`, false],
       ["unrelated-prefix ", "cccccccccccc: Downloading", false],
       ["unrelated-prefix\n", "cccccccccccc: Downloading", true],
       ["unrelated-prefix\r", "cccccccccccc: Downloading", true],
-    ]) {
+    ] as const) {
       // The retained 32 KiB starts either inside a line or exactly at its boundary.
       const tail =
         first + "\n" + "x".repeat(32_768 - first.length - 1 - complete.length) + complete;
       for (const stream of ["stdout", "stderr"]) {
-        const logs = [];
+        const logs: string[] = [];
         const failure = pullFailure("", { [stream]: encode(prefix + tail) });
         await assert.rejects(
           pullImage(image, {
@@ -204,6 +222,7 @@ test("pullImage never reports a truncated line as layer progress", async () => {
           (error) => error === failure,
         );
         assert.equal(logs.length, 1);
+        assert.ok(logs[0] !== undefined);
         const progress = logs[0].split("; ").slice(1);
         assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
       }
@@ -261,11 +280,12 @@ test("pullImage stops at its attempt limit and its retry budget", async () => {
   assert.equal(budgeted.calls.length, 2);
 });
 
-async function flakyServer(t, handlers) {
+async function flakyServer(t: TestContext, handlers: RequestListener[]) {
   let requests = 0;
   const server = createServer((request, response) => {
     const handler = handlers[Math.min(requests, handlers.length - 1)];
     requests += 1;
+    assert.ok(handler);
     handler(request, response);
   });
   return {
@@ -275,16 +295,16 @@ async function flakyServer(t, handlers) {
 }
 
 const answer =
-  (status, body = "") =>
+  (status: number, body = ""): RequestListener =>
   (_request, response) => {
     response.writeHead(status, { "content-type": "text/plain" });
     response.end(body);
   };
-const reset = (request) => request.socket.destroy();
+const reset = (request: IncomingMessage) => request.socket.destroy();
 const hang = () => {};
 const quick = { firstDelayMs: 1, attemptTimeoutMs: 1_000 };
 
-async function readManifestFile(path) {
+async function readManifestFile(path: string) {
   // Reopen the current pathname after each download, including atomic replacement.
   const file = await open(path, "r");
   try {
@@ -378,12 +398,14 @@ test("pinned manifests bound cached files and chunked responses before verificat
       artifact: { ...artifact, path: "download.yaml", url: oversized.url },
       directory,
     }),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(
         error.message,
         /Agent Sandbox download failed: manifest exceeds its 32 MiB size limit/,
       );
-      assert.match(error.cause?.message ?? "", /manifest exceeds its size limit/);
+      assert.ok(error.cause instanceof Error);
+      assert.match(error.cause.message, /manifest exceeds its size limit/);
       return true;
     },
   );
@@ -411,11 +433,15 @@ test("fetchPinnedBytes fails a 404 at once", async (t) => {
 });
 
 test("fetchPinnedBytes keeps the original error and does not retry non-network errors", async () => {
-  await assert.rejects(fetchPinnedBytes({ name: "artifact", url: "not a url" }, quick), (error) => {
-    assert.match(error.message, /artifact download failed: .* after 1 attempt\(s\)/);
-    assert.ok(error.cause instanceof TypeError);
-    return true;
-  });
+  await assert.rejects(
+    fetchPinnedBytes({ name: "artifact", url: "not a url" }, quick),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /artifact download failed: .* after 1 attempt\(s\)/);
+      assert.ok(error.cause instanceof TypeError);
+      return true;
+    },
+  );
 });
 
 test("fetchPinnedBytes keeps the last network error as cause when retries run out", async (t) => {
@@ -423,7 +449,8 @@ test("fetchPinnedBytes keeps the last network error as cause when retries run ou
 
   await assert.rejects(
     fetchPinnedBytes({ name: "artifact", url: server.url }, { ...quick, attempts: 2 }),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /after 2 attempt\(s\)/);
       assert.equal(isTransientFetchError(error.cause), true);
       return true;
@@ -433,7 +460,7 @@ test("fetchPinnedBytes keeps the last network error as cause when retries run ou
 });
 
 test("fetch error classification retries only connection and timeout failures", () => {
-  const wrapped = (code) =>
+  const wrapped = (code: string) =>
     new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
   for (const code of ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET"]) {
     assert.equal(isTransientFetchError(wrapped(code)), true, code);
