@@ -79,6 +79,9 @@ do not count as a completed workflow.
 Setup has a 104-minute subprocess deadline inside its 105-minute step limit.
 On expiry, the wrapper terminates the setup process group before reporting
 sanitized startup timings and entering teardown. Raw command output remains private.
+Setup saves the Agent's identifiers before its first deployment so failure diagnostics
+and teardown can use that Agent. Failed setup, Linear, and Git stages report
+source-defined deployment and worker codes without publishing provider messages.
 
 If Git cleanup fails, installation teardown is withheld so that credential
 retirement can be investigated. Private input files are removed by an

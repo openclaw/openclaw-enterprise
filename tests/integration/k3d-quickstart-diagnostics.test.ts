@@ -12,7 +12,7 @@ const wrapper = fileURLToPath(
 );
 
 test(
-  "quickstart failure reports bounded startup timings without publishing private output",
+  "quickstart setup failure projects startup and deployment diagnostics without private output",
   {
     skip: process.platform !== "linux",
   },
@@ -25,6 +25,49 @@ test(
     await Promise.all([scripts, credentials, run].map((path) => mkdir(path, { recursive: true })));
     const privateOutput = `private-output-${randomUUID()}`;
     const timing = "[occ-dev-timing] stage=controller-build elapsed_ms=123 failed=false";
+    // These command fixtures supply an unavailable API and private runtime logs.
+    // Only the real wrapper's projection is under test, not deployment behavior.
+    await writeFile(
+      join(run, "session.sh"),
+      `
+PLATFORM_NS=oce-system
+RELEASE=openclaw-enterprise
+TENANT_NAMESPACE=oce-tenant-fixture
+namespace=ns_00000000-0000-4000-8000-000000000001
+agent=agent_00000000-0000-4000-8000-000000000001
+base=/namespaces/$namespace
+request() { return 1; }
+kube() {
+  if [[ " $* " == *" get pods "* ]]; then
+    printf '%s\\n' '{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[]}'
+  else
+    cat "$RUN_DIR/runtime-fixture.log"
+  fi
+}
+git() { command git -C "$OCE_DIAGNOSTIC_SOURCE" "$@"; }
+`,
+      { mode: 0o600 },
+    );
+    await writeFile(join(run, "requested-revision"), "rev_00000000-0000-4000-8000-000000000001\n");
+    await writeFile(
+      join(run, "runtime-fixture.log"),
+      [
+        privateOutput,
+        JSON.stringify({
+          severity: "ERROR",
+          service: "occ-worker",
+          event: "worker.error",
+          code: "RUNTIME_MODEL_PROBE_FAILED",
+        }),
+        JSON.stringify({
+          severity: "ERROR",
+          service: "occ-worker",
+          event: "worker.error",
+          code: "PRIVATE_DIAG_SENTINEL",
+        }),
+        "",
+      ].join("\n"),
+    );
     // The stage is a subprocess fixture. The real wrapper owns exit propagation and
     // log projection; malformed or suffixed records must stay in its private log.
     await writeFile(
@@ -44,7 +87,12 @@ test(
     );
     const result = spawnSync("bash", [wrapper, "setup"], {
       cwd: directory,
-      env: { ...process.env, RUNNER_TEMP: directory, RUN_DIR: run },
+      env: {
+        ...process.env,
+        RUNNER_TEMP: directory,
+        RUN_DIR: run,
+        OCE_DIAGNOSTIC_SOURCE: fileURLToPath(new URL("../../", import.meta.url)),
+      },
       encoding: "utf8",
       timeout: 10_000,
     });
@@ -60,6 +108,10 @@ test(
       timing,
     );
     assert.ok(!published.includes(privateOutput));
+    assert.ok(published.includes("API Pods: 0, Ready: 0"));
+    assert.ok(published.includes("Capability deployment status unavailable."));
+    assert.ok(published.includes("Worker diagnostic: RUNTIME_MODEL_PROBE_FAILED"));
+    assert.ok(!published.includes("PRIVATE_DIAG_SENTINEL"));
     assert.ok((await readFile(join(credentials, "setup.log"), "utf8")).includes(privateOutput));
   },
 );

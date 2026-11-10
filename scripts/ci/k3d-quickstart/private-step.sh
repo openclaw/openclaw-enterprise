@@ -39,7 +39,7 @@ else
     grep -Eh '^quickstart-location (linear-(deploy|catalog|send|transcript)|operator-session)\.sh:[0-9]{1,5}$' \
       "$RUN_DIR"/linear-*.log 2>/dev/null | tail -5 || true
   fi
-  if [[ $phase == git || $phase == linear ]]; then
+  if [[ $phase == setup || $phase == git || $phase == linear ]]; then
     if [[ -s "$RUN_DIR/session.sh" && -s "$RUN_DIR/requested-revision" ]]; then
       (
         source "$RUN_DIR/session.sh"
@@ -47,19 +47,27 @@ else
           if [[ -e "$RUN_DIR/$milestone" ]]; then printf 'Reached: %s\n' "$milestone"; fi
         done
         revision=$(cat "$RUN_DIR/requested-revision")
-        request GET "$base/agents/$agent/deployments/$revision" > "$RUN_DIR/capability-status.json" || exit 0
-        jq -r '.data.status | select(.=="succeeded" or .=="running" or .=="failed" or .=="cancelled" or .=="pending") | "Capability deployment status: " + .' "$RUN_DIR/capability-status.json"
-        # The API contract strips provider text. Only emit codes also present
-        # in this checkout, never server messages, URLs, or response bodies.
-        jq -r '.data | [(.warnings[]?.code), .error.code, .error.data.runtimeFailure.code,
-          .error.data.runtimeFailure.cause.kind, .error.data.preparation.code] | .[] |
-          strings | select(test("^[A-Z][A-Z0-9_]{2,63}$"))' "$RUN_DIR/capability-status.json" |
-          while IFS= read -r code; do
-            if git grep -q -F -e "\"$code\"" -- apps/controller/src packages/contracts/src; then printf 'Capability deployment: %s\n' "$code"; fi
-          done
-        jq -r '.data.error.data.preparation.pods[]?.containers[]? |
-          select(.reason=="OOMKilled" or .reason=="Error" or .reason=="ContainerCannotRun" or .reason=="ErrImagePull") |
-          "Preparation container: " + .reason + " (exit " + ((.exitCode // 0) | tostring) + ")"' "$RUN_DIR/capability-status.json"
+        kube --request-timeout=10s -n "$PLATFORM_NS" get pods \
+          -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=api" -o json |
+          jq -r '[.items[] | select(.metadata.deletionTimestamp==null)] as $pods |
+            "API Pods: " + ($pods|length|tostring) + ", Ready: " +
+            ([$pods[] | select(any(.status.containerStatuses[]?; .name=="api" and .ready))]|length|tostring)' || true
+        if request GET "$base/agents/$agent/deployments/$revision" > "$RUN_DIR/capability-status.json"; then
+          jq -r '.data.status | select(.=="succeeded" or .=="running" or .=="failed" or .=="cancelled" or .=="pending") | "Capability deployment status: " + .' "$RUN_DIR/capability-status.json"
+          # The API contract strips provider text. Only emit codes also present
+          # in this checkout, never server messages, URLs, or response bodies.
+          jq -r '.data | [(.warnings[]?.code), .error.code, .error.data.runtimeFailure.code,
+            .error.data.runtimeFailure.cause.kind, .error.data.preparation.code] | .[] |
+            strings | select(test("^[A-Z][A-Z0-9_]{2,63}$"))' "$RUN_DIR/capability-status.json" |
+            while IFS= read -r code; do
+              if git grep -q -F -e "\"$code\"" -- apps/controller/src packages/contracts/src; then printf 'Capability deployment: %s\n' "$code"; fi
+            done
+          jq -r '.data.error.data.preparation.pods[]?.containers[]? |
+            select(.reason=="OOMKilled" or .reason=="Error" or .reason=="ContainerCannotRun" or .reason=="ErrImagePull") |
+            "Preparation container: " + .reason + " (exit " + ((.exitCode // 0) | tostring) + ")"' "$RUN_DIR/capability-status.json"
+        else
+          printf 'Capability deployment status unavailable.\n'
+        fi
         # The disposable cluster has one tenant. Inspect the Gateway, Sandbox
         # supervisor and operator, including an earlier supervisor if retained.
         # Print only regional package hostnames, never paths or signed queries.
@@ -69,11 +77,15 @@ else
         fi
         runtime_log="$RUNNER_TEMP/oce-credentials/capability-runtime.log"
         for scope in "$TENANT_NAMESPACE:openshell.ai/boundary-role=supervisor" "$TENANT_NAMESPACE:openclaw.dev/agent=$agent" "$PLATFORM_NS:app.kubernetes.io/instance=openshell-gateway"; do
-          kube -n "${scope%%:*}" logs -l "${scope#*:}" --all-containers --tail=4000 --prefix --ignore-errors=true
+          kube --request-timeout=10s -n "${scope%%:*}" logs -l "${scope#*:}" --all-containers --tail=4000 --prefix --ignore-errors=true
         done > "$runtime_log" 2>/dev/null
         # A preparation Pod can disappear on failure. Include the worker's own
         # runtime startup classifications while keeping all logs runner-private.
-        kube -n "$PLATFORM_NS" logs deployment/openclaw-enterprise-worker -c worker --tail=1500 >> "$runtime_log" 2>/dev/null || true
+        kube --request-timeout=10s -n "$PLATFORM_NS" logs deployment/openclaw-enterprise-worker -c worker --tail=1500 >> "$runtime_log" 2>/dev/null || true
+        jq -Rr 'fromjson? | .code? | strings | select(test("^[A-Z][A-Z0-9_]{2,63}$"))' "$runtime_log" | sort -u |
+          while IFS= read -r code; do
+            if git grep -q -F -e "\"$code\"" -- apps/controller/src packages/contracts/src; then printf 'Worker diagnostic: %s\n' "$code"; fi
+          done
         grep -F -- "$revision" "$runtime_log" | grep -F 'worker.openshell-git-' |
           grep -Eo 'git-recipient|git-provider-generation|git-supervisor-process|git-supervisor-network|git-reconnected-installation|bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
           sort -u | sed 's/^/Git worker reason: /' || true
@@ -89,7 +101,7 @@ else
       sed 's/^/Read recovery check: /' || true
   fi
   # File presence distinguishes cluster bootstrap, model registration and Agent deployment.
-  for milestone in k3d-state/state.json values.json model-source agent transport requested-revision session.sh; do
+  for milestone in k3d-state/state.json values.json model-source agent transport requested-revision failed-deployment.json session.sh; do
     if [[ -s "$RUN_DIR/$milestone" ]]; then printf 'Created: %s\n' "$milestone"; fi
   done
   if [[ -s "$RUN_DIR/failed-deployment.json" ]]; then
