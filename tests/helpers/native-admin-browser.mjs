@@ -838,7 +838,8 @@ async function assertNativeAttribution(page, terminalFrame, profileId, marker) {
   const session = listed.response.payload.sessions.find((entry) => entry.key === sessionKey);
   assert.ok(session, "the real browser-created session must be listed for its native creator");
   assert.equal(session.createdActor.type, "human");
-  assert.equal(session.createdActor.source, "profile");
+  // The public session row projects persisted provenance into a typed identity.
+  assert.deepEqual(session.createdActor.identity, { type: "profile", id: profileId });
   assert.equal(session.createdActor.id, profileId);
   const history = await nativeRpc(page, "chat.history", { sessionKey, limit: 100 });
   assert.equal(history.response.ok, true, JSON.stringify(history.response.error));
