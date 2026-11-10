@@ -53,6 +53,7 @@ import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
+  validateOpenShellSelection,
 } from "./openshell.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -922,6 +923,9 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   }
   assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
   assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
+  if (isOpenShellLane(name)) {
+    await validateOpenShellSelection(effectiveEnv, execFile);
+  }
   const runtimeImageInputs = [
     "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
     "OCC_TEST_KUBERNETES_AGENT_IMAGE",
