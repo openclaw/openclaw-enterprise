@@ -9,7 +9,48 @@ import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const workflow = JSON.parse(
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function record(value: unknown, ...path: string[]): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  let current = value;
+  for (const key of path) {
+    const next = current[key];
+    assert.ok(isRecord(next));
+    current = next;
+  }
+  return current;
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value));
+  const entries: unknown[] = value;
+  return entries.map((entry) => record(entry));
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function optionalText(value: unknown): string | undefined {
+  return value == null ? undefined : text(value);
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value == null ? undefined : record(value);
+}
+
+function includes(value: unknown, item: string): boolean {
+  assert.ok(typeof value === "string" || Array.isArray(value));
+  const sequence: string | unknown[] = value;
+  return sequence.includes(item);
+}
+
+const workflow: unknown = JSON.parse(
   execFileSync(
     process.env.OCC_YQ_BIN ?? "yq",
     ["-o=json", ".", join(root, ".github/workflows/container-publish.yml")],
@@ -20,106 +61,126 @@ const workflow = JSON.parse(
 // These checks protect the release configuration contract, not GitHub's scheduler.
 test("publication workflow requires explicit chart opt-in and a successful image job", () => {
   // Publication must require source verification for the same native build inputs.
-  const check = JSON.parse(
+  const check: unknown = JSON.parse(
     execFileSync(
       process.env.OCC_YQ_BIN ?? "yq",
       ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
       { encoding: "utf8" },
     ),
   );
-  const steps = check.jobs.prepare.steps;
-  const verification = steps.find((step) => step.with?.target === "openclaw-bridge-tests");
-  const assembly = steps.find((step) => step.id === "build");
+  const steps = records(record(check, "jobs", "prepare").steps);
+  const verification = steps.find(
+    (step) => optionalRecord(step.with)?.target === "openclaw-bridge-tests",
+  );
+  const assembly = record(steps.find((step) => step.id === "build"));
   assert.ok(verification);
   assert.ok(steps.indexOf(verification) < steps.indexOf(assembly));
   assert.equal(verification.if, "${{ matrix.image == 'runtime' }}");
   assert.equal(verification["continue-on-error"], undefined);
   assert.equal(assembly.if, undefined);
-  assert.equal(verification.with.outputs, "type=cacheonly");
+  assert.equal(record(verification.with).outputs, "type=cacheonly");
   for (const field of ["context", "file", "platforms", "build-args", "labels"]) {
-    assert.deepEqual(verification.with[field], assembly.with[field], field);
+    assert.deepEqual(record(verification.with)[field], record(assembly.with)[field], field);
   }
-  assert.equal(workflow.jobs.prepare.uses, "./.github/workflows/container-check.yml");
-  const handoff = steps.find((step) => step.with?.name?.startsWith("built-runtime-"));
+  assert.equal(record(workflow, "jobs", "prepare").uses, "./.github/workflows/container-check.yml");
+  const handoff = record(
+    steps.find((step) =>
+      optionalText(optionalRecord(step.with)?.name)?.startsWith("built-runtime-"),
+    ),
+  );
   assert.equal(handoff.if, "${{ matrix.image == 'runtime' }}");
-  const runtimeSmoke = check.jobs["runtime-smoke"];
+  const runtimeSmoke = record(check, "jobs", "runtime-smoke");
+  const smokeSteps = records(runtimeSmoke.steps);
   assert.equal(runtimeSmoke.needs, "prepare");
-  assert.equal(runtimeSmoke.strategy["fail-fast"], false);
-  const downloaded = runtimeSmoke.steps.find((step) =>
-    step.uses?.startsWith("actions/download-artifact@"),
+  assert.equal(record(runtimeSmoke.strategy)["fail-fast"], false);
+  const downloaded = record(
+    smokeSteps.find((step) => optionalText(step.uses)?.startsWith("actions/download-artifact@")),
   );
-  assert.equal(downloaded.with.name, handoff.with.name);
-  assert.equal(downloaded.with["run-id"], undefined);
-  assert.equal(downloaded.with.pattern, undefined);
-  const verified = runtimeSmoke.steps.find((step) => step.id === "verified");
-  const smoke = runtimeSmoke.steps.find((step) =>
-    step.run?.includes("container-release.mjs smoke"),
+  assert.equal(record(downloaded.with).name, record(handoff.with).name);
+  assert.equal(record(downloaded.with)["run-id"], undefined);
+  assert.equal(record(downloaded.with).pattern, undefined);
+  const verified = record(smokeSteps.find((step) => step.id === "verified"));
+  const smoke = record(
+    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.mjs smoke")),
   );
-  const qualified = runtimeSmoke.steps.find((step) =>
-    step.with?.name?.startsWith("platform-runtime-"),
+  const qualified = record(
+    smokeSteps.find((step) =>
+      optionalText(optionalRecord(step.with)?.name)?.startsWith("platform-runtime-"),
+    ),
   );
-  assert.ok(runtimeSmoke.steps.indexOf(downloaded) < runtimeSmoke.steps.indexOf(verified));
-  assert.ok(runtimeSmoke.steps.indexOf(verified) < runtimeSmoke.steps.indexOf(smoke));
-  assert.ok(runtimeSmoke.steps.indexOf(smoke) < runtimeSmoke.steps.indexOf(qualified));
-  assert.equal(smoke.env.IMAGE_DIGEST, "${{ steps.verified.outputs.digest }}");
+  assert.ok(smokeSteps.indexOf(downloaded) < smokeSteps.indexOf(verified));
+  assert.ok(smokeSteps.indexOf(verified) < smokeSteps.indexOf(smoke));
+  assert.ok(smokeSteps.indexOf(smoke) < smokeSteps.indexOf(qualified));
+  assert.equal(record(smoke.env).IMAGE_DIGEST, "${{ steps.verified.outputs.digest }}");
   assert.equal(smoke["continue-on-error"], undefined);
   assert.equal(qualified.if, undefined);
-  assert.equal(runtimeSmoke.steps.find((step) => step.run?.includes("cleanup.mjs")).if, "always()");
-  const controllerUpload = steps.find((step) => step.with?.name?.startsWith("platform-"));
+  assert.equal(
+    record(smokeSteps.find((step) => optionalText(step.run)?.includes("cleanup.mjs"))).if,
+    "always()",
+  );
+  const controllerUpload = record(
+    steps.find((step) => optionalText(optionalRecord(step.with)?.name)?.startsWith("platform-")),
+  );
   assert.equal(controllerUpload.if, "${{ matrix.image == 'controller' }}");
 
-  const inputs = workflow.on.workflow_dispatch.inputs;
-  assert.equal(inputs.publish.type, "boolean");
-  assert.equal(inputs.publish.default, false);
-  assert.equal(inputs.publish_chart.type, "boolean");
-  assert.equal(inputs.publish_chart.default, false);
-  assert.equal(workflow.jobs.publish.if, "${{ inputs.publish }}");
-  const chart = workflow.jobs["publish-chart"];
+  const inputs = record(workflow, "on", "workflow_dispatch", "inputs");
+  assert.equal(record(inputs.publish).type, "boolean");
+  assert.equal(record(inputs.publish).default, false);
+  assert.equal(record(inputs.publish_chart).type, "boolean");
+  assert.equal(record(inputs.publish_chart).default, false);
+  assert.equal(record(workflow, "jobs", "publish").if, "${{ inputs.publish }}");
+  const chart = record(workflow, "jobs", "publish-chart");
   assert.equal(chart.if, "${{ inputs.publish && inputs.publish_chart }}");
-  assert.ok(chart.needs.includes("publish"));
-  assert.ok(!workflow.jobs.publish.needs.includes("publish-chart"));
-  for (const job of [workflow.jobs.publish, chart]) {
+  assert.ok(includes(chart.needs, "publish"));
+  assert.ok(!includes(record(workflow, "jobs", "publish").needs, "publish-chart"));
+  for (const job of [record(workflow, "jobs", "publish"), chart]) {
     assert.notEqual(job["continue-on-error"], true);
     assert.equal(job.environment, "container-publish");
   }
 });
 
 test("chart publication consumes the exact successful image receipt without archives", () => {
-  const images = workflow.jobs.publish.steps;
-  const chart = workflow.jobs["publish-chart"].steps;
+  const images = records(record(workflow, "jobs", "publish").steps);
+  const chart = records(record(workflow, "jobs", "publish-chart").steps);
   const receiptName = "container-publication-${{ github.run_id }}-${{ github.run_attempt }}";
-  const upload = images.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
-  const download = chart.find((step) => step.uses?.startsWith("actions/download-artifact@"));
-  assert.equal(upload.with.name, receiptName);
-  assert.equal(upload.with.path, "${{ runner.temp }}/prepared/publication.json");
-  assert.equal(upload.with["if-no-files-found"], "error");
-  assert.equal(download.with.name, receiptName);
-  assert.equal(download.with.path, "${{ runner.temp }}/prepared");
-  assert.equal(download.with["run-id"], undefined);
-  assert.equal(download.with.repository, undefined);
-  assert.equal(download.with.pattern, undefined);
-  assert.ok(images.every((step) => !step.run?.includes("chart-release.mjs")));
-  const publishIndex = chart.findIndex((step) => step.run?.includes("chart-release.mjs publish"));
+  const upload = record(
+    images.find((step) => optionalText(step.uses)?.startsWith("actions/upload-artifact@")),
+  );
+  const download = record(
+    chart.find((step) => optionalText(step.uses)?.startsWith("actions/download-artifact@")),
+  );
+  assert.equal(record(upload.with).name, receiptName);
+  assert.equal(record(upload.with).path, "${{ runner.temp }}/prepared/publication.json");
+  assert.equal(record(upload.with)["if-no-files-found"], "error");
+  assert.equal(record(download.with).name, receiptName);
+  assert.equal(record(download.with).path, "${{ runner.temp }}/prepared");
+  assert.equal(record(download.with)["run-id"], undefined);
+  assert.equal(record(download.with).repository, undefined);
+  assert.equal(record(download.with).pattern, undefined);
+  assert.ok(images.every((step) => !optionalText(step.run)?.includes("chart-release.mjs")));
+  const publishIndex = chart.findIndex((step) =>
+    optionalText(step.run)?.includes("chart-release.mjs publish"),
+  );
   assert.ok(publishIndex > chart.indexOf(download));
 });
 
 test("publication keeps its lock across jobs and reports image success after chart failure", async (t) => {
-  assert.deepEqual(workflow.concurrency, {
+  assert.deepEqual(record(workflow).concurrency, {
     group:
       "${{ inputs.publish && 'enterprise-container-publish' || format('enterprise-container-prepare-{0}', github.run_id) }}",
     "cancel-in-progress": false,
   });
   // Reacquiring the workflow's lock inside a job would deadlock the release.
-  assert.equal(workflow.jobs.publish.concurrency, undefined);
-  assert.equal(workflow.jobs["publish-chart"].concurrency, undefined);
-  const summary = workflow.jobs.summary;
+  assert.equal(record(workflow, "jobs", "publish").concurrency, undefined);
+  assert.equal(record(workflow, "jobs", "publish-chart").concurrency, undefined);
+  const summary = record(workflow, "jobs", "summary");
   assert.equal(summary.if, "${{ always() }}");
-  assert.ok(summary.needs.includes("publish"));
-  assert.ok(summary.needs.includes("publish-chart"));
-  const step = summary.steps[0];
-  assert.equal(step.env.IMAGE_RESULT, "${{ needs.publish.result }}");
-  assert.equal(step.env.CHART_RESULT, "${{ needs.publish-chart.result }}");
-  assert.equal(step.env.CHART_REQUESTED, "${{ inputs.publish && inputs.publish_chart }}");
+  assert.ok(includes(summary.needs, "publish"));
+  assert.ok(includes(summary.needs, "publish-chart"));
+  const step = record(records(summary.steps)[0]);
+  assert.equal(record(step.env).IMAGE_RESULT, "${{ needs.publish.result }}");
+  assert.equal(record(step.env).CHART_RESULT, "${{ needs.publish-chart.result }}");
+  assert.equal(record(step.env).CHART_REQUESTED, "${{ inputs.publish && inputs.publish_chart }}");
   const directory = await temporaryDirectory(t, "oce-publication-summary-");
   // Execute the actual summary step for its meaningful terminal outcomes.
   // Supplied results represent GitHub context; this is not a hosted dispatch proof.
@@ -134,7 +195,7 @@ test("publication keeps its lock across jobs and reports image success after cha
       directory,
       `${imagesRequested}-${chartRequested}-${imageResult}-${chartResult}.md`,
     );
-    execFileSync("bash", ["-euo", "pipefail", "-c", step.run], {
+    execFileSync("bash", ["-euo", "pipefail", "-c", text(step.run)], {
       env: {
         ...process.env,
         IMAGES_REQUESTED: imagesRequested,
@@ -155,27 +216,27 @@ test("publication keeps its lock across jobs and reports image success after cha
 });
 
 test("native runtime compilation uses spare capacity without overruling runner selection", () => {
-  const check = JSON.parse(
+  const check: unknown = JSON.parse(
     execFileSync(
       process.env.OCC_YQ_BIN ?? "yq",
       ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
       { encoding: "utf8" },
     ),
   );
-  const prepare = check.jobs.prepare;
-  const armRuntime = prepare.strategy.matrix.include.find(
-    (row) => row.image === "runtime" && row.arch === "arm64",
-  );
+  const prepare = record(check, "jobs", "prepare");
+  const matrix = records(record(prepare, "strategy", "matrix").include);
+  const prepareSteps = records(prepare.steps);
+  const armRuntime = record(matrix.find((row) => row.image === "runtime" && row.arch === "arm64"));
   assert.equal(
     armRuntime.runner,
     "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}",
   );
   assert.equal(
-    prepare.strategy.matrix.include.find((row) => row.arch === "arm64" && !row.image).runner,
+    record(matrix.find((row) => row.arch === "arm64" && !row.image)).runner,
     "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}",
   );
-  const report = prepare.steps.find((step) => step.id === "resources");
-  const script = report.run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+  const report = record(prepareSteps.find((step) => step.id === "resources"));
+  const script = text(text(report.run).match(/node <<'NODE'\n([\s\S]*?)\nNODE/)?.[1]);
   const GiB = 1024 ** 3;
   // Execute the shipped reporting step against kernel/API observations. This
   // checks admission and output wiring, not scheduler capacity or build success.
@@ -207,9 +268,9 @@ test("native runtime compilation uses spare capacity without overruling runner s
     { name: "AMD64 remains unchanged", arch: "x64", expected: 4 },
   ]) {
     const arch = scenario.arch ?? "arm64";
-    const output = [];
-    const observed = [];
-    const files = {
+    const output: unknown[] = [];
+    const observed: unknown[] = [];
+    const files: Record<string, string> = {
       "/proc/self/cgroup": scenario.cgroup ?? "0::/slice/leaf\n",
       "/sys/fs/cgroup/cgroup.controllers": "cpu memory",
       "/sys/fs/cgroup/slice/leaf/cpu.max": "max 100000",
@@ -240,7 +301,7 @@ test("native runtime compilation uses spare capacity without overruling runner s
         freemem: () => scenario.free ?? 44 * GiB,
       },
       "node:fs": {
-        readFileSync: (name) => {
+        readFileSync: (name: string) => {
           if (scenario.missing || (scenario.deniedRoot && name === "/sys/fs/cgroup/cpu.max")) {
             throw Object.assign(new Error("unavailable"), { code: "EACCES" });
           }
@@ -249,16 +310,16 @@ test("native runtime compilation uses spare capacity without overruling runner s
           }
           return files[name];
         },
-        appendFileSync: (name, value) => {
+        appendFileSync: (name: string, value: unknown) => {
           assert.equal(name, "output");
           output.push(value);
         },
       },
     };
     runInNewContext(script, {
-      require: (name) => {
+      require: (name: string) => {
         assert.ok(name in modules);
-        return modules[name];
+        return record(modules)[name];
       },
       process: {
         arch,
@@ -270,14 +331,14 @@ test("native runtime compilation uses spare capacity without overruling runner s
         constrainedMemory: () => scenario.constrained ?? 0,
         availableMemory: () => 44 * GiB,
       },
-      console: { log: (value) => observed.push(value) },
+      console: { log: (value: unknown) => observed.push(value) },
     });
     assert.deepEqual(output, [`node_build_jobs=${scenario.expected}\n`], scenario.name);
-    assert.equal(observed[0].nodeBuildJobs, scenario.expected, scenario.name);
+    assert.equal(record(observed[0]).nodeBuildJobs, scenario.expected, scenario.name);
   }
-  const assembly = prepare.steps.find((step) => step.id === "build");
+  const assembly = record(prepareSteps.find((step) => step.id === "build"));
   assert.ok(
-    assembly.with["build-args"].includes(
+    text(record(assembly.with)["build-args"]).includes(
       "format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs)",
     ),
   );

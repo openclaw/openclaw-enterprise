@@ -20,99 +20,136 @@ import {
 
 const promoteWorkflow = ".github/workflows/container-promote.yml";
 
-export function validatePublicationRun(run, workflow, env) {
-  assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
-  assert.match(env.PUBLICATION_ATTEMPT ?? "", /^[1-9][0-9]*$/);
-  assert.equal(String(run.id), env.PUBLICATION_RUN_ID);
-  assert.equal(String(run.run_attempt), env.PUBLICATION_ATTEMPT);
-  assert.equal(workflow.path, publishWorkflow);
-  assert.equal(workflow.state, "active");
-  assert.equal(run.workflow_id, workflow.id);
-  assert.equal(run.path, publishWorkflow);
-  assert.equal(run.repository?.full_name, repository);
-  assert.equal(run.head_repository?.full_name, repository);
-  assert.equal(run.head_branch, "main");
-  assert.equal(run.head_sha, env.SOURCE_SHA);
-  assert.equal(run.event, "workflow_dispatch");
-  assert.equal(run.status, "completed");
-  assert.equal(run.conclusion, "success");
+type ReceiptImage = {
+  image: string;
+  ciRunId: string;
+  ciAttempt: string;
+  destination: unknown;
+  digest: string;
+  tag: string;
+};
+
+function property<K extends PropertyKey>(value: unknown, key: K): unknown {
+  return (value as { [P in K]: unknown })[key];
 }
 
-export function validateReceipt(receipt, env) {
+function optionalProperty<K extends PropertyKey>(value: unknown, key: K): unknown {
+  return (value as { [P in K]: unknown } | null | undefined)?.[key];
+}
+
+export function validatePublicationRun(run: unknown, workflow: unknown, env: NodeJS.ProcessEnv) {
+  assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
+  assert.match(env.PUBLICATION_ATTEMPT ?? "", /^[1-9][0-9]*$/);
+  assert.equal(String(property(run, "id")), env.PUBLICATION_RUN_ID);
+  assert.equal(String(property(run, "run_attempt")), env.PUBLICATION_ATTEMPT);
+  assert.equal(property(workflow, "path"), publishWorkflow);
+  assert.equal(property(workflow, "state"), "active");
+  assert.equal(property(run, "workflow_id"), property(workflow, "id"));
+  assert.equal(property(run, "path"), publishWorkflow);
+  assert.equal(optionalProperty(property(run, "repository"), "full_name"), repository);
+  assert.equal(optionalProperty(property(run, "head_repository"), "full_name"), repository);
+  assert.equal(property(run, "head_branch"), "main");
+  assert.equal(property(run, "head_sha"), env.SOURCE_SHA);
+  assert.equal(property(run, "event"), "workflow_dispatch");
+  assert.equal(property(run, "status"), "completed");
+  assert.equal(property(run, "conclusion"), "success");
+}
+
+export function validateReceipt(
+  receipt: unknown,
+  env: NodeJS.ProcessEnv,
+): asserts receipt is [ReceiptImage, ReceiptImage] {
   assert.ok(Array.isArray(receipt));
+  const images: unknown[] = receipt;
   assert.deepEqual(
-    receipt.map((image) => image.image),
+    images.map((image) => property(image, "image")),
     ["controller", "runtime"],
   );
-  assert.match(receipt[0].ciRunId ?? "", /^[1-9][0-9]*$/);
-  assert.match(receipt[0].ciAttempt ?? "", /^[1-9][0-9]*$/);
+  assert.match((property(images[0], "ciRunId") ?? "") as string, /^[1-9][0-9]*$/);
+  assert.match((property(images[0], "ciAttempt") ?? "") as string, /^[1-9][0-9]*$/);
   assert.match(
     env.NODE_BASE_IMAGE ?? "",
     /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/,
   );
-  for (const image of receipt) {
+  for (const image of images) {
     validatePreparedImage(image, {
       sourceSha: env.SOURCE_SHA,
       workflowSha: env.SOURCE_SHA,
       runId: env.PUBLICATION_RUN_ID,
       attempt: env.PUBLICATION_ATTEMPT,
-      ciRunId: receipt[0].ciRunId,
-      ciAttempt: receipt[0].ciAttempt,
+      ciRunId: property(images[0], "ciRunId"),
+      ciAttempt: property(images[0], "ciAttempt"),
       nodeBaseImage: env.NODE_BASE_IMAGE,
-      image: image.image,
+      image: property(image, "image"),
     });
-    assert.equal(image.tag, `sha-${env.SOURCE_SHA}`);
+    assert.equal(property(image, "tag"), `sha-${env.SOURCE_SHA}`);
   }
-  assert.notEqual(receipt[0].destination, receipt[1].destination);
+  assert.notEqual(property(images[0], "destination"), property(images[1], "destination"));
 }
 
-export function hubRepositoryPath(image) {
+export function hubRepositoryPath(image: string | undefined) {
   assert.match(
     image ?? "",
     /^docker\.io\/[a-z0-9]+(?:[._-][a-z0-9]+)*\/[a-z0-9]+(?:[._-][a-z0-9]+)*$/,
     "Set an explicit Docker Hub namespace/repository without a tag or digest.",
   );
-  const [, namespace, name] = image.split("/");
+  const [, namespace, name] = (image as string).split("/");
   return `/v2/namespaces/${namespace}/repositories/${name}`;
 }
 
-export function validateHubRepository(repo, image) {
+export function validateHubRepository(repo: unknown, image: string | undefined) {
   hubRepositoryPath(image);
-  const [, namespace, name] = image.split("/");
-  assert.equal(repo.namespace, namespace);
-  assert.equal(repo.name, name);
-  assert.equal(repo.is_private, true, "Docker Hub repository must already exist and be private.");
+  const [, namespace, name] = (image as string).split("/");
+  assert.equal(property(repo, "namespace"), namespace);
+  assert.equal(property(repo, "name"), name);
+  assert.equal(
+    property(repo, "is_private"),
+    true,
+    "Docker Hub repository must already exist and be private.",
+  );
 }
 
-async function verifyProducer(env) {
+async function verifyProducer(env: NodeJS.ProcessEnv) {
   await verifyMainSource(env, promoteWorkflow);
-  const comparison = await github(
+  const comparison: unknown = await github(
     `repos/${repository}/compare/${env.SOURCE_SHA}...${env.GITHUB_WORKFLOW_SHA}`,
   );
-  assert.ok(comparison.status === "ahead" || comparison.status === "identical");
+  assert.ok(
+    property(comparison, "status") === "ahead" || property(comparison, "status") === "identical",
+  );
   await verifyEnvironment();
   assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
-  const run = await github(`repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`);
-  const workflow = await github(`repos/${repository}/actions/workflows/container-publish.yml`);
+  const run: unknown = await github(`repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`);
+  const workflow: unknown = await github(
+    `repos/${repository}/actions/workflows/container-publish.yml`,
+  );
   validatePublicationRun(run, workflow, env);
-  const artifacts = await githubPages(
+  const artifacts: unknown[] = await githubPages(
     `repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}/artifacts`,
     "artifacts",
   );
   const matches = artifacts.filter(
     (artifact) =>
-      artifact.name ===
+      property(artifact, "name") ===
       `container-publication-${env.PUBLICATION_RUN_ID}-${env.PUBLICATION_ATTEMPT}`,
   );
   assert.equal(matches.length, 1, "The exact successful publication receipt is required.");
   const artifact = matches[0];
-  assert.equal(artifact.expired, false);
-  assert.equal(String(artifact.workflow_run?.id), env.PUBLICATION_RUN_ID);
-  assert.equal(artifact.workflow_run?.head_sha, env.SOURCE_SHA);
-  return String(artifact.id);
+  assert.equal(property(artifact, "expired"), false);
+  assert.equal(
+    String(optionalProperty(property(artifact, "workflow_run"), "id")),
+    env.PUBLICATION_RUN_ID,
+  );
+  assert.equal(optionalProperty(property(artifact, "workflow_run"), "head_sha"), env.SOURCE_SHA);
+  return String(property(artifact, "id"));
 }
 
-async function hub(path, token, options = {}, allowMissing = false) {
+async function hub(
+  path: string,
+  token: unknown,
+  options: RequestInit = {},
+  allowMissing = false,
+): Promise<unknown> {
   const response = await fetch(`https://hub.docker.com${path}`, {
     ...options,
     headers: {
@@ -126,32 +163,38 @@ async function hub(path, token, options = {}, allowMissing = false) {
     return undefined;
   }
   assert.equal(response.status, 200, `Docker Hub preflight failed (${response.status}).`);
-  return response.json();
+  const body: Promise<unknown> = response.json();
+  return body;
 }
 
-async function verifyHub(image, digest, tag, env) {
+async function verifyHub(
+  image: string | undefined,
+  digest: string,
+  tag: string,
+  env: NodeJS.ProcessEnv,
+) {
   const path = hubRepositoryPath(image);
   assert.ok(env.DOCKERHUB_USERNAME && env.DOCKERHUB_TOKEN, "Docker Hub credentials are required.");
   const auth = await hub("/v2/auth/token", undefined, {
     method: "POST",
     body: JSON.stringify({ identifier: env.DOCKERHUB_USERNAME, secret: env.DOCKERHUB_TOKEN }),
   });
-  assert.ok(auth.access_token, "Docker Hub did not issue an access token.");
-  validateHubRepository(await hub(path, auth.access_token), image);
-  const existing = await hub(`${path}/tags/${tag}`, auth.access_token, {}, true);
+  assert.ok(property(auth, "access_token"), "Docker Hub did not issue an access token.");
+  validateHubRepository(await hub(path, property(auth, "access_token")), image);
+  const existing = await hub(`${path}/tags/${tag}`, property(auth, "access_token"), {}, true);
   if (existing) {
-    assert.equal(existing.digest, digest, "Refusing to overwrite a different digest.");
+    assert.equal(property(existing, "digest"), digest, "Refusing to overwrite a different digest.");
   }
   return existing !== undefined;
 }
 
-async function promote(path, env) {
+async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
   assert.equal(
     await verifyProducer(env),
     env.ARTIFACT_ID,
     "Publication artifact identity changed.",
   );
-  const receipt = JSON.parse(await readFile(path, "utf8"));
+  const receipt: unknown = JSON.parse(await readFile(path as string, "utf8"));
   validateReceipt(receipt, env);
   const ci = { ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt };
   await verifyCi(ci);
@@ -160,8 +203,8 @@ async function promote(path, env) {
     hubImage: env[`DOCKERHUB_${image.image.toUpperCase()}_IMAGE`],
   }));
   assert.notEqual(
-    targets[0].hubImage,
-    targets[1].hubImage,
+    property(targets[0], "hubImage"),
+    property(targets[1], "hubImage"),
     "Use separate Docker Hub repositories.",
   );
   // Check both private destinations before transmitting either image.
@@ -202,7 +245,7 @@ async function promote(path, env) {
         image.digest,
       );
       await appendFile(
-        env.GITHUB_STEP_SUMMARY,
+        env.GITHUB_STEP_SUMMARY as string,
         `- ${image.image}: \`${image.hubImage}@${image.digest}\`\n`,
       );
     }
@@ -215,7 +258,7 @@ async function main() {
   const [command, path] = process.argv.slice(2);
   if (command === "validate") {
     await appendFile(
-      process.env.GITHUB_OUTPUT,
+      process.env.GITHUB_OUTPUT as string,
       `artifact_id=${await verifyProducer(process.env)}\n`,
     );
   } else if (command === "promote") {
@@ -226,8 +269,8 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error(error.message);
+  main().catch((error: unknown) => {
+    console.error((error as { message: unknown }).message);
     process.exitCode = 1;
   });
 }

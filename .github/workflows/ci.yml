@@ -389,6 +389,9 @@ jobs:
     uses: ./.github/workflows/ci-runtime-artifact.yml
 
   image-lanes:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.title }}
     needs: [impact, runtime-artifact]
     if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-images == 'true' }}
@@ -450,6 +453,9 @@ jobs:
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
+    permissions:
+      contents: read
+      actions: read
     name: First Agent Smoke
     needs: [impact, runtime-artifact]
     if: ${{ needs.impact.outputs.mode == 'full' }}
@@ -517,6 +523,9 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.runtime-artifact.outputs.run-id }}
           path: ${{ runner.temp }}/runtime-artifact
           merge-multiple: true
       - name: Build checkout images

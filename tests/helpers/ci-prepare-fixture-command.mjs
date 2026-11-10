@@ -525,6 +525,8 @@ async function fakeCommand({
         "images",
         "import",
         "--all-platforms",
+        "--label",
+        "io.cri-containerd.pinned=pinned",
         "-",
       ]);
       // The worker's containerd stops answering during its first import (finding 1006). The
@@ -630,13 +632,22 @@ async function fakeCommand({
         return finish(
           "REF TYPE DIGEST SIZE PLATFORMS LABELS\n" +
             references
-              .map(
-                (ref) =>
-                  ref +
-                  " application/vnd.oci.image.manifest.v1+json " +
-                  manifestDigest +
-                  " 1 linux/amd64 -\n",
-              )
+              .map((ref) => {
+                const mediaType =
+                  {
+                    "oci-index": "application/vnd.oci.image.index.v1+json",
+                    "docker-manifest-list":
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                    "docker-manifest": "application/vnd.docker.distribution.manifest.v2+json",
+                  }[scenario] ?? "application/vnd.oci.image.manifest.v1+json";
+                const digest =
+                  scenario === "wrong-worker-containerd-digest" &&
+                  node === "agent-0" &&
+                  ref === alias
+                    ? "sha256:" + "d".repeat(64)
+                    : manifestDigest;
+                return `${ref} ${mediaType} ${digest} 1 linux/amd64 -\n`;
+              })
               .join(""),
         );
       }
@@ -648,6 +659,18 @@ async function fakeCommand({
           state.aliases ??= {};
           state.aliases[node] = args[8];
         }
+        return finish();
+      }
+      if (scenario === "missing-alias" && equals(args.slice(2, 7), [...ctr, "label"])) {
+        stderr("ctr: canonical image not found\n");
+        return exit(1);
+      }
+      if (
+        equals(args.slice(2), [...ctr, "label", alias, "io.cri-containerd.pinned=pinned"]) &&
+        alias
+      ) {
+        state.pinned ??= {};
+        state.pinned[node] = true;
         return finish();
       }
       if (
@@ -687,7 +710,39 @@ async function fakeCommand({
           );
           return exit(1);
         }
-        return finish(JSON.stringify({ status: { id: configId, repoDigests: [alias] } }));
+        const status = {
+          id: configId,
+          repoDigests: [alias],
+          pinned:
+            state.pinned?.[node] === true &&
+            !(
+              node === "agent-0" &&
+              (scenario === "unpinned-worker-cri" ||
+                (scenario === "lagging-worker-pin" && state.criLookups[node] <= 2))
+            ),
+        };
+        if (node === "agent-0") {
+          switch (scenario) {
+            case "wrong-worker-cri-digest":
+              status.repoDigests = [alias.replace(manifestDigest, "sha256:" + "d".repeat(64))];
+              break;
+            case "string-worker-cri-digests":
+              status.repoDigests = `${alias}0`;
+              break;
+            case "mixed-worker-cri-digests":
+              status.repoDigests = [alias, 42];
+              break;
+            case "malformed-worker-cri-pin":
+              status.pinned = "true";
+              break;
+            case "lagging-worker-missing-pin":
+              if (state.criLookups[node] <= 2) {
+                delete status.pinned;
+              }
+              break;
+          }
+        }
+        return finish(JSON.stringify({ status }));
       }
     }
   }
