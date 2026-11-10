@@ -170,7 +170,8 @@ export async function gitExpiryGateway(
     };
   }
   world.retainedProviders = Object.keys(providers);
-  let gitName, pullApiName;
+  let gitName;
+  let pullApiName;
   const receiptEnvironments = new Map();
   const observe = (req) => {
     const name = req.provider;
