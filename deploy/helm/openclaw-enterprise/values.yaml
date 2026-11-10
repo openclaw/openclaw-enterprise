@@ -99,9 +99,9 @@ auth:
     # an egress proxy.
     egressCidrs: []
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
-  # existing password accounts (API Pod only). Needs HTTPS, auth.recoveryUserId and
-  # agentNativeAdmin.enabled: false. Its Secret must differ from auth.github's and
-  # auth.google's. Copy issuer and the three URLs
+  # existing password accounts (API Pod only). Needs HTTPS and auth.recoveryUserId.
+  # Native access supports shared-cookie mode. Its Secret must differ from
+  # auth.github's and auth.google's. Copy issuer and the three URLs
   # from the IdP's discovery document: each must be https on port 443 on the issuer's
   # host, with no query or fragment. The API never runs discovery.
   oidc:

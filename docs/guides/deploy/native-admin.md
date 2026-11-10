@@ -58,7 +58,8 @@ agentNativeAdmin:
 Keep the existing GitHub sign-in and recovery-user settings. Console and Agent
 hosts must use HTTPS on the same registrable site. Google sign-in, OIDC and
 sandbox preview cannot be combined with this mode. The exchange creates no user
-or grant; the signed-in person must already administer the exact Agent. See the
+or grant; the signed-in person needs `operate` for chat or `administer` for
+administration on the exact Agent. See the
 [session boundary](../../reference/agent-native-admin.md#host-only-session-exchange).
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
