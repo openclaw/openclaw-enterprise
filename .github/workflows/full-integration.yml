@@ -520,7 +520,9 @@ jobs:
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
     # Only synthetic, job-local model and private Git credentials enter this installation.
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    # Cold runtime assembly has 180 min, followed by repository images and
+    # the installed proof. Ordinary artifact-backed smoke keeps its short job.
+    timeout-minutes: 240
     permissions:
       contents: read
     steps:
