@@ -745,6 +745,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
                     "page": "guides/deploy/immutable-installation-upgrade",
                     "label": "Immutable Installation"
                   },

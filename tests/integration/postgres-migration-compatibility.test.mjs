@@ -1195,7 +1195,7 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
   (text) => JSON.parse(text).scripts,
 );
 
-// flag is one migration command option (--check or --expect-empty) or undefined; refusal,
+// flag is a migration command option or undefined; refusal,
 // when set, must match the command's MIGRATION_HISTORY_UNSUPPORTED message.
 async function runHistoryCommand(db, mode = "development", flag, refusal) {
   const script = (await migrationScripts)[
@@ -1203,7 +1203,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
   ];
   assert.equal(typeof script, "string");
   const args = ["-c", `${script} "$@"`, "sh", ...(flag === undefined ? [] : [flag])];
-  const checkOnly = flag === "--check";
+  const checkOnly = flag === "--check" || flag === "--require-current";
   try {
     const { stdout } = await execFileAsync("sh", args, {
       cwd: repositoryRoot,
@@ -1230,6 +1230,9 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
         assert.match(output, refusal);
       }
       return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
+    }
+    if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
+      return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
     if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
@@ -1978,6 +1981,29 @@ async function canonicalData(db) {
 }
 
 test(
+  "Separate database deployment verifies the exact candidate history without applying pending SQL",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "separate", {
+      prefix: 73,
+    });
+    const verify = () => runHistoryCommand(db, "production", "--require-current");
+    const predecessor = await historySnapshot(db);
+    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_PENDING" });
+    assert.deepEqual(await historySnapshot(db), predecessor);
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preFiniteRepositorySessionWithdrawal",
+    });
+    const current = await historySnapshot(db);
+    assert.deepEqual(await verify(), { ok: true, history: "completed" });
+    assert.deepEqual(await historySnapshot(db), current);
+    await db.migrator.query("REVOKE SELECT ON occ.iam_identities FROM occ_app");
+    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
+  },
+);
+
+test(
   "First installation requires empty migration history under the migration lock",
   requiresHistoryPostgres,
   async (context) => {
@@ -2088,6 +2114,7 @@ test(
       [72, "preAccountAdministrationPolicy"],
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2580,6 +2607,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2771,21 +2799,26 @@ test(
       }
     }
 
-    // Tables created after restoring 0074 retain their native catalog spelling.
-    const previous = await historyDatabase(context, fixture, "withdrawal", { prefix: 74 });
-    const restored = await restoreHistoryArchive(
-      context,
-      fixture,
-      await dumpHistoryArchive(fixture, previous),
-    );
-    assert.deepEqual(await runHistoryMigration(restored, "production"), {
-      ok: true,
-      history: "preHumanAuthenticationResults",
-    });
-    assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-      ok: true,
-      history: "completed",
-    });
+    // Tables created after restoring a published prefix retain their native catalog spelling.
+    for (const [prefix, history] of [
+      [74, "preHumanAuthenticationResults"],
+      [75, "preNativeBrowserAccess"],
+    ]) {
+      const previous = await historyDatabase(context, fixture, "previous", { prefix });
+      const restored = await restoreHistoryArchive(
+        context,
+        fixture,
+        await dumpHistoryArchive(fixture, previous),
+      );
+      assert.deepEqual(await runHistoryMigration(restored, "production"), {
+        ok: true,
+        history,
+      });
+      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+        ok: true,
+        history: "completed",
+      });
+    }
   },
 );
 
@@ -2858,6 +2891,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2866,6 +2900,7 @@ test(
             preset: prefix >= 25,
             computeAdmission: prefix >= 55,
             executionAdmission: prefix >= 62,
+            harnessSettings: prefix >= 72,
           });
         }
         const before = await historySnapshot(db);
@@ -2878,7 +2913,9 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
+        // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],

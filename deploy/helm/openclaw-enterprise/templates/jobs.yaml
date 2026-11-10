@@ -1,3 +1,9 @@
+{{- if not (has .Values.database.upgradeMigration (list "hook" "separate")) }}
+{{- fail "database.upgradeMigration must be hook or separate" }}
+{{- end }}
+{{- if and .Values.preprovisionedNamespace (eq .Values.database.upgradeMigration "separate") }}
+{{- fail "database.upgradeMigration separate requires the initialization Job" }}
+{{- end }}
 {{- if not .Values.preprovisionedNamespace }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
 {{- $jobName := printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" -}}
@@ -151,6 +157,8 @@ spec:
             - scripts/migrate-production.mjs
             {{- if .Release.IsInstall }}
             - --expect-empty
+            {{- else if eq .Values.database.upgradeMigration "separate" }}
+            - --require-current
             {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}

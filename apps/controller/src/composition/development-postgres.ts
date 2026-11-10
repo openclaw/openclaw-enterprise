@@ -281,6 +281,7 @@ export async function composePostgresDevelopment(
           }),
 
       agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       ...(dependencies.passwordHasher === undefined
         ? {}
         : { passwordHasher: dependencies.passwordHasher }),

@@ -1,8 +1,8 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 import type { PlatformStateStore } from "@openclaw-enterprise/occ";
-import { isBoundInput, snapshotSessionInput } from "../../drivers/repo/credentials/sessions.ts";
-import type { SessionStatus } from "../../drivers/repo/credentials/service-contracts.ts";
+import { isBoundInput, snapshotSessionInput } from "../../drivers/repo/access/sessions.ts";
+import type { SessionStatus } from "../../drivers/repo/access/service-contracts.ts";
 import { RepositoryReceiptStore } from "./receipt-store.ts";
 
 const admissionPattern =

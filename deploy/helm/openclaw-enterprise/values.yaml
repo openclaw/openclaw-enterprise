@@ -104,6 +104,8 @@ auth:
 
 agentNativeAdmin:
   enabled: false
+  # host-only-exchange is an explicit opt-in for guarded OIDC sign-in.
+  sessionMode: shared-cookie
   # Required even when browser access is disabled; shares a non-public DNS suffix
   # with auth.baseUrl for automatically scoped browser session cookies.
   domain: ""
@@ -229,6 +231,8 @@ database:
   secretName: occ-database
   appUrlKey: application-url
   migrationUrlKey: migration-url
+  # On upgrade, separate requires the candidate schema before Helm can replace services.
+  upgradeMigration: hook
   # Public CA trust; may share a Secret with the other CA settings, not secretName.
   caSecretName: ""
   caKey: ca.pem

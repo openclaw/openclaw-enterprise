@@ -3,6 +3,7 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/postgres-oidc-outage.test.mjs",
@@ -26,7 +27,8 @@
     "tests/integration/postgres-human-session-cookie.test.mjs",
     "tests/integration/postgres-service-api-keys.test.mjs",
     "tests/integration/postgres-auth-binding.test.mjs",
-    "tests/integration/postgres-oidc-enrollment.test.ts"
+    "tests/integration/postgres-oidc-enrollment.test.ts",
+    "tests/integration/postgres-native-host-only-browser.test.ts"
   ],
   "files": [
     {
@@ -45,7 +47,9 @@
         "PostgreSQL admin downgrade closes the old socket and reconnects only through chat",
         "PostgreSQL reconnect uses the new cookie while the original chat socket keeps its session",
         "PostgreSQL native admin WebSocket lease closes as a dependency failure during an identity lookup outage",
-        "PostgreSQL native admin WebSocket lease closes as a dependency failure during a State outage"
+        "PostgreSQL native admin WebSocket lease closes as a dependency failure during a State outage",
+        "PostgreSQL native browser shutdown drains an in-flight launch without returning access",
+        "PostgreSQL host-only relaunch preserves an existing socket only for the same parent and revision"
       ]
     },
     {
@@ -168,6 +172,12 @@
       "path": "tests/integration/postgres-oidc-enrollment.test.ts",
       "expectedTests": [
         "OIDC enrollment creates scoped accounts and preserves explicit identity links"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-native-host-only-browser.test.ts",
+      "expectedTests": [
+        "a guarded Console opens host-only Agent sessions bound to the browser, live parent and exact revision"
       ]
     }
   ]

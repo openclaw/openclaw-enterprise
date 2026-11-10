@@ -86,6 +86,7 @@ type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
     };
     nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
     nativeAdminUrl?: string;
+    nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
     observabilityUrl?: string;
     observabilityDenied?: boolean;
@@ -1316,6 +1317,22 @@ const authoredScenarios = {
     steps: [
       "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
       "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
+    ],
+  } satisfies LocalScenario,
+  nativeHostOnlyUnavailable: {
+    group: "Components/Native admin",
+    name: "Host-only launch unavailable",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAdminSessionMode: "host-only-exchange",
+    description:
+      "A simulated launch failure closes the pending Agent window and lets the operator try again.",
+    gap: "This fixture does not perform the browser exchange or prove backend authorization. The PostgreSQL browser integration owns that proof.",
+    steps: [
+      "Use Open Agent UI in the header. Confirm the pending window closes and the panel reports the launch error.",
+      "Block popups for the Console and open again. Confirm the panel asks to allow popups, without sending a launch request.",
+      "Refresh access and confirm the Agent remains available; a failed launch does not alter the Agent or its Configuration.",
     ],
   } satisfies LocalScenario,
   nativeStopped: {

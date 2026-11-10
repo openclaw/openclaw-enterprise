@@ -59,8 +59,13 @@ function startupFailureCode(error) {
   if (/OCC_GATEWAY_API_KEY_PATH|gateway API key file/i.test(message)) {
     return "GATEWAY_API_KEY_UNAVAILABLE";
   }
-  // GitHub and Google native administration remain unqualified.
-  if (/sign-in does not support native administration/.test(message)) {
+  // Production composition refuses the combination before any database work; the auth
+  // composer's host-only cookie check is the backstop.
+  if (
+    /sign-in (does not support|supports host-only cookies without shared) native admin/.test(
+      message,
+    )
+  ) {
     return "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED";
   }
   if (/OCC_AGENT_NATIVE_ADMIN|Native admin UI access|Native admin Agent domain/.test(message)) {
@@ -229,7 +234,13 @@ function configuration(env) {
     }
   }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
-  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain };
+  const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
+  if (!["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
+    throw new Error(
+      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
+    );
+  }
+  const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain, sessionMode };
 
   const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
   let parsedAuthBaseURL;
@@ -249,7 +260,7 @@ function configuration(env) {
 
   deriveSharedCookieDomain(authBaseURL, nativeAdminDomain);
 
-  // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
+  // { google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(env);
   const clientAddress = clientAddressConfiguration(env);
   if (mode === "production") {

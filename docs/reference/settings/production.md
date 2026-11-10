@@ -53,16 +53,17 @@ lookup and credential validation require another approved network route.
 `501`. The chart sets it from `agentRuntimeLogs.enabled`.
 
 All browser sessions require `OCC_AGENT_NATIVE_ADMIN_DOMAIN`, including the
-bootstrap process and installations with native access disabled. OCC derives the
+bootstrap process and installations with native access disabled. In default shared-cookie mode, OCC derives the
 shared cookie domain from it and the HTTPS `OCC_AUTH_BASE_URL`. The removed
 `OCC_AUTH_COOKIE_DOMAIN` and `agentNativeAdmin.sharedCookieDomain` inputs are rejected.
 
 Native browser access uses these settings:
 
-| Variable                         | Required value or format                                                                      | Behavior                                                                       |
-| -------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                       | Enables Agent chat and administration through native browser access.           |
-| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. | Required for shared cookie scope; also derives stable per-Agent browser hosts. |
+| Variable                              | Required value or format                                                                      | Behavior                                                                                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AGENT_NATIVE_ADMIN_ENABLED`      | `true`.                                                                                       | Enables Agent chat and administration through native browser access.                                                                      |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`       | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. | Required for shared cookie scope; also derives stable per-Agent browser hosts.                                                            |
+| `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` | `shared-cookie` (default) or `host-only-exchange`.                                            | Host-only exchange requires guarded OIDC and same-site HTTPS; see [native sessions](../agent-native-admin.md#host-only-session-exchange). |
 
 For changes to startup `logging.level`, follow the
 [log-level procedure](../../guides/observability.md#1-choose-the-log-level).

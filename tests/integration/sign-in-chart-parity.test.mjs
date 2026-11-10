@@ -552,9 +552,9 @@ const emptyEgress = (provider) =>
     `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
   );
 
-describe("sign-in chart parity", { concurrency: true }, () => {
-  after(() => rm(directory, { recursive: true, force: true }));
+after(() => rm(directory, { recursive: true, force: true }));
 
+describe("sign-in chart parity", { concurrency: true }, () => {
   test(
     "the API accepts exactly the sign-in settings the chart renders for every proxy preset, with and without Google",
     tooling,
@@ -1149,7 +1149,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           );
           assert.match(
             await refusal({ ...values, "auth.baseUrl": baseUrl }),
-            /HTTPS for shared browser sessions|must share a non-public DNS suffix/,
+            /HTTPS for (?:shared )?browser sessions|must share a non-public DNS suffix/,
           );
         }
         assert.match(
@@ -1226,7 +1226,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         assert.fail(`createControllerAuth accepted ${baseUrl} without an Installation`);
       };
       const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin|unable to parse url/;
-      const plainHttp = /auth\.baseUrl must use HTTPS for shared browser sessions/;
+      const plainHttp = /auth\.baseUrl must use HTTPS for (?:shared )?browser sessions/;
       const unicodeEdge =
         /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/;
       const unicodeInside = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
@@ -1664,6 +1664,56 @@ test(
           }),
         { name: "Error", message: /^OIDC enrollment / },
       );
+    }
+  },
+);
+
+test(
+  "chart host-only native admin is explicit and preserves guarded cookie scope",
+  tooling,
+  async () => {
+    const values = {
+      ...oidcUpgradeValues(recoveryUserId),
+      "agentNativeAdmin.enabled": "true",
+      "agentNativeAdmin.sessionMode": "host-only-exchange",
+      "agentNativeAdmin.domain": "agents.oce.example.internal",
+      "gatewayRouting.enabled": "true",
+    };
+    // Disabling the UI keeps the selected cookie boundary and its provider restrictions.
+    for (const enabled of ["true", "false"]) {
+      const selected = { ...values, "agentNativeAdmin.enabled": enabled };
+      const objects = await renderChart(selected);
+      const settings = signInSettings(deploymentEnv(objects, "api"));
+      assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, "host-only-exchange");
+      assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
+      assert.equal(
+        signInSettings(deploymentEnv(objects, "worker")).OCC_AGENT_NATIVE_ADMIN_SESSION_MODE,
+        undefined,
+      );
+      await startsUp(resolveSecrets(settings), `host-only native admin ${enabled}`);
+      for (const provider of [
+        { "auth.oidc.enabled": "false", "auth.recoveryUserId": "" },
+        googleUpgradeValues(recoveryUserId),
+      ]) {
+        assert.match(
+          await chartRefusal({ ...selected, ...provider, "agentNativeAdmin.enabled": enabled }),
+          enabled === "true" && provider["auth.google.enabled"] === "true"
+            ? /auth.google requires agentNativeAdmin.enabled: false/
+            : /host-only-exchange requires guarded OIDC sign-in without Google/,
+        );
+      }
+    }
+    for (const [overrides, message] of [
+      [{ "agentNativeAdmin.sessionMode": "unknown" }, /sessionMode must be/],
+      [{ "agentNativeAdmin.sessionMode": "" }, /sessionMode must be/],
+      [
+        { "agentNativeAdmin.sharedCookieDomain": "example.com" },
+        /sharedCookieDomain is no longer supported/,
+      ],
+      [{ "gatewayRouting.sandbox.enabled": "true" }, /does not support sandbox preview/],
+      [{ "gatewayRouting.enabled": "false" }, /requires gatewayRouting.enabled/],
+    ]) {
+      assert.match(await chartRefusal({ ...values, ...overrides }), message);
     }
   },
 );

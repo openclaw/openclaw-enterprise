@@ -292,6 +292,7 @@ export async function composeProduction(
       secret: config.authSecret,
       baseURL: config.authBaseURL,
       agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       pool,
       state,
       iamDriver,

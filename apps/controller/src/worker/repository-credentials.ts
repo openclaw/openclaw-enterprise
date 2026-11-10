@@ -1,4 +1,4 @@
-import { sameBinding } from "../drivers/repo/credentials/grant-identity.ts";
+import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";

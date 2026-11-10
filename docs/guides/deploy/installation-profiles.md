@@ -32,17 +32,15 @@ Both profiles enable:
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
 
-Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
-tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway's
-startup model probe is a full agent turn of about 16 CPU-seconds on about one
-core (ready in 24 to 30 seconds at one core, 51 to 72 at `500m`). The CPU request sets the scheduling reservation,
-so the higher limit reserves no node capacity. The trade-off is overcommit:
-several busy runtimes on one node can each take up to four cores from their
-neighbors, and a `limits.cpu` namespace quota counts the whole limit.
+Both profiles set a `100m` CPU request and four-core (`"4"`) burst limit for
+Gateway Pods (embedded or dedicated), Harness Pods, and the tenant namespace
+container default. An embedded OpenClaw Gateway's startup model probe runs a
+full agent turn (~16 CPU-seconds on about one core). Readiness takes 24–30
+seconds at one core or 51–72 seconds at `500m`. Only the request reserves node
+capacity. Busy runtimes sharing a node can each consume four cores, and a
+`limits.cpu` namespace quota counts the full limit.
 
-Memory requests cover the use measured between turns, so the scheduler reserves
-what each Agent actually holds; limits cover measured peaks:
+Memory requests reserve measured usage between turns. Limits cover measured peaks:
 
 | Pod                             | Request  | Limit | Measured                                                                                                                                                                                                                                                                    |
 | ------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -213,7 +211,9 @@ Activation of Google or OIDC sign-in is one-way, so keep the selected provider i
 later renders. `controlPlane.google: {}` uses the chart's Secret defaults.
 `controlPlane.oidc` requires `issuer`, `authorizationUrl`, `tokenUrl` and `jwksUrl`;
 see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
-existing `recoveryUserId`. Google disables native access; OIDC supports it.
+existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
+set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
+same-site HTTPS Console and Agent domains.
 
 Use `controlPlane.oidc.enrollment` for the
 [enrollment policy](../../reference/authentication/team-enrollment.md), including
