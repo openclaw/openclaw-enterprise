@@ -34,7 +34,14 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import { createBackendController } from "../helpers/postgres-backend-state.mjs";
+import {
+  createBackendController,
+  registerCoreDrivers,
+} from "../helpers/postgres-backend-state.mjs";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
@@ -68,7 +75,11 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { PostgresPlatformState, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  PostgresPlatformState,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
 
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -109,6 +120,12 @@ test(
   "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
   journeyOptions,
   externalGitJourney("online-installation"),
+);
+
+test(
+  "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
+  journeyOptions,
+  externalGitJourney("built-in-installation"),
 );
 
 test(
@@ -156,6 +173,7 @@ function repositoryConfiguration(input: {
   sandbox: Record<string, unknown>;
   issuerCaPath: string;
   apiOrigin: string;
+  policyMode?: "built-in";
 }) {
   const base = createInstallationDriverConfiguration();
   // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
@@ -174,6 +192,7 @@ function repositoryConfiguration(input: {
       },
     ],
     repository: {
+      ...(input.policyMode && { policyMode: input.policyMode }),
       id: input.backendId,
       configuration: { sessionDurationSeconds: 180 },
       preparedGitHub: {
@@ -486,6 +505,7 @@ function externalGitJourney(
     | "repository"
     | "installation"
     | "online-installation"
+    | "built-in-installation"
     | "reducible-installation"
     | "lost-rotation",
   artifactAdmissionOnly = false,
@@ -589,7 +609,8 @@ function externalGitJourney(
     await f.controller.handleNamespaceLifecycle(f.actor.id, createdNamespace.id, "ready");
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
-    const online = scope === "online-installation";
+    const builtIn = scope === "built-in-installation";
+    const online = scope === "online-installation" || builtIn;
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
@@ -665,6 +686,7 @@ function externalGitJourney(
       JSON.stringify(
         repositoryConfiguration({
           backendId,
+          ...(builtIn && { policyMode: "built-in" }),
           registryPath,
           privateKeyPath,
           custodyKeyPath,
@@ -733,7 +755,12 @@ function externalGitJourney(
     assert.equal(repositoryOwner.controlSocket, undefined);
     assert.equal(Object.hasOwn(drivers.installation.drivers, "repo"), false);
     assert.equal(drivers.nativeRepositorySender, undefined);
-    assert.equal("open" in drivers.repositoryPolicy!, false);
+    assert.equal("open" in drivers.repositoryAdmission!.policy, false);
+    if (builtIn) {
+      assert.equal(apiDrivers.repositoryPolicy, undefined);
+      assert.equal(drivers.repositoryPolicy, undefined);
+      assert.equal(drivers.repositoryAdmission?.policyMode, "built-in");
+    }
     assert.equal(drivers.repositoryTransport, undefined);
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
@@ -846,6 +873,7 @@ function externalGitJourney(
       validateHarnessAuth: kube.validateHarnessAuth!.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission!.bind(kube),
       validateRepositoryCredentials: kube.validateRepositoryCredentials!.bind(kube),
+      validateRepositoryCredentialSupport: kube.validateRepositoryCredentialSupport!.bind(kube),
       async prepareRevision(revision: AgentRevision, custody: ComputeRevisionContext) {
         preparationStage = "prepare-entered";
         preparations++;
@@ -988,44 +1016,142 @@ function externalGitJourney(
     };
     const { actor, observerPool: pool } = f;
     const backends = apiDrivers.installation.backend;
-    const controller = createBackendController(f, { backends });
+    const controller = builtIn
+      ? OpenClawController.forInstallation(
+          f.installation,
+          { state: f.state, backends },
+          apiDrivers.repositoryAdmission,
+        )
+      : createBackendController(f, { backends });
+    if (builtIn) {
+      registerCoreDrivers(controller, f.state);
+    }
     const { id: who } = actor;
     if (modelGateway) {
       controller.registerDriver(modelGateway);
       controller.selectDriver("credential_gateway", modelGateway.id);
     }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
-    for (const d of [apiDrivers.repositoryPolicy!, compute]) {
+    for (const d of [
+      ...(apiDrivers.repositoryPolicy ? [apiDrivers.repositoryPolicy] : []),
+      compute,
+    ]) {
       controller.registerDriver(d);
       controller.selectDriver(d.capability, d.id);
     }
     const repositoryRef = broad?.installation.repositoryRef ?? "source";
+    let authenticated:
+      ((method: string, url: string, body?: unknown) => ReturnType<typeof injectJson>) | undefined;
+    if (builtIn) {
+      // Sign in a real persisted account with the fixture's administrator Role. Native IAM
+      // authorizes both Namespaces; repository policy alone denies the foreign selection.
+      const auth = await createPostgresControllerAuth({
+        pool,
+        installationId: f.installation.id,
+        mode: "development",
+        baseURL: "http://127.0.0.1",
+        secret: "repository-policy-test-" + randomUUID(),
+      });
+      const app = createFastifyApp({
+        controller,
+        iamDriver: controller.selectedDriver("iam"),
+        computeDriver: compute,
+        configurationDriver: controller.selectedDriver("configuration"),
+        resolveHarness: resolveApprovedHarness,
+        auditSink: f.state.auditSink,
+        auth,
+        development: { enabled: false },
+      });
+      t.after(() => app.close());
+      const credentials = {
+        email: `repository-${randomUUID()}@example.test`,
+        password: randomUUID(),
+      };
+      const account = await auth.createAccount(credentials);
+      const seed = auth.principalSeed(account, { grant: "none" });
+      await f.state.appendNativeIAMPrincipal(seed);
+      // Give the login account the fixture operator's existing bootstrap grants. This
+      // seeds IAM state only; every request still runs the production verifier and IAM.
+      await pool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id, resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [seed.principal.id, who],
+      );
+      const session = await signInToControllerApp(app, credentials);
+      authenticated = (method, url, body) => injectJson(app, method, url, { session, body });
+      const catalog = await authenticated(
+        "GET",
+        `/namespaces/${namespaceId}/agents/repository-options`,
+      );
+      assert.equal(catalog.statusCode, 200, catalog.body);
+      assert.equal(catalog.json().data[0].repositoryRef, repositoryRef);
+      assert.equal(
+        (await injectJson(app, "GET", `/namespaces/${namespaceId}/agents/repository-options`))
+          .statusCode,
+        401,
+      );
+      const foreign = await controller.createNamespace(who, {
+        name: "foreign-" + randomUUID().slice(0, 8),
+      });
+      await controller.handleNamespaceLifecycle(who, foreign.id, "ready");
+      const foreignConfig = await controller.createConfiguration(who, {
+        namespaceId: foreign.id,
+        kind: "agent",
+        values: createHarnessConfiguration("codex", "fixture"),
+      });
+      const foreignCatalog = await authenticated(
+        "GET",
+        `/namespaces/${foreign.id}/agents/repository-options`,
+      );
+      assert.equal(foreignCatalog.statusCode, 200, foreignCatalog.body);
+      assert.deepEqual(foreignCatalog.json().data, []);
+      const before = { issues: gh.issuesOfTokens.length, traffic: origin.traffic() };
+      const denied = await authenticated("POST", `/namespaces/${foreign.id}/agents`, {
+        configurationId: foreignConfig.id,
+        name: "Foreign policy",
+        executionMode: "dedicated",
+        harnessAuth: { method: "runtime" },
+        repositoryBindings: [{ repositoryRef, profile: "github-installation" }],
+      });
+      assert.equal(denied.statusCode, 400, denied.body);
+      assert.equal(denied.json().error.code, "INVALID_REQUEST");
+      assert.match(denied.json().error.message, /approved for this Namespace and profile/);
+      assert.deepEqual(await controller.listAgents(who, foreign.id), []);
+      assert.deepEqual({ issues: gh.issuesOfTokens.length, traffic: origin.traffic() }, before);
+    }
     const approvalId = randomUUID();
     const { id: configurationId } = await controller.createConfiguration(who, {
       namespaceId,
       kind: "agent",
       values: createHarnessConfiguration("codex", conversation ? "fixture-model" : "fixture"),
     });
-    const { id: agentId, servicePrincipalId } = await controller.createAgent(
-      who,
-      {
-        namespaceId,
-        configurationId,
-        name: "External Git",
-        executionMode: "dedicated",
-        harnessAuth: conversation
-          ? { method: "credential_source", sourceId: modelSourceId }
-          : { method: "runtime" },
-        ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
-        repositoryBindings: [
-          {
-            repositoryRef,
-            profile: broad ? "github-installation" : "git-write",
-          },
-        ],
-      },
-      resolveApprovedHarness,
-    );
+    const agentInput = {
+      namespaceId,
+      configurationId,
+      name: "External Git",
+      executionMode: "dedicated",
+      harnessAuth: conversation
+        ? { method: "credential_source", sourceId: modelSourceId }
+        : { method: "runtime" },
+      ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
+      repositoryBindings: [
+        {
+          repositoryRef,
+          profile: broad ? "github-installation" : "git-write",
+        },
+      ],
+    } satisfies Parameters<typeof controller.createAgent>[1];
+    const createdAgent = authenticated
+      ? await (async () => {
+          const { namespaceId: _namespaceId, ...body } = agentInput;
+          const response = await authenticated!("POST", `/namespaces/${namespaceId}/agents`, body);
+          assert.equal(response.statusCode, 201, response.body);
+          return response.json().data as Awaited<ReturnType<typeof controller.createAgent>>;
+        })()
+      : await controller.createAgent(who, agentInput, resolveApprovedHarness);
+    const { id: agentId, servicePrincipalId } = createdAgent;
     if (conversation) {
       // Model authority is independent of the external proxy's metadata route.
       const role = await controller.createIAMRole(who, {
@@ -1148,7 +1274,19 @@ function externalGitJourney(
         resolveApprovedHarness,
       );
     }
-    const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+    const deploy = async () => {
+      if (!authenticated) {
+        return controller.deployAgent(who, key, resolveApprovedHarness);
+      }
+      const response = await authenticated(
+        "POST",
+        `/namespaces/${namespaceId}/agents/${agentId}/deploy`,
+      );
+      assert.equal(response.statusCode, 202, response.body);
+      return (await f.state.read((view) =>
+        view.revisions.findRevision(namespaceId, agentId, response.json().data.id),
+      ))!;
+    };
     if (artifactAdmissionOnly) {
       // This controlled external Driver proves OCC admission and PostgreSQL freezing.
       // Native OpenShell artifact enforcement is qualified separately with shipped images.
@@ -1238,7 +1376,16 @@ function externalGitJourney(
     }
     if (broad) {
       capability.profile = "repository_git";
-      await assert.rejects(deploy, /did not confirm installation-wide repository access/);
+      if (authenticated) {
+        const refused = await authenticated(
+          "POST",
+          `/namespaces/${namespaceId}/agents/${agentId}/deploy`,
+        );
+        assert.equal(refused.statusCode, 503, refused.body);
+        assert.equal(refused.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      } else {
+        await assert.rejects(deploy, /did not confirm installation-wide repository access/);
+      }
       assert.equal(gh.issuesOfTokens.length, 0);
       capability.profile = "github_installation";
     }
@@ -2042,7 +2189,7 @@ function externalGitJourney(
             [second.materialVersion],
           )
           .then((r) => r.rows[0].n);
-      const committed = await receiptCount();
+      let committed = await receiptCount();
       if (broad) {
         assert.equal(
           committed,
@@ -2070,6 +2217,59 @@ function externalGitJourney(
       // Git is still denied per request and cleanup reduces after it. Every pass that starts
       // after the withdrawal must never prepare.
       await settleRevisionMaintenance(f, revision);
+      if (builtIn) {
+        const stored = await f.state.read((view) =>
+          view.revisions.findRevision(namespaceId, agentId, revision.id),
+        );
+        const identity = {
+          attempts: peer.delivery.attempts,
+          installs: peer.delivery.installs,
+          issues: gh.issuesOfTokens.length,
+        };
+        await f.stop();
+        await transport!.close();
+        await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
+        assert.equal(drivers.repositoryPolicy, undefined);
+        prepared = await startOwner();
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
+        await expireStoppedClaims(f, revision);
+        await startWorker();
+        await waitForRevisionPass(
+          "built-in policy recovers the existing revision",
+          f,
+          revision,
+          () =>
+            f.state.read(
+              async (view) =>
+                (await view.agents.findAgent(namespaceId, agentId))?.activeRevisionId ===
+                  revision.id || undefined,
+            ),
+        );
+        await transfer(await origin.addCommit());
+        assert.deepEqual(
+          {
+            attempts: peer.delivery.attempts,
+            installs: peer.delivery.installs,
+            issues: gh.issuesOfTokens.length,
+          },
+          identity,
+        );
+        assert.deepEqual(
+          await f.state.read((view) =>
+            view.revisions.findRevision(namespaceId, agentId, revision.id),
+          ),
+          stored,
+        );
+        await settleRevisionMaintenance(f, revision);
+        committed = await receiptCount();
+      }
       if (sourceBeforeStop) {
         // The supplier applies an optional-source withdrawal, but its reply and
         // observation are lost. Only the stored operation may recover that effect.

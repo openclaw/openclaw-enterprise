@@ -9,15 +9,17 @@ last_verified: "2026-11-04"
 ## Check useful Git work and conversation continuity
 
 From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
-workspace dependencies, and a migrated disposable PostgreSQL database. Set
-`OCC_TEST_DATABASE_URL` to its limited application role as described in the
-[PostgreSQL setup](./postgresql.md). Run:
+workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
+[prepared PostgreSQL setup](./postgresql.md#revision-worker-tests), selecting
+`tests/integration/postgres-external-protected-git.test.ts` in place of the
+revision-worker file. Keep the generated environment file: each case copies the
+migrated template and runs as the limited application role. Run:
 
 ```sh
-node --test tests/integration/postgres-external-protected-git.test.ts
+node --env-file="$PG_WORKER_RUN_DIR/test.env" --test tests/integration/postgres-external-protected-git.test.ts
 ```
 
-Require all four cases to pass without skips. The installation journeys fetch a
+Require every selected case to pass without skips. The installation journeys fetch a
 previously absent object, push a new commit, create and update a PR, then push a
 second distinct commit to the same branch. They read the same PR through the
 authorized API route and compare its head ref with the exact commit in the real
@@ -25,6 +27,14 @@ bare origin. They also require rejection of a provider-protected ref and fresh
 Git denial after withdrawal, with no provider traffic, while the same token
 still works directly at the controlled provider. Git and PostgreSQL are real;
 the installed external Driver, workload, placement and GitHub API are fixtures.
+
+The built-in policy case signs in a persisted account through Fastify,
+creates and deploys an Agent without a public Repo Driver, and refuses the same
+repository in an otherwise authorized foreign Namespace before issuance or Git
+traffic. It restarts the Worker and custody owner, fetches a new commit through
+the original revision, then withdraws approval and requires fresh fetch and push
+to fail without issuance or provider traffic. This is local protocol and
+persistence proof, not an installed OpenShell or live GitHub qualification.
 
 Run the separate conversation proof with `OCC_TEST_STANDING_GIT_CODEX` set to the
 absolute path of the shipped Codex executable and the same database prerequisites:
