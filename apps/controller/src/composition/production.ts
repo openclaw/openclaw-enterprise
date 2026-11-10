@@ -406,6 +406,7 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));

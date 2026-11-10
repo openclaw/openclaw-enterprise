@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-10
-last_updated_session: authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2
+last_updated_session: authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e
 ---
 
 # Protected credential request flow
@@ -269,7 +269,8 @@ checks [request forms](../reference/credential-sources/protected-inference.md#st
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
 Inline developer tools keep the local-tool restrictions. The same check admits
 optional Git workspace metadata and the passive no-MCP attribution as telemetry.
-Both use the selected model and destination from the admitted grant.
+Both use the selected model and destination from the admitted grant. Follow-up
+requests can replay assistant output text with empty `annotations` and `logprobs` arrays.
 
 ### 6. Reduce the live credential policy
 
@@ -333,6 +334,8 @@ None.
 
 ## Changelog
 
+- 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
+
 - 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
@@ -346,9 +349,5 @@ None.
 - 2026-11-05 20:36: Trace one-shot Git enrollment probe failures to the worker log. (authoring-run/5e3df28f-4382-449e-a9db-e26d5347994e - b1da9eddd3a594982ce36639610d1e3480a9e1f7)
 
 - 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
-
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
-
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

@@ -1,10 +1,15 @@
 # Troubleshoot Agents
 
-Start with the symptom you can observe. When asking an operator for help, give
-them the Namespace, Agent ID, version ID, approximate time, and any request ID
-the console shows. Never include API keys, tokens, or Secret values.
+Give operators the Namespace, Agent/version IDs, time and request ID. Never include
+API keys, tokens, or Secret values.
 
 ## Codex refuses the required permission profile
+
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` means managed requirements explicitly
+refused a required mode, profile or reviewer. Ask the policy owner to check
+[OpenShell's requirements](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` means the reply exceeds 1 MiB; ask the policy
+owner to reduce the document, then redeploy.
 
 If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
 

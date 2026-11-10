@@ -1267,6 +1267,56 @@ verify_agent_continuity() {
   done
 }
 
+# Inventory is an authorized, complete view. Missing collections are not an empty fleet.
+read_restart_inventory() {
+  local destination=$1
+  "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
+    die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
+  jq -es --arg installationId "$installation_id" '
+    def identifier: type == "string" and length > 0;
+    length == 1 and (.[0] |
+    .installationId == $installationId and
+    (.namespaces | type == "array") and
+    ([.namespaces[].id] | length == (unique | length)) and
+    all(.namespaces[];
+      (.id | identifier) and
+      (.status | IN("provisioning", "ready", "failed", "deleting")) and
+      (.agents | type == "array") and
+      ([.agents[].id] | length == (unique | length)) and
+      all(.agents[];
+        (.id | identifier) and (.status | IN("active", "deleting")) and
+        (.desiredRuntimeState | IN("running", "stopped")) and
+        (.executionMode | IN("embedded", "dedicated")) and
+        ((has("activeRevisionId") | not) or (.activeRevisionId | identifier)) and
+        (.deploymentInProgress | type == "boolean"))))
+  ' "$destination" >/dev/null ||
+    die "the deployment inventory is incomplete, invalid or belongs to another Installation; no additional OCC writer was stopped."
+  if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$destination" >/dev/null; then
+    die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
+  fi
+  if [[ -z "$runtime_image" ]]; then
+    local refusals
+    refusals=$(jq -r '
+      [.namespaces[] as $namespace | $namespace.agents[] |
+        select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
+        select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
+        {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
+         reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
+      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+    ' "$destination")
+    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+$refusals
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
+  fi
+}
+
+normalize_restart_inventory() {
+  jq -Sc '{installationId, namespaces: [.namespaces[] |
+    {id, status, agents: ([.agents[] |
+      {id, status, desiredRuntimeState, executionMode, activeRevisionId, deploymentInProgress, repositoryWorkerRestart}]
+      | sort_by(.id))}] | sort_by(.id)}' "$1"
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1282,10 +1332,14 @@ cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
 
 "${kube[@]}" --request-timeout=15s get --raw=/readyz >"$evidence_dir/kubernetes-readyz"
-helm status "$release" "${helm_args[@]}" >"$evidence_dir/before-helm-status.txt"
 helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-status.json"
-jq -e '.info.status == "deployed" and (.version | type == "number")' \
-  "$evidence_dir/before-helm-status.json" >/dev/null || die "the Helm release must be deployed before starting an upgrade."
+jq -ers --arg release "$release" --arg namespace "$namespace" '
+  select(length == 1) | .[0] |
+  select(.name == $release and .namespace == $namespace and .info.status == "deployed" and
+    (.version | type == "number" and isfinite and . >= 1 and . == floor)) |
+  "Summary from before-helm-status.json\nNAME: \(.name)\nNAMESPACE: \(.namespace)\nSTATUS: \(.info.status)\nREVISION: \(.version)"
+' "$evidence_dir/before-helm-status.json" >"$evidence_dir/before-helm-status.txt" ||
+  die "the Helm release must be deployed with matching identity and a valid revision before starting an upgrade."
 helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/before-live-values.yaml"
 installation_secret=$(
   yq -er '.installation.secretName // "occ-installation-startup"' \
@@ -1352,28 +1406,8 @@ targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-"${occ_json[@]}" installation deployment-inventory >"$inventory"
-# Validate the fields used below before filtering: absent state is not settled state.
-jq -es --arg installationId "$installation_id" '
-  def identifier: type == "string" and length > 0;
-  length == 1 and (.[0] |
-    .installationId == $installationId and
-    (.namespaces | type == "array" and all(.[];
-      (.id | identifier) and (.status | IN("provisioning", "ready", "failed", "deleting")) and
-      (.agents | type == "array" and all(.[];
-        (.id | identifier) and (.status | IN("active", "deleting")) and
-        (.desiredRuntimeState | IN("running", "stopped")) and
-        (.executionMode | IN("embedded", "dedicated")) and
-        (.deploymentInProgress | type == "boolean") and
-        ((has("activeRevisionId") | not) or (.activeRevisionId | identifier))
-      ))
-    )))
-' "$inventory" >/dev/null ||
-  die "the deployment inventory must be one complete JSON document belonging to this Installation."
-
-if jq -e '.namespaces[].agents[] | select(.deploymentInProgress)' "$inventory" >/dev/null; then
-  die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
-fi
+read_restart_inventory "$inventory"
+normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
 if [[ -z "$runtime_image" ]]; then
   # This path does not replace Agent revisions. Read the exact active snapshot,
@@ -1940,8 +1974,21 @@ if ((helm_complete == 0)); then
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
+  # Refresh before the first stop, including resume when the worker still runs.
+  # This detects changed selections; exclusive maintenance ownership is still required.
+  if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+    read_restart_inventory "$evidence_dir/inventory/before-stop.json"
+    normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
+    cmp -s "$evidence_dir/inventory/restart-preflight.json" "$evidence_dir/inventory/before-stop-selection.json" ||
+      die "the deployment inventory selections or repository restart assessments changed after preparation; no additional OCC writer was stopped. Reconcile the fleet and prepare a new upgrade under exclusive maintenance ownership."
+  fi
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
+    # A stopped worker cannot receive a prospective assessment. Reconcile its
+    # existing quiescence instead of replaying a stop on resume.
+    if jq -e '.spec.replicas == 0' "$evidence_dir/current-$component-deployment.json" >/dev/null; then
+      continue
+    fi
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \

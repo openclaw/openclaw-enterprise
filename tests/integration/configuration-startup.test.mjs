@@ -872,21 +872,29 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repositoryPolicy.capability, "repo");
-  // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repositoryPolicy.id, "repository-credentials");
-  assert.equal(worker.repositoryPolicy.id, api.repositoryPolicy.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repositoryPolicy.id });
+  for (const runtime of [api, worker]) {
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
+    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+  }
+  const policy = api.repositoryAdmission.policy;
+  const workerPolicy = worker.repositoryAdmission.policy;
+  assert.equal(policy.capability, "repo");
+  // The capability name does not replace the operator's opaque policy identity.
+  assert.equal(policy.id, "repository-credentials");
+  assert.equal(workerPolicy.id, policy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.repository.implementation, api.repositoryPolicy.implementation);
+  assert.equal(api.installation.repository.implementation, policy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repositoryPolicy.resolve(selection);
-  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
+  const resolved = policy.resolveBindings(selection);
+  assert.deepEqual(workerPolicy.resolveBindings(selection), resolved);
   assert.equal(resolved.bindings[0].profile, "git-write");
   assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
   assert.equal(resolved.sessionDurationSeconds, 600);
   assert.throws(
-    () => api.repositoryPolicy.resolve({ ...selection, namespaceId: "ns_other" }),
+    () => policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),
     /permitted/,
   );
   const chatgpt = chatgptInstallation();

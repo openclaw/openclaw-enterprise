@@ -53,6 +53,7 @@ import {
   prepareOpenShell,
   prepareOpenShellClusterBootstrap,
   prepareOpenShellPodSecurityAdmission,
+  validateOpenShellSelection,
 } from "./openshell.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -2789,7 +2790,7 @@ async function prepareK3dRuntimeImages(
   state,
   cluster,
   env,
-  { buildController = false, buildRuntime = false } = {},
+  { buildController = false, buildRuntime = false, reuseEngineImages = true } = {},
 ) {
   const needsController = buildController && !process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
   const needsRuntime =
@@ -2815,6 +2816,7 @@ async function prepareK3dRuntimeImages(
       controller: needsController,
       runtime: needsRuntime,
       nodeBaseImage: effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE,
+      reuseEngineImages,
     });
     Object.assign(env, built.env);
     if (needsRuntime) {
@@ -3067,6 +3069,11 @@ async function prepareLane({ lane, statePath, file }) {
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  // The lane receives source inputs. File preparation later receives its
+  // chart paths and imported image references through the prepared environment.
+  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+    await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -3079,9 +3086,17 @@ async function prepareLane({ lane, statePath, file }) {
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
+  const fullOpenShellSourceBuild =
+    process.env.OCC_CI_IMAGE_CACHE === "1" &&
+    suiteView === "full-integration" &&
+    isOpenShellLane(name) &&
+    relativeFile === undefined &&
+    laneDefinition(name).files.some(({ path }) =>
+      lanePrepare(name).sourceBuildFiles?.includes(path),
+    );
   if (
     process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+    (fullOpenShellSourceBuild || lanePrepare(name).sourceBuildFiles?.includes(relativeFile))
   ) {
     // Prime the selected builder, but keep the installer's actual source-build path.
     // Cache credentials remain in preparation; tests inherit only the builder name.
@@ -3089,16 +3104,19 @@ async function prepareLane({ lane, statePath, file }) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
       throw new Error("Installer image preparation requires its selected job builder.");
     }
-    await timedPreparation(name, "installer-source-images", () =>
-      buildRuntimeImages(resolvedStatePath, state, {
-        controller: true,
-        runtime: true,
-        nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
-        // These callers build from source next; an engine tag does not populate
-        // the selected builder's layer cache, even if it holds an identical image.
-        reuseEngineImages: false,
-      }),
-    );
+    // Full OpenShell lanes populate the same builder during their shared stack
+    // preparation below; focused source-build files have no shared stack.
+    if (!fullOpenShellSourceBuild) {
+      await timedPreparation(name, "installer-source-images", () =>
+        buildRuntimeImages(resolvedStatePath, state, {
+          controller: true,
+          runtime: true,
+          nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+          // An engine tag does not populate the selected builder's layer cache.
+          reuseEngineImages: false,
+        }),
+      );
+    }
     env.BUILDX_BUILDER = builder;
     // WORKDIR cache keys include this value; match the preparation build so the
     // installer reuses its layers instead of rebuilding with an unset epoch.
@@ -3483,6 +3501,7 @@ async function prepareLane({ lane, statePath, file }) {
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
         buildRuntime: true,
+        reuseEngineImages: !fullOpenShellSourceBuild,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);
