@@ -43,9 +43,9 @@ preparation. After interruption (`SIGHUP`, `SIGINT`, `SIGTERM`), preserve eviden
 and `.upgrade-lock`. Confirm helper/children stopped and reconcile accepted
 operations/resources before cleanup, retry, directory restoration or unlocking.
 
-Acknowledged creates retain `preflight-<slot>-identity.json` with fields
-`kind`, `name`, `uid`: `networkpolicy` and `secret` identify dependencies;
-`api`/`worker` identify Jobs; `api-pod`/`worker-pod` identify observed children.
+`preflight-<slot>-identity.json` records acknowledged `kind`, `name`, `uid`:
+`networkpolicy`/`secret` are dependencies; `api`/`worker`/`migration` are Jobs;
+`-pod` slots identify observed children. Resume uses `migration-preflight-resume.*`.
 Optional policy, missing children and interrupted creates leave fewer records.
 Match kubeconfig digest to `parameters.json`'s `kubeconfigSha256`, and path,
 context, namespace and release to its first four `arguments`. Confirm ownership;
@@ -53,7 +53,8 @@ preserve original records. They establish create identity, not current identity
 or deletion authority.
 
 Labels `app.kubernetes.io/instance=<release>` and
-`app.kubernetes.io/component=upgrade-preflight` only discover candidates.
+`app.kubernetes.io/component=upgrade-preflight` only discover startup candidates.
+Migration Jobs retain the initializer's `component=initialization` label.
 Stop and consult the owner for old helpers without records or missing, changed,
 replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
 acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain

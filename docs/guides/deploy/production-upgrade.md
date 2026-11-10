@@ -1,9 +1,9 @@
 # Upgrade production images
 
-Upgrade Kubernetes Compute Helm installations using the release checkout's
+Upgrade [Kubernetes Compute releases](production-installation.md) with the release checkout's
 `scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
-See [production installation](production-installation.md) and
-[production Agents](production-agents.md).
+[Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+lack the required chart-owned initializer.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -61,9 +61,8 @@ Prepare:
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
   its `collector.yaml` or `kubernetes.yaml` differs;
-- PostgreSQL backups for controller migrations that can require data
-  restoration, and Agent-volume backups for runtime releases that can require
-  runtime data restoration.
+- PostgreSQL backups for controller migrations and Agent-volume backups for
+  runtime releases that can require data restoration.
 
 Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
@@ -216,16 +215,20 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, and startup in temporary API/worker Jobs.
-Their controller-owned Pods retain chart security and NetworkPolicy labels.
-Unconfirmed Job or child cleanup blocks Secret/policy removal and the upgrade.
+Helm's server dry run, then startup and migration compatibility in temporary Jobs.
+The migration Job uses the candidate controller, initializer's migrator credential/CA, and `scripts/migrate-production.mjs --check`. Recognized pending history
+is allowed; migrations are not applied. The Helm hook rechecks history; separate
+migrations require completion with `--require-current`.
+
+Pods retain chart security and NetworkPolicy labels. Unconfirmed Job or child
+cleanup blocks Secret/policy removal and upgrade.
 
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
 After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-omit `--preflight-only` and use the unused `"$UPGRADE_EVIDENCE"`. Live checks
-repeat. Retain writer and draft freezes through recovery.
+omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
+Keep writer and draft freezes through recovery.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and
@@ -276,9 +279,9 @@ This samples readiness, not routing, model or channel availability. A final-chec
 the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
-If the startup preflight fails, the old release keeps serving. Inspect the
-API and worker preflight logs in the evidence directory. After a cleanup warning
-or interruption, preserve the evidence and lock and follow
+Failed startup or migration preflight leaves the old release serving. Inspect
+`preflight-<api|worker|migration>.log`. After a cleanup warning or interruption,
+preserve the evidence and lock; follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
