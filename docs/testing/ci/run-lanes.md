@@ -90,6 +90,10 @@ native container verification or authorize publication.
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
+For a failed matrix job, inspect each lane's result artifact to find the failing
+lane. The aggregate reports the parent failure once and requires every selected
+lane's same-source evidence, even when other lanes passed.
+
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
 ```sh

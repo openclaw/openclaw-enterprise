@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -36,6 +37,18 @@ var developmentManifestRetry = manifestRetry{
 
 const developmentManifestLimit = 32 * 1024 * 1024
 
+type manifestFailure string
+
+const (
+	manifestSelectedInput manifestFailure = "selected-input"
+	manifestHTTPStatus    manifestFailure = "http-status"
+	manifestTransport     manifestFailure = "transport"
+	manifestDeadline      manifestFailure = "deadline"
+	manifestCanceled      manifestFailure = "canceled"
+	manifestIntegrity     manifestFailure = "integrity"
+	manifestLocalIO       manifestFailure = "local-io"
+)
+
 // downloadDevelopmentManifest fetches a pinned manifest and verifies its
 // checksum. Network failures and HTTP 408, 429 and 5xx are retried; any other
 // status, a refused certificate, an oversized body and a checksum mismatch fail
@@ -46,27 +59,39 @@ func downloadDevelopmentManifest(
 	name, url, expected string,
 	policy manifestRetry,
 ) ([]byte, error) {
+	data, _, err := downloadDevelopmentManifestOutcome(ctx, log, name, url, expected, policy)
+	return data, err
+}
+
+// The outcome is separate from the original error and is used only by the
+// Agent Sandbox manifest diagnostic.
+func downloadDevelopmentManifestOutcome(
+	ctx context.Context,
+	log io.Writer,
+	name, url, expected string,
+	policy manifestRetry,
+) ([]byte, manifestFailure, error) {
 	client := &http.Client{}
 	started := time.Now()
 	delay := min(policy.firstDelay, policy.maxDelay)
 	for attempt := 1; ; attempt++ {
-		data, transient, err := fetchDevelopmentManifest(ctx, client, url, policy.attemptTimeout)
+		data, transient, failure, err := fetchDevelopmentManifest(ctx, client, url, policy.attemptTimeout)
 		if err == nil {
 			digest := sha256.Sum256(data)
 			if hex.EncodeToString(digest[:]) != expected {
-				return nil, fmt.Errorf("pinned manifest checksum does not match the pinned version")
+				return nil, manifestIntegrity, fmt.Errorf("pinned manifest checksum does not match the pinned version")
 			}
-			return data, nil
+			return data, "", nil
 		}
 		if !transient || attempt >= policy.attempts || time.Since(started)+delay > policy.budget {
-			return nil, fmt.Errorf("%w (after %d attempt(s))", err, attempt)
+			return nil, failure, fmt.Errorf("%w (after %d attempt(s))", err, attempt)
 		}
 		fmt.Fprintf(log, "%s: %v; retrying in %s (attempt %d/%d)\n", name, err, delay, attempt+1, policy.attempts)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, fmt.Errorf("download pinned manifest: %w (after %d attempt(s), last error: %v)", context.Cause(ctx), attempt, err)
+			return nil, manifestTransferFailure(ctx, ctx.Err()), fmt.Errorf("download pinned manifest: %w (after %d attempt(s), last error: %v)", context.Cause(ctx), attempt, err)
 		case <-timer.C:
 		}
 		delay = min(delay*2, policy.maxDelay)
@@ -78,31 +103,48 @@ func fetchDevelopmentManifest(
 	client *http.Client,
 	url string,
 	timeout time.Duration,
-) (data []byte, transient bool, err error) {
+) (data []byte, transient bool, failure manifestFailure, err error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, false, manifestTransport, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, transientManifestError(ctx, err), fmt.Errorf("download pinned manifest: %w", err)
+		return nil, transientManifestError(ctx, err), manifestTransferFailure(attemptCtx, err), fmt.Errorf("download pinned manifest: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		status := response.StatusCode
 		transient := status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 && status <= 599
-		return nil, transient, fmt.Errorf("download pinned manifest: HTTP %d", status)
+		return nil, transient, manifestHTTPStatus, fmt.Errorf("download pinned manifest: HTTP %d", status)
 	}
 	data, err = io.ReadAll(io.LimitReader(response.Body, developmentManifestLimit+1))
 	if err != nil {
-		return nil, transientManifestError(ctx, err), fmt.Errorf("read pinned manifest: %w", err)
+		return nil, transientManifestError(ctx, err), manifestTransferFailure(attemptCtx, err), fmt.Errorf("read pinned manifest: %w", err)
 	}
 	if len(data) > developmentManifestLimit {
-		return nil, false, fmt.Errorf("pinned manifest exceeds its size limit")
+		return nil, false, manifestIntegrity, fmt.Errorf("pinned manifest exceeds its size limit")
 	}
-	return data, false, nil
+	return data, false, "", nil
+}
+
+func manifestTransferFailure(ctx context.Context, err error) manifestFailure {
+	if cause := context.Cause(ctx); cause != nil && errors.Is(err, cause) {
+		err = ctx.Err()
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return manifestDeadline
+	case errors.Is(err, context.Canceled):
+		return manifestCanceled
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return manifestDeadline
+	}
+	return manifestTransport
 }
 
 // Any failure of one attempt may pass on the next: its own timeout, a DNS

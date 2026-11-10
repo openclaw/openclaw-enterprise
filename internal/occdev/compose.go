@@ -96,12 +96,11 @@ func validateComposeNativeAdmin(rendered any, state *developmentState) error {
 		return fmt.Errorf("Compose native admin requires controller and browser-proxy services")
 	}
 	environment, _ := controller["environment"].(map[string]any)
-	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+	_, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 	expected := map[string]string{
 		"OCC_AUTH_BASE_URL":              state.BrowserOrigin,
 		"OCC_AGENT_NATIVE_ADMIN_ENABLED": "true",
 		"OCC_AGENT_NATIVE_ADMIN_DOMAIN":  agentDomain,
-		"OCC_AUTH_COOKIE_DOMAIN":         cookieDomain,
 		"OCC_GATEWAY_API_KEY_PATH":       developmentGatewayAPIKeyMount,
 		"NODE_EXTRA_CA_CERTS":            developmentGatewayCAMount,
 	}
@@ -144,7 +143,10 @@ func AnalyzeCompose(data []byte, profile string) ([]string, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("could not read resolved Compose configuration: %w", err)
 	}
-	for _, name := range []string{"controller", "postgres"} {
+	for _, name := range []string{"controller", "postgres", "browser-proxy"} {
+		if name == "browser-proxy" && config.Services[name] == nil {
+			continue
+		}
 		if config.Services[name] == nil {
 			return nil, fmt.Errorf("Compose configuration does not define the %s service", name)
 		}
@@ -153,7 +155,10 @@ func AnalyzeCompose(data []byte, profile string) ([]string, error) {
 		}
 	}
 	apiURL := ""
-	for _, service := range []struct{ name, label string }{{"postgres", "PostgreSQL"}, {"controller", "controller"}} {
+	for _, service := range []struct{ name, label string }{{"postgres", "PostgreSQL"}, {"controller", "controller"}, {"browser-proxy", "browser-proxy"}} {
+		if config.Services[service.name] == nil {
+			continue
+		}
 		for _, raw := range config.Services[service.name].Ports {
 			host, published, target, protocol, err := parsePublication(raw)
 			if err != nil {

@@ -8,7 +8,8 @@ import {
   createAccount,
   currentSession,
   defaultInstallSettings,
-  githubUpgradeSettings,
+  oidcUpgradeSettings,
+  fixtureOidcIssuer,
   memoryLogger,
   passwordSignIn,
   readAccount,
@@ -24,24 +25,24 @@ const password = "activation-member-password";
 const authSecret = "activation-default-auth-test-secret-at-least-32-bytes";
 const secrets = {
   "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "activation-client-id",
-  "occ-github-login/client-secret": "activation-client-secret",
+  "occ-oidc-login/client-id": "activation-client-id",
+  "occ-oidc-login/client-secret": "activation-client-secret",
 };
 
-// Password onboarding is the default: accounts made before GitHub is enabled keep
+// Password onboarding is the default: accounts made before OIDC is enabled keep
 // signing in after the two-phase upgrade in production-installation.md, and
 // administrators keep creating password accounts afterwards.
 test(
-  "password accounts from before GitHub activation keep signing in, and creation continues after it",
+  "password accounts from before OIDC activation keep signing in, and creation continues after it",
   requiresPostgres,
   async (t) => {
     let app;
     const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
-      { email: "activation-admin@example.test", password, secrets, github: false },
+      { email: "activation-admin@example.test", password, secrets, oidc: true },
     );
-    // Phase 0: the default install, no GitHub configuration.
+    // Phase 0: the default install, no OIDC configuration.
     const {
       admin,
       roles: { reader: readerRole },
@@ -55,6 +56,7 @@ test(
       mode: "production",
       installationId: installation.id,
       baseURL: origin,
+      agentDomain: "agents.oce.example.internal",
       secret: authSecret,
       pool,
     });
@@ -80,13 +82,13 @@ test(
     await app.close();
     app = undefined;
 
-    // Phase 1: helm upgrade with auth.github and the recovery user from GET /api/auth/session.
+    // Phase 1: helm upgrade with auth.oidc and the recovery user from GET /api/auth/session.
     const log = memoryLogger();
-    app = await composeApp(githubUpgradeSettings(admin.id), { logger: log.logger });
+    app = await composeApp(oidcUpgradeSettings(admin.id), { logger: log.logger });
     assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
-      github: true,
       google: false,
-      oidc: false,
+      oidc: true,
+      oidcSignIn: { label: "single sign-on", authorizationUrl: fixtureOidcIssuer.authorizationUrl },
       password: true,
       sessionBinding: true,
     });

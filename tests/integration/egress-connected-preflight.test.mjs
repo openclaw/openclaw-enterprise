@@ -489,7 +489,10 @@ test("connected request bytes pass the real Fastify parser and preserve missing-
     const response = await f.app.inject({
       method: wire.method,
       url: wire.path,
-      headers: authenticatedHeaders(session, wire.headers),
+      headers: {
+        host: new URL(session.origin).host,
+        ...authenticatedHeaders(session, wire.headers),
+      },
       payload: wire.body,
     });
     return assertConnectedResponse(

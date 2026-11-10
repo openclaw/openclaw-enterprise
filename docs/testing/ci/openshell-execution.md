@@ -49,9 +49,10 @@ prepare their required cluster, database server, routing, and images; their imag
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
-claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially and prepares the shared resources
-needed by its other files. First-Agent files do not request a separate CI database
+claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
+Each prepares its own shared resources and runs its assigned manifest files
+serially. The Full Integration Aggregate requires both results for the same
+checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
 ## Cache and runner limits
@@ -91,7 +92,12 @@ fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
 attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
 resource names are excluded. Concurrent or nested commands can overlap, so do
 not sum these durations as wall time. Fixed setup milestones record offsets from
-startup to place these operations on the wall-clock timeline. Native Pod profiles
+startup to place these operations on the wall-clock timeline. OpenShell asset
+preparation reports its failed operation, such as chart acquisition, rollout,
+workspace rendering, or image import, with elapsed time measured from that
+operation’s start. Success reports the total preparation time. A failed operation
+may reflect cancellation by another setup task; it does not establish the primary
+cause. These records exclude error text, arguments, and output. Native Pod profiles
 report time from the
 deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
@@ -101,7 +107,13 @@ worker proof.
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
-report only counts and flags, not marker values, commands or transcripts. Content
+retain counts and flags, plus the numeric exit code (0–255) when a single nested
+exec result is recognized. The proof program reports fixed operation and error
+categories for failed session-file writes, session/workspace-file reads, or proof
+emission. These categories contain no paths, commands, raw output, or stacks;
+unknown error codes become `other`. A failure before Node starts, or without a
+recognized failure marker, remains unclassified. These observations do not relax
+any success predicate. Content
 shape counts distinguish strings, arrays, recognized text and tool-call parts,
 and unsupported parts. Exec observations distinguish an exact requested command,
 nonempty output, and the recognized `value.aggregated` result envelope from other
@@ -124,6 +136,13 @@ expected case, and cleanup to pass at the same checkout revision. Include tool
 setup, image builds/imports, tests, cleanup, and artifact upload in elapsed time.
 Report runner allocation and protected-environment waiting separately, and keep
 failed or canceled runs separate from successful runtime measurements.
+
+The job summary records phase timings for each physical lane: `openshell`,
+`openshell-policy`, or `openshell-installers`. Use the receipt's lane, source SHA,
+run ID, and attempt to compare matching jobs. The same JSON is retained for seven
+days as `timing-<artifact-prefix>-<lane>-attempt-<attempt>`. Its elapsed time
+covers the lane action through result artifact upload; it excludes earlier checkout and runner or
+environment waiting. Missing checkpoints remain missing measurements.
 
 Parallel workflows repeat installation setup and can use more runner minutes
 even when wall time falls. The OpenShell job cap bounds concurrent VMs; each

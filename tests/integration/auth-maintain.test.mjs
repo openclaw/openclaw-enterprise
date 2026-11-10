@@ -229,7 +229,7 @@ test(
     const recoveryEmail = `recovery-${suffix}@example.test`;
     const password = "auth-maintenance-test-password";
     const secret = "auth-maintenance-integration-secret-32-characters";
-    const baseURL = "http://127.0.0.1";
+    const baseURL = "https://console.oce.localhost";
     const directory = await privateBootstrapDirectory(context, "openclaw-auth-maintain-");
     await settled(() =>
       ensureDevelopmentBootstrap(context, {
@@ -249,6 +249,7 @@ test(
         mode: "development",
         installationId,
         baseURL,
+        agentDomain: "agents.oce.localhost",
         secret,
         pool,
       });
@@ -354,6 +355,7 @@ test(
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state: new PostgresPlatformState(pool),
@@ -361,13 +363,14 @@ test(
           /requires a configured external sign-in provider/,
         );
       });
-      // Google alone is such a provider: it composes the guarded profile without GitHub.
+      // Google alone is such a provider: it composes the guarded profile without OIDC.
       await withPool(databaseUrl, async (pool) => {
         const state = new PostgresPlatformState(pool);
         const google = await createPostgresControllerAuth({
           mode: "development",
           installationId,
           baseURL,
+          agentDomain: "agents.oce.localhost",
           secret,
           pool,
           state,
@@ -381,9 +384,8 @@ test(
         });
         assert.equal(google.humanProfile, "guarded");
         assert.equal(google.googleEnabled, true);
-        assert.equal(google.githubEnabled, false);
+        assert.equal(google.oidcEnabled, false);
         assert.match(google.googleProviderId, /^google:[0-9a-f]{64}$/);
-        assert.equal(google.attachGitHub, undefined);
         assert.equal(typeof google.attachGoogle, "function");
       });
     });
@@ -607,11 +609,12 @@ test(
       async () => {
         await withPool(databaseUrl, async (pool) => {
           const state = new PostgresPlatformState(pool);
-          // Ordinary startup without GitHub configuration succeeds again.
+          // Ordinary startup without OIDC configuration succeeds again.
           const auth = await createPostgresControllerAuth({
             mode: "development",
             installationId,
             baseURL,
+            agentDomain: "agents.oce.localhost",
             secret,
             pool,
             state,

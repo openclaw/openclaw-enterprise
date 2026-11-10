@@ -24,7 +24,7 @@ controllers first; create the service-key Secret and match Helm and Installation
 settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
 Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
-[GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
+[Google](google-sign-in.md) sign-in requires disabling native administration.
 
 Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
@@ -163,7 +163,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
+Generation requires Node.js satisfying `engines.node` in the selected release checkout's `package.json` on the operator host (and `pnpm install` with
 native admin). Without Node.js on the operator host, use the manual YAML examples.
 
 Create `$OCC_INPUT_DIRECTORY/profile-input.json` from the schema in
@@ -247,12 +247,13 @@ before the checks:
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
-  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  (HTTPS is required for browser sessions), even a bare `?` or `#`, Unicode
   spaces or invisible characters (outer ASCII spaces are ignored), or forms the
   API's URL parser refuses, such as full-width `？`.
-  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
-  native admin, it must be `https` and its host inside
-  `agentNativeAdmin.sharedCookieDomain`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job.
+  In shared-cookie mode, Console and Agent hosts must share a non-public DNS
+  suffix; OCC derives the cookie domain. OIDC host-only exchange requires
+  same-site HTTPS without a shared Console cookie.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
@@ -280,12 +281,13 @@ intended protected directory containing your prepared `values.yaml`,
 
 Run this block before provisioning the password profile. If it fails, correct the
 named check before continuing. After the directory check, each run invalidates
-the previous render. Image, claim, and manifest-path exports are set only after
-every check succeeds:
+the previous render. Image, claim, database CA, and manifest-path exports are set
+only after every check succeeds:
 
 ```bash
 {
   unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset DATABASE_CA_SECRET DATABASE_CA_KEY
   OCC_RENDER_TEMP=
   if
     OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
@@ -306,7 +308,7 @@ every check succeeds:
       (.api.clients | length > 0) and .gatewayRouting.enabled == true and
       .gatewayRouting.gatewayClassName != "" and
       .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
-      .auth.github.enabled == true or .auth.google.enabled == true or
+      .auth.google.enabled == true or
       .auth.oidc.enabled == true)' \
       "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
     OCC_VALIDATION_STEP='runtime settings' &&
@@ -328,6 +330,10 @@ every check succeeds:
       >"$OCC_RENDER_TEMP" &&
     OCC_VALIDATION_STEP='controller image extraction' &&
     CONTROLLER_IMAGE="$(yq e -e -r '.images.controller' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA Secret extraction' &&
+    DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    OCC_VALIDATION_STEP='database CA key extraction' &&
+    DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='bootstrap claim extraction' &&
     OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='bootstrap claim match' &&
@@ -342,9 +348,11 @@ every check succeeds:
   then
     OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
     export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export DATABASE_CA_SECRET DATABASE_CA_KEY
     unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
   else
     unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset DATABASE_CA_SECRET DATABASE_CA_KEY
     if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
     printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
     unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
@@ -384,8 +392,6 @@ chmod 600 /secure/occ/occ-application-url /secure/occ/occ-migration-url \
   /secure/occ/occ-auth-secret
 test -s /secure/occ/occ-application-url
 test -s /secure/occ/occ-migration-url
-export DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")"
-export DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")"
 if [ -n "$DATABASE_CA_SECRET" ]; then
   chmod 600 /secure/occ/occ-database-ca.pem
   test -s /secure/occ/occ-database-ca.pem
@@ -421,9 +427,9 @@ both files to use the generated Service DNS name.
 Run this whole block only if you have not attempted any of the Secret creates
 below. If you have already attempted a create, follow the recovery instructions
 after the block. Use the Bash shell where validation succeeded and the Secret
-inputs were prepared. In a new shell, restore the input-directory setup, rerun
-validation, and reload `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the intended
-`values.yaml` using the two exports above. Recheck the prepared protected inputs,
+inputs were prepared. In a new shell, restore the input-directory setup and rerun
+validation, which also loads `DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the
+intended `values.yaml`. Recheck the prepared protected inputs,
 including the CA file when configured. Keep the existing auth secret. Both server
 dry runs must succeed before the block creates Secrets.
 
@@ -461,9 +467,9 @@ unknown, verify which Secrets exist in `openclaw-system` on the reviewed cluster
 Resolve uncertain writes before resuming. Do not repeat confirmed successful
 creates.
 
-If you change any of the three prepared YAML files, rerun validation and reload
-`DATABASE_CA_SECRET` and `DATABASE_CA_KEY` from the intended `values.yaml` using
-the two exports above. Recheck the protected inputs, including the CA file when
+If you change any of the three prepared YAML files, rerun validation before
+continuing; it reloads the CA settings from the intended `values.yaml`. Do not
+reuse the previous CA selection. Recheck the protected inputs, including the CA file when
 its settings change. Keep the existing auth secret. Before repeating dry runs or
 any remaining creates, verify that previously created Secrets match the intended
 inputs and resolve any mismatch within the authorized change scope. When resuming
@@ -664,67 +670,38 @@ session copy.
 After authentication, follow [Namespace and Agent deployment](production-agents.md),
 including its [model-response check](production-agents.md#verify-production-workloads).
 
-## Enable GitHub browser sign-in
+## Enable external browser sign-in
 
-Install the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-with GitHub off and a compatible [published](#use-published-images) or [self-built](#build-and-publish-production-images) image.
-Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#roll-back-across-human-sign-in) past activation.
-[Deactivate during stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+Use [OIDC setup](oidc-sign-in.md) or [Google setup](google-sign-in.md) to register
+the client and prepare the provider's dedicated Secret and Helm settings.
+For an installation that uses direct GitHub sign-in, follow the
+[OIDC upgrade procedure](oidc-upgrade.md) before installing this release.
 
-1. Verify password sign-in as recovery administrator. Read `data.user.id` from
-   `GET /api/auth/session`.
-2. Reuse the release Namespace’s dedicated sign-in Secret without reading values.
-   If absent, use protected files:
+1. Verify password sign-in as the recovery administrator. Read `data.user.id`
+   from `GET /api/auth/session` and set `auth.recoveryUserId` to that ID.
+2. Close general ingress, disable automatic restarts and identity or policy
+   writers, drain requests, and [stop all database clients](auth-maintenance.md#stop-every-writer).
+   On first activation, [run `activate --recovery-user <userId> --writers-stopped`](auth-maintenance.md#run-the-command).
+   Review skipped accounts and verify `status`. Keep ingress closed and old
+   API and worker replicas at zero.
+3. Upgrade with the selected provider settings and initialization hooks enabled.
+   The Job checks the Installation, migrates and bootstraps without reissuing
+   credentials for a verified Installation. Confirm one serving controller and
+   no old API Pods.
+4. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, provider sign-in, expected resource access and
+   stale-session rejection. Attach each existing user's identity explicitly.
+   Enable [OIDC enrollment](../../reference/authentication/team-enrollment.md)
+   only with the intended admission rule, initial Role and Groups.
+5. Reopen ingress after verification. Before enabling `auth.passwordSignIn:
+recovery-only`, confirm that every ordinary account can sign in through its
+   attached provider identity.
 
-   ```bash
-   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
-     -n openclaw-system create secret generic occ-github-login \
-     --from-file=client-id=/secure/occ/github-client-id \
-     --from-file=client-secret=/secure/occ/github-client-secret
-   ```
-
-   Protected values:
-
-   ```yaml
-   auth:
-     recoveryUserId: "<recovery administrator user ID>"
-     github:
-       enabled: true
-       secretName: occ-github-login
-       clientIdKey: client-id
-       clientSecretKey: client-secret
-   agentNativeAdmin:
-     enabled: false
-   ```
-
-   Match its name and distinct keys (client ID, not App ID).
-   Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
-   See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
-
-3. Close ingress. Disable auto-restarts and policy/provisioning writers. Drain requests.
-   [Stop API, worker and other database clients](auth-maintenance.md#stop-every-writer).
-   At first activation, [run `activate --recovery-user <recoveryUserId> --writers-stopped`](auth-maintenance.md#run-the-command).
-   This enrolls qualifying accounts, reports skips, and ends unbound sessions. After `status`, return here with ingress closed and old API/worker replicas at zero.
-4. On success, one normal `helm upgrade` restores configured replicas. Keep initialization hooks enabled.
-   The Job checks the Installation, migrates, then bootstraps without reissuing verified Installations’ credentials.
-5. Confirm rollout completion, no old API Pods, and one serving controller.
-   Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access), verify password recovery, new sessions,
-   expected Namespaces and Agent detail, and stale-session rejection before reopening ingress.
-
-Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
-reattach under the new ID before detaching old methods.
-
-For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
-with an existing IAM Group and the App's email-read permission. Otherwise, follow
-the manual attachment procedure below.
-
-[Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
-Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
-Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
-Resolve failed or uncertain writes before retrying. Attach identities to all ordinary accounts. Each user must sign in once with theirs before
-[`auth.passwordSignIn: recovery-only`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in).
-
-Loopback cannot qualify production stop/drain, cookies, logging, and GitHub registration.
+Activation is one-way during normal operation. Returning to password-only mode
+requires [stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+Restart the API after secret rotation. Client ID or issuer changes require new
+identity attachments. Loopback checks do not qualify production ingress,
+provider registration or stop-and-drain procedures.
 
 ## Related
 

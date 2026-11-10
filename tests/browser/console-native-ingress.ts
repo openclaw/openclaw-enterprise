@@ -86,12 +86,10 @@ export async function createNativeConsoleFixture<Options extends object>(
       ...options,
       originHost: consoleHost,
       publicOrigin: true,
-      authCookieDomain: cookieDomain,
       development: { enabled: false },
       https: true,
       ingressTLS,
-      authSecureCookies: true,
-      nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+      nativeAdmin: { enabled: true, domain: nativeDomain },
     });
     t.after(remove);
     const nativePage = serveAgentPage ? await serveNativePage(t, ingressTLS) : undefined;

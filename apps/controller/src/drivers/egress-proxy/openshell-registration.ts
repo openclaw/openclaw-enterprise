@@ -7,7 +7,7 @@ import type {
 import type { OpenShellGateway } from "../../backends/openshell.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
-import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery.ts";
+import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {

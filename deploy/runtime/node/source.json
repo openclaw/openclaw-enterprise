@@ -1,0 +1,8 @@
+{
+  "version": "24.22.1",
+  "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
+  "sourceArchiveSha256": "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231",
+  "patchSha256": "4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9",
+  "modules": "137",
+  "napi": "10"
+}

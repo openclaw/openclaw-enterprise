@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { classify } from "./impact.mjs";
+
 export const fullIntegrationLanes = Object.freeze([
   "qa-matrix",
   "docker-model",
@@ -32,9 +34,9 @@ const credentialedLanes = new Set([
   "openshell",
 ]);
 
-export function selectLane({ eventName, inputLane, ref }) {
+export function selectLane({ eventName, inputLane, ref, impactMode = "full" }) {
   if (eventName === "push" && ref === "refs/heads/main") {
-    return "all";
+    return impactMode === "docs" ? "docs" : "all";
   }
   if (eventName === "workflow_dispatch") {
     return inputLane;
@@ -178,15 +180,17 @@ async function fetchGithubJson({ repository, token, path }) {
 export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
+  impactMode = "full",
 } = {}) {
   assertRunContext(env);
   const selected = selectLane({
     eventName: env.GITHUB_EVENT_NAME,
     inputLane: env.INPUT_LANE,
     ref: env.GITHUB_REF,
+    impactMode,
   });
   // Validate selection before any authorization or protected-environment reads.
-  const required = requiredEnvironmentsForLane(selected);
+  const required = requiredEnvironmentsForLane(selected === "docs" ? "all" : selected);
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
     await validateManualApproval(env, github);
   }
@@ -207,12 +211,15 @@ export async function validateFullIntegrationPreflight({
 }
 
 async function main() {
-  const result = await validateFullIntegrationPreflight();
+  const result = await validateFullIntegrationPreflight({ impactMode: classify().mode });
   console.log(
     process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
       ? "Full Integration authorized by the dispatcher's required team approval."
       : "Full Integration authorized by a main push.",
   );
+  if (result.selectedLane === "docs") {
+    console.log("Verified documentation-only main push: Full Integration lanes are not selected.");
+  }
   if (process.env.GITHUB_OUTPUT) {
     const { appendFileSync } = await import("node:fs");
     appendFileSync(

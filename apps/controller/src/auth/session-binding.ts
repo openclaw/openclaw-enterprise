@@ -26,7 +26,7 @@ export function sessionBindingKey(secret: string, sessionId: string): string {
   return mac(secret, "occ-session-key", sessionId);
 }
 
-/** Public identifier for one GitHub login attempt, derived from its private state. */
+/** Public identifier for one external login attempt, derived from its private state. */
 export function loginAttemptId(secret: string, stateHash: string): string {
   return mac(secret, "occ-login-attempt", stateHash);
 }
@@ -58,7 +58,7 @@ export interface LoginReceipt {
 export function signLoginReceipt(secret: string, receipt: LoginReceipt): string {
   const payload = Buffer.from(
     JSON.stringify({
-      v: 2,
+      v: 3,
       p: receipt.providerId,
       s: receipt.sessionId,
       a: receipt.attemptId,
@@ -72,7 +72,6 @@ export function verifyLoginReceipt(
   secret: string,
   value: string | null | undefined,
   expectedProviderId: string,
-  now: number,
 ): LoginReceipt | undefined {
   if (typeof value !== "string" || value.length > 1024) {
     return undefined;
@@ -92,7 +91,7 @@ export function verifyLoginReceipt(
   }
   const { v, p, s, a, e } = (parsed ?? {}) as Record<string, unknown>;
   if (
-    v !== 2 ||
+    v !== 3 ||
     typeof p !== "string" ||
     p.length === 0 ||
     p !== expectedProviderId ||
@@ -101,32 +100,9 @@ export function verifyLoginReceipt(
     !isBindingValue(a) ||
     typeof e !== "number" ||
     !Number.isSafeInteger(e) ||
-    e <= now
+    e <= 0
   ) {
     return undefined;
   }
   return { providerId: p, sessionId: s, attemptId: a, expiresAt: e };
-}
-
-/**
- * Remembers exchanged receipts until they expire, so a copied receipt cannot be
- * exchanged twice. Capacity is bounded by successful GitHub callbacks, which are
- * themselves admission-limited; the Helm chart runs one controller replica.
- */
-export function receiptLedger() {
-  const consumed = new Map<string, number>();
-  return {
-    consume(receipt: LoginReceipt, now: number): boolean {
-      for (const [attemptId, expiresAt] of consumed) {
-        if (expiresAt <= now) {
-          consumed.delete(attemptId);
-        }
-      }
-      if (consumed.has(receipt.attemptId)) {
-        return false;
-      }
-      consumed.set(receipt.attemptId, receipt.expiresAt);
-      return true;
-    },
-  };
 }

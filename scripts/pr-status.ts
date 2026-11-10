@@ -75,21 +75,30 @@ try {
     ["pr", "view", number, "--repo", repository, "--json", fields.join(",")],
     "pull request",
   );
+  const baseRefName = property(pr, "baseRefName");
   if (
-    !property(pr, "baseRefName") ||
+    typeof baseRefName !== "string" ||
+    baseRefName.split("/").some((part) => !part || part === "." || part === "..") ||
     !property(pr, "headRefOid") ||
     !optionalLogin(property(pr, "author"))
   ) {
     throw new Error("GitHub did not return the PR identity, branch, or head.");
   }
   const base = gh(
-    [
-      "api",
-      `repos/${String(repository)}/commits/${String(encodeURIComponent(String(property(pr, "baseRefName"))))}`,
-    ],
+    ["api", `repos/${String(repository)}/git/ref/heads/${encodeURIComponent(baseRefName)}`],
     "target branch",
   );
-  if (!property(base, "sha")) {
+  const target =
+    typeof base === "object" &&
+    base !== null &&
+    property(base, "ref") === `refs/heads/${baseRefName}`
+      ? property(base, "object")
+      : undefined;
+  const targetSha =
+    typeof target === "object" && target !== null && property(target, "type") === "commit"
+      ? property(target, "sha")
+      : undefined;
+  if (typeof targetSha !== "string" || !/^[a-f0-9]{40}$/i.test(targetSha)) {
     throw new Error("GitHub did not return the target branch commit.");
   }
 
@@ -113,7 +122,7 @@ try {
     `State: ${String(property(pr, "state"))}${property(pr, "isDraft") ? " (draft)" : ""}; mergeable: ${property(pr, "mergeable") ?? "UNKNOWN"}; merge state: ${property(pr, "mergeStateStatus") ?? "UNKNOWN"}`,
   );
   console.log(`Head: ${String(property(pr, "headRefName"))} ${String(property(pr, "headRefOid"))}`);
-  console.log(`Target: ${String(property(pr, "baseRefName"))} ${String(property(base, "sha"))}`);
+  console.log(`Target: ${baseRefName} ${targetSha}`);
   console.log(`PR-reported base: ${property(pr, "baseRefOid") ?? "UNKNOWN"}`);
   console.log(
     `GitHub review decision: ${String(property(pr, "reviewDecision") || "none reported")}`,

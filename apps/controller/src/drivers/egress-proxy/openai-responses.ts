@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 // Closed provider-owned schemas. Local tool schemas describe data for the Harness;
 // provider-executed tools and remote references require a different admitted grant.
@@ -227,9 +227,62 @@ const reasoning = optionalFields({
   context: oneOf("auto", "current_turn", "all_turns"),
 });
 
-const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
+const metadataText = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= 8192;
+function metadataJson(schema: Validator): Validator {
+  return (value) => {
+    if (!metadataText(value)) {
+      return false;
+    }
+    try {
+      return schema(parseUnambiguousJson(value));
+    } catch {
+      return false;
+    }
+  };
+}
+
+const gitRemoteUrls: Validator = (value) => {
+  const remotes = Object.entries(asRecord(value) ?? {});
+  return (
+    remotes.length >= 1 &&
+    remotes.length <= 16 &&
+    remotes.every(
+      ([remote, url]) =>
+        /^[A-Za-z0-9_.-]{1,256}$/u.test(remote) &&
+        typeof url === "string" &&
+        url.length <= 2048 &&
+        ((/^[Hh][Tt][Tt][Pp][Ss]:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]+$/u.test(
+          url,
+        ) &&
+          URL.canParse(url)) ||
+          /^git@[a-zA-Z0-9.-]+:[a-zA-Z0-9._~/-]+$/u.test(url)),
+    )
+  );
+};
+const gitWorkspace = optionalFields({
+  latest_git_commit_hash: (value) =>
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value),
+  has_changes: bool,
+  associated_remote_urls: gitRemoteUrls,
+});
+const gitWorkspaces: Validator = (value) => {
+  const roots = Object.entries(asRecord(value) ?? {});
+  return (
+    roots.length === 1 &&
+    roots.every(
+      ([root, metadata]) =>
+        root.startsWith("/") &&
+        root.length <= 4096 &&
+        !/[\p{Cc}]/u.test(root) &&
+        Object.keys(asRecord(metadata) ?? {}).length > 0 &&
+        gitWorkspace(metadata),
+    )
+  );
+};
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
 const clientMetadata = optionalFields({
+  mcp_attribution: metadataJson(object({ status: oneOf("none") })),
   session_id: metadataText,
   thread_id: metadataText,
   turn_id: metadataText,
@@ -239,45 +292,39 @@ const clientMetadata = optionalFields({
   "x-codex-window-id": metadataText,
   "x-codex-parent-thread-id": metadataText,
   "x-openai-subagent": metadataText,
-  "x-codex-turn-metadata": (value) => {
-    if (!metadataText(value)) {
-      return false;
-    }
-    try {
-      return optionalFields({
-        installation_id: metadataText,
-        session_id: metadataText,
-        thread_id: metadataText,
-        agent_name: metadataText,
-        turn_id: metadataText,
-        window_id: metadataText,
-        window_number: integer,
-        context_window_id: metadataText,
-        request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
-        history_initialization: metadataText,
-        root_turn_id: metadataText,
-        parent_turn_id: metadataText,
-        parent_thread_id: metadataText,
-        forked_from_thread_id: metadataText,
-        forked_from_ordinal_exclusive: integer,
-        thread_source: metadataText,
-        turn_trigger: metadataText,
-        subagent_kind: metadataText,
-        sandbox: metadataText,
-        sandbox_mode: metadataText,
-        auto_review_enabled: bool,
-        node_repl_auto_review_required: bool,
-        node_repl_disabled: bool,
-        turn_started_at_unix_ms: integer,
-        analytics_enabled: bool,
-        history_ingest_requested: bool,
-        model: metadataText,
-        reasoning_effort: reasoningEffort,
-      })(parseUnambiguousJson(String(value)));
-    } catch {
-      return false;
-    }
-  },
+  "x-codex-turn-metadata": metadataJson(
+    optionalFields({
+      installation_id: metadataText,
+      session_id: metadataText,
+      thread_id: metadataText,
+      agent_name: metadataText,
+      turn_id: metadataText,
+      window_id: metadataText,
+      window_number: integer,
+      context_window_id: metadataText,
+      request_kind: oneOf("turn", "prewarm", "compaction", "memory"),
+      history_initialization: metadataText,
+      root_turn_id: metadataText,
+      parent_turn_id: metadataText,
+      parent_thread_id: metadataText,
+      forked_from_thread_id: metadataText,
+      forked_from_ordinal_exclusive: integer,
+      thread_source: metadataText,
+      turn_trigger: metadataText,
+      subagent_kind: metadataText,
+      sandbox: metadataText,
+      sandbox_mode: metadataText,
+      auto_review_enabled: bool,
+      node_repl_auto_review_required: bool,
+      node_repl_disabled: bool,
+      turn_started_at_unix_ms: integer,
+      analytics_enabled: bool,
+      history_ingest_requested: bool,
+      model: metadataText,
+      reasoning_effort: reasoningEffort,
+      workspaces: gitWorkspaces,
+    }),
+  ),
 });
 const jsonFormat = object(
   { type: oneOf("json_schema"), name, schema: jsonSchema },

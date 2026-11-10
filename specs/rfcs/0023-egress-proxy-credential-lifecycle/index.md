@@ -26,7 +26,7 @@ The [proposed protected Codex artifact amendment](contracts.md#protected-codex-a
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
 
-The separate [worker-restart preflight proposal](../0031-repository-worker-restart-preflight.md)
+The separate [worker-restart preflight proposal](../0033-repository-worker-restart-preflight.md)
 asks the selected repository owner to report restart risk before maintenance.
 It does not replace the existing post-replacement terminal-result amendment.
 
