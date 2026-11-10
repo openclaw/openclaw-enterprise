@@ -537,7 +537,8 @@ export async function googleSignIn(
  * echoing the nonce. Per-code `claims` override ID-token claims; `key: "foreign"` signs
  * with an unpublished key. `rotate()` replaces the published key. `issuer` may be
  * reassigned to model an issuer change, and `tokenAuth`
- * to switch the credential method. Modes: "up" and "error" (503). It proves OCE
+ * to switch the credential method. Modes: "up", "error" (503) and "hang" (until
+ * the request is aborted). It proves OCE
  * against its own reading of OIDC, not any IdP's behaviour.
  */
 /** @param {import("node:test").TestContext} t
@@ -551,6 +552,7 @@ export function fakeOidc(
   let key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
   const foreign = rsaSigningKey("fixture-oidc-foreign");
   const codes = new Map();
+  const pendingRequests = new Set();
   const fixture = {
     mode: "up",
     requests: 0,
@@ -595,11 +597,17 @@ export function fakeOidc(
   async function answer(request) {
     fixture.requests += 1;
     if (fixture.mode === "hang") {
-      return new Promise((resolve, reject) => {
-        request.signal.addEventListener("abort", () => reject(request.signal.reason), {
-          once: true,
+      const { signal } = request;
+      signal.throwIfAborted();
+      // Keep the Request and its dependent signal alive until cancellation reaches it.
+      pendingRequests.add(request);
+      try {
+        return await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
-      });
+      } finally {
+        pendingRequests.delete(request);
+      }
     }
     if (fixture.mode === "error") {
       return json(503, {});

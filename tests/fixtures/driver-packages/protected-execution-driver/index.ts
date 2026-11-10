@@ -223,9 +223,10 @@ export function createDriver({
         removeRevision: outsideProfile,
       },
     },
-    computeLifecycleHooks: {
-      async afterNamespacePrepared() {
+    namespaceLifecycleHooks: {
+      async ensureNamespace({ namespace }) {
         calls.lifecycle++;
+        return { namespaceId: namespace.id, namespaceReady: true };
       },
     },
     close() {

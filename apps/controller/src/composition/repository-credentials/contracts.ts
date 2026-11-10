@@ -24,6 +24,8 @@ export interface LoadedConfiguration {
 export type RepositoryTransportEmit = (event: Readonly<Record<string, unknown>>) => void;
 
 export interface RepositoryTransportBinding {
+  /** Supply existing API storage for read-only assessment; never start the sender. */
+  connectRestartObservation?(pool: PostgresPool): void;
   bind(
     authority: ProtectedRepositoryGitAuthority,
     pool: PostgresPool,

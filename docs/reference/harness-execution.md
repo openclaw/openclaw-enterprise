@@ -211,9 +211,10 @@ secret input reads an unset variable: Codex `appServer.authToken` or
 `appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the
 `APP_SERVER_` variables only in a dedicated Codex Gateway, so deployment and
 Agent save refuse them for other Agents. Deployment also refuses another
-variable that no Configuration Secret binding sets, unless an Installation
-Driver adds launch variables. Bind a Secret to it, or remove or disable the
-plugin entry. OpenClaw reads these inputs only in an entry keyed by the exact
+variable that no Secret binding sets (for `${NAME}`, nor an `env` value
+OpenClaw applies), unless an Installation Driver adds launch variables. Bind a
+Secret, or remove or disable the entry. OpenClaw reads these inputs only in an
+entry keyed by the exact
 plugin ID, such as `google`, not `Google`. Saves and deployment refuse another
 spelling of a `codex` or `acpx` key, such as `Codex`, and on Kubernetes of
 `file-transfer` or a managed plugin: OpenClaw merges it into that entry, which

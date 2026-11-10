@@ -200,6 +200,8 @@ kubectl_args=(
 )
 diagnostic_describe=(kubectl "${kubectl_args[@]}" --request-timeout 10s describe pod "$pod")
 diagnostic_logs=(kubectl "${kubectl_args[@]}" --request-timeout 10s logs "$pod" --container prepare)
+diagnostic_claim=(kubectl "${kubectl_args[@]}" --request-timeout 10s get persistentvolumeclaim "$claim"
+  --output 'custom-columns=NAME:.metadata.name,PHASE:.status.phase,STORAGECLASS:.spec.storageClassName,VOLUME:.spec.volumeName')
 
 print_failure_context() {
   local reason=$1
@@ -207,6 +209,7 @@ print_failure_context() {
   printf 'Preparation Pod retained for diagnosis: %s/%s\n' "$namespace" "$pod" >&2
   printf 'Inspect Pod: %s\n' "$(quote_command "${diagnostic_describe[@]}")" >&2
   printf 'Inspect logs: %s\n' "$(quote_command "${diagnostic_logs[@]}")" >&2
+  printf 'Inspect claim: %s\n' "$(quote_command "${diagnostic_claim[@]}")" >&2
 }
 
 kubectl "${kubectl_args[@]}" --request-timeout 10s get persistentvolumeclaim "$claim" --output name >/dev/null

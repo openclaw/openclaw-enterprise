@@ -19,6 +19,7 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { browserEnvironment } from "../helpers/compose.mjs";
 
 const executeFile = promisify(execFile);
 
@@ -693,6 +694,7 @@ test(
     const project = `oce-cleanup-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const env = {
       ...process.env,
+      ...browserEnvironment,
       COMPOSE_PROJECT_NAME: project,
       OCC_POSTGRES_PORT: String(await availablePort()),
       OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: randomComposeSubnet(),
@@ -800,6 +802,7 @@ test(
     };
     const env = {
       ...process.env,
+      ...browserEnvironment,
       COMPOSE_PROJECT_NAME: project,
       NODE_BASE_IMAGE: process.env.NODE_BASE_IMAGE ?? "docker.io/library/node:24-bookworm",
       NODE_ENV: "development",
@@ -823,7 +826,6 @@ test(
         port: 5432,
         pathname: "/openclaw_enterprise",
       }),
-      OCC_AUTH_BASE_URL: baseUrl,
       OPENCLAW_DEV_EMAIL: adminEmail,
       OPENCLAW_DEV_PASSWORD: adminPassword,
       OPENCLAW_DEV_INSTALLATION_NAME: `OpenClaw ${engineName} Compute ${project}`,

@@ -6,7 +6,7 @@ entry. Preserve metadata you are not changing.
 
 ```yaml
 ---
-title: Install the production control plane
+title: HTTP API reference
 tags: [nolimit]
 ---
 ```
@@ -53,8 +53,8 @@ No other tag currently changes site behavior. Other nonempty string tags may be
 retained as metadata; they do not create routes, filters, or search categories.
 
 Follow the approval rule in `AGENTS.md` before adding `nolimit`. The existing
-approved pages are the generated API reference, CI guide, and production
-installation guide. Add the tag to the source page, or to its generator when
+approved pages are the generated API reference and CI guide.
+Add the tag to the source page, or to its generator when
 it is generated. Do not maintain a parallel filename allowlist in the checker.
 An ordinary file linked through a symlink named `AGENTS.md` is not automatically
 exempt. Files actually named `AGENTS.md` retain their existing exemption.

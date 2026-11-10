@@ -7,15 +7,32 @@ import { protectedText, redactedQaTail } from "./qa-secrets.mjs";
 
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {
-  const token = await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  // Namespace readiness is proved first, then native OpenClaw Agents complete real model turns.
+  const token =
+    scenario === "namespace-lifecycle"
+      ? undefined
+      : await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  const namespaceCredential =
+    scenario === "namespace-lifecycle"
+      ? await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential")
+      : undefined;
   const envFile = process.env.OCC_TEST_QA_SANDBOX_ENV;
   assert.ok(envFile, "OCC_TEST_QA_SANDBOX_ENV must select the prepared OpenShell file environment");
   const env = {
     ...process.env,
-    CODEX_ACCESS_TOKEN: token,
+    ...(token === undefined
+      ? {}
+      : { CODEX_ACCESS_TOKEN: token, OCC_TEST_OPENSHELL_HARNESS: "codex" }),
+    ...(namespaceCredential === undefined
+      ? {}
+      : {
+          OPENAI_API_KEY: namespaceCredential,
+          OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_QA_OPENAI_MODEL,
+          OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+        }),
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
-    OCC_TEST_OPENSHELL_HARNESS: "codex",
-    OCC_TEST_OPENSHELL_SCENARIO: scenario,
+    OCC_TEST_OPENSHELL_SCENARIO: scenario === "namespace-lifecycle" ? "full" : scenario,
+    OCC_TEST_NAMESPACE_OPENSHELL_REAL: scenario === "namespace-lifecycle" ? "1" : "0",
   };
   // This is a separate test process, not a recursive run inside the matrix worker.
   delete env.NODE_TEST_CONTEXT;
@@ -26,7 +43,9 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     ...(scenario === "plugin-install"
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
       : []),
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    scenario === "namespace-lifecycle"
+      ? "tests/integration/namespace-driver-openshell-k3d-real.test.ts"
+      : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
   ];
   let output;
   let failed = false;
@@ -60,14 +79,28 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   const evidence = resolve(artifacts, `${scenario}-runtime.log`);
   await writeFile(evidence, text, { mode: 0o600 });
   assert.equal(failed, false, `OpenShell workflow failed; see ${evidence}`);
-  assert.match(
-    text,
-    scenario === "plugin-install"
-      ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
-      : /ok 1 - OpenShell Agent network policy lifecycle/,
-  );
+  if (scenario === "namespace-lifecycle") {
+    assert.match(
+      text,
+      /ok 1 - bootstrap reconciles OpenShell gateways and Workspaces before any Agent/,
+    );
+  } else {
+    assert.match(
+      text,
+      scenario === "plugin-install"
+        ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
+        : /ok 1 - OpenShell Agent network policy lifecycle/,
+    );
+  }
   assert.match(text, /# pass 1\b/);
   assert.match(text, /# skipped 0\b/);
+  if (scenario === "namespace-lifecycle") {
+    return {
+      evidence,
+      outcome:
+        "real Namespace gateways and Workspaces before Agents, followed by Agent deployment and model turns",
+    };
+  }
   return {
     evidence,
     outcome:

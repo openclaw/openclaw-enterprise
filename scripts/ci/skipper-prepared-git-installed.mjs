@@ -11,6 +11,7 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import {
+  projectSkipperRunnerReceipt,
   skipperFailureSummary,
   skipperInstalledProof,
   skipperImageScope,
@@ -158,7 +159,7 @@ async function checkImage(stack, selected, built) {
 
 let phase = "fresh cluster preflight";
 let failed = false;
-let summary;
+let runnerReceipt;
 let imageDigests;
 try {
   await noCluster();
@@ -286,6 +287,24 @@ try {
     () => ({ status: 0 }),
     (error) => error.result ?? {},
   );
+  if (runner.status !== 0) {
+    // Report only a known phase, source location, or failure category. Both raw streams
+    // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
+    const text =
+      String(runner.stderr) +
+      String(runner.stdout) +
+      resultText +
+      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
+        () => "",
+      ));
+    // Optional journey records may be incomplete when the test fails.
+    console.error(
+      "Installed test failed (%s, runner-exit=%s)",
+      skipperFailureSummary(resultText, process.cwd(), text),
+      runner.code ?? "unknown",
+    );
+  }
   const ledger = await readFile(join(directory, "compute-journey.jsonl"), "utf8").catch(() => "");
   const entries = ledger
     .trim()
@@ -298,16 +317,6 @@ try {
     progress(name);
   }
   if (runner.status !== 0) {
-    // Report only a known phase, source location, or failure category. Both raw streams
-    // and the runner's private diagnostics can contain the synthetic credentials.
-    const resultText = await readFile(privateResult, "utf8").catch(() => "");
-    const text =
-      String(runner.stderr) +
-      String(runner.stdout) +
-      resultText +
-      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
-        () => "",
-      ));
     const chat = entries.find((e) => e.phase === "gateway-chat-refused");
     if (chat) {
       const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
@@ -318,25 +327,27 @@ try {
       );
       assert.match(
         category,
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified)$/,
+        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/,
       );
       assert.ok(
-        [modelTurns, modelAnswers, tlsErrors].every((n) => Number.isSafeInteger(n) && n >= 0),
+        [modelTurns, modelAnswers, tlsErrors].every(
+          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
+        ),
       );
-      assert.equal(typeof expectedNonceAnswered, "boolean");
+      assert.ok(expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean");
       assert.match(
         chat.runtimeSignal,
         /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/,
       );
       console.error(
-        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%d, answers=%d, expected nonce answered=%s, TLS errors=%d.",
+        "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
         httpStatus,
         category,
         chat.runtimeSignal,
-        modelTurns,
-        modelAnswers,
-        expectedNonceAnswered,
-        tlsErrors,
+        modelTurns ?? "unknown",
+        modelAnswers ?? "unknown",
+        expectedNonceAnswered ?? "unknown",
+        tlsErrors ?? "unknown",
       );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
@@ -360,6 +371,22 @@ try {
       } else {
         console.error("Synthetic model completion diagnostics unavailable.");
       }
+      const { nativePolls, nativeStatus, nativeExitCode, nativeSessionPresent } = completion;
+      if (
+        Number.isSafeInteger(nativePolls) &&
+        nativePolls >= 0 &&
+        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
+        typeof nativeSessionPresent === "boolean"
+      ) {
+        console.error(
+          "Native command status=%s, exit=%s, session present=%s, polls=%d.",
+          nativeStatus,
+          nativeExitCode,
+          nativeSessionPresent,
+          nativePolls,
+        );
+      }
     }
     const known = [
       ...proof.slice(0, -1), // Retirement can follow a failure before the required proof.
@@ -373,23 +400,19 @@ try {
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    console.error(
-      "Installed test failed after %s (%s, exit=%s)",
-      last,
-      skipperFailureSummary(resultText, process.cwd(), text),
-      runner.code ?? "unknown",
-    );
+    console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
   assert.deepEqual(observed, proof);
   assert.equal(records.at(-1), proof.at(-1));
-  summary = await read(privateResult);
+  const summary = await read(privateResult);
   assert.equal(summary.sourceSha, sourceCommit);
   assert.equal(summary.lane, lane);
   assert.equal(summary.status, "passed");
   assert.equal(summary.exitCode, 0);
   assert.deepEqual(summary.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
   assert.deepEqual(summary.issues, []);
+  runnerReceipt = projectSkipperRunnerReceipt(summary);
 } catch (error) {
   failed = true;
   // File and line are useful on a failed guard. Never print values, runner or subprocess output.
@@ -418,33 +441,18 @@ try {
   await rm(env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY, { recursive: true, force: true });
 }
 
-if (failed) {
+if (failed || !runnerReceipt) {
   process.exitCode = 1;
 } else {
   // No raw ledger, test output, Git/model traffic, database URLs, kubeconfig or diagnostics.
   // Retain only actual, passing runner evidence accepted by Full Integration's aggregator.
   const results = join(env.RUNNER_TEMP, "results");
-  const { version, command, sourceSha, status, counts, exitCode } = summary;
-  assert.equal(summary.files.length, 1);
-  const [{ path, cleanup: testCleanup, tests }] = summary.files;
-  assert.equal(path, `tests/integration/${lane}.test.mjs`);
-  assert.deepEqual(testCleanup, { status: "passed" });
-  assert.deepEqual(
-    tests.map((test) => test.status),
-    ["passed"],
-  );
-  const [{ name, durationMs }] = tests;
   const receipt = {
-    version,
-    command,
+    ...runnerReceipt,
+    cleanup: { status: "passed" },
     lane,
-    sourceSha,
-    status,
-    counts,
-    exitCode,
     imageDigests,
     imageScope: skipperImageScope,
-    files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };
   await mkdir(results, { recursive: true });

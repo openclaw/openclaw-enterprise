@@ -232,8 +232,9 @@ and database migrations to retained volumes and local profile state.
 1. Install cluster prerequisites (on two clusters, upgrade the
    [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
    first) and reconcile protected inputs without replacing retained data.
-2. Run the canonical migration preflight. Stop if the history is unsupported or
-   a required quiescence step is unresolved.
+2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
+   including the candidate's canonical migration check. Stop on unsupported
+   history or an unresolved required quiescence step.
 3. Upgrade the controller, worker, and Console. Wait for database migration,
    bootstrap, authenticated API recovery, and worker readiness. The old API Pod
    stops first and finishes admitted requests within its 30-second grace
@@ -255,8 +256,8 @@ and database migrations to retained volumes and local profile state.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
       contain the expected IDs. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
-      requests no deployments, but affected Agents' Pods can restart once on the
-      same image; check for versions affected by broker restart.
+      requests no deployments. Verify readiness after Agent Pod restarts and
+      check any replacement revisions needed after broker restart.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
       defaults were created, intended same-name copies were updated in place,
       and obsolete copies were handled deliberately.
@@ -264,19 +265,23 @@ and database migrations to retained volumes and local profile state.
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
       sessions match the baseline.
-- [ ] Authentication, audit, metrics, traces, and alert delivery still reach
-      their sinks.
-- [ ] A real model response succeeds for each execution mode and provider in
-      scope. Startup and Pod readiness alone do not prove model access.
-- [ ] Required Slack or other channel delivery, repository clone or write,
-      plugin tool policy, workspace access, and native admin UI each pass a
-      representative live check. Where plugin approval is required, verify an
-      approval and a denial through the intended reviewer. For installed integrations,
-      check negotiated capabilities through the authenticated connection before
-      the downstream smoke. For example, gateway capability negotiation does not
-      prove an actual repository operation.
+- [ ] The configured sign-in paths work and expected operations appear in the
+      audit ledger. Check that configured metrics, traces, and test alerts
+      reach their destinations.
+- [ ] For each execution mode and provider in use, verify the expected Agent
+      revision, allowed and denied gateway access, and a fresh reply from the
+      intended model provider.
+      For manual checks, follow [production workload verification](production-agents.md#verify-production-workloads).
+- [ ] Run a representative request for each workflow in use and
+      check its result at the destination. Include relevant channel delivery,
+      repository clone or write, plugin tool policy, workspace access, and
+      native admin UI. For installed integrations, verify negotiated
+      capabilities through the authenticated connection, then verify the
+      downstream operation. Where plugin approval is required, verify approval
+      and denial through the intended reviewer. See
+      [workflow verification](production-handoff.md#verify-the-deployed-workflow).
 - [ ] Where CredentialSources are enabled, confirm source status and Agent
-      bindings, then verify a real model response through the selected Gateway.
+      bindings and verify a real model reply through the selected Gateway.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
       migration receipt, rollout status, deployment results, and any accepted
       exceptions, but no credential values.

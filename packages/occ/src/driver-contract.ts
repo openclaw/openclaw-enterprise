@@ -1,5 +1,6 @@
 import type {
   ComputeLifecycleHooks,
+  NamespaceLifecycleHooks,
   Driver,
   DriverCapability,
   SandboxFacet,
@@ -12,10 +13,8 @@ import {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
-  "afterNamespacePrepared",
   "beforeWorkloadStart",
   "beforeWorkloadStop",
-  "beforeNamespaceDelete",
 ] as const satisfies readonly (keyof ComputeLifecycleHooks)[];
 
 export function capability(value: unknown): value is DriverCapability {
@@ -273,7 +272,25 @@ function sandboxFacets(value: unknown): value is readonly SandboxFacet[] {
   return true;
 }
 
+export function validNamespaceLifecycleHooks(value: unknown): value is NamespaceLifecycleHooks {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const hooks = value as Record<string, unknown>;
+  return (
+    typeof hooks.ensureNamespace === "function" &&
+    (hooks.deleteNamespace === undefined || typeof hooks.deleteNamespace === "function") &&
+    Object.keys(hooks).every((key) => key === "ensureNamespace" || key === "deleteNamespace")
+  );
+}
+
 export function driverHasValidLifecycleHooks(driver: Driver): boolean {
+  if (
+    driver.namespaceLifecycleHooks !== undefined &&
+    !validNamespaceLifecycleHooks(driver.namespaceLifecycleHooks)
+  ) {
+    return false;
+  }
   const hooks: unknown = driver.computeLifecycleHooks;
   if (hooks === undefined) {
     return true;

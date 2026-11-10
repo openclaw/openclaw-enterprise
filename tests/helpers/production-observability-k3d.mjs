@@ -393,8 +393,7 @@ export async function installObservabilityControlPlane(
     scraperNamespaceLabels: { "kubernetes.io/metadata.name": monitoring },
     scraperPodLabels: { app: "scraper" },
   };
-  async function createAgent(executionMode = "embedded") {
-    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+  async function readyNamespace(namespace) {
     const placements = [];
     // Namespace readiness now requires scoped grants in both managed targets,
     // even when this scenario uses an embedded runtime in the data namespace.
@@ -428,12 +427,16 @@ export async function installObservabilityControlPlane(
         });
       }
     }
-    const [tenant, gatewayRuntimeNamespace] = placements;
-    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     await waitFor(
       "Namespace ready",
       async () => (await api("GET", `/namespaces/${namespace.id}`)).status === "ready",
     );
+    return placements;
+  }
+  async function createAgent(executionMode = "embedded") {
+    const namespace = await api("POST", "/namespaces", { name: `Observability ${suffix}` }, 201);
+    const [tenant, gatewayRuntimeNamespace] = await readyNamespace(namespace);
+    const gatewayPlacement = executionMode === "dedicated" ? gatewayRuntimeNamespace : tenant;
     const sentinel = modelTurns ? process.env.OPENAI_API_KEY : `fixture-only-${secret()}`;
     secrets.push(sentinel);
     const credential = await api(
@@ -688,6 +691,7 @@ service:
     probePod,
     selectors,
     createAgent,
+    readyNamespace,
     createSecret,
     configureCollector,
     installLogReceiver,

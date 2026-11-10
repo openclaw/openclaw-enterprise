@@ -124,7 +124,7 @@ test(
       } else if (cliMs >= probe.capMs) {
         // A probe that reaches its cap is classified by the wrapper's own CPU-wait reading: over
         // a quarter of the time waiting is CPU_STARVED, otherwise TIMEOUT (the rule itself is in
-        // runtime-probe-cpu-counter.test.mjs). With pressure accounting the eight hogs keep
+        // runtime-probe-cpu-counter.test.ts). With pressure accounting the eight hogs keep
         // some task waiting nearly all the time, so the reading must be starvation. CI's
         // runners have none (pressureWaitMs null): the reading is then throttling alone, which
         // misses waiting while other containers hold the node's CPUs, and read 0.22-0.34 of

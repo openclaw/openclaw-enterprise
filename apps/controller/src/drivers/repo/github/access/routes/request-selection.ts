@@ -97,23 +97,33 @@ function requestHead(request: GitHubRequest, binding: GitHubScope): RequestHead 
     "pragma",
     "x-github-api-version",
   ];
+  const githubApi = matchesOrigin("https://api.github.com", request);
+  const scopedDraft =
+    binding.scope === undefined &&
+    binding.pullRequestBase !== undefined &&
+    request.target.method === "POST" &&
+    request.target.path === `/repos/${binding.repository}/pulls` &&
+    request.target.query === "";
   for (const [name, value] of request.headers) {
-    // Shipped gh metadata survives stock's visible-header projection. Admit only
-    // these values on selected-repository bindings; operation() still selects the route.
-    const apiMetadata =
+    // Stock retains the shipped gh timezone on the scoped draft POST.
+    const timeZone =
+      githubApi &&
+      name === "time-zone" &&
+      value === "Etc/UTC" &&
+      (binding.scope === "github-repository" || scopedDraft);
+    const graphqlMetadata =
+      githubApi &&
       binding.scope === "github-repository" &&
-      matchesOrigin("https://api.github.com", request) &&
-      ((name === "time-zone" && value === "Etc/UTC") ||
-        (request.target.method === "POST" &&
-          request.target.path === "/graphql" &&
-          ((name === "graphql-features" && value === "merge_queue") ||
-            // gh forwards its local cache duration; never use it to cache authorization.
-            (name === "x-gh-cache-ttl" &&
-              value.length > 0 &&
-              value.length <= 64 &&
-              [...value].every((character) => character >= " " && character !== "\u007f")))));
+      request.target.method === "POST" &&
+      request.target.path === "/graphql" &&
+      ((name === "graphql-features" && value === "merge_queue") ||
+        // gh forwards its local cache duration; never use it to cache authorization.
+        (name === "x-gh-cache-ttl" &&
+          value.length > 0 &&
+          value.length <= 64 &&
+          [...value].every((character) => character >= " " && character !== "\u007f")));
     if (
-      (!allowed.includes(name) && !apiMetadata) ||
+      (!allowed.includes(name) && !timeZone && !graphqlMetadata) ||
       Object.hasOwn(headers, name) ||
       (name === "accept-language" && value.length > 256) ||
       (name === "pragma" && value !== "no-cache") ||
@@ -170,6 +180,8 @@ function draftScope(
     "x-oce-operation-id": createUUID(),
   };
   delete headers["x-github-api-version"];
+  // The broker planner validates its own protocol. Stock gh metadata stays in the wire view.
+  delete headers["time-zone"];
   let scope: PreparedGitHubPullScope | undefined;
   const plan = planDraftPull(
     { ...head, headers },

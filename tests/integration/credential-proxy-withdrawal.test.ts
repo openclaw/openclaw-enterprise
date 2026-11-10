@@ -168,7 +168,15 @@ test(
         };
         owner = new InstalledDriver(
           { id: proxy.id, implementation: proxy.implementation, configuration: {} },
-          { capabilities: { sandbox, credential_proxy: proxy } },
+          {
+            capabilities: { sandbox, credential_proxy: proxy },
+            namespaceLifecycleHooks: {
+              // The replacement exercises policy reduction on an already-provisioned execution.
+              async ensureNamespace() {
+                assert.fail("Policy reduction must not reinitialize Namespace infrastructure.");
+              },
+            },
+          },
         );
         app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
         compute = createTestKubernetesComputeDriver("policy-reduction-compute", {

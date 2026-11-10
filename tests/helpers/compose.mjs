@@ -4,7 +4,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const browserEnvironment = {
+export const browserEnvironment = {
   OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.development.oce.localhost:8443",
   OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.development.oce.localhost",
 };

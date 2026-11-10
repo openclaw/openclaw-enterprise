@@ -231,6 +231,7 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
+        namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
@@ -406,6 +407,7 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));

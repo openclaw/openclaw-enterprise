@@ -1,4 +1,4 @@
-import { validateGitHubRepositoryGrant } from "../repository-grant.ts";
+import { parseGitHubNumericId, validateGitHubRepositoryGrant } from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubPreparationAdmission } from "../prepared-contracts.ts";
@@ -21,11 +21,8 @@ type Scope = Readonly<{
 const scopes = new WeakMap<ProviderScope, Scope>();
 
 function numericId(value: string): number {
-  if (typeof value !== "string") {
-    throw new Error("invalid-provider-scope");
-  }
-  const number = Number(value);
-  if (!/^[1-9][0-9]{0,15}$/.test(value) || !Number.isSafeInteger(number)) {
+  const number = parseGitHubNumericId(value);
+  if (number === undefined) {
     throw new Error("invalid-provider-scope");
   }
   return number;

@@ -13,6 +13,67 @@ const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const run = (program, args) =>
   execFileSync(program, args, { encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
 
+test("same-run runtime artifact enforces the OCI metadata limit before conversion", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-metadata-"));
+  const previousSha = process.env.GITHUB_SHA;
+  const previousRun = process.env.GITHUB_RUN_ID;
+  t.after(async () => {
+    for (const [key, value] of [
+      ["GITHUB_SHA", previousSha],
+      ["GITHUB_RUN_ID", previousRun],
+    ]) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const sourceSha = run("git", ["rev-parse", "HEAD"]).trim();
+  const runId = "123456";
+  const producerAttempt = "1";
+  Object.assign(process.env, { GITHUB_SHA: sourceSha, GITHUB_RUN_ID: runId });
+  const layout = join(directory, "layout");
+  const archive = join(directory, "runtime.tar");
+  await mkdir(layout);
+  await writeFile(join(layout, "oci-layout"), '{"imageLayoutVersion":"1.0.0"}');
+
+  const index = '{"schemaVersion":2,"manifests":[]}';
+  const limit = 16 * 1024 * 1024;
+  for (const [size, expected] of [
+    [limit, /Expected one runtime platform/],
+    [limit + 1, /Oversized OCI metadata/],
+  ]) {
+    await writeFile(join(layout, "index.json"), index.padEnd(size, " "));
+    run("tar", ["-cf", archive, "-C", layout, "index.json", "oci-layout"]);
+    const archiveSha256 = hash(await readFile(archive));
+    await writeFile(
+      join(directory, "receipt.json"),
+      JSON.stringify({
+        version: 1,
+        sourceSha,
+        runId,
+        producerAttempt,
+        archiveSha256,
+        platform: `linux/${process.arch === "x64" ? "amd64" : process.arch}`,
+      }),
+    );
+    await assert.rejects(
+      loadRuntimeArtifact({
+        directory,
+        archiveSha256,
+        sourceSha,
+        runId,
+        producerAttempt,
+        tag: "localhost/oce-runtime-metadata:proof",
+      }),
+      expected,
+    );
+  }
+});
+
 test(
   "same-run runtime artifact prepares an owned image and supplies a real OCI build context",
   { skip: process.env.OCC_TEST_RUNTIME_ARTIFACT !== "1", timeout: 180_000 },
@@ -114,7 +175,33 @@ test(
     };
     delete receipt.directory;
     await writeFile(join(artifact, "receipt.json"), JSON.stringify(receipt));
-    loaded = await loadRuntimeArtifact({ ...selection, tag });
+    await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag }, Date.now() - 1),
+      /preparation deadline/,
+    );
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    const probeBin = join(directory, "probe-bin");
+    await mkdir(probeBin);
+    await writeFile(
+      join(probeBin, "git"),
+      `#!/usr/bin/env node
+process.on("SIGTERM", () => {});
+setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100);
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = `${probeBin}:${previousPath}`;
+      await assert.rejects(loadRuntimeArtifact({ ...selection, tag }, Date.now() + 750), {
+        code: "ETIMEDOUT",
+        signal: "SIGKILL",
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    loaded = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 60_000);
     assert.equal(loaded.configDigest, manifest.config.digest);
     assert.equal(
       JSON.parse(run("docker", ["image", "inspect", loaded.reference]))[0].Config.Labels[
@@ -244,6 +331,10 @@ test(
     // The producer's earlier attempt is accepted above. Wrong-run/source,
     // corruption and unavailable artifacts fail before a tag can be loaded.
     await assert.rejects(loadRuntimeArtifact({ ...selection, tag, runId: "999" }), /workflow run/);
+    await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag, producerAttempt: "999" }),
+      /producerAttempt mismatch/,
+    );
     await assert.rejects(
       loadRuntimeArtifact({ ...selection, tag, sourceSha: "0".repeat(40) }),
       /checkout/,

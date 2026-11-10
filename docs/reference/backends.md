@@ -8,7 +8,7 @@ A Backend is Installation-owned configuration that gives related Drivers an
 authenticated client. The bundled ChatGPT client manages upstream service
 accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
-credential configuration for the selected `RepoDriver` and uses the separate
+credential configuration for the built-in GitHub policy and uses the separate
 Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
 connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
 Backends have no OCC resource or write API. Installation administrators can
@@ -99,7 +99,6 @@ backend:
       repo: repository-credentials
 repository:
   id: repository-credentials
-  policyMode: built-in
   configuration:
     sessionDurationSeconds: 86400
   nativeSender:
@@ -112,12 +111,14 @@ repository:
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match `repository.id`. New installations can set `repository.policyMode` to
-`built-in` to use the registry policy without registering a public Repo Driver.
-Omitting the setting preserves legacy registration and selection. A built-in
-installation rejects a separate Repo Driver registration. Startup rejects the
-retired Installation `drivers.repo` selection. The registry's Backend ID must
-match the definition, and the session duration must fit the registry's maximum.
+must match `repository.id`. With this configuration, the API and worker use the
+built-in GitHub registry policy. They require no public Repo Driver registration.
+Omit both the GitHub Backend and `repository` to leave Git unconfigured.
+Existing configurations may keep or omit `repository.policyMode: built-in` with
+the same policy and protected sender identity. Startup rejects other values and
+the retired `drivers.repo` selection. Drain admitted work on its original owner
+before changing senders. The registry's Backend ID must match the definition,
+and the session duration must fit the registry's maximum.
 See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
 for delivery settings.
 
@@ -241,12 +242,10 @@ ServiceAccount Driver. The worker receives nonsecret ChatGPT definitions for rec
 Existing Driver lifecycle, controller/state injection, Compute credential
 storage, installed factory signatures, and package trust rules remain unchanged.
 
-For GitHub, API and worker construct `GitHubRepoDriver` from
-`Backend<RepositoryCredentialControlClient>`, the validated registry, and the
-selected duration. Construction reads the public CA but never connects the
-private control socket. API resolution is local policy; the worker invokes
-session operations. The Backend client validates full private control responses;
-the Driver then returns the [four-field public status](repository-credentials.md#repo-driver-contract).
+For GitHub, the API and worker bind `GitHubRepositoryPolicy` to the configured
+Backend, validated registry and selected duration. API resolution uses local
+policy. For native delivery, the worker invokes session operations through the
+selected native sender and its private control socket.
 Only the separate service owns the App key, private TLS material, token
 acquisition, and forwarding engine.
 

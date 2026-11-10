@@ -638,21 +638,7 @@ test("SSH preflight probes configured hosts, names failures, and checks local fi
 });
 
 test("SSH Namespace preparation creates exact ownership, rejects adoption, and classifies failures", async (t) => {
-  const hooks = [];
-  const f = await fixture(t, {
-    lifecycleDrivers: [
-      {
-        id: "hooks",
-        implementation: "test",
-        capability: "configuration",
-        computeLifecycleHooks: {
-          async afterNamespacePrepared(ns) {
-            hooks.push(ns.id);
-          },
-        },
-      },
-    ],
-  });
+  const f = await fixture(t);
   assert.deepEqual(await f.driver.ensureNamespace({ ...tenant, name: "unmapped" }), {
     namespaceId: tenant.id,
     namespaceReady: false,
@@ -674,8 +660,6 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
     namespaceName: tenant.name,
   });
   assert.equal((await stat(marker)).mode & 0o777, 0o600);
-  assert.deepEqual(hooks, [tenant.id]);
-  assert.throws(() => f.driver.setLifecycleDrivers([]), /cannot change/);
   // Replace the directory entry; never follow an unexpected link to change its target.
   const replaceMarker = async (value) => {
     const replacement = marker + ".replacement";
@@ -1395,9 +1379,6 @@ test("SSH immutable snapshots, supersession, cutover, retirement and deletion pr
           async beforeWorkloadStop(rev) {
             hooks.push(`retire:${rev.id}`);
           },
-          async beforeNamespaceDelete(ns) {
-            hooks.push(`delete:${ns.id}`);
-          },
         },
       },
     ],
@@ -1451,7 +1432,6 @@ test("SSH immutable snapshots, supersession, cutover, retirement and deletion pr
   await missing(join(f.state, `${f.unit(first)}.enabled`));
   await missing(join(f.state, `${f.unit(first)}.pid`));
   assert.ok(hooks.includes(`retire:${first.id}`));
-  assert.ok(hooks.includes(`delete:${tenant.id}`));
   const commands = await readFile(join(f.state, "systemctl.log"), "utf8");
   assert.match(commands, /stop openclaw-enterprise-gateway-/);
   assert.match(commands, /disable openclaw-enterprise-gateway-/);

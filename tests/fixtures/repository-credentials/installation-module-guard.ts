@@ -43,14 +43,18 @@ if (mode === "selected-blocked") {
   const api = await load();
   const worker = await load();
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  assert.ok(api?.repositoryPolicy);
-  assert.ok(worker?.repositoryPolicy);
-  const resolved = api.repositoryPolicy.resolve(selection);
+  assert.ok(api?.repositoryAdmission);
+  assert.ok(worker?.repositoryAdmission);
+  const resolved = api.repositoryAdmission.policy.resolveBindings(selection);
   assert.equal(resolved.bindings[0]?.grant.repositoryId, "34567");
-  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
+  assert.deepEqual(worker.repositoryAdmission.policy.resolveBindings(selection), resolved);
   for (const runtime of [api, worker]) {
+    const admission = runtime.repositoryAdmission;
+    assert.ok(admission);
+    assert.equal(admission.policyMode, "built-in");
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
     assert.throws(
-      () => runtime.repositoryPolicy!.resolve({ ...selection, namespaceId: "ns_other" }),
+      () => admission.policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),
       /permitted/,
     );
     assert.equal(runtime.preparedGitHub, undefined);

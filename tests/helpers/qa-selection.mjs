@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
@@ -26,20 +27,20 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
+  const defaultScenarios = allScenarios.filter(
+    (name) =>
+      ![
+        "namespace-lifecycle",
+        "oidc-agent-chat",
+        "sandbox-policy",
+        "plugin-install",
+        "openshell-linear-read",
+        "codex-search-config",
+        "harness-overrides",
+      ].includes(name),
+  );
   const scenarios =
-    input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "sandbox-policy",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-              "harness-overrides",
-              "oidc-agent-chat",
-            ].includes(name),
-        )
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? defaultScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -71,6 +72,7 @@ export function selectQaMatrix(env = process.env) {
       scenarios: scenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
@@ -81,6 +83,7 @@ export function selectQaMatrix(env = process.env) {
       unselected: allScenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
@@ -93,6 +96,7 @@ export function selectQaMatrix(env = process.env) {
       notApplicable: allScenarios.filter(
         (scenario) =>
           ![
+            "namespace-lifecycle",
             "sandbox-policy",
             "plugin-install",
             "openshell-linear-read",
@@ -155,6 +159,7 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
+  const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
@@ -176,6 +181,7 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
+      namespaceLifecycle ||
       sandboxPolicy ||
       pluginInstall ||
       linearRead ||
@@ -194,8 +200,16 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
-    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+  if (namespaceLifecycle) {
+    assert.notEqual(installation, "compose", "Namespace lifecycle proof requires Kubernetes");
+    for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
+      if (!requiredEnv.includes(key)) {
+        requiredEnv.push(key);
+      }
+    }
+  }
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall) {
+    if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
@@ -223,6 +237,7 @@ export function selectQaMatrix(env = process.env) {
   return {
     installations,
     exclusions,
+    namespaceLifecycle,
     oidcAgentChat,
     sandboxPolicy,
     pluginInstall,
@@ -238,7 +253,8 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 6
+      scenarios.length === defaultScenarios.length &&
+      defaultScenarios.every((name) => scenarios.includes(name))
         ? "full"
         : "partial:selected",
   };

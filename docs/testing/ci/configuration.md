@@ -79,6 +79,11 @@ jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requiremen
 and defaults differ by lane: follow its linked suite guide. Missing required
 inputs fail selected lanes.
 
+OpenShell image overrides must retain the pinned release digest, or use the
+[complete candidate image and chart selection](openshell-execution.md#select-candidate-images-and-charts)
+during local preparation. Hosted jobs do not acquire candidate source checkouts
+or charts from image variables alone.
+
 QA model overrides default to `gpt-6-luna`.
 
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).
@@ -101,6 +106,8 @@ preparation before state or resources are created.
 Preparation also selects the verified Gateway image in the host container engine
 for `OCC_DOCKER_RUNTIME_IMAGE`, used by the loopback Gateway relay. Kubernetes
 selectors use the separately verified references imported into the cluster.
+
+Before a cold local source build, [check for an exact-source retained CI runtime](run-lanes.md#find-a-retained-runtime-before-building-locally). This discovers candidate artifacts; it does not import or qualify them.
 
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).

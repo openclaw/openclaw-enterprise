@@ -17,11 +17,14 @@ export async function createQaBrowser(f, { themed }) {
   const nativeHost = `native.${f.cluster}.oce.localhost`;
   let nativeOrigin;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
+  const caFiles = [ca];
   let relay;
   let upstream;
   const sockets = new Set();
   if (f.controlPlane === "compose") {
     const key = join(f.directory, "browser-tls.key");
+    // The native relay has its own identity; preserve the launcher's Console CA.
+    const relayCa = join(f.directory, "native-browser-ca.crt");
     await f.run("openssl", [
       "req",
       "-x509",
@@ -31,7 +34,7 @@ export async function createQaBrowser(f, { themed }) {
       "-keyout",
       key,
       "-out",
-      ca,
+      relayCa,
       "-days",
       "2",
       "-subj",
@@ -41,8 +44,9 @@ export async function createQaBrowser(f, { themed }) {
       "-addext",
       "basicConstraints=critical,CA:TRUE",
     ]);
+    caFiles.push(relayCa);
     relay = createServer(
-      { key: await readFile(key), cert: await readFile(ca), minVersion: "TLSv1.2" },
+      { key: await readFile(key), cert: await readFile(relayCa), minVersion: "TLSv1.2" },
       (socket) => {
         if (!upstream) {
           socket.destroy();
@@ -84,9 +88,21 @@ export async function createQaBrowser(f, { themed }) {
     }
     await f.run("certutil", ["-N", "--empty-password", "-d", `sql:${database}`]);
   }
-  const nickname = `oce-qa-${f.suffix}`;
-  await f.run("certutil", ["-A", "-d", `sql:${database}`, "-n", nickname, "-t", "C,,", "-i", ca]);
-  f.resources.after(() => f.run("certutil", ["-D", "-d", `sql:${database}`, "-n", nickname]));
+  for (const [index, file] of caFiles.entries()) {
+    const nickname = `oce-qa-${f.suffix}-${index}`;
+    await f.run("certutil", [
+      "-A",
+      "-d",
+      `sql:${database}`,
+      "-n",
+      nickname,
+      "-t",
+      "C,,",
+      "-i",
+      file,
+    ]);
+    f.resources.after(() => f.run("certutil", ["-D", "-d", `sql:${database}`, "-n", nickname]));
+  }
   const browser = await chromium.launchPersistentContext(join(f.directory, "browser-profile"), {
     headless: true,
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
@@ -116,7 +132,7 @@ export async function createQaBrowser(f, { themed }) {
   await f.record("console", {
     authenticated: true,
     origin: f.consoleUrl,
-    tls: f.controlPlane === "kubernetes",
+    tls: new URL(f.consoleUrl).protocol === "https:",
   });
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,

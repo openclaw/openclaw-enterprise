@@ -1,3 +1,5 @@
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -62,7 +64,10 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     backend: {
       id: "openshell",
       drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
-      client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+      client: new OpenShellGateway(
+        { serviceName: "openshell-gateway" },
+        { gatewayClient: openShellWorkspaceProtocol() },
+      ),
     },
   });
   let definition = OpenShellSandboxDriver;
@@ -176,6 +181,9 @@ test(
         // Deploy with the authentic Driver before introducing the faulty admission response.
         const { namespace, agent } = await deployAgent(`Integrity ${scenario.name}`);
         const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
           state,
           recordOperations: true,
           sandboxNetworkPolicyCeiling: scenario.ceiling,
@@ -211,7 +219,13 @@ test(
                 implementation: "openshell",
                 configuration: { sandbox: sandboxConfiguration, proxy: proxyConfiguration },
               },
-              { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+              {
+                capabilities: { sandbox: sandboxDriver, credential_proxy: proxy },
+                namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+                  controller.selectedDriver("compute"),
+                  sandboxDriver,
+                ).hooks,
+              },
             ),
             ["sandbox", "credential_proxy"],
           );
@@ -424,6 +438,9 @@ test(
             }
           : state;
         const restarted = new OpenClawController(controller.installation, {
+          namespaceLifecycleBindings: [
+            sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+          ],
           state: observedState,
           recordOperations: true,
           sandboxNetworkPolicyCeiling: [],
@@ -986,6 +1003,9 @@ test(
     // Startup is the owner of the ceiling. A new controller uses the same database and real IAM,
     // with a smaller operator delegation; no mutable test hook changes the running controller.
     const restarted = new OpenClawController(controller.installation, {
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver),
+      ],
       state,
       recordOperations: false,
       sandboxNetworkPolicyCeiling: [],

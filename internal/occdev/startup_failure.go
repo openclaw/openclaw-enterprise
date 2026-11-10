@@ -49,7 +49,7 @@ func startupFailureDetails(err error) (string, bool) {
 	// could misattribute an unclassified primary to a tagged cleanup failure.
 	if failure, ok := err.(*startupFailure); ok {
 		switch failure.stage {
-		case "canceled", "deadline", "routing", "network-verification", "network-cleanup", "registry-detach", "platform-namespace", "openshell-preparation", "rollback":
+		case "canceled", "deadline", "controller-image-import", "routing", "network-verification", "network-cleanup", "registry-detach", "platform-namespace", "openshell-preparation", "rollback":
 			return failure.stage, failure.cleanupFailed
 		}
 		return "unknown", failure.cleanupFailed

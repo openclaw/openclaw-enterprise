@@ -1,3 +1,4 @@
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -80,6 +81,9 @@ export async function protectedSourceFixture(t, { githubMetadata = false, ...opt
     const sandbox = f.controller.selectedDriver("sandbox");
     const controller = new OpenClawController(f.controller.installation, {
       state,
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(f.controller.selectedDriver("compute"), sandbox),
+      ],
       backends: backendFixtures,
       defaultPresets: [],
       bundledPresetVersions: [],

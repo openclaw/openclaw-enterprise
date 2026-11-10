@@ -83,7 +83,8 @@ if (import.meta.main) {
   if (now !== null && command === "mark") {
     process.stdout.write(`uptime=${uptime}\n`);
   } else if (now !== null && command === "summarize" && process.env.GITHUB_STEP_SUMMARY) {
-    const receipt = JSON.stringify(phaseTiming(process.env, now), null, 2);
+    const timing = phaseTiming(process.env, now);
+    const receipt = JSON.stringify(timing, null, 2);
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
       "### OpenShell phase timing\n\n```json\n" + receipt + "\n```\n",
@@ -91,6 +92,12 @@ if (import.meta.main) {
     const receiptPath = process.argv[3];
     if (receiptPath) {
       writeFileSync(receiptPath, receipt + "\n", { flag: "wx" });
+    }
+    if (timing.lane === "openshell-policy") {
+      const { elapsedMs, residualMs, phases } = timing;
+      process.stdout.write(
+        `::notice title=OpenShell policy phase timing::${JSON.stringify({ elapsedMs, residualMs, phases })}\n`,
+      );
     }
   } else {
     process.exitCode = 1;

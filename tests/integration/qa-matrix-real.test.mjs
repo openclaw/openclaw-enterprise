@@ -59,6 +59,12 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.namespaceLifecycle) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(context, "kubernetes/OpenShell", "Namespace gateway before any Agent", () =>
+        verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
+      );
+    }
     if (selection.oidcAgentChat) {
       const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
       await stage(

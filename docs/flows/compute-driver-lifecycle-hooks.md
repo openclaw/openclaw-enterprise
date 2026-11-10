@@ -1,14 +1,15 @@
 ---
 created: 2026-08-20
-updated: 2026-10-31 05:00
-last_updated_session: fix-3022
+updated: 2026-11-07
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 # Compute Driver Lifecycle Hooks Flow
 
 ## Overview
 
-Selected non-Compute Drivers can participate in Namespace and workload lifecycles without owning
+Selected Drivers can participate in workload lifecycles through Compute and
+Namespace lifecycles through OCC without owning
 infrastructure or receiving deployment authority. This flow starts when trusted startup composition
 selects hook owners, follows Compute readiness, workload preparation, revocation, and teardown, and
 stops when Compute returns its existing lifecycle observation to OCC or the independent worker.
@@ -33,10 +34,10 @@ graph TD
 
   subgraph Lifecycle["Compute-owned lifecycle"]
     C --> D{"Lifecycle operation"}
-    D -->|ensure Namespace| E["Prepare tenant infrastructure and run namespace hooks"]
+    D -->|ensure Namespace| E["OCC prepares infrastructure, then registration hooks"]
     D -->|prepare version| F["Prepare or stage version resources"]
     D -->|retire version| G["Revoke workload access before stopping"]
-    D -->|delete Namespace| H["Revoke workloads and namespace before deletion"]
+    D -->|delete Namespace| H["OCC checks eligibility and cleans registrations"]
     E -->|success| I["Report ready"]
     F -->|ready| J["Return readiness for worker activation"]
     E -->|failure| K["Compensate completed owners in reverse"]
@@ -85,11 +86,11 @@ request. Invalid selectors stop configuration loading instead of creating a tena
 that later fails NetworkPolicy admission. Empty values, qualified keys, and valid
 length boundaries remain unchanged.
 
-Both [Kubernetes](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and
-[Docker](../../apps/controller/src/drivers/compute/docker/index.ts) Compute implementations
-prepare tenant infrastructure first, then run `afterNamespacePrepared` before reporting ready.
-No gateway exists until Agent revision preparation. Failed preparation compensates completed
-owners with `beforeNamespaceDelete` in reverse.
+`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` first asks
+Compute to prepare infrastructure, then runs selected Namespace participants.
+Pending or failed setup blocks readiness. Retries recheck completed effects;
+there is no Namespace compensation. OpenShell can create its namespace-owned
+gateway before any Agent exists. See [Namespace hooks](../reference/drivers/namespace-lifecycle.md).
 
 ### 4. Validate launch contributions before starting a workload
 
@@ -136,16 +137,14 @@ workload bindings.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.retireRevision`
 
 Workload retirement runs `beforeWorkloadStop` in reverse owner order before stopping the workload
-for this version. Namespace deletion is limited to empty tenants and runs
-`beforeNamespaceDelete` before requesting Kubernetes deletion. A
-failed revocation preserves the owned resource for retry; aborted preparation receives a new
+for this version. A failed revocation preserves the owned resource for retry; aborted preparation receives a new
 cleanup signal that requests cancellation after five seconds. The original cancellation
 cannot prevent this cleanup attempt.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.deleteNamespace`
 
-Docker Namespace deletion also runs `beforeNamespaceDelete` before removing owned
-containers and workspace volumes. If the network has already been removed externally,
+OCC checks deletion eligibility and runs Namespace registration cleanup before
+Docker removes owned containers and workspace volumes. If the network has already been removed externally,
 the Driver still runs these cleanup steps; network absence alone does not establish
 Namespace deletion. It verifies any existing network before teardown and removes it
 after the remaining resources. The worker settles deletion only from the resulting
@@ -153,7 +152,7 @@ after the remaining resources. The worker settles deletion only from the resulti
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/utils.test.mjs tests/conformance/compute-lifecycle-hooks.test.mjs`
+- Run `node --test tests/conformance/utils.test.ts tests/conformance/compute-lifecycle-hooks.test.mjs`
   for shared immutable copies, callback capture, preparation/teardown ordering, opaque placeholders,
   cancellation, and rollback.
 - Run `node --test --test-name-pattern='Kubernetes lifecycle owners cannot be replaced|Kubernetes lifecycle hooks never run' tests/conformance/kubernetes-compute.test.mjs`
@@ -180,6 +179,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-06 23:26: Move Namespace orchestration to OCC in the accompanying implementation. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - 91b1a51eb)
 
 - 2026-10-31 05:00: Name the missing model of a draft at deployment admission. (fix-3022, finding 3022)
 

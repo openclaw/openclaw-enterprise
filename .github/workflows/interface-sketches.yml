@@ -1,7 +1,7 @@
 name: Interface sketches
 on:
   push:
-    branches: [main, tools/interface-sketches]
+    branches: [main]
     paths:
       - "scripts/interface-sketches/**"
       - "docs/assets/credential-proxy/**"

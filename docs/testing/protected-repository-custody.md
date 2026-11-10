@@ -33,7 +33,7 @@ Git denial after withdrawal, with no issuance or workload traffic, while the sam
 still works directly at the controlled provider. Git and PostgreSQL are real;
 the installed external Driver, workload, placement and GitHub API are fixtures.
 
-The built-in policy case signs in a persisted account through Fastify,
+The default file-based GitHub policy case signs in a persisted account through Fastify,
 creates and deploys an Agent without a public Repo Driver, and refuses the same
 repository in an otherwise authorized foreign Namespace before issuance or Git
 traffic. It restarts the Worker and custody owner, fetches a new commit through

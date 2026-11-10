@@ -86,6 +86,80 @@ Inspect producer build/export and consumer download/load timings separately from
 test durations. Ordinary artifacts stay within their workflow and do not replace
 native container verification or authorize publication.
 
+### Find a retained runtime before building locally
+
+Before a cold local build, check CI runs triggered by pushes to `main` for the
+exact source revision. This example does not search manual, pull-request or
+merge-group runs; an empty result rules out only matching main-push runs.
+Discovery uses GitHub CLI access to Actions and `jq`; it does not load an image
+or qualify a release. Use the full commit SHA, not a branch name:
+
+```bash
+SOURCE_SHA='<full-40-character-commit>'
+REPOSITORY='openclaw/openclaw-enterprise'
+gh api --method GET --paginate \
+  "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+  -f head_sha="$SOURCE_SHA" -f event=push -f branch=main -f per_page=100 \
+  --jq '.workflow_runs[] | {id, run_attempt, head_sha, status, conclusion, html_url}'
+```
+
+Select a run whose `head_sha` matches. Inspect its runtime producer in the
+selected attempt; a green unrelated job is insufficient:
+
+```bash
+RUN_ID='<run-id>'
+PRODUCER_ATTEMPT='<attempt-number>'
+gh api --paginate \
+  "repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$PRODUCER_ATTEMPT/jobs?per_page=100" \
+  --jq '.jobs[] | select(.name == "Shared Runtime Image / Build ordinary CI runtime") |
+    {id, run_id, run_attempt, head_sha, status, conclusion, html_url}'
+```
+
+Require one matching producer with the selected source, run and attempt,
+`status: completed`, and `conclusion: success`. After a partial rerun, the
+successful producer can belong to an earlier attempt; inspect that attempt
+instead of assuming the latest run attempt produced the image.
+
+List the image and separate small provenance receipt for that producer:
+
+```bash
+gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" |
+  jq --arg image "ci-runtime-$RUN_ID-$PRODUCER_ATTEMPT" \
+     --arg receipt "ci-runtime-receipt-$RUN_ID-$PRODUCER_ATTEMPT" \
+    '.artifacts[] | select(.name == $image or .name == $receipt) |
+      {id, name, expired, expires_at, digest, size_in_bytes, workflow_run}'
+```
+
+Require one image artifact and, for the small download below, one receipt artifact,
+with `expired: false`, a future `expires_at`, and
+`workflow_run.id` / `workflow_run.head_sha` matching the selected run and source.
+Record both artifact IDs and digests. These artifacts expire after **one day**;
+an absent or expired artifact cannot satisfy this lookup. The API `digest`
+identifies the downloaded artifact ZIP, not the image manifest. If the separate
+receipt upload is missing, the image archive also contains `receipt.json`; inspect
+it during a separately verified image transfer.
+
+Download only the small receipt into a fresh directory to inspect the platform
+and image identities before transferring the image:
+
+```bash
+RECEIPT_DIR="$(mktemp -d)"
+gh run download "$RUN_ID" --repo "$REPOSITORY" \
+  --name "ci-runtime-receipt-$RUN_ID-$PRODUCER_ATTEMPT" --dir "$RECEIPT_DIR"
+jq '{sourceSha, runId, producerAttempt, platform, archiveSha256,
+     indexDigest, platformManifestDigest, configDigest}' "$RECEIPT_DIR/receipt.json"
+```
+
+Compare `sourceSha` with the intended Enterprise commit, `runId` with `RUN_ID`,
+`producerAttempt` with the successful `PRODUCER_ATTEMPT`, and `platform` with the
+local target platform. Its `archiveSha256` covers `runtime.tar`. Discovery and a matching receipt
+alone do not verify downloaded image bytes, native behavior or installed
+acceptance. The existing runtime-artifact helper accepts only same-workflow
+consumers; there is no supported local import command. Do not set `GITHUB_*`
+variables to bypass that check. Retain this evidence when planning separately
+verified local reuse or a source build. For release-qualified image transfer,
+follow [native image checks](../../release/containers.md#check-native-images-without-publication).
+
 ## Results and cleanup
 
 A lane fails if required cases are missing, skipped, marked TODO, or failed, or if cleanup fails. This includes skipped suites and Go tests. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.

@@ -411,8 +411,29 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       }),
     /exclusive QA selection/,
   );
+  const namespaceLifecycle = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "namespace-lifecycle",
+    OCC_TEST_QA_PRESET: "OpenClaw",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.ok(namespaceLifecycle.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
+  assert.ok(namespaceLifecycle.requiredEnv.includes("OCC_TEST_QA_OPENAI_MODEL"));
+  assert.throws(
+    () =>
+      validateQaInputs(namespaceLifecycle, {
+        OCC_TEST_QA_SANDBOX_ENV: "/private/sandbox.env",
+      }),
+    /OPENAI_KEY_FILE is required/,
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
+  // An equally sized selection still omits default coverage if it substitutes a manual scenario.
+  assert.equal(
+    selectQaMatrix({
+      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets,git-write,slack,namespace-lifecycle",
+    }).scope,
+    "partial:selected",
+  );
   assert.ok(full.repository);
   const isolated = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "git-write",

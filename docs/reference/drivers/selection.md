@@ -388,3 +388,5 @@ The [Driver package loader](../../../apps/controller/src/composition/driver-pack
 resolves installed packages and checks their factories;
 [Installation composition](../../../apps/controller/src/composition/installation-config.ts)
 validates selections and constructs the runtime bundle.
+
+Namespace setup follows the [registration lifecycle](namespace-lifecycle.md).

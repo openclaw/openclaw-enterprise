@@ -114,7 +114,8 @@ function renderedBroker(objects, options) {
   }
   const args = broker.args ?? [];
   const origin = valueAfter(args, "--public-origin");
-  const backendId = valueAfter(args, "--backend-id");
+  // The chart escapes literal dollars for one kubelet argument-expansion pass.
+  const backendId = valueAfter(args, "--backend-id").replaceAll("$$", "$");
   let url;
   try {
     url = new URL(origin);

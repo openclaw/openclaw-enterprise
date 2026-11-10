@@ -17,10 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	runtimeLogFollowInterval = 2 * time.Second
-	runtimeLogFollowTail     = "1000"
-)
+const runtimeLogFollowInterval = 2 * time.Second
 
 // sleepContext waits for d or until ctx is done. Tests replace it.
 var sleepContext = func(ctx context.Context, d time.Duration) error {
@@ -371,10 +368,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	for {
 		pageQuery := query
 		if cursor != "" {
-			// A cursor continues the view; the server derives the window from it.
+			// A cursor continues the same view. OCC binds that view to the tail
+			// accepted on the first page and derives the time window from the
+			// cursor, so a poll must repeat tailLines instead of widening it.
 			pageQuery = url.Values{
 				"source":    query["source"],
-				"tailLines": {runtimeLogFollowTail},
+				"tailLines": query["tailLines"],
 				"cursor":    {cursor},
 			}
 			if pod := query.Get("pod"); pod != "" {

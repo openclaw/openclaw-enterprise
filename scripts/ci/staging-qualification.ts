@@ -5,7 +5,7 @@ import { lstat, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { validatePublicationRun, validateReceipt } from "./container-promote.mjs";
+import { validatePublicationRun, validateReceipt } from "./container-promote.ts";
 import {
   github,
   githubPages,

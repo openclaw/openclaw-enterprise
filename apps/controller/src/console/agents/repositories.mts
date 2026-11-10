@@ -227,6 +227,8 @@ export function createRepositoryFields(
   // Set before any render: a held form renders before its first read (finding 2909).
   let searchState: SearchState = { query: "", browsing: false, dismissed: false, page: 0 };
   let loadGeneration = 0;
+  let deploymentRequiresRepository = false;
+  let loadedAfterReset = false;
   const status = element(
     "p",
     { className: "hint", role: "status" },
@@ -1075,16 +1077,8 @@ export function createRepositoryFields(
       });
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
-      if (!state.options.length) {
-        const next = clearSelections
-          ? "Start a new draft to continue without repository access."
-          : "You can continue without repository access.";
-        status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories. ${next}`;
-      } else {
-        status.textContent = clearSelections
-          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
-          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
-      }
+      loadedAfterReset = clearSelections;
+      showReadyStatus();
       revealInvalidSelections();
       render();
       onChange(false);
@@ -1160,13 +1154,45 @@ export function createRepositoryFields(
     };
   }
 
+  function showReadyStatus() {
+    if (!state.options.length) {
+      const next = deploymentRequiresRepository
+        ? ""
+        : loadedAfterReset
+          ? " Start a new draft to continue without repository access."
+          : " You can continue without repository access.";
+      status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
+    } else {
+      status.textContent = loadedAfterReset
+        ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
+        : deploymentRequiresRepository
+          ? "Select approved repository access for this Agent."
+          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
+    }
+  }
+
+  function setDeploymentRequiresRepository(required: boolean) {
+    if (deploymentRequiresRepository === required) {
+      return;
+    }
+    deploymentRequiresRepository = required;
+    if (state.discovery === "ready") {
+      showReadyStatus();
+    } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      showSetupLink();
+    }
+  }
+
   // The status line for an Installation without repository access. Only an Installation
   // administrator can set it up, so only a known administrator gets the setup guide; anyone else
   // is told whom to ask, in the console's words (finding D754).
   function showSetupLink() {
     setStatusTone(status, null);
-    const next =
-      state.selected.size > 0
+    const next = deploymentRequiresRepository
+      ? state.selected.size > 0
+        ? " Remove unavailable repository selections."
+        : ""
+      : state.selected.size > 0
         ? ` Remove the selected repositories${initial.agentId ? " and save" : ""} to continue without repository access.`
         : !initial.agentId
           ? " You can continue without repository access."
@@ -1213,6 +1239,7 @@ export function createRepositoryFields(
     validate,
     hasValidSelection,
     setDisabled,
+    setDeploymentRequiresRepository,
     reload: () => load(true),
     /** Reads the choices a held form has not read yet; once read, retries go through Retry. */
     start: () => {

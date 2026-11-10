@@ -1,3 +1,11 @@
+import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
+import {
+  validateNamespaceGatewayResources,
+  reconcileNamespaceGateway,
+  managedGatewayNamespaceExists,
+  ensureNamespaceGatewayIdentity,
+  namespaceGatewayExists,
+} from "./openshell-namespace-gateway.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
@@ -79,12 +87,14 @@ import {
   PatchStrategy,
 } from "@kubernetes/client-node";
 import {
+  ActivationFailedError,
   ConfigurationHarnessError,
   configurationSettingMessage,
   DependencyUnavailableError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   SandboxNamespaceRefusedError,
+  SandboxNamespacePendingError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
@@ -203,6 +213,7 @@ export interface OpenShellSandboxDriverOptions {
       readonly pollIntervalMs?: number;
     };
     readonly operatorWorkspaceResources?: readonly KubernetesNamespacedResource[];
+    readonly namespaceGatewayResources?: readonly KubernetesNamespacedResource[];
     readonly networkPolicyResources?: readonly KubernetesNamespacedResource[];
   };
   readonly kubernetes: {
@@ -1272,7 +1283,7 @@ async function waitForGatewayReadiness(
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new OpenShellSandboxConfigurationFailure(unavailable);
+      throw new SandboxNamespacePendingError(unavailable);
     }
     // Check once more at the deadline rather than a whole poll interval past it.
     await delay(Math.min(pollIntervalMs, remaining), undefined, { signal: context.signal });
@@ -2314,6 +2325,7 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
         "operatorNamespaceLabels",
         "readiness",
         "operatorWorkspaceResources",
+        "namespaceGatewayResources",
         "networkPolicyResources",
       ].includes(key)
     ) {
@@ -2374,6 +2386,14 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     refuseIngressAlias(resource, `/gateway/networkPolicyResources/${index}`);
     refuseUnsentFields(resource, "networkPolicyResources", index);
   });
+  if (options.gateway.namespaceGatewayResources !== undefined) {
+    validateNamespaceGatewayResources(options.gateway.namespaceGatewayResources);
+    if (options.gateway.readiness === undefined || options.gateway.workspaceMode !== "operator") {
+      throw new SandboxNamespaceRefusedError(
+        "Namespace gateway setup requires readiness settings and operator Workspace mode.",
+      );
+    }
+  }
   options.gateway.operatorWorkspaceResources?.forEach((resource, index) => {
     validateOperatorWorkspaceResource(resource, `gateway.operatorWorkspaceResources[${index}]`);
     refuseIngressAlias(resource, `/gateway/operatorWorkspaceResources/${index}`);
@@ -2463,6 +2483,7 @@ export const configurationSchema = Object.freeze({
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
         operatorNamespaceLabels: { type: "object", writeOnly: true },
         operatorWorkspaceResources: { type: "array", writeOnly: true },
+        namespaceGatewayResources: { type: "array", writeOnly: true },
         networkPolicyResources: { type: "array", writeOnly: true },
         readiness: {
           type: "object",
@@ -2976,6 +2997,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     this.backend = selection.backend;
     this.operatorOwnedKubernetesResources = selection.operatorOwnedKubernetesResources === true;
+    if (
+      this.operatorOwnedKubernetesResources &&
+      options.gateway.namespaceGatewayResources !== undefined
+    ) {
+      throw new SandboxNamespaceRefusedError(
+        "Operator-owned Kubernetes resources cannot select Namespace gateway creation.",
+      );
+    }
   }
 
   configureAgent(
@@ -3087,6 +3116,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private async ensureNamespaceWorkspace(context: SandboxNamespaceContext): Promise<void> {
     this.requireOperatorWorkspaceMode("ensure a Namespace");
     const namespace = namespaceName(context.namespace);
+    if (this.options.gateway.namespaceGatewayResources !== undefined) {
+      const placement = this.backend.client.placement(namespace);
+      if (
+        placement?.namespace !== namespace ||
+        placement.service !== this.options.gateway.readiness?.serviceName
+      ) {
+        throw new SandboxNamespaceRefusedError(
+          "Namespace gateway setup requires its own namespace-local Backend Service.",
+        );
+      }
+    }
     if (this.operatorOwnedKubernetesResources) {
       const api = kubernetes(context);
       const observed = await api.read({
@@ -3163,6 +3203,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       await applyOperatorNamespaceLabels(context, this.options.gateway.operatorNamespaceLabels);
       await applyResources(context, this.options.gateway.operatorWorkspaceResources);
       await applyResources(context, this.options.gateway.networkPolicyResources);
+    }
+    if (this.options.gateway.namespaceGatewayResources !== undefined) {
+      await ensureNamespaceGatewayIdentity(
+        context,
+        `${this.options.gateway.readiness!.serviceName}-jwt-keys`,
+      );
+    }
+    if (
+      this.options.gateway.namespaceGatewayResources !== undefined &&
+      !(await reconcileNamespaceGateway(context, this.options.gateway.namespaceGatewayResources))
+    ) {
+      throw new SandboxNamespacePendingError();
     }
     if (this.options.gateway.readiness !== undefined) {
       await waitForGatewayReadiness(context, this.options.gateway.readiness);
@@ -4070,8 +4122,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Observes the Harness through its bearer-passthrough exposure, as the Agent Gateway reaches a
    * Codex Harness. A Harness holding a startup failure (for example a failed model probe) serves
    * that failure on the exposed port in place of Codex, or in place of the dedicated OpenClaw
-   * worker's node. Provider-managed Codex PATs also require the serving process's auth status;
-   * other modes need the authenticated WebSocket handshake.
+   * worker's node. Dedicated Codex also checks the serving process's permission requirements.
+   * Provider-managed PATs additionally require the serving process's authentication status.
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
@@ -4089,31 +4141,40 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Harness wrapper holding a startup failure answers the upgrade 503 with the held
       // code and serves the failure itself on the status path.
       const auth = context.revision.harnessAuth;
-      const providerManagedPat =
-        context.revision.harness.id === "codex" &&
-        auth?.method === "credential_source" &&
-        auth.loginMode === "codex_pat";
-      if (providerManagedPat) {
-        const status = await client.serviceCodexPatStatus(
+      if (context.revision.harness.id === "codex") {
+        const status = await client.serviceCodexReadinessStatus(
+          service.url,
+          context.transportToken,
+          auth?.method === "credential_source" && auth.loginMode === "codex_pat",
+          context.signal,
+        );
+        context.signal.throwIfAborted();
+        if (typeof status === "object") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+            "The Codex Harness reports managed permission requirements incompatible with activation.",
+            status.permissionDenials,
+          );
+        }
+        if (status === "requirements-too-large") {
+          throw new ActivationFailedError(
+            "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+            "The Codex Harness requirements reply exceeds the supported size limit.",
+          );
+        }
+        if (status !== "unavailable") {
+          return Object.freeze({ state: status });
+        }
+      } else {
+        const serving = await client.serviceWebSocketHandshake(
           service.url,
           context.transportToken,
           context.signal,
         );
         context.signal.throwIfAborted();
-        if (status !== "unavailable") {
-          return Object.freeze({ state: status });
+        if (serving) {
+          return Object.freeze({ state: "serving" });
         }
-      }
-      const serving =
-        !providerManagedPat &&
-        (await client.serviceWebSocketHandshake(
-          service.url,
-          context.transportToken,
-          context.signal,
-        ));
-      context.signal.throwIfAborted();
-      if (serving) {
-        return Object.freeze({ state: "serving" });
       }
       const document = await client.getServiceDocument(
         service.url,
@@ -4302,8 +4363,47 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     this.requireOperatorWorkspaceMode("clean up a Namespace");
     const namespace = namespaceName(context.namespace);
+    const managedResources = this.options.gateway.namespaceGatewayResources;
+    // Compute removes the backing namespace asynchronously after provider cleanup. Its
+    // absence also removes tenant RBAC and proves this namespace-owned gateway is gone.
+    if (managedResources !== undefined && !(await managedGatewayNamespaceExists(context))) {
+      return;
+    }
     const client = this.gatewayClientForNamespace(namespace);
-    const workspace = await client.getWorkspace(workspaceName(context.namespace), context.signal);
+    let gatewayAvailable = managedResources === undefined;
+    if (
+      managedResources !== undefined &&
+      (await namespaceGatewayExists(context, this.options.gateway.readiness!.serviceName))
+    ) {
+      const pods = await kubernetes(context).list(
+        "v1",
+        "Pod",
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        labelSelector(this.options.gateway.readiness!.podSelector),
+      );
+      context.signal.throwIfAborted();
+      gatewayAvailable = pods.items.some((pod) => podReady(pod as ConfigurationRecord));
+    }
+    let workspace;
+    if (gatewayAvailable) {
+      try {
+        workspace = await client.getWorkspace(workspaceName(context.namespace), context.signal);
+      } catch (error) {
+        context.signal.throwIfAborted();
+        // A managed gateway and its state belong entirely to this Namespace. An unavailable
+        // transport must not strand their teardown; authorization and provider refusals still fail.
+        if (
+          managedResources === undefined ||
+          !(error instanceof OpenShellGatewayUnavailableError)
+        ) {
+          throw error;
+        }
+      }
+    }
     if (workspace !== undefined) {
       // A prior delete can have reached TERMINATING before its response was lost.
       // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
@@ -4324,6 +4424,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }
       await client.deleteWorkspace(workspace.name, context.signal);
+      if ((await client.getWorkspace(workspace.name, context.signal)) !== undefined) {
+        throw new SandboxNamespacePendingError();
+      }
+    }
+    if (
+      this.options.gateway.namespaceGatewayResources !== undefined &&
+      !(await reconcileNamespaceGateway(
+        context,
+        [
+          {
+            apiVersion: "v1",
+            kind: "Secret",
+            metadata: { name: `${this.options.gateway.readiness!.serviceName}-jwt-keys` },
+          },
+          ...this.options.gateway.namespaceGatewayResources,
+        ],
+        true,
+      ))
+    ) {
+      throw new SandboxNamespacePendingError();
     }
     if (this.operatorOwnedKubernetesResources) {
       return;

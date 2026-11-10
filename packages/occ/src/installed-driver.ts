@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleHooks } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -14,6 +15,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { canonicalProvisioningJson } from "./agent-provisioning.ts";
 import {
   capability,
+  validNamespaceLifecycleHooks,
   driverHasCapabilityContract,
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";
@@ -24,6 +26,7 @@ export class InstalledDriver {
   readonly ref: DriverRegistrationRef;
   readonly capabilities: readonly DriverCapability[];
   readonly lifecycleDriver: Driver | undefined;
+  readonly namespaceLifecycleHooks: NamespaceLifecycleHooks | undefined;
   readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
   readonly #close: (() => void | Promise<void>) | undefined;
   #closing: Promise<void> | undefined;
@@ -56,6 +59,7 @@ export class InstalledDriver {
         driver.id !== (capabilityIds[key] ?? id) ||
         driver.implementation !== implementation ||
         driver.computeLifecycleHooks !== undefined ||
+        driver.namespaceLifecycleHooks !== undefined ||
         !driverHasCapabilityContract(driver)
       ) {
         throw new DriverSelectionError(
@@ -77,6 +81,15 @@ export class InstalledDriver {
       }
       this.lifecycleDriver = Object.freeze(lifecycle);
     }
+    if (
+      registration.namespaceLifecycleHooks !== undefined &&
+      !validNamespaceLifecycleHooks(registration.namespaceLifecycleHooks)
+    ) {
+      throw new DriverSelectionError(
+        "A Driver registration has invalid Namespace lifecycle hooks.",
+      );
+    }
+    this.namespaceLifecycleHooks = registration.namespaceLifecycleHooks;
     this.#close = registration.close?.bind(registration);
     Object.freeze(this);
   }

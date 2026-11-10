@@ -168,15 +168,24 @@ const responseTools = array(
 
 const toolChoice = oneOf("auto", "none", "required");
 
+const empty = array(() => false, 0);
+const outputText = object(
+  { type: oneOf("output_text"), text },
+  { annotations: empty, logprobs: empty },
+);
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
 const contentParts = array(textPart);
 const content: Validator = (value) => text(value) || contentParts(value);
 const phase = oneOf("commentary", "partial_answer", "final_answer");
 const status = oneOf("in_progress", "completed", "incomplete");
 const summary = object({ type: oneOf("summary_text"), text });
-const inputMessage = object(
-  { role: oneOf("system", "developer", "user", "assistant"), content },
-  { type: oneOf("message"), id: text, phase, status },
+const inputMessage = (role: Validator, content: Validator) =>
+  object({ role, content }, { type: oneOf("message"), id: text, phase, status });
+const plainInputMessage = inputMessage(oneOf("system", "developer", "user"), content);
+const assistantContentParts = array((value) => textPart(value) || outputText(value));
+const assistantInputMessage = inputMessage(
+  oneOf("assistant"),
+  (value) => text(value) || assistantContentParts(value),
 );
 const reasoningItem = object(
   { type: oneOf("reasoning"), summary: array(summary) },
@@ -213,7 +222,8 @@ const additionalLocalTools = object(
 );
 const inputItems = array(
   (item) =>
-    inputMessage(item) ||
+    plainInputMessage(item) ||
+    assistantInputMessage(item) ||
     reasoningItem(item) ||
     toolCall(item) ||
     toolOutput(item) ||
@@ -384,11 +394,6 @@ export const validChatRequest = object(
   },
 );
 
-const empty = array(() => false, 0);
-const outputText = object(
-  { type: oneOf("output_text"), text },
-  { annotations: empty, logprobs: empty },
-);
 // A provider safety refusal arrives as a documented `refusal` part of the assistant message
 // (openai-python ResponseOutputRefusal). Its text is assistant-visible, so the stream scans
 // it like output_text.

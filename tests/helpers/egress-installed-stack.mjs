@@ -16,6 +16,32 @@ import {
   sendConnectedRequest,
 } from "./egress-connected-inputs.mjs";
 
+// Keep response diagnostics closed: arbitrary codes and messages can contain credentials.
+const responseCodes = new Set([
+  "AGENT_DELETING",
+  "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "CREDENTIAL_TOKEN_UNSETTLED",
+  "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "DEPENDENCY_UNAVAILABLE",
+  "FORBIDDEN",
+  "INTERNAL_ERROR",
+  "INVALID_REQUEST",
+  "NAMESPACE_NOT_READY",
+  "NOT_FOUND",
+  "RESOURCE_CONFLICT",
+  "SANDBOX_POLICY_PROTECTED_EXECUTION",
+  "UNAUTHENTICATED",
+]);
+
+function canonicalRequestId(value) {
+  // The controller disables caller-supplied IDs and generates req_<UUIDv4>.
+  return typeof value === "string" &&
+    value.length === 40 &&
+    /^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    ? value
+    : null;
+}
+
 export async function arrangeRealPrerequisites(t, progress, inputsPath, profile = {}) {
   assert.equal(process.env.OCC_TEST_EGRESS_CONNECTED, "1");
   assert.ok(inputsPath, "OCC_TEST_EGRESS_CONNECTED_INPUTS must name the exact prepared stack");
@@ -64,6 +90,7 @@ export async function createRunEvidence(t, setup, progress) {
     images: input.images,
     namespaceId: controller.namespaceId,
     resources: [],
+    apiOperations: [],
     phases: [],
     cleanup: "pending",
   };
@@ -72,18 +99,24 @@ export async function createRunEvidence(t, setup, progress) {
   let writing = Promise.resolve();
   const saveLedger = () => {
     const snapshot = JSON.stringify(ledger, null, 2) + "\n";
-    writing = writing.then(async () => {
+    const write = writing.then(async () => {
       const pending = join(directory, "observations.pending.json");
       await writeFile(pending, snapshot, { mode: 0o600 });
       await rename(pending, join(directory, "observations.json"));
     });
-    return writing;
+    // A caller observes its own failure; a later checkpoint can still attempt its write.
+    writing = write.catch(() => {});
+    return write;
   };
   const checkpoint = async (phase, details = {}, privateDetails = {}) => {
     progress.stage = phase;
     ledger.phases.push({ phase, at: new Date().toISOString(), ...details, ...privateDetails });
     await saveLedger();
     t.diagnostic(`egress-connected ${phase} ${JSON.stringify(details)}`);
+  };
+  const recordFailure = async (failure) => {
+    ledger.failure = failure;
+    await saveLedger();
   };
   const credentials = {
     initial: `SYNTHETIC-OCE-EGRESS-${runId}-v1`,
@@ -114,37 +147,70 @@ export async function createRunEvidence(t, setup, progress) {
       t.signal.throwIfAborted();
     }
     const wire = serializeConnectedRequest(method, path, body);
-    // The operation ID identifies this local attempt. Persist uncertainty before
-    // sending; do not copy the controller's response, request ID or URL to this record.
-    ledger.lastApi = { operationId: randomUUID(), method, outcome: "unknown" };
-    await saveLedger();
-    const response = await sendConnectedRequest(
-      controller,
-      wire,
-      cleanup
-        ? AbortSignal.timeout(20_000)
-        : AbortSignal.any([t.signal, AbortSignal.timeout(20_000)]),
-    );
-    const raw = await response.text();
-    excludesCredentials(raw, "controller response");
-    assert.equal(
-      raw.includes(controller.serviceKey),
-      false,
-      "controller response leaked its service key",
-    );
-    const captured = {
-      status: response.status,
-      body: raw === "" ? undefined : JSON.parse(raw),
+    // Persist uncertainty before dispatch. Keep each attempt after cleanup replaces lastApi.
+    const operation = {
+      operationId: randomUUID(),
+      method,
+      phase: cleanup ? "cleanup" : (progress.stage ?? "unclassified"),
+      outcome: "unknown",
+      status: null,
+      code: null,
+      requestId: null,
     };
-    if (captured.body !== undefined) {
-      excludesCredentials(captured.body, "decoded controller response");
-      assert.equal(
-        JSON.stringify(captured.body).includes(controller.serviceKey),
-        false,
-        "decoded controller response leaked its service key",
+    ledger.lastApi = operation;
+    ledger.apiOperations.push(operation);
+    await saveLedger();
+    let captured;
+    try {
+      const response = await sendConnectedRequest(
+        controller,
+        wire,
+        cleanup
+          ? AbortSignal.timeout(20_000)
+          : AbortSignal.any([t.signal, AbortSignal.timeout(20_000)]),
       );
+      operation.status = response.status;
+      const requestId = canonicalRequestId(response.headers.get("x-request-id"));
+      if (requestId !== null) {
+        excludesCredentials(requestId, "controller request ID");
+        assert.equal(
+          requestId.includes(controller.serviceKey),
+          false,
+          "controller request ID leaked its service key",
+        );
+      }
+      operation.requestId = requestId;
+      const raw = await response.text();
+      excludesCredentials(raw, "controller response");
+      assert.equal(
+        raw.includes(controller.serviceKey),
+        false,
+        "controller response leaked its service key",
+      );
+      captured = {
+        status: response.status,
+        body: raw === "" ? undefined : JSON.parse(raw),
+      };
+      if (captured.body !== undefined) {
+        excludesCredentials(captured.body, "decoded controller response");
+        assert.equal(
+          JSON.stringify(captured.body).includes(controller.serviceKey),
+          false,
+          "decoded controller response leaked its service key",
+        );
+      }
+      operation.requestId ??= canonicalRequestId(captured.body?.meta?.requestId);
+      if (!response.ok) {
+        const code = captured.body?.error?.code;
+        operation.code = responseCodes.has(code) ? code : "UNKNOWN";
+      }
+      operation.outcome = response.ok ? "received-success-status" : "received-error-status";
+    } catch (error) {
+      // Preserve the initiating failure if diagnostics also fail. The pre-dispatch
+      // unknown checkpoint remains authoritative; no write is safe to replay.
+      await saveLedger().catch(() => {});
+      throw error;
     }
-    ledger.lastApi.outcome = response.ok ? "received-success-status" : "received-error-status";
     await saveLedger();
     return captured;
   };
@@ -155,6 +221,7 @@ export async function createRunEvidence(t, setup, progress) {
     directory,
     ledger,
     checkpoint,
+    recordFailure,
     credentials,
     protect,
     excludesCredentials,

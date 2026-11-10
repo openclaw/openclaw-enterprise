@@ -201,10 +201,12 @@ It proves collection and dashboard provisioning, not live Agent behavior.
 
 ### Kubernetes observability acceptance
 
-With Node 24+, pinned pnpm and installed dependencies, Helm, kubectl, k3d,
-and Docker or an explicitly selected compatible Podman engine, run the
-credential-free lane on a disposable loopback cluster. NetworkPolicy must be
-enforced. Use a fresh private state directory for each run:
+Use Node matching `package.json`, pinned pnpm and installed dependencies, the Go
+toolchain in `go.mod`, Helm, kubectl, k3d, and the
+[production helper prerequisites](../guides/deploy/production-upgrade.md#prepare-the-release),
+including jq and yq. Run this credential-free lane with Docker or an explicitly
+selected compatible Podman engine on a disposable loopback cluster with enforced
+NetworkPolicy. Use a fresh private state directory for each run:
 
 ```sh
 OBS_LANE=k3d-observability

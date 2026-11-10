@@ -197,6 +197,7 @@ export async function composePostgresDevelopment(
       persistedInstallation,
       {
         ...installationControllerOptions(drivers?.installation),
+        namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined
@@ -373,6 +374,7 @@ export async function composePostgresDevelopment(
       },
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    drivers?.repositoryTransport?.connectRestartObservation?.(pool);
     await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));

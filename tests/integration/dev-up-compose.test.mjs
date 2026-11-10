@@ -108,7 +108,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   }
 
   // The CLI's client behavior is covered against the real Fastify API in
-  // service-api-keys.test.mjs; this fixture isolates dev-up's CLI invocation.
+  // service-api-keys.test.ts; this fixture isolates dev-up's CLI invocation.
   const occLogs = await readJsonLines(fixture.occLog);
   assert.deepEqual(occLogs, [{ args: ["installation", "get", "--output", "json"] }]);
   assert.doesNotMatch(JSON.stringify(occLogs), new RegExp(serviceKey));

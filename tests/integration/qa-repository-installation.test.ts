@@ -168,7 +168,12 @@ test("QA repository inputs start the controller, worker owner and repository ser
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
   });
-  assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
+  assert.ok(loaded?.repositoryOwner && loaded.repositoryAdmission && loaded.preparedRepositoryGit);
+  assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
+  assert.equal(Object.hasOwn(loaded.installation.drivers, "repo"), false);
+  assert.equal(loaded.repositoryAdmission.policyMode, "built-in");
+  assert.equal(loaded.repositoryAdmission.backendId, registry.backendId);
+  assert.equal(loaded.repositoryAdmission.policy.id, installation.repository.id);
   assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
   assert.equal(
@@ -178,8 +183,10 @@ test("QA repository inputs start the controller, worker owner and repository ser
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
   assert.equal(
-    loaded.repositoryPolicy.resolve({ namespaceId: "ns_qa", bindings: [{ repositoryRef: "qa" }] })
-      .bindings[0]?.profile,
+    loaded.repositoryAdmission.policy.resolveBindings({
+      namespaceId: "ns_qa",
+      bindings: [{ repositoryRef: "qa" }],
+    }).bindings[0]?.profile,
     "git-write",
   );
 

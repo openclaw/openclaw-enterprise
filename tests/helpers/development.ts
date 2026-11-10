@@ -10,6 +10,10 @@ function createReadyComputeBase(id: string) {
     async ensureNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceReady: true };
     },
+    // This passive fixture owns no external resources that could prohibit deletion.
+    async checkNamespaceDeletion(namespace) {
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    },
     async deleteNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },

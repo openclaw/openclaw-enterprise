@@ -1,31 +1,26 @@
 ---
-tags: [human_verified, nolimit]
+tags: [human_verified]
 # Backfilled from the verification tag recorded in a66a9cdfd.
 last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Kubernetes
 
-Install OpenClaw Enterprise (OCE) on an existing Kubernetes cluster.
-
-This OpenShell workflow supports development and evaluation.
-[OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
-
-After installation, [deploy your first Agent](deploy-first-agent.md).
+Install OpenClaw Enterprise (OCE) with OpenShell on an existing Kubernetes cluster for development and evaluation. [OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 ## Before you start
 
 <Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
-Label separate pools `oce-role=control` and `oce-role=agents`. Use encrypted RWO storage with `WaitForFirstConsumer`.
+Use separate pools (`oce-role=control`, `oce-role=agents`) and encrypted RWO storage with `WaitForFirstConsumer`.
 
-Install the matching Agent Sandbox controller and a `runc` RuntimeClass named `openshell-sandbox`. Verify the [OpenShell kernel and isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
+Install the matching Agent Sandbox controller and `openshell-sandbox` `runc` RuntimeClass; verify [kernel/isolation requirements](../../reference/drivers/openshell-sandbox.md#qualification-contract) and restricted tenant Pod Security.
 
-Use a fresh database and keep credential files private.
+Use a fresh application database.
 
 ## 1. Prepare the cluster and images
 
-From the matching checkout, [select images](published-images.md) as `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`.
+[Select `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`](published-images.md) from the matching checkout.
 
 ```bash
 set -euo pipefail
@@ -52,11 +47,18 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get nodes -L oce-role
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORAGE_CLASS"
 ```
 
-Set `OCE_CHART` to the matching absolute chart directory/archive and `OPENSHELL_CHART` to stock OpenShell 0.1.6. Set `SANDBOX_REGISTRY` and `SANDBOX_REPOSITORY` to the registry holding its stock AMD64 Gateway, supervisor and runtime manifests. Verify compatibility with the templates’ OpenShell 0.1.6 and Codex 0.164.0.
+| Input                                    | Value                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `OCE_CHART`                              | Matching absolute chart directory/archive.                                     |
+| `OPENSHELL_CHART`                        | Stock 0.1.6.                                                                   |
+| `SANDBOX_REGISTRY`, `SANDBOX_REPOSITORY` | Registry/repository for stock AMD64 Gateway, supervisor and runtime manifests. |
+| `ENVOY_IMAGE`                            | Qualified immutable proxy image.                                               |
+| `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
+| `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Set `ENVOY_IMAGE` to the qualified immutable proxy image and `ADMIN_EMAIL` to the owner’s email. Set `DATABASE_CIDRS` and `API_CIDRS` to approved IPv4 JSON arrays, including the API Service VIP and endpoint /32s.
+Match templates: OpenShell 0.1.6, Codex 0.164.0.
 
-Create `oce-system`. Allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify the GatewayClass:
+Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 
 ```bash
 class_json=$(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get gatewayclass eg --ignore-not-found -o json)
@@ -79,6 +81,6 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 
 ## 4. Prepare the operator session
 
-Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
+In the same Bash shell, [deploy your first Agent](deploy-first-agent.md).
 
-To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Kubernetes cleanup](kubernetes-cleanup.md).
+When finished, [delete the Agent](quickstart-delete-agent.md), then [clean up the installation](kubernetes-cleanup.md).
