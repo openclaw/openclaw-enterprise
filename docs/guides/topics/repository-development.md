@@ -163,8 +163,7 @@ source revision, checks that passed, failures and missing prerequisites.
 Before publication, verify the active repository grant as well as the task's
 authorization. The linked Git walkthrough restores read-only access; its temporary
 push grant does not include pull-request writes. `git push` requires
-`contents: write`; `gh pr create` also requires `pull_requests: write`. See
-[prepared Git and draft PR permissions](../../reference/repository-credentials/prepared-native-git.md).
+`contents: write`; `gh pr create` also requires `pull_requests: write`.
 
 With read-only access, hand off the local diff or commit to an authorized publisher
 without attempting either operation. If only pushing is permitted, use normal
