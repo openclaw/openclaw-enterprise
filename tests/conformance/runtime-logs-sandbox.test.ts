@@ -7,7 +7,6 @@ import test from "node:test";
 import { Check } from "typebox/value";
 import type {
   ComputeDriver,
-  Namespace,
   RuntimeDiagnosticCheck,
   RuntimeLogStream,
 } from "../../packages/contracts/src/index.ts";
@@ -44,6 +43,10 @@ import {
   RuntimeLogsForbiddenByClusterError,
   type ControllerOptions,
 } from "../../packages/occ/src/index.ts";
+import type {
+  RuntimeLogCursorBinding,
+  RuntimeLogPage,
+} from "../../packages/occ/src/runtime-logs/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
@@ -383,14 +386,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function recordValue(value: unknown): Record<string, unknown> {
   assert.ok(isRecord(value));
   return value;
-}
-
-function isUnknownArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
-
-function isPromise(value: unknown): value is Promise<unknown> {
-  return value instanceof Promise;
 }
 
 function canaries() {
@@ -1224,64 +1219,46 @@ test("a Harness the gateway restarts is told apart from a first start", () => {
   );
 });
 
-/**
- * The OpenShell Sandbox Driver alone with one dedicated revision, and contexts naming another
- * Driver, another Namespace and an embedded Harness.
- */
-// Preserve the existing abbreviated fixture inputs while calling the real typed implementation.
-function invokeFixture(
-  receiver: object | undefined,
-  method: (...args: never[]) => Promise<unknown>,
-  ...args: unknown[]
-): Promise<unknown> {
-  const result: unknown = Reflect.apply(method, receiver, args);
-  assert.ok(isPromise(result));
-  return result;
-}
-
-function driverUnderTest(revisionFields: { harness?: undefined } = {}) {
-  const gateway = logOnlyGatewayClient();
-  const driver = openShellSandboxDriver(gateway.client);
-  const namespace: Namespace = {
-    id: "ns_1",
-    name: SANDBOX_NAMESPACE,
-    status: "ready",
-    createdAt: "x",
+async function driverUnderTest() {
+  const { gateway, sandboxDriver: driver, fixture, target } = await harnessFixture("owner", []);
+  const revision = await fixture.controller.getRevision(
+    fixture.admin.seed.principal.id,
+    target.namespace.id,
+    target.agent.id,
+    target.revisionId,
+  );
+  const context = {
+    namespace: target.namespace,
+    revision,
+    signal: AbortSignal.timeout(2_000),
+    kubernetes: undefined,
   };
-  const revision = {
-    id: "rev_00000000-0000-4000-8000-000000000001",
-    namespaceId: namespace.id,
-    agentId: "agt_1",
-    sandboxDriverId: driver.id,
-    harness: { id: "codex", mode: "dedicated" },
-    ...revisionFields,
-  };
-  const signal = AbortSignal.timeout(2_000);
-  const foreign = [
-    { namespace, revision: { ...revision, sandboxDriverId: "another-sandbox" }, signal },
-    { namespace: { ...namespace, id: "ns_2" }, revision, signal },
-    { namespace, revision: { ...revision, harness: { id: "openclaw", mode: "embedded" } }, signal },
+  // Change one ownership attribute at a time on the revision admitted by the controller.
+  const foreignOwner = [
+    { ...context, revision: { ...revision, sandboxDriverId: "another-sandbox" } },
+    { ...context, namespace: { ...context.namespace, id: "ns_other" } },
   ];
-  return { gateway, driver, namespace, revision, signal, foreign };
+  const embedded = {
+    ...context,
+    revision: {
+      ...revision,
+      harness: { ...revision.harness, id: "openclaw", mode: "embedded" as const },
+    },
+  };
+  return { gateway, driver, context, foreignOwner, embedded };
 }
 
 test("the OpenShell Sandbox Driver observes only its own dedicated revisions", async () => {
-  const { gateway, driver, namespace, revision, signal, foreign } = driverUnderTest();
-  for (const context of foreign) {
-    await assert.rejects(
-      invokeFixture(driver, driver.observeHarness, context),
-      /outside its selected dedicated/,
-    );
+  const { gateway, driver, context, foreignOwner, embedded } = await driverUnderTest();
+  for (const foreign of [...foreignOwner, embedded]) {
+    await assert.rejects(driver.observeHarness(foreign), /outside its selected dedicated/);
   }
   assert.deepEqual(gateway.requests, [], "a refused observation reads nothing");
-  gateway.state.sandbox = sandboxRecord(revision.id, { phase: "SANDBOX_PHASE_COMPLETED" });
-  assert.deepEqual(
-    await invokeFixture(driver, driver.observeHarness, { namespace, revision, signal }),
-    {
-      state: "lost",
-      code: "HARNESS_EXITED",
-    },
-  );
+  gateway.state.sandbox = sandboxRecord(context.revision.id, { phase: "SANDBOX_PHASE_COMPLETED" });
+  assert.deepEqual(await driver.observeHarness(context), {
+    state: "lost",
+    code: "HARNESS_EXITED",
+  });
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
 
@@ -1289,54 +1266,41 @@ test("the OpenShell Sandbox Driver observes only its own dedicated revisions", a
 // Gateway by the labels the Driver returns; OpenShell's supervisor Pod carries the
 // Sandbox's gateway-minted ID, not the Sandbox name Compute could derive.
 test("the OpenShell Sandbox Driver names only its own revision's supervisor as the workspace-node peer", async () => {
-  const { gateway, driver, namespace, revision, signal, foreign } = driverUnderTest();
-  for (const context of foreign) {
-    await assert.rejects(
-      invokeFixture(driver, driver.workspaceNodePeerLabels, context),
-      /outside its selected dedicated/,
-    );
+  const { gateway, driver, context, foreignOwner, embedded } = await driverUnderTest();
+  for (const foreign of [...foreignOwner, embedded]) {
+    await assert.rejects(driver.workspaceNodePeerLabels(foreign), /outside its selected dedicated/);
   }
   assert.deepEqual(gateway.requests, [], "a refused lookup reads nothing");
   // No Sandbox yet: no peer.
-  assert.equal(
-    await invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
-    undefined,
-  );
+  assert.equal(await driver.workspaceNodePeerLabels(context), undefined);
   const name = sandboxRequest(gateway.requests[0]).name;
-  assert.equal(
-    name,
-    recordValue(Reflect.apply(driver.harnessResource, driver, [{ namespace, revision }]))
-      .resourceName,
-  );
+  assert.equal(name, driver.harnessResource(context).resourceName);
   const sandboxId = "0f4c1d0e-7b7e-4a55-9a64-3c1e0f5d2b11";
-  gateway.state.sandbox = sandboxRecord(revision.id, {
+  gateway.state.sandbox = sandboxRecord(context.revision.id, {
     name,
     id: sandboxId,
     phase: "SANDBOX_PHASE_READY",
   });
-  assert.deepEqual(
-    await invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
-    {
-      "openshell.ai/sandbox-id": sandboxId,
-      "openshell.ai/boundary-role": "supervisor",
-    },
-  );
+  assert.deepEqual(await driver.workspaceNodePeerLabels(context), {
+    "openshell.ai/sandbox-id": sandboxId,
+    "openshell.ai/boundary-role": "supervisor",
+  });
   // Another revision's Sandbox, or one without a usable ID, is refused.
   gateway.state.sandbox = {
     ...gateway.state.sandbox,
     annotations: { "openclaw.dev/revision-id": "rev_other" },
   };
   await assert.rejects(
-    invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
+    driver.workspaceNodePeerLabels(context),
     /without exact AgentRevision ownership/,
   );
   for (const id of [undefined, "", "not a label value", "x".repeat(64)]) {
-    gateway.state.sandbox = sandboxRecord(revision.id, {
+    gateway.state.sandbox = sandboxRecord(context.revision.id, {
       name,
       ...(id === undefined ? {} : { id }),
     });
     await assert.rejects(
-      invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
+      driver.workspaceNodePeerLabels(context),
       /no ID usable as a supervisor Pod label/,
     );
   }
@@ -1395,33 +1359,22 @@ test("the OpenShell Sandbox observer exposes GetSandbox and nothing else", async
 });
 
 test("the OpenShell Sandbox Driver reads logs only for its own revisions", async () => {
-  const { gateway, driver, namespace, revision, signal, foreign } = driverUnderTest({
-    harness: undefined,
-  });
+  const { gateway, driver, context, foreignOwner } = await driverUnderTest();
   gateway.state.lines = [sandboxLine(1, "hello", { level: "INFO" })];
-  const chunk = recordValue(
-    await invokeFixture(
-      driver,
-      driver.readSandboxLogs,
-      { namespace, revision, signal },
-      { lines: 5 },
-    ),
-  );
+  const chunk = await driver.readSandboxLogs(context, { lines: 5 });
   assert.equal(chunk.sandbox, logRequest(gateway.requests[0]).sandbox);
   assert.equal(chunk.bufferTotal, 1);
-  assert.ok(isUnknownArray(chunk.lines));
-  assert.equal(recordValue(chunk.lines[0]).message, "hello");
+  assert.equal(required(chunk.lines[0]).message, "hello");
 
-  // Reads check the Driver and the Namespace (the first two foreign contexts).
-  for (const context of foreign.slice(0, 2)) {
+  for (const foreign of foreignOwner) {
     await assert.rejects(
-      invokeFixture(driver, driver.readSandboxLogs, context, { lines: 5 }),
+      driver.readSandboxLogs(foreign, { lines: 5 }),
       /outside its selected AgentRevision/,
     );
   }
   gateway.state.error = Object.assign(new Error("unauthenticated"), { code: 16 });
   await assert.rejects(
-    invokeFixture(driver, driver.readSandboxLogs, { namespace, revision, signal }, { lines: 5 }),
+    driver.readSandboxLogs(context, { lines: 5 }),
     RuntimeLogsForbiddenByClusterError,
   );
   assert.deepEqual([...new Set(gateway.touched)], ["getSandboxLogs"]);
@@ -1520,8 +1473,12 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
   // carry. Choosing the cut must not sanitize the tail again for each candidate
   // prefix. Both costs are process CPU time, min of 3, so the bound holds on slow
   // or loaded runners.
-  const { createRuntimeLogCursorCodec, readSandboxLogPage, sanitizeSandboxLogLines } =
-    await import("../../packages/occ/src/runtime-logs/index.ts");
+  const {
+    createRuntimeLogCursorCodec,
+    readSandboxLogPage,
+    SANDBOX_LOG_RETENTION,
+    sanitizeSandboxLogLines,
+  } = await import("../../packages/occ/src/runtime-logs/index.ts");
   const lines = Array.from({ length: 1000 }, (_, index) =>
     sandboxLine(
       Math.floor(index / 20),
@@ -1532,36 +1489,49 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
   const decorated = lines.map(openShellLogDecision);
   const stream: RuntimeLogStream = { source: "sandbox", sandbox: "sb-0123" };
   const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, decorated));
-  const binding = {
+  const binding: RuntimeLogCursorBinding = {
     principalId: "synthetic-person",
     agentId: "agent-test",
     revisionId: "revision-test",
     source: "sandbox",
   };
   const codec = createRuntimeLogCursorCodec(randomUUID().repeat(2));
-  let page: unknown;
+  const observedAt = "2026-09-30T12:10:00Z";
+  let page: RuntimeLogPage | undefined;
   const cut = await cpuTimeMsAsync(async () => {
-    page = await invokeFixture(undefined, readSandboxLogPage, {
+    page = await readSandboxLogPage({
       description: {
         revisionId: binding.revisionId,
-        sources: [{ id: "sandbox", kind: "sandbox", available: true }],
+        observedAt,
+        pods: [],
+        sources: [
+          {
+            id: "sandbox",
+            kind: "sandbox",
+            available: true,
+            pods: [],
+            retention: SANDBOX_LOG_RETENTION,
+          },
+        ],
       },
       query: { source: "sandbox", previous: false, tailLines: 1000 },
       codec,
       binding,
-      now: () => Date.parse("2026-09-30T12:10:00Z"),
+      now: () => Date.parse(observedAt),
       admitView: async () => {},
-      readLogs: async () => ({ sandbox: "sb-0123", lines: decorated, bufferTotal: 1000 }),
+      readLogs: async () => ({
+        sandbox: "sb-0123",
+        observedAt,
+        lines: decorated,
+        bufferTotal: 1000,
+      }),
     });
   });
-  const checkedPage = recordValue(page);
-  assert.ok(isUnknownArray(checkedPage.records));
-  const delivered = checkedPage.records.filter(
-    (record) => recordValue(record).type === "line",
-  ).length;
+  const checkedPage = required<RuntimeLogPage>(page);
+  const delivered = checkedPage.records.filter((record) => record.type === "line").length;
   assert.equal(checkedPage.truncated, true);
   assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
-  assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(checkedPage), "utf8") <= 512 * 1024);
   // Policy decisions sanitize cheaply, so the cut's fixed per-line work (validation,
   // line hashes, serialization) is about one more sanitization: a cut costs 2-3x one.
   // Sanitizing again for each binary-search candidate costs about 9x.
