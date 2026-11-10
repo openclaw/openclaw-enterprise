@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, open, stat, truncate, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.ts";
 import {
   downloadPinnedArtifact,
@@ -109,8 +111,120 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
     assert.equal(call.options.timeoutMs, 120_000);
   }
   assert.deepEqual(sleeps, [5_000, 10_000]);
-  assert.match(logs[0], /toomanyrequests.*attempt 2\/4/);
-  assert.match(logs[1], /timed out after 120000 ms.*attempt 3\/4/);
+  assert.match(logs[1], /toomanyrequests.*attempt 2\/4/);
+  assert.match(logs[3], /timed out after 120000 ms.*attempt 3\/4/);
+});
+
+test("pullImage retains bounded layer progress from actual timed-out children through the final attempt", async (t) => {
+  const directory = await temporaryDirectory(t, "image-pull-progress-");
+  const docker = join(directory, "docker");
+  // A real child produces Docker-shaped progress and unrelated private text, then
+  // hangs. Docker suppresses numeric progress on pipes; use its plain status lines.
+  // Node owns the timeout and captures both pipes; no registry is contacted.
+  await writeFile(
+    docker,
+    `#!${process.execPath}
+process.stdout.write("aaaaaaaaaaaa: Pull complete\\n" + "x".repeat(40000) + "\\n");
+for (let index = 0; index < 10; index++) {
+  process.stdout.write(index.toString(16).padStart(12, "0") + ": Downloading\\r");
+}
+process.stdout.write("000000000009: Download complete\\n");
+process.stderr.write("bbbbbbbbbbbb: Extracting\\n");
+process.stderr.write("cccccccccccc: Downloading https://example.invalid/private-marker\\n");
+process.stderr.write("dddddddddddd: Sending private-marker\\n");
+process.stderr.write("\\x1b[31meeeeeeeeeeee: Pull complete\\x1b[0m\\n");
+process.stderr.write("ffffffffffff: Downloading 12345678901234567890MB/2MB\\n");
+setInterval(() => {}, 1000);
+`,
+    { mode: 0o700 },
+  );
+  const runChild = promisify(execFileCallback);
+  const failures = [];
+  const logs = [];
+  await assert.rejects(
+    pullImage(image, {
+      docker,
+      attempts: 2,
+      firstDelayMs: 1,
+      attemptTimeoutMs: 1_000,
+      execFile: async (command, args, { timeoutMs }) => {
+        try {
+          return await runChild(command, args, { timeout: timeoutMs });
+        } catch (error) {
+          // Adapt Node's actual timeout marker to the caller's existing contract.
+          error.timedOut = error.killed;
+          failures.push(error);
+          throw error;
+        }
+      },
+      log: (message) => logs.push(message),
+    }),
+    (error) => error === failures.at(-1),
+  );
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every((error) => error.killed && error.signal === "SIGTERM"));
+  const diagnostics = logs.filter((line) => line.startsWith("Image pull attempt "));
+  assert.equal(diagnostics.length, 2, "retain the final attempt even when no retry follows");
+  for (const [index, diagnostic] of diagnostics.entries()) {
+    assert.match(
+      diagnostic,
+      new RegExp(`attempt ${index + 1}/2 failed after \\d+ ms \\(timeout\\)`),
+    );
+    assert.match(diagnostic, /000000000008: Downloading/);
+    assert.match(diagnostic, /000000000009: Download complete/);
+    assert.match(diagnostic, /bbbbbbbbbbbb: Extracting/);
+    assert.equal([...diagnostic.matchAll(/[a-f0-9]{12}: /g)].length, 8);
+    assert.doesNotMatch(diagnostic, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
+    assert.equal(diagnostic.includes(String.fromCharCode(27)), false);
+    assert.ok(diagnostic.length < 1_000);
+  }
+});
+
+test("pullImage never reports a truncated line as layer progress", async () => {
+  const complete = "\nbbbbbbbbbbbb: Pull complete\n";
+  for (const encode of [(value) => value, (value) => Buffer.from(value)]) {
+    for (const [prefix, first, retained] of [
+      ["a".repeat(20), `${"a".repeat(44)}: Downloading`, false],
+      ["unrelated-prefix ", "cccccccccccc: Downloading", false],
+      ["unrelated-prefix\n", "cccccccccccc: Downloading", true],
+      ["unrelated-prefix\r", "cccccccccccc: Downloading", true],
+    ]) {
+      // The retained 32 KiB starts either inside a line or exactly at its boundary.
+      const tail =
+        first + "\n" + "x".repeat(32_768 - first.length - 1 - complete.length) + complete;
+      for (const stream of ["stdout", "stderr"]) {
+        const logs = [];
+        const failure = pullFailure("", { [stream]: encode(prefix + tail) });
+        await assert.rejects(
+          pullImage(image, {
+            ...scriptedPull([failure]),
+            attempts: 1,
+            log: (message) => logs.push(message),
+          }),
+          (error) => error === failure,
+        );
+        assert.equal(logs.length, 1);
+        const progress = logs[0].split("; ").slice(1);
+        assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
+      }
+    }
+  }
+});
+
+test("pullImage preserves its terminal failure when the diagnostic sink throws", async () => {
+  const failure = pullFailure("", { timedOut: true, stdout: "aaaaaaaaaaaa: Downloading\n" });
+  const execution = scriptedPull([failure]);
+  await assert.rejects(
+    pullImage(image, {
+      ...execution,
+      attempts: 1,
+      log: () => {
+        throw new Error("diagnostic sink unavailable");
+      },
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(execution.calls.length, 1);
 });
 
 test("pullImage fails a permanent failure on the first attempt with the original error", async () => {

@@ -431,6 +431,7 @@ async function pullExecFile(command, args, { timeoutMs }) {
   try {
     return await run(command, args, { timeout: timeoutMs });
   } catch (error) {
+    error.stdout = error.result?.stdout ?? "";
     error.stderr = error.result?.stderr ?? "";
     error.timedOut = error.result?.signal === "SIGKILL";
     throw error;

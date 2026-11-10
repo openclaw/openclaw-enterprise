@@ -3282,7 +3282,7 @@ for (const viewport of [
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
       route.fulfill({
         json: {
-          data: { status: "available", url: "https://admin.example.test/" },
+          data: { status: "available", mode: "admin", url: "https://admin.example.test/" },
           meta: { requestId: "req_test_failing_deploy" },
         },
       }),

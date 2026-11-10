@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0031-durable-namespace-cleanup.md
+rfc: ../rfcs/0032-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0031
+- **ID:** RFC-0032
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0031](../rfcs/0031-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0032](../rfcs/0032-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- 2026-11-09: Main reserves RFC-0031 for OIDC sessions and Agent chat. This proposal moves to RFC-0032, retaining Proposed status, author, dates, original submissions and plan 0027.
 
 - 2026-11-09: Main reserves migrations 74/75 for finite repository withdrawal and sign-in results; unchanged Namespace journal SQL moves to 76. Actual PostgreSQL restore and six journal cases pass, preserving receipts, identities, grants and sequence. Initial canonical qualification has 49 passing cases and a fresh-process failure plus its parent; that interruption remains unexplained although a separate two-script race succeeds. The finite-withdrawal TLS fixture fails before product execution. Current host/database clocks differ by about 55 hours; no clocks, assertions or constraints changed. Owned cleanup completed. These gaps, both unrelated P2 findings, Proposed status and genuine-provider holds remain.
 

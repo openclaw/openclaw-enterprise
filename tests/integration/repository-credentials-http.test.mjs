@@ -13,10 +13,10 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
-const { inspectRequestHead } = await appModule("drivers/repo/credentials/transport/request");
-const { createUpstreamSender } = await appModule("drivers/repo/credentials/transport/upstream");
-const { sendError } = await appModule("drivers/repo/credentials/transport/errors");
-const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
+const { inspectRequestHead } = await appModule("drivers/repo/access/transport/request");
+const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
+const { sendError } = await appModule("drivers/repo/access/transport/errors");
+const { createSystemClock } = await appModule("drivers/repo/access/clock");
 
 const exchange = (port, path, body = Buffer.alloc(0), headers = {}) =>
   new Promise((resolve, reject) => {

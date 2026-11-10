@@ -163,7 +163,7 @@ version at the same recipient before `confirmInstall(pending)`. Preserve the
 pair through renewal. A replacement process must re-observe the recipient;
 a lost installation or confirmation remains pending and cannot be replayed or
 adopted as success. OCC stores fences and delivery facts; Token Service stores
-material. The [recipient evidence checks](../../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts)
+material. The [recipient evidence checks](../../../apps/controller/src/drivers/repo/access/protected-repository-git-installation.ts)
 require installed state and the exact attempt/version for use.
 
 Call `authorize` once for the captured request and installed version. An exact

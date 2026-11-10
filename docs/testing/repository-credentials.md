@@ -181,6 +181,9 @@ marker, or state that model observations are unavailable. A separate message con
 binding withdrawal and discovery release when that checkpoint was recorded. Without
 that message, the stage is unknown. These diagnostics do not expose chat or command
 output and do not replace the Git assertions or qualify the release.
+The failure summary prefers the runner's failed-case or file-failure record over
+generic lane issues. It publishes only known source coordinates and fixed error
+categories; absent or malformed records retain the bounded fallback summary.
 
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)

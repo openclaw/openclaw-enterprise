@@ -952,6 +952,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",

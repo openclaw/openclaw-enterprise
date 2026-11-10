@@ -79,7 +79,7 @@ import {
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
 const adminPassword = "postgres-agent-provisioning-password";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
 const administratorSessions = new Map();
@@ -325,6 +325,7 @@ async function ensureProvisioningBootstrap(context, state) {
       password: adminPassword,
       authSecret,
       authBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName: "Agent provisioning integration",
       environment: { PATH: process.env.PATH },
     });
@@ -498,7 +499,9 @@ async function createFixture(context, options = {}) {
     credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
-  let nativeAdminSettings = {};
+  let nativeAdminSettings = {
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+  };
   if (options.nativeAdmin) {
     const directory = await temporaryDirectory(context, "native-admin-provisioning-");
     const gatewayApiKeyPath = join(directory, "gateway-key");
@@ -507,7 +510,6 @@ async function createFixture(context, options = {}) {
       nativeAdmin: {
         enabled: true,
         domain: "agents.oce.localhost",
-        sharedCookieDomain: "oce.localhost",
       },
       gatewayApiKeyPath,
     };

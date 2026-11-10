@@ -69,7 +69,8 @@ const productionServer = {
   OCC_HOST: "192.0.2.10",
   OCC_PORT: "8080",
   OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+  OCC_AUTH_BASE_URL: "https://console.example.test",
+  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
@@ -487,6 +488,7 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
       OCC_PORT: "8080",
       OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
       OCC_AUTH_BASE_URL: "https://console.example.test",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
     };
     // All three entrypoints reject before persistence. Ceiling errors must name
     // the Installation input, including its array index, rather than the Agent wrapper.
@@ -542,6 +544,7 @@ test("API and worker refuse a bad observability host or runtime image before ope
         OCC_PORT: "8080",
         OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
         OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
       },
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
@@ -1847,6 +1850,8 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
     boot("apps/controller/src/server.mjs", {
       PATH: process.env.PATH,
       NODE_ENV: "development",
+      OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_CONFIG_PATH: path,
       OCC_HOST: "127.0.0.1",
       OCC_PORT: "8080",

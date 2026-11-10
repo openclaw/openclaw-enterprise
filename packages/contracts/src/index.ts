@@ -333,7 +333,7 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
-  /** The API offers native admin configuration during Agent provisioning. */
+  /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */

@@ -18,7 +18,7 @@ import {
   composeRepositoryPolicy,
   repositoryPolicyOwner,
 } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   repositoryApprovalFingerprint,
@@ -59,7 +59,8 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: authSecret,
       pool,
     });
@@ -201,7 +202,7 @@ test(
     assert.equal(login.statusCode, 200, login.body);
     const cookies = login.headers["set-cookie"];
     const session = {
-      origin: "http://127.0.0.1",
+      origin: "https://console.oce.localhost",
       cookie: cookieHeaderFromSetCookie(Array.isArray(cookies) ? cookies : [cookies!]),
     };
     const request = (

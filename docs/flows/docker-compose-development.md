@@ -20,6 +20,14 @@ Compose-backed profiles perform host preflight, select Docker Engine or Podman,
 prepare runtime images, start Compose, and wait for PostgreSQL migration,
 Installation bootstrap, API health, and worker readiness. The Kubernetes-only
 profile performs the equivalent readiness checks inside its owned cluster.
+All profiles prepare HTTPS Console and Agent DNS hosts and use the existing
+loopback TLS proxy, even when Agent native access is disabled. Session cookie
+scope is derived from those hosts; no cookie-domain setting is accepted.
+For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
+`internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
+existing TLS generator and retains private per-checkout certificates under the
+system temporary directory across stop/start. The launcher prints the Console
+URL and CA certificate path. `occ dev down` reloads the same proxy settings.
 Startup proves authenticated Installation access with a protected local
 bootstrap service key; it does not create an Agent or prove model execution.
 
