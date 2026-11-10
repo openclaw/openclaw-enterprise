@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+
 // These programs run through the Agent's ordinary shell tool. Their receipt files
 // are read only after the native thread confirms the exact command completed.
 export function publicBootstrapProgram({ packageManager, receipt, nonce }) {
@@ -118,6 +120,28 @@ const connect = host => new Promise(resolve => {
   console.log(${JSON.stringify(nonce)});
 })();
 `;
+}
+
+export function assertPublicNetworkReceipt(report, { nonce, allowed, hosts, publicTcp }) {
+  assert.equal(report.nonce, nonce);
+  assert.equal(report.publicReads.length, 3, "all three public destinations must report");
+  for (const result of report.publicReads) {
+    if (allowed) {
+      assert.equal(result.status, 200);
+    } else {
+      assert.equal(result.code, "EACCES");
+    }
+  }
+  if (allowed) {
+    assert.equal(report.publicReads[2].bodySha256, publicTcp.expectedBodySha256);
+  }
+  assert.deepEqual(
+    report.managedPorts.map((result) => result.host),
+    hosts,
+  );
+  for (const result of report.managedPorts) {
+    assert.equal(result.code, "EACCES", "managed hosts remain reserved on undeclared ports");
+  }
 }
 
 export function authenticatedRepositoryProgram({ repository, permissions, receipt }) {

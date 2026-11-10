@@ -5,6 +5,18 @@ Installation. It creates a regular protected Agent, compares restricted and publ
 revisions, and uses model-driven shell commands for network and repository work.
 The test does not provision infrastructure or select credentials for the operator.
 
+## Check the receiver probe locally
+
+Run the receiver check without opening a port.
+
+```sh
+node --test --test-name-pattern="mock receiver" tests/integration/egress-connected-preflight.test.mjs
+```
+
+The Agent probe hashes a streamed mock HTTPS response. The connected runner accepts
+the expected body and rejects a changed body with the same HTTP 200 status.
+The installed scenario below separately verifies reachability and credential custody.
+
 ## Prepare inputs
 
 Prepare a dedicated loopback k3d cluster, migrated `openclaw_k8s_*` database and

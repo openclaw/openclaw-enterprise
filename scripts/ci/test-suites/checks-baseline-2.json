@@ -644,6 +644,7 @@
         "connected failed-turn observation rejects partial text without a completed message",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
+        "public egress probe checks the mock receiver's streamed body without a listener",
         "failed custody deployment preserves worker event order across a reused attempt budget"
       ]
     },

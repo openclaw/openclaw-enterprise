@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
@@ -37,6 +40,11 @@ import {
   validateConnectedInputs,
   validatePublicEgressObserver,
 } from "../helpers/egress-connected-inputs.mjs";
+import {
+  assertPublicNetworkReceipt,
+  publicNetworkProgram,
+} from "../helpers/public-egress-workflow.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { publicEgressResources } from "../helpers/public-egress-resources.mjs";
 import { listen } from "../helpers/listen.mjs";
 
@@ -953,6 +961,45 @@ test("failed custody deployment preserves worker event order across a reused att
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
+  }
+});
+
+test("public egress probe checks the mock receiver's streamed body without a listener", async (t) => {
+  const directory = await temporaryDirectory(t, "public-egress-probe-");
+  const publicTcp = {
+    url: "https://receiver.invalid:8443/check",
+    expectedBodySha256: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+  };
+  // Execute the Agent probe and the connected runner's receipt checks. Only the
+  // HTTPS responses are simulated. No DNS lookup or socket is needed.
+  for (const suffix of ["world", "changed"]) {
+    const nonce = randomUUID();
+    const receipt = join(directory, nonce);
+    const https = {
+      get(url, options, onResponse) {
+        assert.deepEqual(Object.keys(options), ["signal"]);
+        const response = Readable.from(url === publicTcp.url ? ["hello ", suffix] : ["registry"]);
+        response.statusCode = 200;
+        onResponse(response);
+        return response;
+      },
+    };
+    await runInNewContext(publicNetworkProgram({ nonce, receipt, publicTcp, managedHosts: [] }), {
+      require: (name) => (name === "node:https" ? https : process.getBuiltinModule(name)),
+      AbortSignal,
+    });
+    const report = JSON.parse(await readFile(receipt, "utf8"));
+    const verify = () =>
+      assertPublicNetworkReceipt(report, { nonce, publicTcp, hosts: [], allowed: true });
+    if (suffix === "world") {
+      verify();
+    } else {
+      assert.throws(verify, {
+        code: "ERR_ASSERTION",
+        actual: report.publicReads[2].bodySha256,
+        expected: publicTcp.expectedBodySha256,
+      });
+    }
   }
 });
 

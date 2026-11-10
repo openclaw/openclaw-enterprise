@@ -25,6 +25,7 @@ import {
   publicBootstrapProgram,
   publicGatewayTurnProgram,
   publicNetworkProgram,
+  assertPublicNetworkReceipt,
   publicCustodyProgram,
   authenticatedRepositoryProgram,
 } from "../helpers/public-egress-workflow.mjs";
@@ -817,24 +818,7 @@ test(
         `eval(${JSON.stringify(publicNetworkProgram({ nonce, receipt, publicTcp: input.publicTcp, managedHosts: hosts }))})`,
       ]);
       const report = JSON.parse(await exec(active.harness, "agent", ["cat", receipt]));
-      assert.equal(report.nonce, nonce);
-      for (const result of report.publicReads) {
-        if (allowed) {
-          assert.equal(result.status, 200);
-        } else {
-          assert.equal(result.code, "EACCES");
-        }
-      }
-      if (allowed) {
-        assert.equal(report.publicReads[2].bodySha256, input.publicTcp.expectedBodySha256);
-      }
-      assert.deepEqual(
-        report.managedPorts.map((result) => result.host),
-        hosts,
-      );
-      for (const result of report.managedPorts) {
-        assert.equal(result.code, "EACCES", "managed hosts remain reserved on undeclared ports");
-      }
+      assertPublicNetworkReceipt(report, { nonce, allowed, hosts, publicTcp: input.publicTcp });
       await save(phase + "-network", report);
     };
     const awaitPreparation = async (file, expected, timeout = 1200000) =>
