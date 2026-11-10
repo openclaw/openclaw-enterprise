@@ -40,7 +40,25 @@ export function runtimeArtifactSelection(env) {
   return selection;
 }
 
-function verifyContext({ sourceSha, runId, producerAttempt }) {
+function importTimeout(deadlineMs, maximumMs) {
+  if (deadlineMs === undefined) {
+    return maximumMs;
+  }
+  const remainingMs = Math.floor(deadlineMs - Date.now());
+  if (remainingMs <= 0) {
+    throw new Error("Runtime artifact import reached its preparation deadline.");
+  }
+  return Math.min(remainingMs, maximumMs);
+}
+
+function importProbeOptions(deadlineMs, maximumMs) {
+  return {
+    timeout: importTimeout(deadlineMs, maximumMs),
+    ...(deadlineMs === undefined ? {} : { killSignal: "SIGKILL" }),
+  };
+}
+
+function verifyContext({ sourceSha, runId, producerAttempt }, deadlineMs) {
   assert.match(sourceSha, shaPattern);
   assert.match(runId, integerPattern);
   assert.match(producerAttempt, integerPattern);
@@ -48,7 +66,7 @@ function verifyContext({ sourceSha, runId, producerAttempt }) {
     execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repositoryRoot,
       encoding: "utf8",
-      timeout: 30_000,
+      ...importProbeOptions(deadlineMs, 30_000),
     }).trim(),
     sourceSha,
     "Runtime artifact source differs from checkout.",
@@ -65,9 +83,9 @@ function verifyContext({ sourceSha, runId, producerAttempt }) {
   );
 }
 
-async function hashFile(path) {
+async function hashFile(path, signal) {
   const hash = createHash("sha256");
-  for await (const bytes of createReadStream(path)) {
+  for await (const bytes of createReadStream(path, { signal })) {
     hash.update(bytes);
   }
   return hash.digest("hex");
@@ -75,7 +93,7 @@ async function hashFile(path) {
 
 // Read only the OCI layout's small fixed vocabulary. In particular, no archive
 // link or extension header can change the path interpreted by an extractor.
-async function extractLayout(archive, destination) {
+async function extractLayout(archive, destination, signal) {
   const file = await open(archive, "r");
   const members = new Set();
   const entries = [];
@@ -83,10 +101,11 @@ async function extractLayout(archive, destination) {
   let offset = 0;
   try {
     while (offset + 512 <= size) {
+      signal?.throwIfAborted();
       const header = Buffer.alloc(512);
       assert.equal((await file.read(header, 0, 512, offset)).bytesRead, 512);
       if (header.every((byte) => byte === 0)) {
-        for await (const padding of createReadStream(archive, { start: offset })) {
+        for await (const padding of createReadStream(archive, { start: offset, signal })) {
           assert.ok(
             padding.every((byte) => byte === 0),
             "Unexpected data after OCI archive terminator.",
@@ -142,23 +161,25 @@ async function extractLayout(archive, destination) {
   }
   // Validate the complete archive directory before writing any member.
   for (const entry of entries) {
+    signal?.throwIfAborted();
     const path = join(destination, entry.name);
     await mkdir(dirname(path), { recursive: true });
     if (entry.length === 0) {
-      await writeFile(path, "", { flag: "wx" });
+      await writeFile(path, "", { flag: "wx", signal });
     } else {
       await pipeline(
         createReadStream(archive, { start: entry.start, end: entry.start + entry.length - 1 }),
         createWriteStream(path, { flags: "wx", mode: 0o600 }),
+        { signal },
       );
     }
   }
 }
 
-async function inspectLayout(directory, sourceSha) {
+async function inspectLayout(directory, sourceSha, signal) {
   async function json(path) {
     assert.ok((await lstat(path)).size <= 16 * 1024 * 1024, "Oversized OCI metadata.");
-    return JSON.parse(await readFile(path, "utf8"));
+    return JSON.parse(await readFile(path, { encoding: "utf8", signal }));
   }
   const verified = new Set();
   async function blob(descriptor, parse = true) {
@@ -168,7 +189,7 @@ async function inspectLayout(directory, sourceSha) {
     assert.equal((await lstat(path)).size, descriptor.size, "OCI descriptor size mismatch.");
     if (!verified.has(descriptor.digest)) {
       assert.equal(
-        `sha256:${await hashFile(path)}`,
+        `sha256:${await hashFile(path, signal)}`,
         descriptor.digest,
         "OCI descriptor digest mismatch.",
       );
@@ -183,7 +204,9 @@ async function inspectLayout(directory, sourceSha) {
   assert.equal(root.manifests.length, 1, "Expected one runtime platform.");
   let descriptor = root.manifests[0];
   const indexDigest =
-    descriptor.mediaType === indexType ? descriptor.digest : `sha256:${await hashFile(rootPath)}`;
+    descriptor.mediaType === indexType
+      ? descriptor.digest
+      : `sha256:${await hashFile(rootPath, signal)}`;
   if (descriptor.mediaType === indexType) {
     const index = await blob(descriptor);
     assert.equal(index.schemaVersion, 2);
@@ -285,7 +308,7 @@ function command(program, args, timeoutMs = 20 * 60_000) {
   });
 }
 
-export function assertRuntimeArtifactTagAvailable(tag) {
+export function assertRuntimeArtifactTagAvailable(tag, deadlineMs) {
   assert.ok(
     typeof tag === "string" && tag.startsWith("localhost/"),
     "A caller-owned local image tag is required.",
@@ -293,7 +316,7 @@ export function assertRuntimeArtifactTagAvailable(tag) {
   try {
     execFileSync(docker(), ["image", "inspect", tag], {
       encoding: "utf8",
-      timeout: 120_000,
+      ...importProbeOptions(deadlineMs, 120_000),
       stdio: "pipe",
     });
   } catch (error) {
@@ -321,27 +344,37 @@ function imageConfiguration(config) {
   );
 }
 
-export async function loadRuntimeArtifact(selection) {
+export async function loadRuntimeArtifact(selection, deadlineMs) {
   const { directory, archiveSha256, tag } = selection;
-  verifyContext(selection);
+  const signal =
+    deadlineMs === undefined
+      ? undefined
+      : AbortSignal.timeout(importTimeout(deadlineMs, 2 ** 31 - 1));
+  verifyContext(selection, deadlineMs);
   assert.match(archiveSha256, /^[a-f0-9]{64}$/);
   assert.ok(
     typeof tag === "string" && tag.startsWith("localhost/"),
     "A caller-owned local image tag is required.",
   );
-  const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
+  const receipt = JSON.parse(
+    await readFile(join(directory, "receipt.json"), { encoding: "utf8", signal }),
+  );
   for (const key of ["sourceSha", "runId", "producerAttempt", "archiveSha256"]) {
     assert.equal(receipt[key], selection[key], `Runtime receipt ${key} mismatch.`);
   }
   assert.equal(receipt.version, 1);
   assert.equal(receipt.platform, `linux/${architecture}`);
   const archive = join(directory, "runtime.tar");
-  assert.equal(await hashFile(archive), archiveSha256, "Runtime archive checksum mismatch.");
+  assert.equal(
+    await hashFile(archive, signal),
+    archiveSha256,
+    "Runtime archive checksum mismatch.",
+  );
   const layoutDirectory = await mkdtemp(join(tmpdir(), "oce-runtime-layout-"));
   const cleanup = () => rm(layoutDirectory, { recursive: true, force: true });
   try {
-    await extractLayout(archive, layoutDirectory);
-    const verified = await inspectLayout(layoutDirectory, selection.sourceSha);
+    await extractLayout(archive, layoutDirectory, signal);
+    const verified = await inspectLayout(layoutDirectory, selection.sourceSha, signal);
     for (const key of ["indexDigest", "platformManifestDigest", "configDigest"]) {
       assert.equal(receipt[key], verified[key], `Runtime receipt ${key} mismatch.`);
     }
@@ -350,23 +383,30 @@ export async function loadRuntimeArtifact(selection) {
     const importDirectory = join(layoutDirectory, "import");
     await mkdir(importDirectory);
     const dockerArchive = join(importDirectory, "docker.tar");
-    await command("skopeo", [
-      "copy",
-      `oci:${layoutDirectory}`,
-      `docker-archive:${dockerArchive}:${tag}`,
-    ]);
+    await command(
+      "skopeo",
+      ["copy", `oci:${layoutDirectory}`, `docker-archive:${dockerArchive}:${tag}`],
+      importTimeout(deadlineMs, 20 * 60_000),
+    );
     const raw = JSON.parse(
       execFileSync("skopeo", ["inspect", "--raw", `docker-archive:${dockerArchive}`], {
         maxBuffer: 16 * 1024 * 1024,
-        timeout: 120_000,
+        ...importProbeOptions(deadlineMs, 120_000),
       }),
     );
     assert.equal(raw.config.digest, verified.configDigest);
-    assertRuntimeArtifactTagAvailable(tag);
-    await command(docker(), ["image", "load", "--input", dockerArchive]);
+    assertRuntimeArtifactTagAvailable(tag, deadlineMs);
+    await command(
+      docker(),
+      ["image", "load", "--input", dockerArchive],
+      importTimeout(deadlineMs, 20 * 60_000),
+    );
     await rm(importDirectory, { recursive: true });
     const [loaded] = JSON.parse(
-      execFileSync(docker(), ["image", "inspect", tag], { encoding: "utf8", timeout: 120_000 }),
+      execFileSync(docker(), ["image", "inspect", tag], {
+        encoding: "utf8",
+        ...importProbeOptions(deadlineMs, 120_000),
+      }),
     );
     assert.match(loaded.Id, digestPattern);
     assert.equal(loaded.Os, "linux");

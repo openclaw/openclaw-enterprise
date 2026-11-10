@@ -114,7 +114,33 @@ test(
     };
     delete receipt.directory;
     await writeFile(join(artifact, "receipt.json"), JSON.stringify(receipt));
-    loaded = await loadRuntimeArtifact({ ...selection, tag });
+    await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag }, Date.now() - 1),
+      /preparation deadline/,
+    );
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    const probeBin = join(directory, "probe-bin");
+    await mkdir(probeBin);
+    await writeFile(
+      join(probeBin, "git"),
+      `#!/usr/bin/env node
+process.on("SIGTERM", () => {});
+setTimeout(() => process.stdout.write(${JSON.stringify(`${sourceSha}\n`)}), 2100);
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = `${probeBin}:${previousPath}`;
+      await assert.rejects(loadRuntimeArtifact({ ...selection, tag }, Date.now() + 750), {
+        code: "ETIMEDOUT",
+        signal: "SIGKILL",
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+    assert.throws(() => run("docker", ["image", "inspect", tag]), { status: 1 });
+    loaded = await loadRuntimeArtifact({ ...selection, tag }, Date.now() + 60_000);
     assert.equal(loaded.configDigest, manifest.config.digest);
     assert.equal(
       JSON.parse(run("docker", ["image", "inspect", loaded.reference]))[0].Config.Labels[
@@ -244,6 +270,10 @@ test(
     // The producer's earlier attempt is accepted above. Wrong-run/source,
     // corruption and unavailable artifacts fail before a tag can be loaded.
     await assert.rejects(loadRuntimeArtifact({ ...selection, tag, runId: "999" }), /workflow run/);
+    await assert.rejects(
+      loadRuntimeArtifact({ ...selection, tag, producerAttempt: "999" }),
+      /producerAttempt mismatch/,
+    );
     await assert.rejects(
       loadRuntimeArtifact({ ...selection, tag, sourceSha: "0".repeat(40) }),
       /checkout/,

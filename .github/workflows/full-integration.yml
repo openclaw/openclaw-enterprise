@@ -241,7 +241,7 @@ jobs:
   docker-model:
     name: Docker Model Runtime
     runs-on: ubuntu-24.04
-    needs: preflight
+    needs: [preflight, runtime-artifact]
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docker-model') }}
     timeout-minutes: 40
     environment: integration-main
@@ -255,6 +255,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify successful runtime producer has an artifact
+        if: needs.runtime-artifact.result == 'success'
+        env:
+          RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
+        run: test -n "$RUNTIME_ARTIFACT_ID"
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: docker-model
@@ -262,6 +267,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 40
+          runtime-artifact-id: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.artifact-id || '' }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.archive-sha256 || '' }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.source-sha || '' }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.run-id || '' }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.result == 'success' && needs.runtime-artifact.outputs.producer-attempt || '' }}
 
   k3d-model:
     name: k3d Model Runtime
