@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   github,
   githubPages,
@@ -253,7 +254,7 @@ async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
   }
 }
 
-export async function main() {
+async function main() {
   const [command, path] = process.argv.slice(2);
   if (command === "validate") {
     await appendFile(
@@ -265,4 +266,11 @@ export async function main() {
   } else {
     throw new Error("Expected validate or promote.");
   }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }

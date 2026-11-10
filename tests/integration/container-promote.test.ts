@@ -5,7 +5,7 @@ import {
   validateHubRepository,
   validatePublicationRun,
   validateReceipt,
-} from "../../scripts/ci/container-promote.mjs";
+} from "../../scripts/ci/container-promote.ts";
 import { repository, publishWorkflow } from "../../scripts/ci/container-release.mjs";
 
 const sourceSha = "a".repeat(40);
