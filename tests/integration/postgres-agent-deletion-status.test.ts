@@ -6,7 +6,11 @@ import pg from "pg";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
-import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
+import type {
+  AuthorizationDecision,
+  AuthorizationRequest,
+} from "../../packages/contracts/src/index.ts";
+import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   OpenClawController,
   PostgresHumanAuthentication,
@@ -16,6 +20,28 @@ import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-ses
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+
+// Native IAM whose next `delete` check of one Agent throws once armed: an IAM Driver outage at
+// exactly the worker's finalize recheck.
+class RecheckOutageIAM extends NativeIAMDriver {
+  #armedFor: string | undefined;
+
+  armFor(agentId: string): void {
+    this.#armedFor = agentId;
+  }
+
+  get armed(): boolean {
+    return this.#armedFor !== undefined;
+  }
+
+  override async authorize(request: AuthorizationRequest): Promise<AuthorizationDecision> {
+    if (request.action === "delete" && request.resource.id === this.#armedFor) {
+      this.#armedFor = undefined;
+      throw new Error("The IAM Driver is unavailable.");
+    }
+    return super.authorize(request);
+  }
+}
 
 // Error bodies carry a fresh request ID; everything else must match byte for byte.
 const withoutRequestId = (body: string) =>
@@ -130,9 +156,20 @@ test(
 
     // Removing an actor's Agent access while teardown runs must stop its finalization.
     const duringRetire = new Map<string, () => Promise<void>>();
+    // Each worker's IAM is Native IAM on that worker's own state; the outage stays unarmed until
+    // the retry case below.
+    const outageDrivers: RecheckOutageIAM[] = [];
     const createWorker = () =>
       new ControllerWorker({
         pool: new pg.Pool({ connectionString: databaseUrl }),
+        createIAMDriver(state) {
+          const driver = new RecheckOutageIAM(state, {
+            id: "native-iam",
+            implementation: "native",
+          });
+          outageDrivers.push(driver);
+          return driver;
+        },
         computeDriver: {
           ...f.computeDriver,
           capability: "compute",
@@ -312,24 +349,8 @@ test(
     // retries the work as DEPENDENCY_UNAVAILABLE, like the check before teardown. Teardown arms
     // one throw for the next delete check of this Agent, which is the finalize recheck. The
     // second teardown is held so the state between the attempts can be read.
-    const workerIAM = (
-      worker as unknown as {
-        iam: { authorize(request: { action: string; resource: { id?: string } }): unknown };
-      }
-    ).iam;
-    const authorize = workerIAM.authorize.bind(workerIAM);
-    let throwRecheck = false;
-    workerIAM.authorize = (request) => {
-      if (
-        throwRecheck &&
-        request.action === "delete" &&
-        request.resource.id === unavailable.agent.id
-      ) {
-        throwRecheck = false;
-        throw new Error("The IAM Driver is unavailable.");
-      }
-      return authorize(request);
-    };
+    const workerIAM = outageDrivers.at(-1);
+    assert.ok(workerIAM, "the running worker's IAM Driver");
     let teardowns = 0;
     const secondTeardown = Promise.withResolvers<void>();
     const resumeTeardown = Promise.withResolvers<void>();
@@ -337,7 +358,7 @@ test(
     duringRetire.set(unavailable.agent.id, async () => {
       teardowns += 1;
       if (teardowns === 1) {
-        throwRecheck = true;
+        workerIAM.armFor(unavailable.agent.id);
       } else if (teardowns === 2) {
         secondTeardown.resolve();
         await resumeTeardown.promise;
@@ -366,7 +387,7 @@ test(
     const provisioningBefore = await provisioning();
     await retrier.request();
     await secondTeardown.promise;
-    assert.equal(throwRecheck, false, "the finalize recheck consumed the armed throw");
+    assert.equal(workerIAM.armed, false, "the finalize recheck consumed the armed throw");
     // The first attempt committed nothing of its finalization and failed nothing permanently.
     const { rows: between } = await f.pool.query(
       "SELECT state, attempt_count, reason_code FROM occ.controller_work WHERE idempotency_key = $1",

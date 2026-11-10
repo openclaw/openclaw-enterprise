@@ -178,6 +178,11 @@ export interface ControllerWorkerOptions {
   readonly pool: PostgresPool & PostgresQueryClient;
   readonly mode?: "development" | "production";
   readonly drivers?: InstallationRuntimeDrivers;
+  /**
+   * The IAM Driver of a worker without Installation startup configuration (`drivers`, which
+   * supplies its own). Defaults to Native IAM on the worker's state.
+   */
+  readonly createIAMDriver?: (state: PostgresPlatformState) => IAMDriver;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
@@ -1302,9 +1307,13 @@ export class ControllerWorker {
     this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
     this.backendMap = backendDefinitionMap(this.backends);
     this.iamDriverId = drivers?.installation.drivers.iam.id ?? "native-iam";
+    if (drivers !== undefined && options.createIAMDriver !== undefined) {
+      throw new Error("A worker with Installation startup configuration uses its IAM Driver.");
+    }
     this.iam =
       drivers === undefined
-        ? new NativeIAMDriver(this.state, { id: "native-iam", implementation: "native" })
+        ? (options.createIAMDriver?.(this.state) ??
+          new NativeIAMDriver(this.state, { id: "native-iam", implementation: "native" }))
         : drivers.createIAMDriver(this.state);
     if (this.iam.capability !== "iam" || this.iam.id !== this.iamDriverId) {
       throw new Error("The selected IAM Driver is unavailable.");
