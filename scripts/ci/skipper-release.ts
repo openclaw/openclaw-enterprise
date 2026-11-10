@@ -11,7 +11,7 @@ export function skipperInstalledProof(teamReview: boolean): string[] {
     "prepared-before-native-git",
     ...(teamReview ? teamReviewProof : ["native-commit-confirmed-by-independent-fetch"]),
     "wrong-repository-hook-refusal-and-broker-denied-mixed-push",
-    "native-authenticated-post-after-withdrawal-refused",
+    "native-session-disposed-and-provider-token-retired",
     "fresh-authenticated-fetch-after-effective-withdrawal-refused",
     "same-compute-owned-skipper-chat-after-git-withdrawal-verified",
     "same-compute-owned-skipper-chat-git-and-live-withdrawal-observed",
@@ -113,7 +113,7 @@ export function qualifySkipperRelease(selection: unknown, evidence: unknown, cur
   const test = record(file.tests[0]);
   assert.equal(
     test.name,
-    "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats",
+    "same Compute-owned Skipper chats, authors private Git, disposes withdrawn Git access, and still chats",
   );
   assert.equal(test.status, "passed");
   assert.ok(Array.isArray(receipt.proof));

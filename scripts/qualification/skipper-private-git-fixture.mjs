@@ -43,19 +43,6 @@ const witness = createServer(async ({ url, method }, res) => {
       out(publicInput);
     } else if (method === "GET" && url === "/evidence") {
       out(origin.snapshot());
-    } else if (method === "POST" && url === "/hold-next-discovery") {
-      origin.holdNextDiscovery();
-      out(true);
-    } else if (method === "GET" && url === "/discovery-held") {
-      out(origin.discoveryHeld());
-    } else if (method === "POST" && url === "/release-discovery") {
-      origin.releaseDiscovery();
-      out(true);
-    } else if (method === "POST" && url === "/release-if-held") {
-      if (origin.discoveryHeld()) {
-        origin.releaseDiscovery();
-      }
-      out(true);
     } else if (method === "GET" && url === "/refs") {
       out(await origin.readRefs());
     } else if (method === "GET" && url === "/fetch") {

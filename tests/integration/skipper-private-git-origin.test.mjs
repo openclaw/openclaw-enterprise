@@ -332,7 +332,8 @@ test(
     assert.equal(await fixture.probeIssuedGit(indexB), 200);
 
     const observedWithdrawal = fixture.observeRestartTraffic(indexA, indexB);
-    // Qualify the exact installed withdrawal oracle on a real Git protocol-v2 connection.
+    // Check the client trace oracle on a real Git protocol-v2 connection. This direct-origin
+    // case has no broker session cleanup racing the authenticated POST.
     // Hold authenticated discovery, revoke the synthetic token, release discovery. The native
     // client must see its authenticated POST refused, never infer a denial from a timeout.
     fixture.holdNextDiscovery();
