@@ -165,13 +165,29 @@ test("full coverage receipts require real case evidence and retain approved same
     assert.equal(result.error, undefined);
     return result;
   };
-  const produce = (target, directory = "results", env = {}) =>
-    invoke(
+  const clean = (target, directory = "results") =>
+    spawnSync(
+      process.execPath,
+      [
+        join(repositoryRoot, "scripts/ci/cleanup.mjs"),
+        "--state",
+        join(fixtureRoot, "state", `${target}.json`),
+        "--results",
+        join(fixtureRoot, directory, `${target}.json`),
+      ],
+      { cwd: repositoryRoot, encoding: "utf8", timeout: 10_000 },
+    );
+  const produce = (target, directory = "results", env = {}) => {
+    const result = invoke(
       "run",
       target,
       ["--state", `state/${target}.json`, "--results", `${directory}/${target}.json`],
       env,
     );
+    const cleanup = clean(target, directory);
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    return result;
+  };
   await json(join(fixtureRoot, "manifest.json"), {
     version: 1,
     lanes: {
@@ -222,6 +238,11 @@ test("full coverage receipts require real case evidence and retain approved same
   const publicSkipper = skipperPassingReceipt(privateSkipper);
   assert.doesNotMatch(JSON.stringify(publicSkipper), /private-output-canary/);
   await json(skipperPath, publicSkipper);
+  assert.equal(clean(skipperLane).status, 0);
+  assert.equal(clean("unstarted-lane").status, 0);
+  await assert.rejects(readFile(join(fixtureRoot, "results/unstarted-lane.json")), {
+    code: "ENOENT",
+  });
   const installer = produce("openshell-installers");
   assert.equal(installer.status, 0, installer.stderr);
   const ordinary = produce(lane, "download", {
@@ -254,6 +275,7 @@ test("full coverage receipts require real case evidence and retain approved same
       assert.equal(await readFile(marker, "utf8"), "1\n");
       assert.equal(await readFile(output, "utf8"), "full_coverage_exercised=true\n");
     } else {
+      assert.equal(JSON.parse(result.stdout).fullCoverageExercised, undefined);
       await assert.rejects(readFile(marker), { code: "ENOENT" });
     }
   };
@@ -267,6 +289,26 @@ test("full coverage receipts require real case evidence and retain approved same
   await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
   assert.equal(produce("openshell-policy").status, 0);
   await verify(0, true);
+  const passingPolicy = await readFile(policyReceipt, "utf8");
+  for (const damage of [
+    (value) => {
+      delete value.files[0].cleanup;
+    },
+    (value) => {
+      value.issues.push({
+        code: "expected-test-not-passed",
+        status: "failed",
+        file: policyPath,
+        name: "sentinel",
+      });
+    },
+  ]) {
+    const damaged = JSON.parse(passingPolicy);
+    damage(damaged);
+    await json(policyReceipt, damaged);
+    await verify(0, false);
+  }
+  await writeFile(policyReceipt, passingPolicy);
   // Never turn absent, unsafe, or unsuccessful private evidence into a passing receipt.
   for (const damage of [
     (value) => {
@@ -308,11 +350,32 @@ test("full coverage receipts require real case evidence and retain approved same
     (value) => {
       value.files[0].cleanup.status = "failed";
     },
+    (value) => {
+      delete value.files[0].counts;
+    },
+    (value) => {
+      value.files[0].counts.total = 2;
+    },
+    (value) => {
+      value.files[0].status = "failed";
+    },
+    (value) => {
+      value.files[0].tests[0].durationMs = { diagnostic: "private-output-canary" };
+    },
+    (value) => {
+      value.files[0].tests[0].durationMs = -1;
+    },
+    (value) => {
+      value.files[0].tests[0].durationMs = Infinity;
+    },
   ]) {
     const damaged = structuredClone(privateSkipper);
     damage(damaged);
     assert.throws(() => skipperPassingReceipt(damaged), { code: "ERR_ASSERTION" });
   }
+  const noDuration = structuredClone(privateSkipper);
+  delete noDuration.files[0].tests[0].durationMs;
+  assert.equal(skipperPassingReceipt(noDuration).files[0].tests[0].durationMs, undefined);
   const legacy = JSON.parse(reusedReceipt);
   for (const file of legacy.files) {
     delete file.exercised;
@@ -334,8 +397,65 @@ test("full coverage receipts require real case evidence and retain approved same
   await generate(policyPath, ["sentinel"], 'assert.fail("synthetic assertion");');
   assert.equal(produce("openshell-policy").status, 1);
   await verify(1, true);
+  // Final cleanup is independent of successful file cleanup. Its refusal must
+  // withhold coverage even when an assertion already makes the owning job red.
+  for (const target of ["openshell-policy", "openshell-installers"]) {
+    const resultPath = join(fixtureRoot, "results", `${target}.json`);
+    const original = await readFile(resultPath, "utf8");
+    const statePath = join(fixtureRoot, "state", `${target}.json`);
+    const state = {
+      version: 1,
+      repositoryRoot: repositoryRoot.replace(/\/$/, ""),
+      prefix: "openclaw-ci-coverage",
+      resources: [
+        {
+          id: "retained-cluster",
+          kind: "k3d-cluster",
+          name: "openclaw-ci-coverage-cluster",
+          owner: "openclaw-ci-different-owner",
+        },
+      ],
+    };
+    await json(statePath, state);
+    const refused = clean(target);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /Refusing to clean resource owned by another prefix/);
+    assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")).cleanup, { status: "failed" });
+    await verify(1, false);
+    // No cluster was created. Reconcile the synthetic ownership record, then
+    // require the real cleanup command to remove its empty state and requalify.
+    await json(statePath, { ...state, resources: [] });
+    assert.equal(clean(target).status, 0);
+    await assert.rejects(readFile(statePath), { code: "ENOENT" });
+    await verify(1, true);
+    for (const cleanup of [undefined, null, { status: "failed" }, { status: "unknown" }]) {
+      await json(resultPath, { ...JSON.parse(original), cleanup });
+      await verify(1, false);
+    }
+    await writeFile(resultPath, original);
+  }
   await verify(1, false, { GITHUB_RUN_ATTEMPT: "2" });
   const genuine = await readFile(policyReceipt, "utf8");
+  for (const damage of [
+    (value) => {
+      value.issues = [];
+    },
+    (value) => {
+      value.files[0].issues = [];
+    },
+    (value) => {
+      value.issues[0].file = "tests/integration/other.test.mjs";
+    },
+    (value) => {
+      value.files[0].issues[0].name = "another case";
+    },
+  ]) {
+    const damaged = JSON.parse(genuine);
+    damage(damaged);
+    await json(policyReceipt, damaged);
+    await verify(1, false);
+  }
+  await writeFile(policyReceipt, genuine);
 
   await generate(
     policyPath,
@@ -472,6 +592,7 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
     command: "run",
     sourceSha: sha,
     scope: "full",
+    cleanup: { status: "passed" },
     lane,
     status: "passed",
     exitCode: 0,
@@ -493,6 +614,9 @@ test("same-SHA reuse runs the existing full-coverage validator and rejects damag
   for (const patch of [
     { scope: "focused" },
     { scope: undefined },
+    { cleanup: undefined },
+    { cleanup: { status: "failed" } },
+    { cleanup: { status: "unknown" } },
     { sourceSha: "0".repeat(40) },
     { files: [] },
     { exitCode: 1 },
@@ -1474,6 +1598,12 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
   const workflow = loadYaml(await read(".github/workflows/full-integration.yml"));
   const action = loadYaml(await read(".github/actions/run-ci-lane/action.yml"));
+  const finalCleanup = action.runs.steps.find((step) => step.id === "cleanup-lane");
+  assert.equal(finalCleanup.if, "always()");
+  assert.equal(
+    finalCleanup.run,
+    'node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"',
+  );
   const suites = JSON.parse(await read("scripts/ci/test-suites.json"));
   assert.ok(workflow.on.workflow_dispatch.inputs.lane.options.includes("dev-up-k3d"));
   assert.deepEqual(workflow.on.push.branches, ["main"]);

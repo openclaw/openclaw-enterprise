@@ -38,6 +38,8 @@ export function skipperPassingReceipt(value: unknown) {
   assert.deepEqual(fileIssues, []);
   assert.equal(nodeExitCode, 0);
   assert.equal(file.fileFailure, undefined);
+  assert.equal(file.status, status);
+  assert.deepEqual(file.counts, counts);
   assert.equal(path, "tests/integration/skipper-prepared-git-installed.test.mjs");
   assert.deepEqual(cleanup, { status: "passed" });
   assert.ok(Array.isArray(tests));
@@ -46,6 +48,10 @@ export function skipperPassingReceipt(value: unknown) {
     ["passed"],
   );
   const { name, durationMs } = record(tests[0]);
+  assert.ok(
+    durationMs === undefined ||
+      (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0),
+  );
   return {
     version,
     command,

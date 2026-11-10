@@ -2053,7 +2053,10 @@ async function aggregateGroup(
     process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
     groupName === "full" &&
     selection === undefined &&
-    Boolean(needsPath);
+    Boolean(needsPath) &&
+    process.env.GITHUB_REF === "refs/heads/main" &&
+    process.env.GITHUB_RUN_ATTEMPT === "1" &&
+    source.sha === process.env.GITHUB_SHA;
   const currentSha = source.sha;
 
   if (!laneNames) {

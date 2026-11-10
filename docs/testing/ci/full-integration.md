@@ -104,11 +104,14 @@ when it selects all lanes. It records admission before the lanes run.
 
 The execution receipt, `full-integration-exercised-v1-<sha>`, expires after
 seven days. The aggregate uploads it after complete same-SHA case evidence,
-including qualified CI reuse. It can accompany a red aggregate when all cases
-complete and failures come from assertions. Setup errors, missing or skipped
-cases, cancellation, focused runs, and retries cannot qualify. Use the run,
+including qualified CI reuse. Each lane must record successful final cleanup
+separately from file cleanup. It can accompany a red aggregate when all cases
+complete and case failures come from assertions. Setup errors, missing or skipped
+cases, unproved or failed cleanup, cancellation, focused runs, and retries cannot qualify. Use the run,
 attempt and tested SHA to bind either receipt. An absent receipt gives no
-execution proof. Use the aggregate for the pass or fail result.
+execution proof. Use the aggregate for the pass or fail result. Later artifact
+export or upload failures still fail their job and aggregate; they do not undo
+completed execution or cleanup. Missing lane artifacts prevent qualification.
 
 The installed-Skipper lane publishes a sanitized passing receipt only after its
 test and owned-resource cleanup succeed. It retains the runner's full scope,

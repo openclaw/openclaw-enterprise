@@ -147,7 +147,8 @@ function fileCounts(value: unknown, expected: ExpectedFile) {
     file.exercised !== true ||
     file.signal !== null ||
     file.fileFailure !== undefined ||
-    (file.cleanup != null && record(file.cleanup)?.status !== "passed") ||
+    file.cleanup === undefined ||
+    (file.cleanup !== null && record(file.cleanup)?.status !== "passed") ||
     !Array.isArray(file.issues) ||
     !file.issues.every(isAssertionIssue) ||
     !Array.isArray(file.tests) ||
@@ -174,20 +175,28 @@ function fileCounts(value: unknown, expected: ExpectedFile) {
       return undefined;
     }
   }
+  const failedExpected = new Set(expected.expectedTests.filter((name) => failedNames.has(name)));
+  const issueNames = new Set(file.issues.map((issue: unknown) => record(issue)?.name));
   const status = failed ? "failed" : "passed";
   if (
+    file.issues.length !== failedExpected.size ||
+    issueNames.size !== failedExpected.size ||
     !countsMatch(file.counts, passed, failed) ||
     expected.expectedTests.some((name) => !names.has(name)) ||
     !file.issues.every((issue: unknown) => {
       const name = record(issue)?.name;
-      return typeof name === "string" && failedNames.has(name);
+      return (
+        record(issue)?.file === expected.path &&
+        typeof name === "string" &&
+        failedExpected.has(name)
+      );
     }) ||
     file.status !== status ||
     file.nodeExitCode !== (failed ? 1 : 0)
   ) {
     return undefined;
   }
-  return { passed, failed };
+  return { passed, failed, failedExpected };
 }
 
 export function exercisedLaneStatus(
@@ -200,6 +209,7 @@ export function exercisedLaneStatus(
     receipt.version !== 1 ||
     receipt.command !== "run" ||
     receipt.scope !== "full" ||
+    record(receipt.cleanup)?.status !== "passed" ||
     !Array.isArray(receipt.files) ||
     expectedFiles.length === 0 ||
     receipt.files.length !== expectedFiles.length ||
@@ -216,6 +226,15 @@ export function exercisedLaneStatus(
     }
     files.set(path, file);
   }
+  const issueKeys = new Set(
+    receipt.issues.map((issue: unknown) => {
+      const entry = record(issue);
+      return JSON.stringify([entry?.file, entry?.name]);
+    }),
+  );
+  if (issueKeys.size !== receipt.issues.length) {
+    return undefined;
+  }
   let passed = 0;
   let failed = 0;
   for (const expected of expectedFiles) {
@@ -223,11 +242,17 @@ export function exercisedLaneStatus(
     if (!counts) {
       return undefined;
     }
+    for (const name of counts.failedExpected) {
+      if (!issueKeys.delete(JSON.stringify([expected.path, name]))) {
+        return undefined;
+      }
+    }
     passed += counts.passed;
     failed += counts.failed;
   }
   const status = failed ? "failed" : "passed";
   if (
+    issueKeys.size === 0 &&
     countsMatch(receipt.counts, passed, failed) &&
     receipt.status === status &&
     receipt.exitCode === (failed ? 1 : 0)

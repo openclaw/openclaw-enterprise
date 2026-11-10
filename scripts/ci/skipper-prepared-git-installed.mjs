@@ -444,6 +444,7 @@ if (failed) {
   const results = join(env.RUNNER_TEMP, "results");
   const receipt = {
     ...summary,
+    cleanup: { status: "passed" },
     imageDigests,
     imageScope: skipperImageScope,
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],

@@ -878,12 +878,38 @@ async function cleanupState(statePath: string) {
   await cleanupResourceIds(statePath);
 }
 
+// Final job cleanup runs after the runner wrote its file-level evidence.
+async function recordLaneCleanup(path: string, status: "passed" | "failed") {
+  if (!(await stateExists(path))) {
+    return; // Setup may have failed before a lane result existed.
+  }
+  const result: unknown = JSON.parse(await readFile(path, "utf8"));
+  if (!isRecord(result) || result.version !== 1 || result.command !== "run") {
+    throw new Error("Cannot record cleanup on an invalid lane result.");
+  }
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify({ ...result, cleanup: { status } }, null, 2), {
+    mode: 0o600,
+  });
+  await rename(temporary, path);
+}
+
 export async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.state) {
     throw new Error("--state is required.");
   }
-  await cleanupState(args.state);
+  try {
+    await cleanupState(args.state);
+  } catch (error) {
+    if (args.results) {
+      await recordLaneCleanup(args.results, "failed");
+    }
+    throw error;
+  }
+  if (args.results) {
+    await recordLaneCleanup(args.results, "passed");
+  }
 }
 
 export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };

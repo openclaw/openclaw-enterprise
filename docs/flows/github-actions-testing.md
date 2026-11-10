@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b
+last_updated_session: authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905
 ---
 
 # GitHub Actions testing flow
@@ -234,14 +234,14 @@ Windows bounds streams and terminates only the direct child.
 Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
 60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`scripts/ci/impact-gate.mjs:main` and Full Integration report failed matrix jobs.
-`scripts/ci/run-tests.mjs:aggregateGroup` matches lane and SHA receipts.
-Passing requires successful jobs, one owner per lane, case evidence and cleanup.
-Reused lanes keep independent jobs. Fresh lanes keep their matrix parent.
-Docs mode skips aggregation. Full Integration checks its lane or `full`.
-On the first full attempt, preflight admission lasts one day. The aggregate can
-publish [exact-SHA execution evidence](../testing/ci/full-integration.md#results-and-limits)
-for seven days, including assertion red. Missing receipts prove neither step.
+`scripts/ci/run-tests.mjs:aggregateGroup` checks receipt SHA, lane ownership, job
+success, cases and cleanup. Reuse retains independent owners; fresh lanes retain
+matrix parents. Docs mode skips aggregation.
+The shared action's `scripts/ci/cleanup.ts:main` records final cleanup; installed
+Skipper records its own. [Execution evidence](../testing/ci/full-integration.md#results-and-limits)
+requires this positive outcome for every lane, including passing siblings and reuse,
+separately from file cleanup. Later delivery failures keep checks red; missing
+artifacts cannot qualify.
 `ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
 awaits an approved resource ledger.
@@ -267,6 +267,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 15:47: Require final lane cleanup evidence for execution coverage. (authoring-run/8af45432-2706-4ed9-aafd-7750cfea1905 - 60dba17cf36b796aee257e61499803b5dacc5a8c)
 
 - 2026-11-10 13:06: Admit navigation in docs-only CI. (authoring-run/3fcf2723-e440-4ce4-8994-00066241bc2b - 554857e441d9348adfac651bd382c17ffef67c8d)
 
