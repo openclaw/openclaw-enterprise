@@ -439,6 +439,15 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
+  // An explicit-only lane cannot replace a default lane and still claim full coverage.
+  const substituted = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "scratch-volume,console-secrets,git-write,git-push-denied,slack",
+  });
+  assert.equal(substituted.scope, "partial:selected");
+  assert.equal(
+    selectQaMatrix({ OCC_TEST_QA_SCENARIOS: [...full.scenarios].reverse().join(",") }).scope,
+    "full",
+  );
   const isolated = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "git-write",
     QA_REPOSITORY_FIXTURE: "isolated",

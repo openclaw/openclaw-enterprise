@@ -1205,6 +1205,56 @@ test("receives selected model inputs", () => {
   }
 });
 
+test("focused plugin installation forwards API-key selection through its real wrapper", async (t) => {
+  const root = await fixture(t);
+  const lane = JSON.parse(
+    await readFile(join(repositoryRoot, "scripts/ci/test-suites/openshell.json"), "utf8"),
+  );
+  const path = "tests/integration/openshell-plugin-install-real.test.ts";
+  const file = lane.files.find((entry) => entry.path === path);
+  await mkdir(join(root, "tests/helpers"), { recursive: true });
+  for (const name of [path, "tests/helpers/qa-secrets.mjs", "scripts/ci/failure-redaction.mjs"]) {
+    await writeFile(join(root, name), await readFile(join(repositoryRoot, name)));
+  }
+  // Keep the real wrapper and subprocess; only replace its costly cluster/model consumer.
+  await writeFile(
+    join(root, "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs"),
+    `import assert from "node:assert/strict";
+import test from "node:test";
+test("OpenShell installs selected Codex plugins before WebSocket startup", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "codex");
+  assert.equal(process.env.OCC_TEST_OPENSHELL_SCENARIO, "plugin-install");
+  assert.equal(process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL, "https://api.openai.com/v1");
+  assert.equal(process.env.OPENAI_API_KEY, "synthetic-model-key");
+});
+`,
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { openshell: { ...lane, files: [file] } },
+    groups: { ci: ["openshell"] },
+  });
+  const inputs = {
+    ...Object.fromEntries(
+      [...lane.requiredEnv, ...(file.requiredEnv ?? [])].map((name) => [name, "fixture-input"]),
+    ),
+    OPENAI_API_KEY: "synthetic-model-key",
+    CODEX_ACCESS_TOKEN: "",
+    OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+    OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+  };
+  const results = join(root, "results/plugin.json");
+  const result = run(
+    root,
+    [...laneArgs(root, "openshell", "state/plugin.json", results), "--file", path],
+    inputs,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(results, "utf8"));
+  assert.deepEqual(summary.issues, []);
+  assert.equal(summary.counts.passed, 1);
+});
+
 test("full OpenShell lanes ignore inherited focused model selectors and retain explicit harness settings", async (t) => {
   const root = await fixture(t);
   const lane = JSON.parse(

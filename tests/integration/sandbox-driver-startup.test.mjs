@@ -1601,6 +1601,15 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   };
   gatewayClient.getSandbox = async () => storedSandbox;
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.kubernetes.agentResourceOverrides = [
+    {
+      namespaceId: namespaceContext().namespace.id,
+      agentId: "agt_00000000-0000-4000-8000-000000000003",
+      requests: {},
+      limits: {},
+      runtimeClassName: "openshell-skipper",
+    },
+  ];
   configuration.policy.filesystem = {
     includeWorkdir: false,
     readOnly: ["/app"],
@@ -1627,12 +1636,17 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   await driver.provisionHarness({ ...context, revision, requirements });
   assert.equal(prepared.length, 1, "an adopted Sandbox must not recreate its PVC writer");
   const preparation = prepared[0].spec.template.spec;
+  assert.equal(preparation.runtimeClassName, "openshell-skipper");
   assert.equal(preparation.automountServiceAccountToken, false);
   assert.equal(preparation.securityContext.runAsUser, 10001);
   assert.deepEqual(preparation.containers[0].securityContext.capabilities, { drop: ["ALL"] });
 
   assert.equal(sandbox.revisionId, revision.id);
   assert.equal(requests.length, 1);
+  const template = requests[0].spec.template;
+  const pod = template.driver_config.fields.kubernetes.structValue.fields.pod;
+  assert.equal(template.runtime_class_name, "openshell-skipper");
+  assert.equal(pod.structValue.fields.runtime_class_name.stringValue, "openshell-skipper");
   assert.deepEqual(requests[0].serviceExposures, []);
   assert.deepEqual(
     requests[0].spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length),
@@ -2523,14 +2537,34 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     }
     return sandbox;
   };
-  const driver = openShellDriver(gatewayClient);
   const context = namespaceContext();
+  const options = sandboxOf(sandboxInstallation());
+  const selectedAgent = "agt_00000000-0000-4000-8000-000000000003";
+  options.kubernetes.agentResources = {
+    requests: { cpu: "1", memory: "1Gi", "example.com/gpu": "1" },
+    limits: { cpu: "2", memory: "2Gi", "example.com/gpu": "1" },
+  };
+  options.kubernetes.agentResourceOverrides = [
+    {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000002",
+      agentId: selectedAgent,
+      requests: { cpu: "4" },
+      limits: { cpu: "4" },
+    },
+    {
+      namespaceId: context.namespace.id,
+      agentId: selectedAgent,
+      requests: { cpu: "88", memory: "344Gi" },
+      limits: { cpu: "90", memory: "352Gi" },
+    },
+  ];
+  const driver = openShellDriver(gatewayClient, options);
   const revision = dedicatedRevision(driver, context, "000000000003");
-  const provision = (environment = [], target = revision) =>
-    driver.provisionHarness({
+  const provision = (environment = [], target = revision, owner = driver) =>
+    owner.provisionHarness({
       ...context,
       revision: target,
-      requirements: codexRequirements(revision, environment),
+      requirements: codexRequirements(target, environment),
     });
 
   const first = await provision();
@@ -2539,6 +2573,56 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     calls.map(([call]) => call),
     ["getSandbox", "createSandbox"],
   );
+  const agentResources = (sandbox) =>
+    sandbox.spec.template.driver_config.fields.kubernetes.structValue.fields.containers.structValue
+      .fields.agent.structValue.fields.resources.structValue.fields;
+  const resources = (sandbox, section) =>
+    Object.fromEntries(
+      Object.entries(agentResources(sandbox)[section].structValue.fields).map(([name, value]) => [
+        name,
+        value.stringValue,
+      ]),
+    );
+  // Check the actual Sandbox request content and the identity of the selected Agent.
+  const saved = sandboxes.get(name);
+  assert.deepEqual(resources(saved, "requests"), {
+    cpu: "88",
+    memory: "344Gi",
+    "example.com/gpu": "1",
+    "ephemeral-storage": "256Mi",
+  });
+  assert.deepEqual(resources(saved, "limits"), {
+    cpu: "90",
+    memory: "352Gi",
+    "example.com/gpu": "1",
+    "ephemeral-storage": "1Gi",
+  });
+  const other = await provision([], dedicatedRevision(driver, context, "000000000004"));
+  const otherTemplate = sandboxes.get(other.resourceName).spec.template;
+  assert.equal(otherTemplate.runtime_class_name, "openshell-sandbox");
+  assert.deepEqual(resources(sandboxes.get(other.resourceName), "requests"), {
+    cpu: "1",
+    memory: "1Gi",
+    "example.com/gpu": "1",
+    "ephemeral-storage": "256Mi",
+  });
+  assert.deepEqual(resources(sandboxes.get(other.resourceName), "limits"), {
+    cpu: "2",
+    memory: "2Gi",
+    "example.com/gpu": "1",
+    "ephemeral-storage": "1Gi",
+  });
+  // Restarting the controller with different sizing cannot adopt the stale Sandbox.
+  const changedOptions = structuredClone(options);
+  changedOptions.kubernetes.agentResourceOverrides[1].limits.cpu = "89";
+  const changed = openShellDriver(gatewayClient, changedOptions);
+  calls.length = 0;
+  await assert.rejects(
+    provision([], revision, changed),
+    /without exact AgentRevision ownership and content/,
+  );
+  assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+
   // A later pass with a different spec rejects the stale Sandbox and never creates.
   calls.length = 0;
   await assert.rejects(
@@ -4705,6 +4789,66 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
   await loadInstallationFile(t, accepted);
 });
 
+test("startup refuses invalid or conflicting exact-Agent resource overrides", async (t) => {
+  const override = {
+    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+    agentId: "agt_00000000-0000-4000-8000-000000000003",
+    requests: { cpu: "88" },
+    limits: { cpu: "90" },
+  };
+  const path = "/kubernetes/agentResourceOverrides";
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.agentResourceOverrides = [override, override];
+    },
+    invalidValue(`${path}/1`, "An Agent can have only one resource override."),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.agentResourceOverrides = [{ ...override, requests: { cpu: "-1" } }];
+    },
+    invalidValue(
+      `${path}/0/requests`,
+      "Each value must be a quoted, non-negative Kubernetes quantity, such as 500m or 1Gi.",
+    ),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      const kubernetes = sandboxOf(c).kubernetes;
+      kubernetes.agentResources = { requests: { cpu: "1" }, limits: { cpu: "4" } };
+      kubernetes.agentResourceOverrides = [{ ...override, limits: {} }];
+    },
+    [
+      {
+        path: `${path}/0/requests`,
+        code: "INVALID_RANGE",
+        message: "The cpu request (88) cannot exceed its limit (4).",
+      },
+    ],
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.agentResourceOverrides = [
+        { ...override, limits: { "ephemeral-storage": "2Gi" } },
+      ];
+    },
+    structuralRefusal(`${path}/0/limits`, "additionalProperties", "UNKNOWN_FIELD"),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.agentResourceOverrides = [
+        { ...override, runtimeClassName: "bad/Name" },
+      ];
+    },
+    invalidValue(`${path}/0/runtimeClassName`, "Use a Kubernetes RuntimeClass resource name."),
+  );
+});
+
 // The Gateway refuses these protocols at CreateSandbox (finding 2335): unknown names, L7
 // protocols without an access preset, access or enforcement on tcp, enforce on sql, and json-rpc
 // or mcp, which need rules.
@@ -6808,6 +6952,22 @@ test("OpenShell preserves legacy workspace recovery when its data mount uses the
 test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {
   const { driver, gateway, api, resource, context, requirements } =
     await orphanedNativePreparation();
+  // Captured through the incumbent Driver at 21051d1618bd9d32e69a0d5f4b5875fd799d723e.
+  // A controller upgrade must adopt this exact no-scratch command, not just its own renderer.
+  const incumbentCommand = JSON.parse(
+    await readFile(
+      new URL("../fixtures/openshell-native-preparation-command.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const read = api.read;
+  api.read = async (target) => {
+    const result = await read(target);
+    if (target.kind === "Deployment") {
+      result.spec.template.spec.containers[0].command = incumbentCommand;
+    }
+    return result;
+  };
   api.create = async () => assert.fail("a retry must adopt the existing preparer");
   let sandboxCreates = 0;
   gateway.createSandbox = async (request) => {

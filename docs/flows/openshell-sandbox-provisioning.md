@@ -250,13 +250,14 @@ and `NATIVE_WORKER_ENTRYPOINT` set `0700` and clear setgid before setup/migratio
 permission failures stop startup. [Writable runtime state](../reference/drivers/openshell-sandbox.md#writable-runtime-state)
 owns state-child isolation, retained permissions and temporary paths.
 
-`prepareNativeWorkspace` creates missing scratch directories; existing ones must
-be process-owned `0700`. Sibling content stays untouched. Other subpaths use managed preparation in a restricted revision Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
-completed preparation exits successfully on SIGTERM with normal grace. Sandbox
-creation waits for every writer Pod. Admission requires `userNamespaces: false`,
-one optional operator-mode ServiceAccount and the pinned Gateway's default identity.
-Preparation has no model credentials, ServiceAccount tokens, capabilities or direct
-Pod creation.
+`prepareNativeWorkspace` creates process-owned `0700` scratch directories or verifies
+existing ones; siblings survive. Other subpaths use restricted Deployments.
+Ownership/mode checks precede UID-fenced foreground deletion; SIGTERM succeeds
+with normal grace. Sandbox creation awaits every writer. Admission requires
+`userNamespaces: false`, optional operator ServiceAccount and the pinned Gateway identity.
+Preparation has no model credentials, tokens, capabilities or direct Pod creation.
+`agentResourceOverride` matches Namespace/Agent: preparation and `sandboxSpec` select its
+RuntimeClass; `agentResourceMaps` merges CPU/memory overrides, preserving fixed ephemeral storage.
 
 After Sandbox readiness, `initializeWorkspace` validates setup Secret
 Namespace/Agent/setup identity and sends initializer/JSON stdin through

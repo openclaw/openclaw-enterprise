@@ -31,7 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellFocusedEnv, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -1678,7 +1678,10 @@ function selectLane(manifest, laneName, selectedFile) {
       lane = {
         ...lane,
         files: [selected],
-        optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
+        optionalEnv: [
+          ...lane.optionalEnv,
+          ...openShellFocusedEnv(laneName, selected.path, lane.focusedEnv),
+        ],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
     }

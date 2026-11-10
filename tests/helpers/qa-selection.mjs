@@ -27,21 +27,20 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
+  const defaultScenarios = allScenarios.filter(
+    (name) =>
+      ![
+        "sandbox-policy",
+        "scratch-volume",
+        "plugin-install",
+        "openshell-linear-read",
+        "codex-search-config",
+        "harness-overrides",
+        "oidc-agent-chat",
+      ].includes(name),
+  );
   const scenarios =
-    input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "sandbox-policy",
-              "scratch-volume",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-              "harness-overrides",
-              "oidc-agent-chat",
-            ].includes(name),
-        )
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? defaultScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -258,7 +257,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 7
+      defaultScenarios.every((name) => scenarios.includes(name))
         ? "full"
         : "partial:selected",
   };
