@@ -160,7 +160,8 @@ export function googleRequestPolicy(scope: GoogleRequestScope) {
     const inside =
       scope.path === "/**" ||
       (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
-    const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
+    // `{name}` is one segment (`*`). `{+name}` may contain slashes, and OpenShell's `*` does not.
+    const path = inside ? op.path.replace(/\{\+\w+\}/g, "**").replace(/\{\w+\}/g, "*") : scope.path;
     permit(scope.host, op.method, path);
   }
   for (const { host, path } of discovery) {
