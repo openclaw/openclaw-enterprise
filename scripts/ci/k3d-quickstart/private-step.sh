@@ -65,6 +65,15 @@ else
           jq -r '.data.error.data.preparation.pods[]?.containers[]? |
             select(.reason=="OOMKilled" or .reason=="Error" or .reason=="ContainerCannotRun" or .reason=="ErrImagePull") |
             "Preparation container: " + .reason + " (exit " + ((.exitCode // 0) | tostring) + ")"' "$RUN_DIR/capability-status.json"
+          node --input-type=module - "$RUN_DIR/capability-status.json" <<'JS'
+import { readFileSync } from "node:fs";
+import { runtimeFailureCause } from "./packages/occ/src/index.ts";
+const data = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const cause = runtimeFailureCause(data.data?.error?.data?.runtimeFailure?.cause);
+if (cause) {
+  console.log(`Runtime model cause: ${cause.kind}${cause.detail ? `/${cause.detail}` : ""}`);
+}
+JS
         else
           printf 'Capability deployment status unavailable.\n'
         fi
@@ -89,7 +98,7 @@ else
         grep -F -- "$revision" "$runtime_log" | grep -F 'worker.openshell-git-' |
           grep -Eo 'git-recipient|git-provider-generation|git-supervisor-process|git-supervisor-network|git-reconnected-installation|bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
           sort -u | sed 's/^/Git worker reason: /' || true
-        grep -Eo 'PLUGIN_(NOT_IN_CATALOG|DETAIL_MISSING|NOT_READY|AUTH_REQUIRED|INSTALL_FAILED)|MODEL_PROBE_FAILED|rate_limit_exceeded|insufficient_quota|no space left on device|permission denied|certificate verify failed|unknown authority|x509: certificate' "$runtime_log" | sort -u | sed 's/^/Runtime diagnostic: /' || true
+        grep -Eo 'PLUGIN_(NOT_IN_CATALOG|DETAIL_MISSING|NOT_READY|AUTH_REQUIRED|INSTALL_FAILED)|MODEL_PROBE_FAILED|http_401_403|http_5xx|http_other|rate_limit_exceeded|insufficient_quota|no space left on device|permission denied|certificate verify failed|unknown authority|x509: certificate' "$runtime_log" | sort -u | sed 's/^/Runtime diagnostic: /' || true
         grep -Ei 'den(y|ied)|block(ed)?|reject|403|download|failed to fetch' "$runtime_log" |
           grep -Eio 'sdmntpr[a-z]{2,25}[0-9]{0,2}\.oaiusercontent\.com' | sort -u |
           sed 's/^/Package host in diagnostic: /'
