@@ -14542,7 +14542,17 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         "MODEL_PROBE_FAILED",
         { kind: "INVALID_OUTPUT", detail: "json" },
       ],
+      // OpenClaw's own 15 s timer ends the probe. Its window is judged on the CPU wait the
+      // CLI preload read inside it, not on the whole run: a boot throttled at the CPU
+      // limit before that timer started is not starvation (finding 2675).
       ["provider timeout", "timeout", "MODEL_PROBE_TIMEOUT"],
+      ["provider timeout after a throttled boot", "timeout", "MODEL_PROBE_TIMEOUT"],
+      [
+        "provider timeout while waiting for CPU in its window",
+        "timeout",
+        "MODEL_PROBE_CPU_STARVED",
+      ],
+      ["provider timeout without a window reading", "timeout", "MODEL_PROBE_TIMEOUT"],
       // The wrapper's cap ends the probe. Only CPU waiting for most of it makes
       // the failure CPU starvation, which fails the deployment at once.
       ["cap exceeded while waiting for CPU", undefined, "MODEL_PROBE_CPU_STARVED"],
@@ -14674,6 +14684,18 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     const reads = starved ? throttledReads++ : 0;
                     return `usage_usec 1\nnr_throttled ${reads * 1000}\nthrottled_usec ${reads * 1e8}\n`;
                   }
+                  // The CLI preload's samples across OpenClaw's 15 s timeout window.
+                  if (
+                    path === "/isolated-probe/cpu-window.json" &&
+                    variant.startsWith("provider timeout") &&
+                    !variant.endsWith("without a window reading")
+                  ) {
+                    const waitMs = variant.endsWith("in its window") ? 9_000 : 500;
+                    return JSON.stringify([
+                      [1_000, 0, 0, 0],
+                      [16_000, waitMs, waitMs, 15_000],
+                    ]);
+                  }
                   throw Object.assign(new Error("unexpected read"), { code: "ENOENT" });
                 },
               };
@@ -14795,6 +14817,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         );
         if (!upfront) {
           assert.equal(probeCall.environment.TMPDIR, "/isolated-probe");
+          // The CLI loads the CPU window preload from its own probe directory.
+          assert.deepEqual(probeCall.args.slice(0, 3), [
+            "--require",
+            "/isolated-probe/cpu-window.cjs",
+            "/app/openclaw.mjs",
+          ]);
+          assert.match(files.get("/isolated-probe/cpu-window.cjs"), /\/isolated-probe\/cpu-window\.json/);
           // 15 s model turn, 5 s slack, and 45 CPU-seconds at the 500m limit.
           assert.equal(probeCall.timeout, 110_000);
           assert.equal(probeCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
@@ -14878,6 +14907,12 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         const waitMs =
           variant.includes("waiting for CPU") || variant.includes("throttled") ? 100_000 : 0;
         assert.equal(probeLog.cpuWaitMs, waitMs);
+        assert.deepEqual(
+          [probeLog.timeoutWindowMs, probeLog.timeoutWindowCpuWaitMs],
+          !variant.startsWith("provider timeout") || variant.endsWith("without a window reading")
+            ? [undefined, undefined]
+            : [15_000, variant.endsWith("in its window") ? 9_000 : 500],
+        );
         // The event records each counter's delta; without pressure accounting PSI has none.
         assert.deepEqual(
           [probeLog.pressureWaitMs, probeLog.throttledWaitMs],
