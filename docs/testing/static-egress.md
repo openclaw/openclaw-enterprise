@@ -242,20 +242,20 @@ cluster or model runtime and supplies no installation receipt.
 ## Select the prepared connected lane
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
-with the `egress-connected` CLI lane. CI, GitHub dispatch and the generic `openshell`
-HTTP fixture do not run it. This retained lane is for existing qualified
-installations. It requires a prepared, authenticated controller, worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
+through the `egress-connected` CLI lane for existing qualified installations.
+CI, GitHub dispatch and the generic `openshell` HTTP fixture omit this lane.
+It requires a prepared, authenticated controller, worker and supplier gateway.
+Missing selected inputs fail.
 
-Use a ready Namespace with one placement in disposable loopback k3d, enforcing
-NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).
-[Migrate a dedicated](postgresql.md) `openclaw_k8s_*` database, then run the controller
-and observer as `occ_app`. The test compares the database Installation with the controller's.
+Prepare a ready Namespace with one placement in disposable loopback k3d.
+Enforce NetworkPolicies and the [OpenShell launch prerequisites](openshell.md).
+[Migrate](postgresql.md) a dedicated `openclaw_k8s_*` database. Run the controller
+and observer as `occ_app`. The test compares database and controller Installations.
 
-The protected product and supplier source must agree on physical namespace
-mapping, loaded-enforcement receipt readiness, finite Responses protection and
-zero automatic retries, including the startup authentication probe. Build and
-select the corresponding immutable images before running. This test cannot
-qualify a checkout that lacks those contracts or a legacy gateway-copy setup.
+Build and select immutable product and supplier images with matching physical
+namespace mapping, loaded-enforcement receipt readiness, finite Responses
+protection and zero automatic retries, including the startup authentication
+probe. The test requires these contracts and excludes legacy gateway copies.
 
 Set `OCC_TEST_EGRESS_CONNECTED_INPUTS` to an absolute path to a private JSON file.
 The [input validator](../../tests/helpers/egress-connected-inputs.mjs) defines its
@@ -290,7 +290,7 @@ This lane requires execution authority, all five supplier capabilities, and a
 loaded managed policy with no caller executable list. Run it from the candidate
 checkout named by `oceCommit`.
 
-With those prerequisites ready, select a fresh result directory:
+Select a fresh result directory:
 
 ```sh
 run_dir="$PWD/.build/egress-connected/run-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -308,45 +308,50 @@ Killing a local client does not establish remote termination. Never replay an un
 ### Read evidence and retain cleanup custody
 
 The test creates resources through public APIs, deploys through the real worker,
-reads its persisted installation, and checks the authenticated supplier receipt.
-It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
-explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes the startup probe, measured
-Codex sends (including hostile responses and recovery), and a managed request
-from an ordinary sibling.
-For that sibling and the direct TCP probe, the operator uses the supplier's
-authenticated [workload launch path](./protected-repository-custody.md) so both
-inherit the installed connection mediation. Kubernetes exec remains suitable for
-independent process inspection, but cannot establish managed workload traffic.
-Each measured exchange must join the supervisor's resolve, permit and response
-transitions. IAM revocation must produce no permit or upstream request. A raw
-TCP bypass to the same live listener must produce no connection, with independent
-reachability controls immediately before and after. Hostile responses must give
-Codex an empty HTTP 502, no partial assistant output, and a private
-`response_blocked` transition after the authorized provider send. The test
-checks that the synthetic provider credential is absent from the ordinary Agent
-and running Codex process environments, observed responses, bounded logs,
-diagnostics, audit, Pod specs and ConfigMaps.
+reads the persisted installation and verifies the authenticated supplier receipt.
+The Agent Gateway Pod runs the packaged Codex app-server caller. The test adopts
+a fresh unbound source with `adoption: "live"` and `authorityScope: "execution"`.
+The origin observes the startup probe, measured Codex sends during hostile
+responses and recovery, and an ordinary sibling's managed request.
 
-Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
-IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
-canonical request IDs checked for known credentials. Bodies, messages and other
-headers are excluded. Interrupted or undecodable responses remain `unknown`.
-Cleanup preserves earlier entries and requires its own successful checkpoint.
-`lastApi` identifies the latest attempt.
-The deployed checkpoint identifies the public owner capability of the source selected
-by the admitted Harness, while sender evidence independently shows protected sends.
+Use the supplier's authenticated [workload launch path](./protected-repository-custody.md)
+for the sibling and TCP probe so both inherit connection mediation. Kubernetes
+exec provides independent process inspection. The launch path is required to
+establish managed workload traffic. Each measured exchange must match the
+supervisor's resolve, permit and response transitions. IAM revocation must yield
+no permit or upstream request. The raw TCP bypass to the same live listener must
+yield no connection, with independent reachability checks immediately before
+and after. After an authorized send, a hostile response must give Codex an empty
+HTTP 502, produce no partial assistant output and record a private
+`response_blocked` transition. The test checks that the synthetic provider
+credential stays out of ordinary Agent and running Codex process environments,
+observed responses, bounded logs, diagnostics, audit, Pod specs and ConfigMaps.
+
+Retain `.build/egress-connected/runtime-<uuid>/`. The ledger's `apiOperations`
+records IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise)
+and canonical request IDs checked for known credentials. It omits bodies,
+messages and other headers. Interrupted or undecodable responses remain
+`unknown`. `lastApi` identifies the latest attempt. Cleanup preserves entries
+and requires its own successful checkpoint.
+
+`failure` names the custody step, Gateway exec or turn verification that failed.
+When available, `failure.kubectl` records the local outcome, exit code, termination
+signal, kill flag and abort state. A deadline describes the local cap. The
+remote Codex protocol phase remains unknown. The terminal error preserves these
+facts if ledger writing fails. Both omit arguments, output and error payloads. The deployed checkpoint identifies the admitted Harness source's
+public owner capability. Sender evidence independently shows protected sends.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
-then removes supporting resources and closes the provider. Reconcile missing Sandbox
-identities or unconfirmed creates from the ledger. The parent owns interrupted cleanup
-and disposal of the prepared Namespace, database, cluster, controller and gateway.
+removes supporting resources and closes the provider. Use the ledger to reconcile
+missing Sandbox identities or unconfirmed creates. The parent owns interrupted
+cleanup and disposal of the prepared Namespace, database, cluster, controller
+and Gateway.
 
-A passing selected run establishes only this static-inference slice at its
-recorded inputs. Source checks are not runtime proof. The scenario does not
-prove real-provider usefulness, all workload credential/control-API containment,
+A passing run covers this slice at its recorded inputs.
+Real-provider usefulness, full workload credential and control API containment,
 revocation between Resolve and AuthorizeSend, mixed-version activation, HA,
-dynamic credentials, long-lived streaming or complete Egress MVP delivery.
+dynamic credentials, long-lived streaming and complete Egress MVP delivery
+require separate proof.
 
 ## Installed repository response and dispatch custody
 

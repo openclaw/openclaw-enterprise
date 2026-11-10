@@ -11,6 +11,14 @@ import {
   activateRepositoryAgent,
   admitRepositoryAgent,
 } from "../helpers/egress-custody-installed-agent.mjs";
+import {
+  observeConnectedOperation,
+  safeConnectedFailure,
+} from "../helpers/egress-connected-failure.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
@@ -37,6 +45,7 @@ import { listen } from "../helpers/listen.mjs";
 
 import {
   assertOpenShellHarnessBinding,
+  createOpenShellKubernetesFixture,
   openShellAgentName,
   openShellRevisionName,
 } from "../helpers/openshell-kubernetes-real.mjs";
@@ -949,4 +958,229 @@ test("failed custody deployment preserves worker event order across a reused att
       "public safe projection",
     );
   }
+});
+
+test("connected turn failure receipts distinguish custody reads from the local kubectl exec outcome", async (t) => {
+  const marker = `private-diagnostic-${randomUUID()}`;
+  const directory = await temporaryDirectory(t, "connected-kubectl-");
+  const workspace = "fixture-workspace";
+  const sandboxId = "fixture-sandbox";
+  const supervisor = {
+    metadata: {
+      uid: "fixture-supervisor",
+      namespace: workspace,
+      labels: {
+        "openshell.ai/sandbox-id": sandboxId,
+        "openshell.ai/boundary-role": "supervisor",
+      },
+    },
+    status: { containerStatuses: [{ restartCount: 0, containerID: "fixture-container" }] },
+  };
+  // Exercise the same real execFile boundary used by the harness. The local
+  // executable never opens a socket or launches a remote command.
+  await writeCommand(
+    directory,
+    "kubectl",
+    `
+    const [verb, first, second] = process.argv.slice(6);
+    const pod = verb === "get" ? second : first;
+    switch (pod) {
+      case "supervisor":
+        if (verb !== "get") process.exit(2);
+        console.log(${JSON.stringify(JSON.stringify(supervisor))});
+        break;
+      case "ok":
+        if (verb !== "exec") process.exit(2);
+        console.log("{}");
+        break;
+      case "malformed":
+        console.log(${JSON.stringify(marker)});
+        break;
+      case "signal":
+        process.kill(process.pid, "SIGTERM");
+        break;
+      case "external-kill":
+        process.kill(process.pid, "SIGKILL");
+        break;
+      case "external-kill-with-open-stdout":
+        // Keep the execFile pipe open after the child exits so its timer still fires.
+        // The descendant exits on its own even if the test fails.
+        require("node:child_process").spawn(
+          process.execPath,
+          ["-e", "setTimeout(() => {}, 2000)"],
+          { stdio: ["ignore", "inherit", "ignore"] },
+        );
+        process.kill(process.pid, "SIGKILL");
+        break;
+      case "overflow":
+        process.stdout.write("x".repeat(5 * 1024 * 1024));
+        // Keep the local child alive until execFile reacts to the overflow.
+        setInterval(() => {}, 1000);
+        break;
+      case "deadline":
+        setInterval(() => {}, 1000);
+        break;
+      default:
+        console.log(${JSON.stringify(marker)});
+        console.error(${JSON.stringify(marker)});
+        process.exit(17);
+    }
+    `,
+    { interpreter: process.execPath },
+  );
+  const cases = [
+    { operation: "before-custody-supervisor-get", read: 1, outcome: "exit", exitCode: 17 },
+    { operation: "before-custody-log-read", log: 1 },
+    { operation: "before-custody-supervisor-recheck", read: 2, outcome: "exit", exitCode: 17 },
+    { operation: "gateway-codex-exec", pod: marker, outcome: "exit", exitCode: 17 },
+    { operation: "gateway-codex-exec", pod: "malformed", outcome: "exit", exitCode: 0 },
+    { operation: "gateway-codex-exec", pod: "signal", outcome: "signal", signal: "SIGTERM" },
+    { operation: "gateway-codex-exec", pod: "external-kill", outcome: "signal", signal: "SIGKILL" },
+    {
+      operation: "gateway-codex-exec",
+      pod: "external-kill-with-open-stdout",
+      outcome: "signal",
+      signal: "SIGKILL",
+      commandTimeoutMs: 1000,
+    },
+    {
+      operation: "gateway-codex-exec",
+      pod: "deadline",
+      outcome: "deadline",
+      signal: "SIGKILL",
+      killed: true,
+    },
+    {
+      operation: "gateway-codex-exec",
+      pod: "deadline",
+      outcome: "cancelled",
+      killed: true,
+      abort: true,
+    },
+    {
+      operation: "gateway-codex-exec",
+      pod: "overflow",
+      outcome: "transport",
+      signal: "SIGKILL",
+      killed: true,
+    },
+    { operation: "after-custody-supervisor-get", read: 3, outcome: "exit", exitCode: 17 },
+    { operation: "after-custody-log-read", log: 2 },
+    {
+      operation: "after-custody-supervisor-recheck",
+      read: 4,
+      outcome: "exit",
+      exitCode: 17,
+      writeFailure: true,
+    },
+  ];
+  await withEnvironment({ PATH: directory }, async () => {
+    for (const item of cases) {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      const abort = new AbortController();
+      const f = createOpenShellKubernetesFixture({
+        kubeconfigPath: marker,
+        kubernetesContext: "fixture",
+        commandTimeoutMs: item.commandTimeoutMs ?? (item.outcome === "deadline" ? 250 : 5000),
+        signal: abort.signal,
+      });
+      let reads = 0;
+      let logReads = 0;
+      const custody = createCustodyTransitions({
+        gatewayClient: {
+          async getSandboxLogs() {
+            if (++logReads === item.log) {
+              return observeConnectedOperation(marker, () => {
+                throw Object.assign(new Error(`egress-${marker}.mjs:12:34`, { cause: marker }), {
+                  code: marker,
+                  signal: marker,
+                  stdout: marker,
+                  stderr: marker,
+                });
+              });
+            }
+            const lines =
+              logReads === 1
+                ? []
+                : [
+                    {
+                      sandboxId,
+                      source: "sandbox",
+                      level: "INFO",
+                      target: "openshell_supervisor_network::l7::rest::credentials",
+                      message: "Protected response custody transition",
+                      fields: {
+                        request_id: "aaaaaaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
+                        response_custody_event: "resolve_accepted",
+                      },
+                    },
+                  ];
+            return { lines, bufferTotal: lines.length };
+          },
+        },
+        workspace,
+        sandbox: sandboxId,
+        sandboxId,
+        supervisor,
+        readSupervisor: () =>
+          f.resource("pod", ++reads === item.read ? marker : "supervisor", workspace),
+      });
+      await evidence.checkpoint("turn-start");
+      if (item.writeFailure) {
+        await mkdir(evidence.directory + "/observations.pending.json");
+      }
+      const expected = {
+        kind: "operation",
+        operation: item.operation,
+        kubectl: item.outcome
+          ? {
+              outcome: item.outcome,
+              exitCode: item.exitCode ?? null,
+              signal: item.signal ?? null,
+              killed: item.exitCode === 0 ? null : (item.killed ?? false),
+              signalAborted: item.abort ?? false,
+            }
+          : null,
+      };
+      try {
+        const before = await custody.snapshot();
+        const turn = f.requestCodexTurnFromGatewayPod({
+          namespace: workspace,
+          gatewayPod: item.pod ?? "ok",
+          providerModel: marker,
+          prompt: marker,
+        });
+        if (item.abort) {
+          abort.abort(new DOMException(marker, "TimeoutError"));
+        }
+        await turn;
+        await custody.expectAfter(before, ["resolve_accepted"]);
+        assert.fail("the selected operation should have failed");
+      } catch (error) {
+        const safe = await safeConnectedFailure(error, "turn-start", evidence.recordFailure);
+        assert.ok(safe.message.includes(item.operation), safe.message);
+        assert.equal(safe.stack.includes(marker), false);
+        assert.equal(safe.cause, undefined);
+        if (expected.kubectl !== null) {
+          assert.ok(
+            safe.message.includes(`kubectl=${JSON.stringify(expected.kubectl)}`),
+            safe.message,
+          );
+        }
+      }
+      const observations = evidence.directory + "/observations.json";
+      const beforeCleanup = JSON.parse(await readFile(observations, "utf8"));
+      if (item.writeFailure) {
+        assert.equal(beforeCleanup.failure, undefined);
+        await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+      } else {
+        assert.deepEqual(beforeCleanup.failure, expected, "failure is durable before cleanup");
+      }
+      await evidence.checkpoint("cleanup");
+      const raw = await readFile(observations, "utf8");
+      assert.deepEqual(JSON.parse(raw).failure, expected, "cleanup preserves the original failure");
+      assert.equal(raw.includes(marker), false);
+    }
+  });
 });

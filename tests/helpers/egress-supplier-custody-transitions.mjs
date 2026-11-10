@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
 import { openShellSandboxLogReader } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
+import { observeConnectedOperation } from "./egress-connected-failure.mjs";
+
 const ringSize = 2000;
 const target = "openshell_supervisor_network::l7::rest::credentials";
 const message = "Protected response custody transition";
@@ -107,9 +109,9 @@ export function createCustodyTransitions(
 
   return Object.freeze({
     async snapshot() {
-      await sameSupervisor();
-      await read(5000);
-      await sameSupervisor();
+      await observeConnectedOperation("before-custody-supervisor-get", sameSupervisor);
+      await observeConnectedOperation("before-custody-log-read", () => read(5000));
+      await observeConnectedOperation("before-custody-supervisor-recheck", sameSupervisor);
       snapshots.add(events);
       return events;
     },
@@ -118,32 +120,36 @@ export function createCustodyTransitions(
     // a missing resolve, explicit no_permit, or terminal transition fails the test.
     // Reuse the original snapshot to follow an acknowledged pending operation to FIN.
     async expectAfter(before, expected) {
-      assert.ok(
-        snapshots.has(before) && expected.length > 0,
-        "snapshot from this enrolled Sandbox",
-      );
-      await sameSupervisor();
-      const deadline = performance.now() + deliveryTimeoutMs;
-      while (performance.now() < deadline) {
-        await read(Math.max(1, Math.ceil(deadline - performance.now())));
-        const fresh = events.slice(before.length);
-        const id = fresh[0]?.id;
+      return observeConnectedOperation("after-custody-observation", async () => {
         assert.ok(
-          !id || !before.some((entry) => entry.id === id),
-          "supplier reused an earlier request ID",
+          snapshots.has(before) && expected.length > 0,
+          "snapshot from this enrolled Sandbox",
         );
-        assert.ok(
-          fresh.length <= expected.length &&
-            fresh.every((entry, i) => entry.id === id && entry.event === expected[i]),
-          "unexpected, missing, or ambiguous supplier custody transition",
-        );
-        if (fresh.length === expected.length) {
-          await sameSupervisor();
-          return id;
+        await observeConnectedOperation("after-custody-supervisor-get", sameSupervisor);
+        const deadline = performance.now() + deliveryTimeoutMs;
+        while (performance.now() < deadline) {
+          await observeConnectedOperation("after-custody-log-read", () =>
+            read(Math.max(1, Math.ceil(deadline - performance.now()))),
+          );
+          const fresh = events.slice(before.length);
+          const id = fresh[0]?.id;
+          assert.ok(
+            !id || !before.some((entry) => entry.id === id),
+            "supplier reused an earlier request ID",
+          );
+          assert.ok(
+            fresh.length <= expected.length &&
+              fresh.every((entry, i) => entry.id === id && entry.event === expected[i]),
+            "unexpected, missing, or ambiguous supplier custody transition",
+          );
+          if (fresh.length === expected.length) {
+            await observeConnectedOperation("after-custody-supervisor-recheck", sameSupervisor);
+            return id;
+          }
+          await setTimeout(Math.max(1, Math.min(pollIntervalMs, deadline - performance.now())));
         }
-        await setTimeout(Math.max(1, Math.min(pollIntervalMs, deadline - performance.now())));
-      }
-      assert.fail("required supplier custody transitions unobservable before delivery deadline");
+        assert.fail("required supplier custody transitions unobservable before delivery deadline");
+      });
     },
   });
 }

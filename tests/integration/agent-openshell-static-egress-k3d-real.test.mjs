@@ -20,6 +20,10 @@ import {
   registerCleanupAndStartProvider,
   observeInstalledProtection,
 } from "../helpers/egress-installed-agent.mjs";
+import {
+  observeConnectedOperation,
+  safeConnectedFailure,
+} from "../helpers/egress-connected-failure.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -28,19 +32,6 @@ import {
 
 const inputsPath = process.env.OCC_TEST_EGRESS_CONNECTED_INPUTS;
 const selected = process.env.OCC_TEST_EGRESS_CONNECTED === "1" || inputsPath !== undefined;
-
-function safeConnectedFailure(error, stage) {
-  // Assertions and subprocess errors may embed response bytes. Keep a source
-  // location and the durable phase, never raw error payloads or an unsafe cause.
-  const location =
-    String(error.stack).match(
-      /(?:agent-openshell-static-egress-k3d-real\.test|egress-[\w.-]+|openshell-kubernetes-real)\.mjs:\d+:\d+/,
-    )?.[0] ?? "external-operation";
-  const kind = error.code === "ERR_ASSERTION" ? "assertion" : "operation";
-  return new Error(
-    `Connected egress ${kind} failed at ${stage} (${location}); inspect the per-run ledger`,
-  );
-}
 
 /**
  * @typedef {Awaited<ReturnType<typeof arrangeRealPrerequisites>>} Prerequisites
@@ -60,6 +51,7 @@ test(
   },
   async (t) => {
     const progress = { stage: "input-preflight" };
+    let evidence;
     try {
       const setup = await arrangeRealPrerequisites(t, progress, inputsPath, {
         wholeExecution: true,
@@ -69,7 +61,7 @@ test(
         setup.input.oceCommit,
         "run this qualification from the selected candidate checkout",
       );
-      const evidence = await createRunEvidence(t, setup, progress);
+      evidence = await createRunEvidence(t, setup, progress);
       const stack = await observePreparedStack(t, setup, evidence, progress);
       const owned = await registerCleanupAndStartProvider(t, setup, stack, evidence);
       const deployment = await deployProtectedAgent(setup, stack, evidence, owned);
@@ -89,7 +81,7 @@ test(
         "one startup probe, seventeen measured Codex sends and one managed sibling send; no retries",
       );
     } catch (error) {
-      throw safeConnectedFailure(error, progress.stage);
+      throw await safeConnectedFailure(error, progress.stage, evidence?.recordFailure);
     }
   },
 );
@@ -309,25 +301,27 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
       observeFailure: true,
       timeoutMs: 90_000,
     });
-    excludesCredentials(result, "Codex response/events");
-    assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
-    assert.equal(
-      result.items.some((event) => event.params?.willRetry === true),
-      false,
-      "protected calls must not automatically retry",
-    );
-    if (expected === "completed") {
-      assert.equal(result.assistant, nonce);
-    } else {
-      assertNoConnectedAssistantOutput(result);
-      // The selected supplier returns an empty HTTP 502. Its private, content-free
-      // transitions distinguish refusal before access from a blocked provider response.
-      assert.match(
-        JSON.stringify(result.error),
-        /\b502\b/,
-        "expected the supplier's public refusal",
+    await observeConnectedOperation("gateway-turn-verification", () => {
+      excludesCredentials(result, "Codex response/events");
+      assert.equal(result.status, expected, `${phase}: actual Codex terminal status`);
+      assert.equal(
+        result.items.some((event) => event.params?.willRetry === true),
+        false,
+        "protected calls must not automatically retry",
       );
-    }
+      if (expected === "completed") {
+        assert.equal(result.assistant, nonce);
+      } else {
+        assertNoConnectedAssistantOutput(result);
+        // The selected supplier returns an empty HTTP 502. Its private, content-free
+        // transitions distinguish refusal before access from a blocked provider response.
+        assert.match(
+          JSON.stringify(result.error),
+          /\b502\b/,
+          "expected the supplier's public refusal",
+        );
+      }
+    });
     const revoked = phase === "fresh-iam-revoked";
     const transitions = revoked
       ? ["resolve_refused", "no_permit", "response_blocked"]
