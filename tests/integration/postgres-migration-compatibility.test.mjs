@@ -2998,7 +2998,9 @@ test(
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
+        // Reject 0077's final grants after the linking table and child bindings exist.
         const rollbackTag = [
+          [76, "GRANT"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
