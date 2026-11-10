@@ -59,8 +59,8 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
   "in this Installation",
   "create a Namespace or to give you access to an existing one",
 );
-// Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
-// delete one: the reason names who can, not a grant to ask for (finding D788).
+// Namespace IAM Roles cannot grant namespace:delete. Direct the member to an Installation
+// administrator who can delete the Namespace (finding D788).
 export const NAMESPACE_DELETE_DENIED =
   "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
 // An Installation administrator refused Namespace delete is refused by a deny Restriction, which

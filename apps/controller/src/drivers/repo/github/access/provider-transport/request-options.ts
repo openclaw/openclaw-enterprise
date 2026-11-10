@@ -1,17 +1,23 @@
-import { validateGitHubRepositoryGrant, type GitHubRepositoryGrant } from "../repository-grant.ts";
+import { validateGitHubRepositoryGrant } from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
-import type { GitHubTokenProfile } from "../types.ts";
-import type { GitHubInstallationGrant } from "../prepared-contracts.ts";
+import type { GitHubPreparationAdmission } from "../prepared-contracts.ts";
 import { permissionsForProfile } from "../profiles.ts";
 
 declare const scopeIdentity: unique symbol;
-export type ProviderScope = Readonly<{ [scopeIdentity]: true }>;
-export type ProviderIssuanceScope =
-  | GitHubRepositoryGrant
-  | GitHubInstallationGrant
-  | Readonly<{ installationId: string; repositoryId: string; profile: GitHubTokenProfile }>;
-type Scope = Readonly<{ origin: string; issuePath: string; issueBody: string }>;
+export type ProviderScope = IssuanceProjection & Readonly<{ [scopeIdentity]: true }>;
+type IssuanceProjection =
+  | Readonly<{ kind: "inherited" }>
+  | Readonly<{
+      kind: "selected";
+      repositories: readonly Readonly<{ id: number; name: string }>[];
+      permissions: Readonly<Record<string, string>>;
+    }>;
+type Scope = Readonly<{
+  origin: string;
+  issuePath: string;
+  issueBody: string;
+}>;
 const scopes = new WeakMap<ProviderScope, Scope>();
 
 function numericId(value: string): number {
@@ -25,22 +31,21 @@ function numericId(value: string): number {
   return number;
 }
 
-export function prepareProviderScope(origin: string, scope: ProviderIssuanceScope): ProviderScope {
-  const url = new URL(origin);
-  if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password) {
-    throw new Error("invalid-provider-origin");
-  }
-  const installationId = numericId(scope.installationId);
-  let issueBody: string;
+function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): IssuanceProjection {
   if (scope.profile === "github-repository") {
     validateGitHubRepositoryGrant(scope);
-    issueBody = JSON.stringify({
-      repository_ids: [...scope.repositories]
-        .map((r) => numericId(r.repositoryId))
-        .sort((a, b) => a - b),
-      permissions: scope.permissions,
-    });
-  } else if (scope.profile === "github-installation") {
+    return {
+      kind: "selected",
+      repositories: scope.repositories
+        .map((r) => ({
+          id: numericId(r.repositoryId),
+          name: r.repository,
+        }))
+        .sort((a, b) => a.id - b.id),
+      permissions: { ...scope.permissions },
+    };
+  }
+  if (scope.profile === "github-installation") {
     // Reject a mixed persisted grant instead of silently dropping its narrowing constraints.
     const fields = ["id", "isolationId", "appId", "installationId", "profile"];
     if (
@@ -53,23 +58,49 @@ export function prepareProviderScope(origin: string, scope: ProviderIssuanceScop
       throw new Error("invalid-provider-scope");
     }
     numericId(scope.appId);
-    issueBody = "{}";
-  } else {
-    issueBody = JSON.stringify({
-      repository_ids: [numericId(scope.repositoryId)],
-      permissions: permissionsForProfile(scope.profile),
-    });
+    return { kind: "inherited" };
   }
-  const ref = Object.freeze({}) as ProviderScope;
+  const id = numericId(scope.repositoryId);
+  const permissions = permissionsForProfile(scope.profile);
+  return {
+    kind: "selected",
+    repositories: [{ id, name: scope.repository }],
+    permissions,
+  };
+}
+
+export function prepareProviderScope(
+  origin: string,
+  scope: GitHubPreparationAdmission["grant"],
+): ProviderScope {
+  const url = new URL(origin);
+  if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password) {
+    throw new Error("invalid-provider-origin");
+  }
+  const installationId = numericId(scope.installationId);
+  const projection = projectIssuanceScope(scope);
+  if (projection.kind === "selected") {
+    projection.repositories.forEach(Object.freeze);
+    Object.freeze(projection.repositories);
+    Object.freeze(projection.permissions);
+  }
+  const prepared = Object.freeze(projection) as ProviderScope;
+  const issueBody =
+    projection.kind === "inherited"
+      ? "{}"
+      : JSON.stringify({
+          repository_ids: projection.repositories.map((r) => r.id),
+          permissions: projection.permissions,
+        });
   scopes.set(
-    ref,
+    prepared,
     Object.freeze({
       origin,
       issuePath: `/app/installations/${installationId}/access_tokens`,
       issueBody,
     }),
   );
-  return ref;
+  return prepared;
 }
 
 export function providerRequestOptions(

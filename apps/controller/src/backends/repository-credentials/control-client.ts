@@ -5,6 +5,7 @@ import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/con
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
   hasControlCharacter,
+  isValidGitClientConnection,
   normalizePushRefAllowlist,
 } from "../../drivers/repo/access/client-contracts.ts";
 import type {
@@ -128,15 +129,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const origin = new URL(fields.gatewayOrigin);
   const remote = new URL(fields.gitRemote);
   if (
-    origin.protocol !== "https:" ||
-    origin.origin !== fields.gatewayOrigin ||
-    origin.username ||
-    origin.password ||
-    remote.origin !== origin.origin ||
-    remote.username ||
-    remote.password ||
-    remote.search ||
-    remote.hash ||
+    !isValidGitClientConnection(origin, remote, fields) ||
     fields.apiHost !== origin.hostname ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(fields.canonicalApiHost) ||
     !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(fields.repository) ||

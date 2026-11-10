@@ -110,9 +110,8 @@ image** with `node scripts/migrate-production.mjs --check` against the retained
 database, with its migrator credential and required CA. The Kubernetes
 [maintenance procedure](auth-maintenance.md#run-the-command) supplies these: set
 `CONTROLLER_IMAGE` and args `["scripts/migrate-production.mjs","--check"]`.
-Retain exit-zero `migration.checked` output; follow [migration history](../../reference/settings/operations.md#migration-history).
-After checking the Job outcome, use `--resume --migration-history-checked`.
-This attestation does not run the check. The helper returns OCC to zero replicas
+Retain exit-zero `migration.checked` output. [Separate migrations](separate-database-upgrade.md) require `--require-current`.
+Attest the checked outcome with `--resume --migration-history-checked`. The helper returns OCC to zero replicas
 and records the next expected revision before retrying. Prefer a reviewed forward
 fix; neither Helm rollback nor the helper reverses committed migrations.
 

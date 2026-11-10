@@ -13,7 +13,7 @@ whose selections belonged to the Codex Driver.
 
 ## Import a plugin for a dedicated OpenClaw Agent
 
-The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
+The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. Publishing requires `namespace:publish_plugins` on the target Namespace. The built-in Installation administrator Role includes this permission.
 
 1. Choose a tar or gzip-compressed tar package of up to 16 MiB. Leave the marketplace entry blank to import the plugin at the archive root, even if the archive also contains a marketplace. To import a marketplace entry, enter its exact name. If the entry points to a remote repository, upload the resolved plugin package separately.
 2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.

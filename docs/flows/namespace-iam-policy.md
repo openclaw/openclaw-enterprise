@@ -106,8 +106,8 @@ issues and revokes its keys.
 
 `packages/occ/src/index.ts:createIAMAccessBinding`
 
-Role creation accepts only nonempty, duplicate-free permissions for Namespace
-resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
+Roles require nonempty, duplicate-free Namespace resource permissions.
+The Namespace itself supports `read` and `publish_plugins`. `iamRolePermissions`
 also refuses action/kind pairs outside `SUPPORTED_PERMISSION_ACTIONS` (contracts),
 because no operation checks them, and then any `create` Permission, because `create`
 is checked on the Namespace and this API binds only exact resources
