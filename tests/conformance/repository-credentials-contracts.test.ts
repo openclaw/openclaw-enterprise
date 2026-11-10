@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
+import type {
+  Denied,
+  RequestHead,
+  RequestPlan,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
@@ -12,15 +18,60 @@ import {
   writeSessionClientConfiguration,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import {
-  requestHead as head,
+  requestHead,
   issueResponse,
   pullResponse,
 } from "../fixtures/repository-credentials/builders.mjs";
 import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/access/prepared-draft-pull.ts";
 
+function head(
+  method: string,
+  rawTarget: string,
+  headers: Record<string, string> = {},
+): RequestHead {
+  const value: unknown = requestHead(method, rawTarget, headers);
+  assertRequestHead(value);
+  return value;
+}
+
+function assertRequestHead(value: unknown): asserts value is RequestHead {
+  const request = jsonObject(value);
+  assert.equal(typeof request.method, "string");
+  assert.equal(typeof request.rawTarget, "string");
+  assert.ok(
+    Object.values(jsonObject(request.headers)).every((header) => typeof header === "string"),
+  );
+  assert.equal(typeof request.receivedMonoMs, "number");
+  assert.equal(request.contentEncoding, "identity");
+  const framing = jsonObject(request.framing);
+  assert.equal(framing.kind, "none");
+  assert.equal(framing.bytes, undefined);
+}
+
+function admitted(plan: RequestPlan | Denied): RequestPlan {
+  assert.ok(!("kind" in plan));
+  return plan;
+}
+
+function denied(plan: RequestPlan | Denied): Denied {
+  assert.ok("kind" in plan);
+  return plan;
+}
+
+function rewrite(plan: RequestPlan, value: JsonValue): JsonValue {
+  const rewriteJson = plan.responsePolicy.rewriteJson;
+  assert.ok(rewriteJson);
+  return rewriteJson(value);
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
 test("development token Driver admits exact REST methods, read-only GraphQL and configured Git routes", async (t) => {
   const { factory, bind } = await createGitHubPlanningFixture(t);
-  const routes = [
+  const routes: [string, string[]][] = [
     ["/repos/fixture/repository", ["GET"]],
     ["/repos/fixture/repository/pulls", ["GET", "POST"]],
     ["/repos/fixture/repository/pulls/1", ["GET", "PATCH"]],
@@ -55,7 +106,7 @@ test("development token Driver admits exact REST methods, read-only GraphQL and 
     { profile: "git-write", service: "receive", admitted: true },
     { profile: "git-full", service: "upload", admitted: true },
     { profile: "git-full", service: "receive", admitted: true },
-  ];
+  ] as const;
   for (const { profile, service, admitted } of gitScenarios) {
     await t.test(`${profile} ${service}-pack discovery and RPC`, () => {
       const git = bind(profile);
@@ -80,11 +131,10 @@ test("development token Driver admits exact REST methods, read-only GraphQL and 
       }
     });
   }
-  for (const profile of ["git-read", "git-write"]) {
+  for (const profile of ["git-read", "git-write"] as const) {
     for (const request of [head("GET", "/repos/fixture/repository")]) {
       await t.test(`${profile} admits ${request.method} ${request.rawTarget}`, () => {
-        const plan = bind(profile).plan(request);
-        assert.equal(plan.kind, undefined);
+        const plan = admitted(bind(profile).plan(request));
         assert.equal(plan.effect, request.method === "GET" ? "read" : "write");
       });
     }
@@ -102,7 +152,7 @@ test("development token Driver admits exact REST methods, read-only GraphQL and 
     },
   ]) {
     await t.test(`denies ${name}`, () => {
-      assert.equal(bind().plan(head("GET", rawTarget)).kind, "denied");
+      assert.equal(denied(bind().plan(head("GET", rawTarget))).kind, "denied");
     });
   }
 });
@@ -111,20 +161,20 @@ test("pinned gh JSON media profile is admitted and REST headers are normalized",
   const bound = bind();
   const accept =
     "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview";
-  const plan = bound.plan(
-    head("POST", "/graphql", {
-      accept,
-      "content-type": "application/json; charset=utf-8",
-      "graphql-features": "merge_queue",
-    }),
+  const plan = admitted(
+    bound.plan(
+      head("POST", "/graphql", {
+        accept,
+        "content-type": "application/json; charset=utf-8",
+        "graphql-features": "merge_queue",
+      }),
+    ),
   );
-  assert.equal(plan.kind, undefined);
   assert.equal(plan.effect, "write");
   assert.equal(plan.requestHeaders.accept, accept);
   assert.equal(plan.requestHeaders["content-type"], "application/json");
   assert.equal(plan.requestHeaders["graphql-features"], "merge_queue");
-  const readme = bound.plan(head("GET", "/repos/fixture/repository/readme", { accept }));
-  assert.equal(readme.kind, undefined);
+  const readme = admitted(bound.plan(head("GET", "/repos/fixture/repository/readme", { accept })));
   assert.equal(readme.requestHeaders.accept, "application/vnd.github+json");
   assert.equal(readme.responsePolicy.body, "bounded-json");
   for (const { name, path, headers, method = "POST" } of [
@@ -163,7 +213,7 @@ test("pinned gh JSON media profile is admitted and REST headers are normalized",
     },
   ]) {
     await t.test(`denies ${name}`, () => {
-      assert.equal(bind().plan(head(method, path, headers)).kind, "denied");
+      assert.equal(denied(bind().plan(head(method, path, headers))).kind, "denied");
     });
   }
 });
@@ -173,7 +223,7 @@ test("REST issue and PR responses preserve informational URLs on reads and succe
   for (const [resource, buildResponse] of [
     ["issues", issueResponse],
     ["pulls", pullResponse],
-  ]) {
+  ] as const) {
     const scenarios = [
       { name: "read item", method: "GET", path: `${resource}/1`, status: 200, list: false },
       { name: "list items", method: "GET", path: resource, status: 200, list: true },
@@ -182,8 +232,8 @@ test("REST issue and PR responses preserve informational URLs on reads and succe
     ];
     for (const scenario of scenarios) {
       await t.test(`${resource}: ${scenario.name} preserves informational links`, () => {
-        const plan = bind().plan(
-          head(scenario.method, `/repos/fixture/repository/${scenario.path}`),
+        const plan = admitted(
+          bind().plan(head(scenario.method, `/repos/fixture/repository/${scenario.path}`)),
         );
         const input = buildResponse();
         const expected = {
@@ -191,10 +241,15 @@ test("REST issue and PR responses preserve informational URLs on reads and succe
           url: `${gateway}/${resource}/1`,
           comments_url: `${gateway}/issues/1/comments`,
           ...(resource === "issues"
-            ? { pull_request: { ...input.pull_request, url: `${gateway}/pulls/1` } }
+            ? {
+                pull_request: {
+                  ...jsonObject(jsonObject(input).pull_request),
+                  url: `${gateway}/pulls/1`,
+                },
+              }
             : { issue_url: `${gateway}/issues/1` }),
         };
-        const output = plan.responsePolicy.rewriteJson(scenario.list ? [input] : input);
+        const output = rewrite(plan, scenario.list ? [input] : input);
         assert.deepEqual(JSON.parse(JSON.stringify(output)), scenario.list ? [expected] : expected);
         const headers = { "content-type": "application/json" };
         assert.deepEqual(plan.responsePolicy.headers(scenario.status, headers), headers);
@@ -203,7 +258,10 @@ test("REST issue and PR responses preserve informational URLs on reads and succe
   }
   for (const path of ["labels/bug", "milestones/1", "pulls/1/comments", "pulls/1/commits"]) {
     await t.test(`informational ${path} remains unfollowable`, () => {
-      assert.equal(bind().plan(head("GET", `/repos/fixture/repository/${path}`)).kind, "denied");
+      assert.equal(
+        denied(bind().plan(head("GET", `/repos/fixture/repository/${path}`))).kind,
+        "denied",
+      );
     });
   }
 });
@@ -267,10 +325,9 @@ test("repository responses omit cloning credentials at repository locations with
   ]) {
     await t.test(name, () => {
       const original = structuredClone(input);
-      const plan = bind().plan(head(method, `/repos/fixture/repository${path}`));
-      assert.equal(plan.kind, undefined);
+      const plan = admitted(bind().plan(head(method, `/repos/fixture/repository${path}`)));
       // Exercise the selected backend policy and the JSON boundary, not a replacement sanitizer.
-      const serialized = JSON.stringify(plan.responsePolicy.rewriteJson(input));
+      const serialized = JSON.stringify(rewrite(plan, input));
       assert.deepEqual(JSON.parse(serialized), expected);
       assert.doesNotMatch(serialized, /synthetic-[a-z]+-cloning-credential/);
       assert.deepEqual(input, original);
@@ -281,7 +338,7 @@ test("repository responses omit cloning credentials at repository locations with
 test("followed JSON links validate field purpose while GraphQL human URLs remain intact", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
-  const planFor = (method, path) => bound.plan(head(method, path));
+  const planFor = (method: string, path: string) => admitted(bound.plan(head(method, path)));
   const issue = planFor("GET", "/repos/fixture/repository/issues/1");
   for (const { name, url } of [
     { name: "foreign origin", url: "https://other.example/steal" },
@@ -297,12 +354,12 @@ test("followed JSON links validate field purpose while GraphQL human URLs remain
     },
   ]) {
     await t.test(`rejects ${name}`, () => {
-      assert.throws(() => issue.responsePolicy.rewriteJson({ url }), /unsafe-upstream-url/);
+      assert.throws(() => rewrite(issue, { url }), /unsafe-upstream-url/);
     });
   }
   assert.throws(
     () =>
-      issue.responsePolicy.rewriteJson({
+      rewrite(issue, {
         comments_url: "https://api.github.com/repos/fixture/repository/issues/1",
       }),
     /unsafe-upstream-url/,
@@ -322,13 +379,14 @@ test("followed JSON links validate field purpose while GraphQL human URLs remain
       },
     },
   };
-  assert.deepEqual(planFor("POST", "/graphql").responsePolicy.rewriteJson(graphql), graphql);
+  assert.deepEqual(rewrite(planFor("POST", "/graphql"), graphql), graphql);
 });
 test("GraphQL input policy refuses clone credential selections hidden by JSON encoding", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
-  const { inputPolicy } = bound.plan(head("POST", "/graphql"));
-  const allows = (text) => inputPolicy(Buffer.from(text));
+  const { inputPolicy } = admitted(bound.plan(head("POST", "/graphql")));
+  assert.ok(inputPolicy);
+  const allows = (text: string) => inputPolicy(Buffer.from(text));
   assert.equal(allows('{"query":"query { viewer { login } }"}'), true);
   assert.equal(
     allows('{"query":"query($q: String!) { viewer { login } }","variables":{"q":"\\""}}'),
@@ -343,14 +401,17 @@ test("GraphQL input policy refuses clone credential selections hidden by JSON en
   ]) {
     assert.equal(allows(text), false, text);
   }
-  assert.equal(bound.plan(head("GET", "/repos/fixture/repository")).inputPolicy, undefined);
+  assert.equal(
+    admitted(bound.plan(head("GET", "/repos/fixture/repository"))).inputPolicy,
+    undefined,
+  );
   // An empty query string cannot select another spelling of the GraphQL route.
-  assert.equal(bound.plan(head("POST", "/graphql?")).kind, "denied");
+  assert.equal(denied(bound.plan(head("POST", "/graphql?"))).kind, "denied");
 });
 test("response policy rewrites admitted machine links without changing human content or forwarding credential headers", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
-  const plan = bound.plan(head("GET", "/repos/fixture/repository/issues/1/comments"));
+  const plan = admitted(bound.plan(head("GET", "/repos/fixture/repository/issues/1/comments")));
   const link = "https://api.github.com/repos/fixture/repository/issues/1/comments?page=2";
   const headers = plan.responsePolicy.headers(200, {
     link: `<${link}>; rel="next"`,
@@ -366,15 +427,17 @@ test("response policy rewrites admitted machine links without changing human con
   assert.equal(headers["set-cookie"], undefined);
   assert.equal(headers["www-authenticate"], undefined);
   assert.equal(headers["content-length"], undefined);
-  const body = plan.responsePolicy.rewriteJson({
-    url: "https://api.github.com/repos/fixture/repository/issues/comments/1",
-    body: link,
-    html_url: "https://github.com/fixture/repository/pull/1",
-    user: { url: "https://api.github.com/users/person" },
-  });
+  const body = jsonObject(
+    rewrite(plan, {
+      url: "https://api.github.com/repos/fixture/repository/issues/comments/1",
+      body: link,
+      html_url: "https://github.com/fixture/repository/pull/1",
+      user: { url: "https://api.github.com/users/person" },
+    }),
+  );
   assert.equal(body.url, "https://credentials.example/repos/fixture/repository/issues/comments/1");
   assert.equal(body.body, link);
-  assert.equal(body.user.url, "https://api.github.com/users/person");
+  assert.equal(jsonObject(body.user).url, "https://api.github.com/users/person");
   const unsafe = { message: "unsafe-upstream-url" };
   assert.throws(() => plan.responsePolicy.headers(302, { location: link }), {
     message: "upstream-redirect",
@@ -396,16 +459,16 @@ test("response policy rewrites admitted machine links without changing human con
   assert.ok(long.length > 8192);
   assert.throws(() => plan.responsePolicy.headers(200, { link: long }), unsafe);
   // Git responses never carry pagination links, even admitted ones.
-  const git = bound.plan(head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"));
-  assert.equal(git.kind, undefined);
+  const git = admitted(
+    bound.plan(head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack")),
+  );
   assert.throws(() => git.responsePolicy.headers(200, { link: `<${link}>; rel="next"` }), unsafe);
 });
 
 test("response policy rejects 304 without a redirect location", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
-  const plan = bind().plan(head("GET", "/repos/fixture/repository/issues/1"));
+  const plan = admitted(bind().plan(head("GET", "/repos/fixture/repository/issues/1")));
   const headers = { "cache-control": "private, max-age=60" };
-  assert.equal(plan.kind, undefined);
   assert.deepEqual(plan.responsePolicy.headers(200, headers), headers);
   // Cache validation remains within the current all-3xx refusal policy.
   assert.throws(() => plan.responsePolicy.headers(304, headers), {
@@ -418,7 +481,7 @@ test("native repository-ID pagination stays bound to the configured repository a
   const bound = bind();
   const target = "/repos/fixture/repository/issues";
   const cursor = "Y3Vyc29yOnYyOjE=";
-  const plan = bound.plan(head("GET", target));
+  const plan = admitted(bound.plan(head("GET", target)));
   for (const direction of ["after", "before"]) {
     await t.test(`${direction} cursor rewrites to the admitted issue route`, () => {
       const query = `state=all&per_page=1&${direction}=${encodeURIComponent(cursor)}&page=2`;
@@ -427,13 +490,13 @@ test("native repository-ID pagination stays bound to the configured repository a
         link: `<https://api.github.com/repositories/73/issues?${query}>; rel="next"`,
       });
       assert.equal(headers.link, `<https://credentials.example${canonical}>; rel="next"`);
-      assert.equal(bound.plan(head("GET", canonical)).target, canonical);
-      assert.equal(bound.plan(head("POST", canonical)).kind, "denied");
-      assert.equal(bind("git-write").plan(head("GET", canonical)).target, canonical);
+      assert.equal(admitted(bound.plan(head("GET", canonical))).target, canonical);
+      assert.equal(denied(bound.plan(head("POST", canonical))).kind, "denied");
+      assert.equal(admitted(bind("git-write").plan(head("GET", canonical))).target, canonical);
     });
   }
   // A native ID is response metadata, never an additional caller-selected repository route.
-  assert.equal(bound.plan(head("GET", "/repositories/73/issues")).kind, "denied");
+  assert.equal(denied(bound.plan(head("GET", "/repositories/73/issues"))).kind, "denied");
   for (const { name, url } of [
     { name: "foreign repository ID", url: "https://api.github.com/repositories/74/issues?page=2" },
     { name: "repository ID prefix", url: "https://api.github.com/repositories/730/issues?page=2" },
@@ -476,8 +539,7 @@ test("response policy rejects a literal comma inside an otherwise admitted Link 
   const bound = bind();
   const target = "/repos/fixture/repository/issues?labels=bug,help&page=2";
   const encodedTarget = "/repos/fixture/repository/issues?labels=bug%2Chelp&page=2";
-  const plan = bound.plan(head("GET", target));
-  assert.equal(plan.kind, undefined);
+  const plan = admitted(bound.plan(head("GET", target)));
   assert.deepEqual(
     plan.responsePolicy.headers(200, {
       link: `<https://api.github.com${encodedTarget}>; rel="next"`,
@@ -510,25 +572,39 @@ test("gateway authentication rejects foreign attempt, result and plan objects", 
     bearer,
   );
   assert.equal(
-    factory.parseAuthentication(
-      head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"),
-      `Bearer ${bearer}`,
+    jsonObject(
+      factory.parseAuthentication(
+        head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"),
+        `Bearer ${bearer}`,
+      ),
     ).kind,
     "denied",
   );
+  // These foreign objects deliberately violate the branded contract to exercise runtime identity checks.
   await assert.rejects(
     bound.driver.acquire(
-      { id: "copy", action: "acquire", authority: bound.authority },
+      { id: "copy", action: "acquire", authority: bound.authority } as Parameters<
+        typeof bound.driver.acquire
+      >[0],
       undefined,
       1,
     ),
     /FOREIGN_ATTEMPT/,
   );
   await assert.rejects(
-    bound.driver.settle({ kind: "acquired", attemptId: "copy" }),
+    bound.driver.settle({ kind: "acquired", attemptId: "copy" } as Parameters<
+      typeof bound.driver.settle
+    >[0]),
     /foreign-outcome/,
   );
-  assert.throws(() => bound.driver.prepareAuthentication({}, {}), /invalid-credential/);
+  assert.throws(
+    () =>
+      bound.driver.prepareAuthentication(
+        {} as Parameters<typeof bound.driver.prepareAuthentication>[0],
+        {} as Parameters<typeof bound.driver.prepareAuthentication>[1],
+      ),
+    /invalid-credential/,
+  );
 });
 
 test("partial fixture cleanup retains the startup failure and releases owned material and files", async () => {
@@ -540,9 +616,11 @@ test("partial fixture cleanup retains the startup failure and releases owned mat
   resources.after(() => {
     throw cleanupFailure;
   });
-  const closed = resources.close(startupFailure);
+  const closed: unknown = resources.close(startupFailure);
+  assert.ok(closed instanceof Promise);
   assert.equal(resources.close(), closed);
   await assert.rejects(closed, (error) => {
+    assert.ok(error instanceof AggregateError);
     assert.deepEqual(error.errors, [startupFailure, cleanupFailure]);
     assert.equal(error.cause, startupFailure);
     return true;
@@ -559,13 +637,14 @@ test("a cleanup deadline is a failure and does not prevent remaining resource re
   // loaded runner; 20 ms let the removal time out too.
   const resources = createResourceScope({ cleanupTimeoutMs: 500 });
   const directory = await temporaryDirectory(resources);
-  const pendingCleanup = Promise.withResolvers();
+  const pendingCleanup = Promise.withResolvers<void>();
   resources.after(() => pendingCleanup.promise);
-  const closed = resources.close();
+  const closed: unknown = resources.close();
+  assert.ok(closed instanceof Promise);
   await assert.rejects(closed, (error) => {
     assert.ok(error instanceof AggregateError);
     assert.equal(error.errors.length, 1);
-    assert.match(error.errors[0].message, /cleanup timed out/);
+    assert.match(String(jsonObject(error.errors[0]).message), /cleanup timed out/);
     return true;
   });
   await assert.rejects(access(directory), { code: "ENOENT" });
@@ -580,53 +659,75 @@ test(
   "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const { resources, clock, tls, config, github } = await startTokenServiceScope(t);
-    const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const { service, listeners } = await startStaticTokenService(resources, {
+    const scope = await startTokenServiceScope(t);
+    const { resources, tls, github } = scope;
+    const clock = jsonObject(scope.clock);
+    const config = jsonObject(scope.config);
+    const gateway = jsonObject(config.gateway);
+    assert.ok(typeof gateway.controlSocket === "string");
+    assert.ok(github);
+    // The fixture accepts resource scopes at runtime; its JavaScript annotation names the broader test context.
+    const git = jsonObject(
+      await Reflect.apply(startGitSmartHttpFixture, undefined, [
+        resources,
+        { authorize: github.authorize, tls },
+      ]),
+    );
+    assert.ok(typeof git.origin === "string");
+    const started = await startStaticTokenService(resources, {
       config,
       clock,
       tls,
       github,
       gitOrigin: git.origin,
     });
+    const { service } = started;
+    const address = jsonObject(jsonObject(started.listeners).address);
+    assert.ok(typeof address.port === "number");
+    const port = address.port;
     const opened = service.open({ durationSeconds: 86400, profile: "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {
       opened,
       ca: tls.ca,
     });
     // Dial the owned loopback listener while retaining the public authority and TLS validation.
-    const response = await new Promise((resolve, reject) => {
-      const outgoing = request(
-        {
-          hostname: "127.0.0.1",
-          port: listeners.address.port,
-          path: "/repos/fixture/repository",
-          ca: tls.ca,
-          headers: { host: "credentials.example.test", authorization: `Bearer ${opened.bearer}` },
-          agent: false,
-        },
-        (incoming) => {
-          const chunks = [];
-          incoming.on("data", (chunk) => chunks.push(chunk));
-          incoming.once("error", reject);
-          incoming.once("end", () =>
-            resolve({ status: incoming.statusCode, body: Buffer.concat(chunks) }),
-          );
-        },
-      );
-      outgoing.setTimeout(3000, () => outgoing.destroy(new Error("fixture request timeout")));
-      outgoing.once("error", reject);
-      outgoing.end();
-    });
+    const response = await new Promise<{ status: number | undefined; body: Buffer }>(
+      (resolve, reject) => {
+        const outgoing = request(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: "/repos/fixture/repository",
+            ca: tls.ca,
+            headers: { host: "credentials.example.test", authorization: `Bearer ${opened.bearer}` },
+            agent: false,
+          },
+          (incoming) => {
+            const chunks: Buffer[] = [];
+            incoming.on("data", (chunk: unknown) => {
+              assert.ok(Buffer.isBuffer(chunk));
+              chunks.push(chunk);
+            });
+            incoming.once("error", reject);
+            incoming.once("end", () =>
+              resolve({ status: incoming.statusCode, body: Buffer.concat(chunks) }),
+            );
+          },
+        );
+        outgoing.setTimeout(3000, () => outgoing.destroy(new Error("fixture request timeout")));
+        outgoing.once("error", reject);
+        outgoing.end();
+      },
+    );
     assert.equal(response.status, 200);
-    assert.equal(JSON.parse(response.body).full_name, "fixture/repository");
+    assert.equal(jsonObject(JSON.parse(response.body.toString())).full_name, "fixture/repository");
     assert.equal(github.issuesOfTokens.length, 0);
     await resources.close();
-    assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
-    assert.equal(github.tokenState()[0].revoked, false);
+    assert.equal(service.status(opened.session.sessionId)?.state, "DISPOSED");
+    assert.equal(github.tokenState()[0]?.revoked, false);
     assert.deepEqual(github.errors, []);
     await assert.rejects(access(clientDirectory), { code: "ENOENT" });
-    await assert.rejects(access(config.gateway.controlSocket), { code: "ENOENT" });
+    await assert.rejects(access(gateway.controlSocket), { code: "ENOENT" });
   },
 );
 
@@ -641,8 +742,8 @@ test("a prepared draft keeps GitHub's spelling of the repository and still reads
     head: "review/task",
     base: "main",
   };
-  const side = (ref) => ({ repositoryId: "42", ref, sha: "a".repeat(40) });
-  const projection = (url, number = 8) => ({
+  const side = (ref: string) => ({ repositoryId: "42", ref, sha: "a".repeat(40) });
+  const projection = (url: string, number = 8): Parameters<typeof validateDraftProjection>[0] => ({
     id: "9001",
     number,
     url,
@@ -672,7 +773,7 @@ test("a prepared draft keeps GitHub's spelling of the repository and still reads
     ["another host", "https://github.org/Acme/Kit/pull/8"],
     ["plain HTTP", "http://github.com/Acme/Kit/pull/8"],
     ["a non-ASCII letter that folds to ASCII", "https://github.com/acme/\u212Ait/pull/8"],
-  ]) {
+  ] as const) {
     await t.test(`refuses ${name}`, () => {
       assert.throws(
         () => validateDraftProjection(projection(url, number), target),
