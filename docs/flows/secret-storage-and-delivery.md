@@ -149,18 +149,16 @@ execution topology.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
-The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up` installation.
-Before Kubernetes or OCC API calls, it requires the current v3 development marker
-and state from the same checkout.
-The state must select Kubernetes Compute and record the canonical HTTPS Console
-origin, browser port, and Agent domain for its cluster. These browser settings
-are required with either Sandbox Driver; `--control-ui` still requires OpenShell.
-API requests use the recorded loopback HTTP endpoint. The default `sandboxDriver: "none"`
-path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
-`scripts/first-agent.ts:loadLocalInstallation` uses the recorded Unix socket and
-removes inherited Docker TLS settings for container-engine calls. Compose setup
-queries the recorded controller port and PostgreSQL service without another
-daemon's certificates.
+The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up`
+installation. Before Kubernetes or OCC calls, it requires same-checkout v3
+Kubernetes development state and marker. Both Sandbox Drivers require the
+recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.
+API requests use the recorded loopback HTTP endpoint. `sandboxDriver: "none"`
+uses embedded OpenClaw; OpenShell requires `--harness codex`, and `--control-ui`
+requires OpenShell.
+`scripts/first-agent.ts:loadLocalInstallation` selects the recorded Unix socket
+and removes inherited Docker TLS settings. Compose queries the recorded
+controller port and PostgreSQL service without another daemon's certificates.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -190,37 +188,32 @@ without replacing the original action error. A crash can leave a lock that needs
 The helper closes the temporary record before renaming and removes a failed
 temporary output without replacing the previous record.
 
-The tool provisions runtime credentials and requests deployment through
-OCC. A rerun follows a newer revision from a later deploy, after the same
-drift check. If the Agent is stopped, it fails at once and prints the
-`occ agent deploy` command. The check requires the local OpenShell profile's
-Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
-`sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
-or PAT sources. It can recognize a prior PAT Agent revision frozen with
-`workspace-write`; a new deployment uses the current policy. Other workspace or
-Configuration differences fail the drift check. Once OCC selects the version,
-[`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
-tenant namespace through `openclaw.dev/namespace`. The supported local setup is
-single-cluster, so embedded and dedicated Gateways share that physical namespace
-with the provider-owned Harness. The verifier requires the exact Agent labels,
-Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. It requires the OpenAI key in the Gateway container only for embedded
-OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
-local helper does not infer physical placement from the Agent execution mode.
+The tool provisions runtime credentials and requests deployment through OCC.
+Reruns follow newer revisions after drift checks. A stopped Agent fails immediately
+with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
+`/sandbox/enterprise` workspace and frozen Codex policy: `sandbox: "danger-full-access"`
+and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
+with `workspace-write` are recognized; new deployments use current policy.
+Other workspace or Configuration differences fail drift checks.
+After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.mjs)
+resolves `openclaw.dev/namespace`. This single-cluster helper places embedded and
+dedicated Gateways beside the provider-owned Harness. It requires exact Agent
+labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
+sending the prompt. Embedded OpenClaw requires the key in the Gateway container;
+dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
+belongs to Kubernetes Compute; this helper never infers placement from execution mode.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
 when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
-After a model failure, the CLI prints the original error before a bounded
-[diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from the existing
-revision-scoped runtime status and log API. The API resolves both Kubernetes and
-OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
-and restart count; changed identities suppress log attribution. It prints container
-state, admitted startup event fields, and fixed classifications of known Codex
-connection failures, fallback and retry messages. It never forwards free-form log
-text or provider bodies. Collection is limited to ten seconds, 64 KiB per response,
-and two container streams per role. Same-stream history gaps retain valid
-observations and mark the sample incomplete. Unavailable or incomplete evidence
-does not change the original failure; startup observations do not establish the
-failed request's cause.
+After a model failure, the CLI prints the original error, then a
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from revision-scoped
+runtime status and logs. The API resolves Kubernetes and OpenShell Harness
+ownership. Changed Gateway Pod UID or restart count suppresses log attribution.
+Output includes container state, admitted startup fields, and fixed Codex connection,
+fallback and retry classifications; never free-form logs or provider bodies.
+Collection permits ten seconds, 64 KiB per response, and two container streams per
+role. Same-stream gaps retain valid observations but mark evidence incomplete.
+Missing or incomplete evidence preserves the original failure; startup observations
+do not establish the failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
