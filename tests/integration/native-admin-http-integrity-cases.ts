@@ -109,7 +109,7 @@ export function registerNativeAdminHttpIntegrityCases(
 ): void {
   test("native HTTP framing preserves bodyless requests and nominated lengths", async (t) => {
     const context = await createFixture(t, { upstream: { captureWire: true } });
-    const targetPrefix = "/namespaces/" + context.namespaceId + "/agents/" + context.agentId;
+    const targetPrefix = "/native-browser/namespaces/" + context.namespaceId + "/agents/" + context.agentId;
     const bodyless: { method: string; parsedRequests: number; body: string }[] = [];
     for (const method of ["GET", "HEAD"]) {
       const path = "/integrity-bodyless-" + method.toLowerCase();
@@ -194,6 +194,7 @@ export function registerNativeAdminHttpIntegrityCases(
     const safeHeaders = {
       "x-forwarded-for": "203.0.113.10",
       "x-occ-identity": "invented-browser-identity",
+      "x-occ-browser-key": "invented-browser-key",
       "x-openclaw-scopes": "invented-browser-scope",
       "x-safe-client-header": "integrity-preserved",
     };
@@ -253,7 +254,7 @@ export function registerNativeAdminHttpIntegrityCases(
       "the real HTTPS parser must observe the admitted request",
     );
     const expectedTarget =
-      "/namespaces/" + context.namespaceId + "/agents/" + context.agentId + path;
+      "/native-browser/namespaces/" + context.namespaceId + "/agents/" + context.agentId + path;
     const parsed = context.upstream.parsedRequests.slice(beforeParsed);
     const observed = context.upstream.requests.find((r) => r.url === expectedTarget);
     const requestLine = "GET " + expectedTarget + " HTTP/1.1\r\n";
@@ -293,12 +294,13 @@ export function registerNativeAdminHttpIntegrityCases(
     assert.equal(parsedRequest.url, expectedTarget);
     assert.equal(parsedRequest.headers["x-api-key"], context.nativeGatewayApiKey);
     assert.equal(parsedRequest.headers["x-safe-client-header"], "integrity-preserved");
+    assert.match(String(parsedRequest.headers["x-occ-identity"]), /^test:/);
+    assert.equal(parsedRequest.headers["x-occ-browser-key"], "server-browser-credential");
+    assert.equal(parsedRequest.headers["x-openclaw-scopes"], "operator.admin");
     for (const name of [
       "cookie",
       "authorization",
       "x-forwarded-for",
-      "x-occ-identity",
-      "x-openclaw-scopes",
     ]) {
       assert.equal(parsedRequest.headers[name], undefined, name + " must not reach the peer");
     }

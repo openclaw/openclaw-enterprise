@@ -24,13 +24,17 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { CredentialWithdrawalRefusedError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withNativeAdminGateway,
+} from "../helpers/harness-configuration.mjs";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
   admitRevisionHarness,
   apiKeyAuth,
   authContext,
   digest,
+  gatewayRouting,
   options,
   routedRevision,
   tenant,
@@ -1170,10 +1174,22 @@ export async function checkDedicatedModelCredentialPreparation(method: ModelCred
 }
 
 export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
-  const fixture: CredentialWorkspace = workspaceSetupFixture(embedded);
+  const fixture: CredentialWorkspace = workspaceSetupFixture(
+    embedded,
+    true,
+    undefined,
+    { gatewayRouting },
+  );
   const { driver, namespace, objects } = fixture;
   const { harnessAuth, resolvedHarnessAuth } = modelAuthBindings(fixture, "api_key");
-  const revision = { ...fixture.revision, harnessAuth };
+  const revision = {
+    ...fixture.revision,
+    harnessAuth,
+    configuration: withNativeAdminGateway(
+      fixture.revision.configuration,
+      "https://agent.example.test",
+    ),
+  };
   const context: ComputeRevisionContext = {
     ...fixture.context,
     harnessAuth: resolvedHarnessAuth,
@@ -1196,6 +1212,9 @@ export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
     "preparation projects the model credential into a per-revision Secret",
   );
   assert.ok(revisionScoped().includes(`ConfigMap:gateway-${agentDigest}-rev-${revisionDigest}`));
+  assert.ok(
+    revisionScoped().includes(`Secret:browser-delegation-${agentDigest}-${revisionDigest}`),
+  );
   await driver.stopRevision(revision);
   // A stopped revision keeps no copy of its credentials; preparing it again re-projects them.
   assert.deepEqual(revisionScoped(), []);

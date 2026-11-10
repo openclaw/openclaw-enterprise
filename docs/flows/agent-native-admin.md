@@ -16,7 +16,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
+- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayBrowserRequest` for both browser modes.
 
 ## Flow
 
@@ -55,9 +55,11 @@ graph TD
   M -->|no| N["Return unsupported with derived origin"]
   M -->|yes| CO{"Compute owner matches?"}
   CO -->|no| CF["Return 503 dependency error"]
-  CO -->|yes| EP{"Private gateway endpoint supported?"}
+  CO -->|yes| EP{"Delegated browser transport supported?"}
   EP -->|no| N
-  EP -->|yes| O["Return available Agent URL"]
+  EP -->|yes| BC["Read revision credential<br/>and derive Principal subject"]
+  BC -->|dependency failure| CF
+  BC -->|ready| O["Return available Agent URL<br/>without private headers"]
   O --> OPEN["Open Agent host directly or exchange<br/>a challenge for a host-only handle"]
   OPEN -->|HTTP| Q["Resolve host to Agent"]
   OPEN -->|WebSocket| V["OCC guards client socket during admission"]
@@ -66,7 +68,8 @@ graph TD
   R -->|no| S["Reject request; audit exact-Agent authorization denial"]
   R -->|yes| T["Resolve current version, native config and Compute owner"]
   T -->|owner mismatch| RF["Refuse before key lookup or gateway connection"]
-  T -->|matching owner| U["Strip browser credentials;<br/>proxy to private Gateway"]
+  T -->|matching owner| U["Replace browser identity and credentials;<br/>send delegated subject and scope"]
+  U --> NP["Gateway verifies delegation<br/>and resolves native profile"]
   T -->|WebSocket client reset| VB["Stop before gateway connection"]
   T -->|WebSocket client connected with matching owner and exact Origin| VC["Proxy 101 upgrade with version lease"]
   U -->|shared-cookie mode and sandbox routing enabled| W["Load separate preview origin"]
@@ -104,8 +107,19 @@ reuse its fingerprinted plan and identity. The worker creates and deploys.
 Using Local Setup browser state, the helper saves disabled Configuration generation 1,
 creates the Agent, and derives its origin. Generation 2 enables `controlUi`, pins
 origins, requires `x-openclaw-scopes`, and grants `occ-workspace-files` trusted-proxy
-`operator.admin` with device auto-approval before deployment. Identity grants supply
-admin independently of device scopes. Existing helper-owned names keep this selection.
+`operator.admin` for machine access before deployment. Delegated browser access
+does not enroll devices or issue reusable device tokens. Existing helper-owned names keep this selection.
+
+### 0b. Compute prepares delegated browser transport
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:browserDelegationCredential`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayConfiguration`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayRouteHeaderFilter`
+
+Preparation creates or reuses the revision's immutable browser Secret, mounted
+only in the Gateway. Generated configuration names its file and authority.
+`/native-browser/` preserves delegated headers; machine/node routes remove the
+credential. Retirement removes the Secret, retaining native profiles.
 
 ### 1. Console renders native admin availability
 
@@ -152,7 +166,7 @@ OCC derives the selected version's target. An administrator viewing a non-runnin
 
 The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
 
-Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
+Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Both browser modes use `getGatewayBrowserRequest` with server-owned Installation and Principal IDs, mode, and an abort signal. Missing support or an invalid private `wss:` endpoint returns `unsupported` with reason `compute`; credential failures remain dependencies. Only `available` carries `gatewayBase`, the non-secret native subject, and private transport headers. `nativeAdminAvailabilityData` omits those transport values from browser responses. There is no machine fallback.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -241,9 +255,10 @@ identity, and scope headers. Over private HTTPS it preserves surviving
 `Content-Length`; otherwise, it uses chunked framing only when inbound headers
 specify framing.
 
-Both modes use `occ-workspace-files`. Chat sets
-`x-openclaw-scopes: operator.sessions.write`, capping runtime authority alongside
-identity and device grants.
+Compute supplies the delegated human subject, revision credential, and scope.
+The Gateway resolves its native profile before access. Native roles narrow the
+delegated ceiling; static identity and device grants cannot widen it. Profile or
+credential failure refuses access instead of selecting the machine identity.
 
 The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
 same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
@@ -262,7 +277,7 @@ Before Fastify routing, the API intercepts derived-host upgrades and tracks sock
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. `closeReason` records lifecycle, revocation, dependency, client, upstream or shutdown. Admission renews every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. Reconnects authenticate the current cookie and use the selected version. Cookie replacement cannot transfer a socket to another session. Native chat does not renew the OCE session.
+The proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId` and `details.nativeAdmin.subject`. `closeReason` records lifecycle, revocation, dependency, client, upstream or shutdown. Admission renews every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. Reconnects authenticate the current cookie and use the selected version. Cookie replacement cannot transfer a socket to another session. Native chat does not renew the OCE session.
 
 `apps/controller/src/http/native-admin.ts:drainNativeAdminWork`
 
@@ -281,21 +296,18 @@ durable delivery; process exit can interrupt attempts.
 
 In shared-cookie mode with sandbox routing configured, preparation and activation render the
 Agent's stable preview origin and adjacent sandbox port in its native document.
-The worker reconciles its GET/HEAD route, public-shell SecurityPolicy and
-Agent-scoped backend ingress policy under the serving version. A separate Helm listener admits only configured ingress
-peers, and the backend targets the sandbox port instead of the admin port.
-The preview domain is outside the shared session cookie scope. Native UI still
+The worker reconciles GET/HEAD routing and SecurityPolicy under the serving
+version. The Helm listener admits configured ingress peers to the sandbox port.
+The preview domain remains outside session-cookie scope. Native UI still
 reads private file content through its authenticated connection, then delivers
 it to the runtime's isolated iframe. The sandbox listener serves public shell
 and registered renderer assets; runtime CSP and nested frame isolation remain
 responsible for executing generated content. See the [routing contract](../reference/gateway-routing.md#public-preview-routing).
 
-For opted-in Kubernetes gateways, `KubernetesComputeDriver.privateStateInitContainer`
-copies the admitted configuration from `/etc/openclaw-managed/openclaw.json` to
-`/runtime-state/home/.openclaw/openclaw.json` on the init container's writable
-volume. The gateway mounts that same home subdirectory at `/home/node`, so native
-edits remain Pod-local and the next Pod starts from the admitted configuration.
-The init container cannot write through the gateway's later mount path.
+`KubernetesComputeDriver.privateStateInitContainer` copies
+`/etc/openclaw-managed/openclaw.json` to
+`/runtime-state/home/.openclaw/openclaw.json`. The Gateway mounts that home at
+`/home/node`; native edits remain Pod-local. A new Pod restores managed configuration.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:configureNativeWorkerProfile`
 reuses only the exact generated worker profile after a container restart;
@@ -313,7 +325,7 @@ admin Configuration remains Pod-local.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - WebSocket connect and close audits share `connectionId`; close audits add a `closeReason` category from step 7.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warnings, availability, and URL opening. Integration proof covers shared-cookie admission, denied service keys and unknown hosts, assets, WebSocket leases and reconnects, and a reversible native edit.
+- [Native browser tests](../testing/native-agent-browser.md) check distinct profiles, creator/sender attribution, reconnect/regrant, retained-storage restart, and delegated scope limits through the real browser workflow. Source and passing unit checks do not establish runtime qualification.
 
 ## Related docs
 
@@ -352,6 +364,8 @@ admin Configuration remains Pod-local.
 - 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
+
+- 2026-11-10 12:28: Describe delegated profiles, revision credentials, and private browser routing in accompanying implementation. Runtime qualification pending. (authoring-run/a88e2937-bfa9-4cff-8dfd-d108048d60d6 - eff92cc67c38da5f9f4b86a839fb3ce4281a28b6)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

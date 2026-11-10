@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -25,7 +25,7 @@ per-person Gateway configuration is required.
 
 **The decision is to delegate identity and request authority to OCC while keeping
 profiles in OpenClaw.** This needs a native authentication extension and a
-Compute Driver contract change. Both remain proposed and unimplemented.
+Compute Driver contract change. The RFC is submitted; implementation is in progress and runtime qualification remains pending.
 
 ## Why the current paths are insufficient
 
@@ -155,7 +155,7 @@ session policy; this feature adds no IdP revocation deadline.
 ## Acceptance Criteria
 
 The [verification plan](../plans/0035-oidc-native-profiles.md#verification) pairs
-these requirements with real dependencies and checks; none has run for this draft.
+these requirements with real dependencies and checks. The delivery record must distinguish source checks from completed runtime proof.
 
 - **AC-1 — Stable people:** Two enrolled OIDC users open one Agent and receive
   distinct profiles and creator/sender attribution. Reconnect, email change,
@@ -183,9 +183,10 @@ roster would require permission enumeration and synchronization; wildcard
 admission plus broad device grants would weaken the admission boundary.
 
 Use the [implementation plan](../plans/0035-oidc-native-profiles.md) for the native
-extension, Compute integration, and live proof. Submit this RFC for human review
-before changing the Driver contract. Qualify the native extension before enabling
-OCE delegation. No implementation or acceptance is claimed by this proposal.
+extension, Compute integration, and live proof. This RFC was submitted for human
+review in [PR #5320](https://github.com/openclaw/openclaw-enterprise/pull/5320)
+before Driver implementation. Qualify the native extension before enabling OCE
+delegation. The proposal's status does not claim acceptance or completed runtime proof.
 
 ## Manual Notes
 

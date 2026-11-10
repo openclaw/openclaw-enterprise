@@ -234,6 +234,10 @@ install_browser_dependencies() {
     if [[ -z "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       pnpm exec playwright install --with-deps --only-shell chromium
     fi
+    if [[ -n "${OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR:-}" ]]; then
+      # Host Chrome does not install Playwright's pinned video encoder.
+      pnpm exec playwright install ffmpeg
+    fi
     if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
         echo "Selected CI browser executable is unavailable." >&2

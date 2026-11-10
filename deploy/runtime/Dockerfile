@@ -274,9 +274,14 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
     src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
+    src/gateway/server.auth.delegation.test.ts src/gateway/trusted-proxy-delegation.test.ts \
+    src/state/user-profile-delegation.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
+    src/node-host/openclaw-id-join.test.ts src/node-host/openclaw-id-transport.test.ts \
+    src/node-host/openclaw-id-enrollment.test.ts src/node-host/openclaw-id-target.test.ts \
+    src/node-host/openclaw-id-connection.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
     src/node-host/openclaw-id-join.test.ts \

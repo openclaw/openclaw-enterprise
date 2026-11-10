@@ -10,7 +10,7 @@ last_verified: "2026-11-04"
 ## Overview
 
 Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
+security and lifecycle files, local installation, and the native Agent browser workflow. Jobs use
 real dependencies on disposable installations. Results are advisory, not merge
 or publication gates.
 
@@ -26,7 +26,7 @@ or publication gates.
 | Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
 | Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                             |
 | Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                      |
-| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
+| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
@@ -358,11 +358,12 @@ For OpenClaw, inspect `matrix.json`: one `kubernetes/OpenClaw` cell with only
 Its `partial:selected` scope is intentional; missing stages or artifacts leave
 verification incomplete. Preserve the job link and attempt-specific results.
 
-| Results                                             | Where to look                                                                 |
-| --------------------------------------------------- | ----------------------------------------------------------------------------- |
-| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`              |
-| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
-| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`              |
+| Results                                             | Where to look                                                                                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`                                                                            |
+| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`)                                                               |
+| Native Agent browser                                | `qa-advisory-oidc-agent-chat-gateway-routing`; [browser media and review procedure](../native-agent-browser.md#collect-ci-browser-evidence) |
+| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`                                                                            |
 
 Startup failures report elapsed time, the 1,100,000 ms limit, and the observed
 exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
