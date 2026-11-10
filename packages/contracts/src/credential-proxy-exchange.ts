@@ -10,12 +10,61 @@ import type {
   EgressRoute,
 } from "./drivers/credential-proxy/index.ts";
 
+/** The request inspected before the sender injects any provider material. */
+export interface CredentialHttpRequest {
+  readonly target: {
+    readonly reportedScheme: "https";
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly query: string;
+    readonly method: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  readonly body: Uint8Array;
+}
+
+/** The installed sender supplies the authenticated recipient and immutable route binding. */
+export interface RequestCredentialInput {
+  readonly recipient: { readonly id: string; readonly context?: unknown };
+  readonly requestId: string;
+  readonly deadlineAt: string;
+  readonly bindingId: string;
+  readonly execution: Pick<EgressExecution, "namespaceId" | "agentId" | "revisionId">;
+  readonly http: CredentialHttpRequest;
+}
+
+/** The token transport independently authenticates the recipient redeeming this request. */
+export interface RequestCredentialGrant {
+  readonly recipientId: string;
+  readonly requestId: string;
+  readonly bindingId: string;
+  readonly deadlineAt: string;
+}
+
+/** Ephemeral material for one approved request; usableUntil does not expire the provider key. */
+export interface RequestCredentialMaterial {
+  readonly value: string;
+  readonly version: string;
+  readonly usableUntil: string;
+}
+
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;
 }
 
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
+  /** Online authorization is distinct from the strict dispatch/response exchange below. */
+  authorizeRequestCredential?(
+    request: RequestCredentialInput,
+    signal: AbortSignal,
+  ): Promise<"credential" | undefined>;
+  /** Consume the exact request, binding and authenticated recipient approval once. */
+  resolveRequestCredential?(
+    grant: RequestCredentialGrant,
+    signal: AbortSignal,
+  ): Promise<RequestCredentialMaterial | undefined>;
   resolve(
     authorization: string,
     sandboxId: string,

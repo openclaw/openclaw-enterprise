@@ -64,6 +64,30 @@ revocation or expiry at GitHub are separate events. See the
 
 In the [withdrawal example](../../../tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and bypass checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
 
+## Online model request boundary
+
+The explicit [online model profile](../drivers/credential-proxy.md#online-model-requests)
+keeps the OpenAI key outside the guest. The supervisor sends the captured request
+to OCC, then redeems a single-use approval with its SPIFFE JWT-SVID. OCC checks
+the current model grant, revision, installation and Secret version before
+release. The approved request ID and binding are correlated with the SVID's
+Sandbox identity; they are not themselves SVID claims.
+
+The Workload API socket and registration must belong only to the trusted
+supervisor. Verify that the guest cannot access them or obtain the same identity.
+The request middleware uses the existing Gateway-signed extension identity;
+this is a separate authentication check from token redemption. The Driver also
+requires mandatory middleware, an exact provider/token endpoint, zero credential
+caching, and no overlapping direct model route.
+
+Withdrawal before redemption prevents release even when approval already
+exists. A request whose credential was released earlier may finish. A key copied
+on the trusted side remains usable until the provider expires or revokes it;
+the short token-grant lease does not expire the key. This profile does not hold
+or filter the full response. Verify the actual installed Codex HTTPS/SSE path
+and these identity and network boundaries before treating the deployment as
+qualified. See the [operator checks](../../guides/credential-proxy/model-requests.md#verify-the-installed-path).
+
 ## Who remains trusted?
 
 - **OCC and the provider adapter** decide which operation a sender may perform and which bytes it may return. The sender sees the usable credential header and the full provider response.

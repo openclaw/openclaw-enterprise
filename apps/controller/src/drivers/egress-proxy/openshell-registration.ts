@@ -1,3 +1,4 @@
+import type { OpenShellTokenGrantConfiguration } from "./openshell-token-grant.ts";
 import type {
   Backend,
   CredentialProxyDriver,
@@ -37,6 +38,7 @@ export function createOpenShellCapabilities(input: {
     readonly id: string;
     readonly configuration: OpenShellProxyOptions;
     readonly exchangeAuthority?: EgressAuthorityConfiguration;
+    readonly tokenGrant?: OpenShellTokenGrantConfiguration;
     readonly preparedProviders: readonly CredentialProviderDefinition[];
   };
 }) {
@@ -68,6 +70,7 @@ export function createOpenShellCapabilities(input: {
       sandbox,
       preparedProviders: input.proxy.preparedProviders,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
+      ...(input.proxy.tokenGrant && { tokenGrant: input.proxy.tokenGrant }),
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),

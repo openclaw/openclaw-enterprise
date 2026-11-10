@@ -34,6 +34,8 @@ export async function installEgressAuthority(
       const proxy = controller.createCredentialProxy(exchangeOwner);
       // Return only the transport contract, not the controller or the proxy's internal ports.
       return Object.freeze({
+        authorizeRequestCredential: proxy.authorizeRequestCredential.bind(proxy),
+        resolveRequestCredential: proxy.resolveRequestCredential.bind(proxy),
         resolve: proxy.resolve.bind(proxy),
         authorizeSend: proxy.authorizeSend.bind(proxy),
         beginResponse: proxy.beginResponse.bind(proxy),

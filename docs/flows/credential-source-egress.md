@@ -1,16 +1,17 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-06
-last_updated_session: authoring-run/96255fab-cb34-45d9-b940-d3055029e29f
+updated: 2026-11-10
+last_updated_session: authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
-(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
-and [threat model](../reference/security/credential-proxy.md).
+The supervisor holds a GitHub identity reply until OpenClaw Control Plane (OCC)
+permits release.
+[Online model requests](credential-source-egress/model-requests.md) use a separate
+approval and credential-release flow.
 
 ## Entry Points
 
@@ -312,9 +313,8 @@ verifies the original fence, recipient, material, policy and request without rea
 
 ## Debugging and Verification
 
-Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
-response custody and NetworkPolicy on the selected deployment. Observe origin and
-caller independently.
+[Qualify the installed transport](../testing/static-egress.md), observing origin
+and caller independently.
 
 ## Related docs
 
@@ -330,6 +330,8 @@ caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-10 02:54: Link the separate online model request flow. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
 
 - 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
 

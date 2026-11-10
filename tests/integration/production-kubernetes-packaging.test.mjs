@@ -6812,6 +6812,79 @@ test(
       await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
     }
 
+    // Token redemption shares the selected callers and TLS identity; its trust bundle is API-only.
+    const tokenValues = {
+      ...protectedValues,
+      "egressAuthority.tokenGrant.enabled": "true",
+      "egressAuthority.tokenGrant.bundleConfigMapName": "supervisor-jwt-bundle",
+    };
+    const tokenObjects = await resources((await render(tokenValues, { isUpgrade: true })).stdout);
+    const tokenService = tokenObjects.find(
+      ({ kind, metadata }) => kind === "Service" && metadata.name === service.metadata.name,
+    );
+    assert.deepEqual(tokenService.spec.ports, [
+      ...service.spec.ports,
+      { name: "token-grant", port: 9445, targetPort: "token-grant" },
+    ]);
+    const tokenIngress = tokenObjects.find(
+      ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === ingress.metadata.name,
+    );
+    assert.deepEqual(tokenIngress.spec.ingress, [
+      {
+        ...ingress.spec.ingress[0],
+        ports: [
+          { protocol: "TCP", port: 9444 },
+          { protocol: "TCP", port: 9445 },
+        ],
+      },
+    ]);
+    for (const object of tokenObjects.filter(
+      ({ kind }) => kind === "Deployment" || kind === "Job",
+    )) {
+      const pod = object.spec.template.spec;
+      const api = object.metadata.name === "openclaw-enterprise-api";
+      const volume = pod.volumes?.find(({ name }) => name === "token-grant-bundle");
+      assert.equal(Boolean(volume), api);
+      if (api) {
+        assert.deepEqual(volume.configMap, {
+          name: "supervisor-jwt-bundle",
+          items: [{ key: "bundle.json", path: "bundle.json" }],
+        });
+        const container = pod.containers.find(({ name }) => name === "api");
+        assert.deepEqual(
+          container.volumeMounts.find(({ name }) => name === "token-grant-bundle"),
+          {
+            name: "token-grant-bundle",
+            mountPath: "/etc/openclaw/egress/token-grant",
+            readOnly: true,
+          },
+        );
+        assert.ok(
+          container.ports.some(
+            ({ name, containerPort }) => name === "token-grant" && containerPort === 9445,
+          ),
+        );
+      }
+      // The upgrade preflight and both processes must receive the same chart listener expectation.
+      for (const container of [...(pod.initContainers ?? []), ...pod.containers]) {
+        const expectation = container.env?.find(({ name }) => name === "OCC_TOKEN_GRANT_PORT");
+        if (["api", "worker", "installation-check"].includes(container.name)) {
+          assert.equal(expectation?.value, "9445");
+        }
+      }
+    }
+    for (const [override, diagnostic] of [
+      [{ "egressAuthority.enabled": "false" }, /tokenGrant requires egressAuthority.enabled/],
+      [{ "egressAuthority.tokenGrant.bundleConfigMapName": "" }, /bundleConfigMapName is required/],
+      [{ "egressAuthority.tokenGrant.port": "9444" }, /distinct TCP port/],
+      [{ "egressAuthority.tokenGrant.port": "8080" }, /distinct TCP port/],
+      [{ "egressAuthority.tokenGrant.port": "1023" }, /distinct TCP port/],
+      [{ "egressAuthority.tokenGrant.port": "65536" }, /TCP port/],
+      [{ "egressAuthority.tokenGrant.port": "09445" }, /TCP port without leading/],
+    ]) {
+      await assert.rejects(render({ ...tokenValues, ...override }), diagnostic);
+    }
+
     const prepared = {
       ...protectedValues,
       "preparedGitHub.custodySecretName": "prepared-github-custody",

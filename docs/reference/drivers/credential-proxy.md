@@ -32,7 +32,7 @@ these operations:
 | Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
-| `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
+| `bindExchange(createCredentialProxy)`       | API supplies a factory for `EgressExchangeOwner`; receive exchange and optional request-credential methods. Return a binding with `close()`.                            | Optional on the base interface; required to connect a request-time exchange transport.                   |
 | `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                         | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
 | `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
 | `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
@@ -80,6 +80,40 @@ observed hooks to exact dispatch. Existing v3–v6 admissions keep their semanti
 The [admission source](../../../packages/occ/src/index.ts) and
 [version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
+
+### Online model requests
+
+Source creation with `authorization: "online-request"` selects an offered
+request-authorization provider. Omission selects the strict profile; updates
+retain the original provider ID and generation. The bundled provider is
+`openai-online-request`, generation 1. It admits one dedicated Codex HTTPS
+Responses route with an explicit model and no provider-hosted tools.
+
+`ProxyPlan.authorization` preserves that selection. Admission version 8 covers
+the model route; version 9 combines it with independently authorized mandatory
+Git delivery. Neither version changes existing strict admissions. The Driver's
+optional `requestTimeCredentials` capability verifies availability and the
+current recipient before use.
+
+IAM grant revocation denies the affected path while the other authorized path
+remains usable in the same Sandbox. Version 9 does not admit `policyReduction`.
+Removing a model or Git binding follows the existing lifecycle and may stop or
+redeploy the execution; it does not promise uninterrupted use of the other path.
+
+`authorizeRequestCredential` checks the captured request and saves a nonsecret,
+single-use approval. `resolveRequestCredential` authenticates its redemption,
+consumes the approval, rechecks current authority, reads current Secret material
+twice to detect intervening rotation, and rechecks authority before release.
+The token-grant lease bounds release; it is not the API key's expiry. Required
+middleware and `cache_ttl: 0` prevent a later request from reusing that approval.
+
+The guest receives a placeholder; the supervisor injects the key. Gateway
+metadata ownership remains, without a Gateway key copy or attachment on this
+path. A request whose credential was already released may finish after
+withdrawal; an approval awaiting redemption cannot. This profile supplies
+neither exact dispatch nor response custody. Its source implementation does not
+qualify an installed runtime pair. See [setup and qualification](../../guides/credential-proxy/model-requests.md)
+and the [request flow](../../flows/credential-source-egress/model-requests.md).
 
 ## IAM
 

@@ -44,6 +44,10 @@ export type {
   CredentialProxyDriver,
 } from "./drivers/credential-proxy/index.ts";
 export type {
+  CredentialHttpRequest,
+  RequestCredentialInput,
+  RequestCredentialGrant,
+  RequestCredentialMaterial,
   CredentialProxyBinding,
   CredentialProxyExchange,
   EgressPeer,

@@ -299,6 +299,15 @@ If the installation result is unknown, `state` stays `installing`. The sender mu
 - `fence` (advances before each attempt to install a token), `state` (`observed`, `installing`, or `installed`)
 - `attempt_id`, `material_version` (identify the prepared token without storing its value here)
 
+### `request_credential_approvals`
+
+Stores one-use request credential approvals and retains consumed keys until expiry to prevent replay.
+
+- `recipient_id`, `request_id`, `binding_id`
+- `namespace_id`, `agent_id`, `revision_id`
+- `policy_digest`, `driver_ref`
+- `expires_at`, `consumed`
+
 ### `egress_send_receipts`
 
 Retains exact sender attempts and safe observations independently of final delivery proof.

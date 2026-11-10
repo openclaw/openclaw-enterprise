@@ -262,3 +262,22 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
       value === undefined ? undefined : protectedResponse(response, value, request, operation),
   });
 }
+
+/** The same bounded request policy, with online release instead of dispatch/response custody. */
+export function createOpenAiRequestProvider(): CredentialProviderDefinition {
+  const strict = createOpenAiStaticProvider();
+  return Object.freeze({
+    ...strict,
+    ref: { id: "openai-online-request", generation: 1 },
+    authorization: "online-request" as const,
+    routes(...args: Parameters<CredentialProviderDefinition["routes"]>) {
+      return strict
+        .routes(...args)
+        .filter((route) => route.path.endsWith("/responses"))
+        .map((route) => ({
+          ...route,
+          responsePolicy: { id: "online-request-no-response-custody", generation: 1 },
+        }));
+    },
+  });
+}

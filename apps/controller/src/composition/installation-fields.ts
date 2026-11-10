@@ -211,6 +211,17 @@ export const chartListeners = {
       ],
     },
   },
+  tokenGrant: {
+    path: "drivers.credential_proxy.configuration.tokenGrant",
+    chart: "egressAuthority.tokenGrant",
+    variable: "OCC_TOKEN_GRANT_PORT",
+    files: {
+      bundlePath: [
+        "/etc/openclaw/egress/token-grant/bundle.json",
+        "egressAuthority.tokenGrant.bundleConfigMapName",
+      ],
+    },
+  },
 } as const;
 
 /**
@@ -220,24 +231,16 @@ export const chartListeners = {
  * Without the chart's variable (no chart, for example a test or another packaging) there is
  * nothing to compare.
  */
-export function requireChartListener(
+export function requireChartListener<Field extends string>(
   authority:
-    | Pick<
-        EgressAuthorityConfiguration,
-        "host" | "port" | "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath"
-      >
+    | ({ readonly host: string; readonly port: number } & Readonly<Record<NoInfer<Field>, string>>)
     | undefined,
   environment: Readonly<Record<string, string | undefined>>,
   listener: {
     readonly path: string;
     readonly chart: string;
     readonly variable: string;
-    readonly files: Readonly<
-      Record<
-        "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath",
-        readonly [string, string]
-      >
-    >;
+    readonly files: Readonly<Record<Field, readonly [string, string]>>;
   },
 ): void {
   const declared = environment[listener.variable];
@@ -277,14 +280,28 @@ export function requireChartListener(
   }
   // The listener reads these files only when it starts, after a Recreate upgrade has stopped
   // the old Pod. Name only the chart's path: the configured one is the operator's layout.
-  for (const [field, [mounted, value]] of Object.entries(listener.files)) {
-    if (authority[field as keyof typeof listener.files] !== mounted) {
+  for (const field of Object.keys(listener.files) as Field[]) {
+    const [mounted, value] = listener.files[field];
+    if (authority[field] !== mounted) {
       throw new ChartListenerMismatchError(
         `${listener.path}.${field} must be ${mounted}, where the chart mounts the file from Helm ${value}.`,
         `${listener.path}.${field}`,
       );
     }
   }
+}
+
+/** The token grant listener shares the authority host and TLS identity. */
+export function requireChartTokenGrant(
+  tokenGrant: { readonly port: number; readonly bundlePath: string } | undefined,
+  authority: Pick<EgressAuthorityConfiguration, "host"> | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  requireChartListener(
+    tokenGrant && { ...tokenGrant, host: authority?.host ?? "" },
+    environment,
+    chartListeners.tokenGrant,
+  );
 }
 
 /** Compare selected Kubernetes routing with the private Gateway this chart renders. */

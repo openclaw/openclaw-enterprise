@@ -278,6 +278,18 @@ export class OpenShellEgressIdentity implements EgressExchangeOwner {
     };
   }
 
+  /** The request middleware authenticates the Sandbox without claiming an exact-dispatch exchange. */
+  credentialSandbox(authorization: string) {
+    const claims = this.claims(authorization);
+    const sandboxId = claims?.sandbox_id;
+    return claims?.caller_kind === "supervisor" &&
+      typeof sandboxId === "string" &&
+      /^[A-Za-z0-9._-]{1,256}$/.test(sandboxId) &&
+      claims.sub === `spiffe://openshell/sandbox/${sandboxId}`
+      ? { sandboxId, expiresAt: Number(claims.exp) * 1000 }
+      : undefined;
+  }
+
   /** Preliminary identity only; it cannot establish an exchange or resolve material. */
   supervisor(authorization: string): EgressPeer | undefined {
     return this.peer(this.claims(authorization));

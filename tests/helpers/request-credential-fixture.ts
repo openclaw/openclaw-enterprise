@@ -1,0 +1,267 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import type { TestContext } from "node:test";
+import type {
+  Agent,
+  Namespace,
+  SecretReference,
+  CredentialProxyDriver,
+  EgressInstallation,
+  RequestCredentialInput,
+} from "../../packages/contracts/src/index.ts";
+import {
+  InstalledDriver,
+  OpenClawController,
+  PostgresPlatformState,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import {
+  createOpenAiRequestProvider,
+  createOpenAiStaticProvider,
+} from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { staticEgressFixture } from "./static-egress.mjs";
+import { postgresApp } from "./postgres-egress-app.mjs";
+
+/** Real API/IAM/PostgreSQL/Secret Driver with controlled external runtime observation.
+ * No installed OpenShell or workload execution is represented by this fixture. */
+export async function requestCredentialFixture(t: TestContext) {
+  let owner!: InstalledDriver;
+  let state!: PlatformStateStore;
+  let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
+  let live: EgressInstallation | undefined;
+  const sandboxId = randomUUID();
+  const options = {
+    admitRevision: false,
+    driverConfigurations: [
+      {
+        capability: "sandbox" as const,
+        driverId: "request-policy-fixture",
+        implementation: "request-policy-fixture",
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+    appFactory: async (context: TestContext, options: object = {}) => {
+      const app = await postgresApp(context, { ...options, recordOperations: true });
+      state = app.state;
+      pool = app.pool;
+      return app;
+    },
+    async admitSource({
+      app,
+      agent,
+      namespace,
+      secret,
+      path,
+      origin,
+    }: {
+      app: Awaited<ReturnType<typeof postgresApp>>;
+      agent: Agent;
+      namespace: Namespace;
+      secret: { ref: SecretReference };
+      path: string;
+      origin: string;
+    }) {
+      const original = app.controller.selectedDriver("credential_proxy");
+      const sandbox = new Proxy(app.controller.selectedDriver("sandbox"), {
+        get(target, key) {
+          if (key === "id" || key === "implementation") {
+            return "request-policy-fixture";
+          }
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      // This fixture supplies only the external installation/recipient observation.
+      // Production provider classification, IAM, approval persistence and Secret reads run below.
+      const proxy: CredentialProxyDriver = {
+        id: "request-policy-fixture",
+        implementation: "request-policy-fixture",
+        capability: "credential_proxy",
+        sourceControl: {
+          ...original.sourceControl,
+          providers: [createOpenAiRequestProvider(), ...original.sourceControl.providers],
+        },
+        requestTimeCredentials: {
+          async assertAvailable(signal) {
+            assert.equal(signal.aborted, false);
+          },
+          async verifyRecipient(ns, revision, recipient) {
+            return (
+              live !== undefined &&
+              recipient.id === live.sandboxId &&
+              ns.id === live.plan.execution.namespaceId &&
+              revision.id === live.plan.execution.revisionId
+            );
+          },
+        },
+        async configureRevision(context) {
+          return { plan: context.plan, configuration: {} };
+        },
+        async wiringStatus() {
+          return live;
+        },
+        async verifyInstallation(context, installation) {
+          return (
+            isDeepStrictEqual(context.plan, live?.plan) && isDeepStrictEqual(installation, live)
+          );
+        },
+        async removeRevision() {
+          return false;
+        },
+      };
+      owner = new InstalledDriver(
+        { id: proxy.id, implementation: proxy.implementation, configuration: {} },
+        { capabilities: { sandbox, credential_proxy: proxy } },
+      );
+      app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+      const createSource = async (name: string, authorization?: "online-request") => {
+        const response = await app.request("POST", path, {
+          body: {
+            name,
+            type: "openai",
+            ...(authorization && { authorization }),
+            config: { authorized_base_url: `${origin}/v1` },
+            secrets: { api_key: secret.ref },
+          },
+        });
+        assert.equal(response.status, 201, JSON.stringify(response.body));
+        return response.data;
+      };
+      const strict = await createSource("default-remains-strict");
+      const strictSource = await state.read((unit) =>
+        unit.credentialSources.findCredentialSource(namespace.id, strict.id),
+      );
+      assert.deepEqual(
+        strictSource?.egress?.key.provider,
+        createOpenAiStaticProvider().ref,
+        "putting the online provider first must not change default admission",
+      );
+      const source = await createSource("explicit-online-model", "online-request");
+      // Updates retain the admitted provider even when the catalog presents a different profile first.
+      for (const [selected, expected] of [
+        [strict, createOpenAiStaticProvider().ref],
+        [source, createOpenAiRequestProvider().ref],
+      ] as const) {
+        const updated = await app.request("PATCH", `${path}/${selected.id}`, {
+          body: { secrets: { api_key: secret.ref } },
+        });
+        assert.equal(updated.status, 200, JSON.stringify(updated.body));
+        const stored = await state.read((unit) =>
+          unit.credentialSources.findCredentialSource(namespace.id, selected.id),
+        );
+        assert.deepEqual(stored?.egress?.key.provider, expected);
+      }
+      const result = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+        body: {
+          configurationId: agent.configurationId,
+          harnessAuth: { method: "credential_source", sourceId: source.id },
+          credentialSources: [{ sourceId: source.id }],
+        },
+      });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      return { agent: result.data, source };
+    },
+  };
+  const f = Object.assign(await staticEgressFixture(t, options), { pool });
+  assert.ok("pauseNextSecretRead" in f);
+  const deployment = await f.deployAgent(f.namespace.id, f.agent.id);
+  const revision = await state.read((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, deployment.id),
+  );
+  assert.ok(revision?.egressPlan);
+  assert.deepEqual(revision.executionAdmission, { mode: "protected", version: 8 });
+  assert.equal(revision.egressPlan.authorization, "online-request");
+  assert.equal(revision.egressPlan.routes.length, 1);
+  const route = revision.egressPlan.routes[0]!;
+  live = {
+    plan: revision.egressPlan,
+    sandboxId,
+    sender: owner.require("credential_proxy").sourceControl.sender,
+    installedAt: new Date().toISOString(),
+    enforcement: {
+      instanceId: randomUUID(),
+      configurationId: "request-policy",
+      policyHash: "a".repeat(64),
+      authorityScope: "execution",
+    },
+  };
+  await state.transact((unit) => unit.credentialSources.recordEgressInstallation(live!));
+  await f.activateRevision(f.namespace.id, f.agent.id, revision.id);
+  const transport = {
+    async verify() {
+      return undefined;
+    },
+    capture() {
+      return undefined;
+    },
+    owns() {
+      return false;
+    },
+  };
+  const exchange = f.controller.createCredentialProxy(transport);
+  const request = (): RequestCredentialInput => ({
+    requestId: randomUUID(),
+    bindingId: route.binding.binding.id,
+    recipient: { id: sandboxId },
+    deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+    execution: { namespaceId: f.namespace.id, agentId: f.agent.id, revisionId: revision.id },
+    http: {
+      target: {
+        reportedScheme: "https",
+        host: new URL(route.origin).hostname,
+        port: Number(new URL(route.origin).port || 443),
+        method: "POST",
+        path: route.path,
+        query: "",
+      },
+      headers: [["content-type", "application/json"]],
+      body: Buffer.from(JSON.stringify({ model: "fixture-model", input: "hello", store: false })),
+    },
+  });
+  const grant = (input: RequestCredentialInput) => ({
+    recipientId: input.recipient.id,
+    requestId: input.requestId,
+    bindingId: input.bindingId,
+    deadlineAt: input.deadlineAt,
+  });
+  const restartController = () => {
+    const restartedState = new PostgresPlatformState(f.pool);
+    const restarted = new OpenClawController(f.controller.installation, {
+      state: restartedState,
+      driverConfigurations: options.driverConfigurations,
+    });
+    const iam = new NativeIAMDriver(restartedState, { id: "request-restarted-iam" });
+    restarted.registerDriver(iam);
+    restarted.selectDriver("iam", iam.id);
+    for (const capability of [
+      "compute",
+      "configuration",
+      "secret",
+      "credential_gateway",
+    ] as const) {
+      const driver = f.controller.selectedDriver(capability);
+      restarted.registerDriver(driver);
+      restarted.selectDriver(capability, driver.id);
+    }
+    restarted.installDriver(owner, ["sandbox", "credential_proxy"]);
+    return restarted;
+  };
+  return {
+    f,
+    owner,
+    revision,
+    exchange,
+    request,
+    grant,
+    restartController,
+    get installation() {
+      return live!;
+    },
+    setInstallation(value: EgressInstallation) {
+      live = value;
+    },
+  };
+}

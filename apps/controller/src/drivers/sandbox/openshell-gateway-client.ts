@@ -200,6 +200,13 @@ export interface OpenShellProviderProfile {
     readonly headerName: string;
     readonly stablePlaceholder?: boolean;
     readonly refresh?: OpenShellProfileCredentialRefresh;
+    readonly tokenGrant?: {
+      readonly token_endpoint: string;
+      readonly jwt_svid_audience: string;
+      readonly audience: string;
+      readonly client_assertion_type: string;
+      readonly cache_ttl: { readonly seconds: 0; readonly nanos: 0 };
+    };
   }[];
   readonly files?: readonly {
     readonly path: string;
@@ -853,6 +860,30 @@ function stringMap(value: unknown, description: string): Readonly<Record<string,
   return Object.freeze({ ...(record as Record<string, string>) });
 }
 
+/** Keep output-only grant ownership separate from policy submitted or compared by OCC. */
+function takeTokenGrantOwners(policy: unknown): Readonly<Record<string, readonly unknown[]>> {
+  const owners: Record<string, readonly unknown[]> = {};
+  for (const [name, rule] of Object.entries(asRecord(asRecord(policy)?.network_policies) ?? {})) {
+    const endpoints = asRecord(rule)?.endpoints;
+    if (!Array.isArray(endpoints)) {
+      continue;
+    }
+    const stamps = endpoints.map((value: unknown) => {
+      const endpoint = asRecord(value);
+      if (!endpoint) {
+        return undefined;
+      }
+      const stamp = endpoint.token_grant_owner;
+      delete endpoint.token_grant_owner;
+      return stamp;
+    });
+    if (stamps.some(Boolean)) {
+      owners[name] = stamps;
+    }
+  }
+  return owners;
+}
+
 function storedProviderProfile(profile: RecordValue, id: string): OpenShellStoredProviderProfile {
   return Object.freeze({
     id,
@@ -904,6 +935,7 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       ...(credential.stablePlaceholder === undefined
         ? {}
         : { stable_placeholder: credential.stablePlaceholder }),
+      ...(credential.tokenGrant && { token_grant: credential.tokenGrant }),
       ...(credential.refresh === undefined
         ? {}
         : {
@@ -1625,12 +1657,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
-  async getSandboxConfig(workspace: string, sandbox: string, signal: AbortSignal) {
-    return this.unary(
+  async getSandboxConfig(
+    workspace: string,
+    sandbox: string,
+    signal: AbortSignal,
+  ): Promise<RecordValue> {
+    const response = await this.unary(
       "GetSandboxConfig",
       { name: sandbox, workspace_scope: { workspace } },
       signal,
     );
+    return { ...response, tokenGrantOwners: takeTokenGrantOwners(response.policy) };
   }
 
   async getSandboxPolicyStatus(
@@ -1638,11 +1675,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     sandbox: string,
     signal: AbortSignal,
   ): Promise<RecordValue> {
-    return this.unary(
+    const response = await this.unary(
       "GetSandboxPolicyStatus",
       { sandbox, workspace_scope: { workspace }, version: 0 },
       signal,
     );
+    takeTokenGrantOwners(asRecord(response.loaded_policy_observation)?.effective_policy);
+    return response;
   }
 
   async getWorkspace(

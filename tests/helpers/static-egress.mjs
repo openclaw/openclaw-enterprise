@@ -137,6 +137,7 @@ export async function staticEgressFixture(
   let runtimeNamespace;
   let secretReads = 0;
   let secretReadBarrier;
+  let nextSecretRead;
   let beforeNamespaceResponse;
   const kube = createHttpsServer({ key, cert }, async (request, response) => {
     response.setHeader("content-type", "application/json");
@@ -205,6 +206,10 @@ export async function staticEgressFixture(
       response.writeHead(request.method === "POST" ? 201 : 200).end(JSON.stringify(stored));
     } else if (request.method === "GET" && previous) {
       secretReads += 1;
+      const paused = nextSecretRead;
+      nextSecretRead = undefined;
+      paused?.reached.resolve();
+      await paused?.release.promise;
       await secretReadBarrier;
       response.end(JSON.stringify(previous));
     } else {
@@ -618,7 +623,24 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant, modelProvider };
+    return {
+      ...app,
+      namespace,
+      agent,
+      source,
+      grant,
+      modelProvider,
+      secret,
+      get secretReads() {
+        return secretReads;
+      },
+      pauseNextSecretRead() {
+        const reached = Promise.withResolvers();
+        const release = Promise.withResolvers();
+        nextSecretRead = { reached, release };
+        return { reached: reached.promise, release: () => release.resolve() };
+      },
+    };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>

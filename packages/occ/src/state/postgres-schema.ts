@@ -728,25 +728,28 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8','9')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','9'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('5','9')
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
                     WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
                       AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
-                AND
-                jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('8','9')
+                  THEN ${table.admittedSpec} #> '{execution_admission,version}' IN ('8'::jsonb,'9'::jsonb)
+                    AND occ.request_model_plan_is_valid(${table.admittedSpec}->'egress_plan')
+                  ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'authorization') END
+                AND jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
@@ -1859,6 +1862,32 @@ export const egressRejectedMaterial = occSchema.table(
       "egress_rejected_material_check",
       sql`length(${table.secretDriverId}) > 0 AND length(${table.materialId}) > 0 AND length(${table.materialVersion}) > 0`,
     ),
+  ],
+);
+
+export const requestCredentialApprovals = occSchema.table(
+  "request_credential_approvals",
+  {
+    recipientId: text("recipient_id").notNull(),
+    requestId: text("request_id").notNull(),
+    bindingId: text("binding_id").notNull(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    policyDigest: text("policy_digest").notNull(),
+    driverRef: jsonb("driver_ref").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumed: boolean("consumed").notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.recipientId, table.requestId] }),
+    foreignKey({
+      name: "request_credential_approval_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    }).onDelete("cascade"),
+    check("request_credential_approval_digest", sql`${table.policyDigest} ~ '^[a-f0-9]{64}$'`),
+    index("request_credential_approvals_expiry").on(table.expiresAt),
   ],
 );
 

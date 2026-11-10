@@ -1,3 +1,10 @@
+import {
+  openShellModelRequestPolicy,
+  verifyModelRequestPolicy,
+  verifyModelRequestProfile,
+} from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { openShellProfileEndpoint } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
@@ -215,4 +222,156 @@ test("reconciles a Workspace provider profile without replaying a failed write",
   await assert.rejects(reconcile("Unapplied profile"), /UpdateProviderProfiles did not update/);
   assert.deepEqual(calls.splice(0), ["read", "update:9", "read"]);
   assert.equal(stored?.display_name, "Concurrent matching profile");
+});
+
+test("model profile wire retains zero-cache token grants and output-only endpoint ownership", async (t) => {
+  const workspace = "model-profile-wire";
+  const name = "oce-model-" + "a".repeat(32);
+  const tokenEndpoint = "https://authority.example.test/token";
+  const profile = {
+    id: name,
+    displayName: "Request-authorized model access",
+    category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+    credentials: [
+      {
+        name: "access_token",
+        envVars: [],
+        required: false,
+        authStyle: "bearer",
+        headerName: "Authorization",
+        tokenGrant: {
+          token_endpoint: tokenEndpoint,
+          jwt_svid_audience: tokenEndpoint,
+          audience: "018f923f-f00e-744b-8001-8423f0021bc0",
+          client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+          cache_ttl: { seconds: 0, nanos: 0 },
+        },
+      },
+    ],
+    endpoints: [
+      {
+        host: "api.example.test",
+        port: 443,
+        path: "/v1/responses",
+        protocol: "rest",
+        rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+      },
+    ],
+    binaries: OPEN_SHELL_CODEX_BINARIES,
+    inferenceCapable: false,
+  } satisfies NonNullable<ReturnType<typeof openShellModelRequestPolicy>>["provider"]["profile"];
+  const expected = {
+    provider: { name, profile },
+    host: "api.example.test",
+    environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
+    registration: { name: "model-authority", audience: "model-authority", tokenEndpoint },
+    middlewares: {
+      "oce-model": {
+        name: "oce-model",
+        middleware: "model-authority",
+        on_error: "fail_closed",
+        endpoints: { include: ["api.example.test"] },
+        order: 2147483646,
+        config: {
+          fields: {
+            binding_id: { stringValue: profile.credentials[0]!.tokenGrant.audience },
+            namespace_id: { stringValue: "namespace-1" },
+            agent_id: { stringValue: "agent-1" },
+            revision_id: { stringValue: "revision-1" },
+          },
+        },
+      },
+    },
+  };
+  const ruleName = "_provider_" + name.replaceAll("-", "_");
+  let stored: Record<string, unknown> | undefined;
+  const owner = "grant-owner:v1:" + "1".repeat(64);
+  let ownerPresent = true;
+  const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+    model: name,
+    workspace,
+    sandbox: "sandbox",
+    revisionId: "revision-1",
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods: Record<string, (request: Record<string, unknown>) => unknown>) {
+      methods.ImportProviderProfiles = (request) => {
+        assert.ok(Array.isArray(request.profiles));
+        const item = request.profiles[0] as { profile: Record<string, unknown> };
+        stored = { ...item.profile, scope: "workspace", resource_version: "1" };
+        return { imported: true };
+      };
+      methods.GetProviderProfile = () => ({ profile: stored });
+      methods.GetSandboxConfig = () => ({
+        workspace,
+        policy_source: 1,
+        configuration_admitted: true,
+        policy_validation_failure_mode: "fail_closed",
+        extension_authentication_enabled: true,
+        supervisor_middleware_services: [
+          {
+            name: "model-authority",
+            audience: "model-authority",
+            grpc_endpoint: "https://authority.example.test:9443",
+            binding_policy: 2,
+            bindings: [1],
+          },
+        ],
+        policy: {
+          network_middlewares: expected.middlewares,
+          network_policies: {
+            [ruleName]: {
+              name: ruleName,
+              binaries: profile.binaries.map((path) => ({ path })),
+              endpoints: profile.endpoints.map((endpoint) => ({
+                ...openShellProfileEndpoint(endpoint),
+                provider_credentialed: true,
+                ...(ownerPresent && { token_grant_owner: owner }),
+              })),
+            },
+          },
+        },
+      });
+    },
+  });
+  const signal = AbortSignal.timeout(10000);
+  // Both request serialization and response decoding use the real gRPC client.
+  // This proves the adapter preserves upstream fields, not that an installed supervisor enforces them.
+  await client.importProviderProfile(workspace, { ...profile, annotations: {} }, signal);
+  const read = () => client.getProviderProfile(workspace, name, signal);
+  verifyModelRequestProfile(await read(), profile, workspace);
+  const credential = (stored!.credentials as { token_grant: Record<string, unknown> }[])[0]!;
+  assert.deepEqual(credential.token_grant.cache_ttl, { seconds: "0", nanos: 0 });
+  const grant = structuredClone(credential.token_grant);
+  for (const mutation of [
+    { ...grant, cache_ttl: undefined },
+    { ...grant, cache_ttl: { seconds: 1 } },
+    { ...grant, audience: "another-binding" },
+    { ...grant, token_endpoint: "https://wrong.example.test/token" },
+    { ...grant, jwt_svid_audience: "wrong-recipient" },
+  ]) {
+    credential.token_grant = mutation;
+    const observed = await read();
+    assert.throws(
+      () => verifyModelRequestProfile(observed, profile, workspace),
+      /zero-cache model token grant/,
+    );
+  }
+  credential.token_grant = grant;
+  const config = await client.getSandboxConfig(workspace, "sandbox", signal);
+  verifyModelRequestPolicy(config, expected, workspace);
+  assert.deepEqual(config.tokenGrantOwners, { [ruleName]: [owner] });
+  const policy = config.policy as {
+    network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
+  };
+  assert.equal(
+    Object.hasOwn(policy.network_policies[ruleName]!.endpoints[0]!, "token_grant_owner"),
+    false,
+  );
+  ownerPresent = false;
+  const missingOwner = await client.getSandboxConfig(workspace, "sandbox", signal);
+  assert.throws(
+    () => verifyModelRequestPolicy(missingOwner, expected, workspace),
+    /token grant provider/,
+  );
 });

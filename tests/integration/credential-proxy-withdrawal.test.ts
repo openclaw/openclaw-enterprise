@@ -1,3 +1,4 @@
+import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -5,6 +6,8 @@ import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  RequestCredentialInput,
+  ProxyPlan,
   CredentialProxyDriver,
   AcceptedEgressAssociation,
   AgentRevision,
@@ -885,3 +888,250 @@ test("Git reduction v7 preserves earlier admission meanings and rejects widening
     );
   }
 });
+
+test(
+  "online model requests redeem current material once after durable policy authorization (PostgreSQL)",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const fixture = await requestCredentialFixture(t);
+    const { f, exchange, request, grant, revision } = fixture;
+    const stored = await f.pool.query<{
+      admitted_spec: {
+        execution_admission: { mode: string; version: number };
+        egress_plan: ProxyPlan;
+        harness_auth: { protectedExecutionVersion: number };
+      };
+    }>("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id]);
+    const baseline = stored.rows[0]!.admitted_spec;
+    const plan = baseline.egress_plan;
+    // Invalid persisted profiles must fail the database constraint, even outside API validation.
+    for (const invalid of [
+      { ...baseline, egress_plan: { ...plan, authorization: undefined } },
+      {
+        ...baseline,
+        execution_admission: { mode: "protected", version: 3 },
+        harness_auth: { ...baseline.harness_auth, protectedExecutionVersion: 3 },
+      },
+      { ...baseline, egress_plan: { ...plan, routes: [] } },
+      { ...baseline, egress_plan: { ...plan, policyReductionVersion: 1 } },
+      {
+        ...baseline,
+        egress_plan: {
+          ...plan,
+          routes: [
+            ...plan.routes,
+            {
+              ...plan.routes[0]!,
+              binding: {
+                ...plan.routes[0]!.binding,
+                source: {
+                  ...plan.routes[0]!.binding.source,
+                  source: { id: `cs_${randomUUID()}`, generation: 1 },
+                },
+              },
+            },
+          ],
+        },
+      },
+    ]) {
+      const id = `rev_${randomUUID()}`;
+      const candidate = {
+        ...invalid,
+        egress_plan: {
+          ...invalid.egress_plan,
+          execution: { ...plan.execution, revisionId: id },
+          routes: invalid.egress_plan.routes.map((route) => ({
+            ...route,
+            binding: {
+              ...route.binding,
+              execution: { ...route.binding.execution, revisionId: id },
+            },
+          })),
+        },
+      };
+      await assert.rejects(
+        f.pool.query(
+          `INSERT INTO occ.agent_revisions
+        (id,namespace_id,agent_id,revision_number,backend_id,gateway_managed_mode,admitted_spec,admitted_at)
+        SELECT $2,namespace_id,agent_id,revision_number+1,backend_id,gateway_managed_mode,$3::jsonb,admitted_at
+        FROM occ.agent_revisions WHERE id=$1`,
+          [revision.id, id, JSON.stringify(candidate)],
+        ),
+        { code: "23514", constraint: "agent_revisions_execution_admission" },
+      );
+    }
+    const signal = AbortSignal.timeout(50_000);
+    const first = request();
+    assert.equal(await exchange.authorizeRequestCredential(first, signal), "credential");
+
+    // Reconstruct the controller and repository wrappers: the approval is durable, not a local map.
+    const afterRestart = fixture.restartController().createCredentialProxy({
+      async verify() {
+        return undefined;
+      },
+      capture() {
+        return undefined;
+      },
+      owns() {
+        return false;
+      },
+    });
+    const beforeRead = f.secretReads;
+    const material = await afterRestart.resolveRequestCredential(grant(first), signal);
+    assert.equal(material?.value, "synthetic-key-initial");
+    assert.ok(material?.version);
+    assert.equal(
+      f.secretReads,
+      beforeRead + 2,
+      "two authoritative reads protect held-read rotation",
+    );
+    assert.equal(await exchange.resolveRequestCredential(grant(first), signal), undefined);
+    assert.equal(
+      await exchange.authorizeRequestCredential(first, signal),
+      undefined,
+      "the consumed request remains a tombstone until expiry",
+    );
+
+    const bound = request();
+    assert.equal(await exchange.authorizeRequestCredential(bound, signal), "credential");
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), recipientId: randomUUID() },
+        signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), bindingId: randomUUID() },
+        signal,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await afterRestart.resolveRequestCredential(
+        { ...grant(bound), deadlineAt: new Date(0).toISOString() },
+        signal,
+      ),
+      undefined,
+    );
+    const concurrent = await Promise.all([
+      exchange.resolveRequestCredential(grant(bound), signal),
+      afterRestart.resolveRequestCredential(grant(bound), signal),
+    ]);
+    assert.equal(
+      concurrent.filter(Boolean).length,
+      1,
+      "independent authorities can redeem a request only once",
+    );
+
+    // Invalid request semantics and foreign identities cannot create a usable approval or read a Secret.
+    const foreign = await f.createNamespace(`request-other-${randomUUID().slice(0, 8)}`);
+    const readsBeforeDenials = f.secretReads;
+    for (const mutate of [
+      (input: RequestCredentialInput) => ({ ...input, recipient: { id: randomUUID() } }),
+      (input: RequestCredentialInput) => ({ ...input, bindingId: randomUUID() }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        execution: { ...input.execution, namespaceId: foreign.id },
+      }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        http: { ...input.http, target: { ...input.http.target, path: "/v1/chat/completions" } },
+      }),
+      (input: RequestCredentialInput) => ({
+        ...input,
+        http: {
+          ...input.http,
+          body: Buffer.from(
+            JSON.stringify({ model: "another-model", input: "hello", store: false }),
+          ),
+        },
+      }),
+    ]) {
+      const refused = mutate(request());
+      assert.equal(await exchange.authorizeRequestCredential(refused, signal), undefined);
+      assert.equal(await exchange.resolveRequestCredential(grant(refused), signal), undefined);
+    }
+    const saved = fixture.installation;
+    fixture.setInstallation({
+      ...saved,
+      enforcement: { ...saved.enforcement, policyHash: "b".repeat(64) },
+    });
+    assert.equal(
+      await exchange.authorizeRequestCredential(request(), signal),
+      undefined,
+      "a recipient that still exists cannot reuse an old installation fence",
+    );
+    fixture.setInstallation(saved);
+    assert.equal(f.secretReads, readsBeforeDenials);
+
+    // A held real Kubernetes GET contains the old version; a concurrent API update advances storage.
+    const rotating = request();
+    assert.equal(await exchange.authorizeRequestCredential(rotating, signal), "credential");
+    const barrier = f.pauseNextSecretRead();
+    t.after(() => barrier.release());
+    const resolving = exchange.resolveRequestCredential(grant(rotating), signal);
+    await barrier.reached;
+    try {
+      const update = await f.request(
+        "PATCH",
+        `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`,
+        {
+          body: { value: "synthetic-key-rotated" },
+        },
+      );
+      assert.equal(update.status, 200, JSON.stringify(update.body));
+    } finally {
+      barrier.release();
+    }
+    assert.equal(
+      await resolving,
+      undefined,
+      "rotation while the first read is held must refuse release",
+    );
+    const rotated = request();
+    assert.equal(await exchange.authorizeRequestCredential(rotated, signal), "credential");
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(rotated), signal))?.value,
+      "synthetic-key-rotated",
+    );
+
+    // Authorization is checked again after durable approval; deleting the exact grant prevents redemption.
+    const revoked = request();
+    assert.equal(await exchange.authorizeRequestCredential(revoked, signal), "credential");
+    assert.equal(
+      (await f.request("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${f.grant.id}`))
+        .status,
+      204,
+    );
+    const readsBeforeRevocation = f.secretReads;
+    assert.equal(await afterRestart.resolveRequestCredential(grant(revoked), signal), undefined);
+    assert.equal(f.secretReads, readsBeforeRevocation);
+    const restored = await f.request("POST", `/namespaces/${f.namespace.id}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: f.agent.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: f.source.id,
+      },
+    });
+    assert.equal(restored.status, 201, JSON.stringify(restored.body));
+    const withdrawn = request();
+    assert.equal(await exchange.authorizeRequestCredential(withdrawn, signal), "credential");
+    const withdrawal = await f.request(
+      "POST",
+      `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
+    );
+    assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+    assert.equal(await exchange.resolveRequestCredential(grant(withdrawn), signal), undefined);
+    assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
+    const audit = await f.pool.query(
+      "SELECT details FROM occ.audit_events WHERE actor_id = $1 AND action = 'openclaw.egress.authorize'",
+      [f.agent.servicePrincipalId],
+    );
+    assert.ok(audit.rows.some(({ details }) => details.code === "unauthorized"));
+    assert.ok(audit.rows.some(({ details }) => details.code === "stale_material"));
+  },
+);
