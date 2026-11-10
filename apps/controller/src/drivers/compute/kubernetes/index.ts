@@ -14581,7 +14581,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private async verifyPrivateInferencePeer(revision: Readonly<AgentRevision>): Promise<void> {
     const peer = revision.harness.privateInferencePeer;
-    if (!peer) return;
+    if (!peer) {
+      return;
+    }
     const provider = savedModelProvider(revision.harness.configuration);
     if (
       !provider ||
