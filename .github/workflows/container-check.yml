@@ -52,6 +52,9 @@ jobs:
             runner: ${{ vars.CONTAINER_AMD64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
           - arch: arm64
             runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}
+          - image: runtime
+            arch: arm64
+            runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -83,16 +86,63 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
       - name: Report native runner resources
+        id: resources
         env:
+          IMAGE: ${{ matrix.image }}
           PLATFORM: linux/${{ matrix.arch }}
         run: |
           node <<'NODE'
           const os = require("node:os");
+          const fs = require("node:fs");
+          const path = require("node:path");
           const arch = process.arch === "x64" ? "amd64" : process.arch;
           if (process.env.PLATFORM !== `linux/${arch}`) {
             throw new Error("Select a native Linux runner");
           }
-          console.log({arch, cpus: os.availableParallelism(), memoryBytes: os.totalmem()});
+          const cpus = os.availableParallelism();
+          const memoryBytes = Math.min(os.totalmem(), process.constrainedMemory() || os.totalmem());
+          let availableBytes = Math.min(memoryBytes, os.freemem(), process.availableMemory());
+          let buildCpus = cpus;
+          let limitsKnown = false;
+          // Include ancestor limits: a leaf cgroup can be unlimited inside a capped slice.
+          // Unknown layouts retain the existing four-job compile, without guessing capacity.
+          try {
+            const group = fs.readFileSync("/proc/self/cgroup", "utf8").trim().match(/^0::(\/[^\n]*)$/);
+            if (group) {
+              const root = "/sys/fs/cgroup";
+              const controllers = fs.readFileSync(`${root}/cgroup.controllers`, "utf8").trim().split(/\s+/);
+              if (!["cpu", "memory"].every((name) => controllers.includes(name))) {
+                throw new Error("Unknown cgroup controllers");
+              }
+              let current = path.resolve(root, `.${group[1]}`);
+              if (current !== root && !current.startsWith(`${root}/`)) {
+                throw new Error("Unsupported cgroup path");
+              }
+              while (current !== root) {
+                const quota = fs.readFileSync(`${current}/cpu.max`, "utf8").trim().match(/^(max|[1-9][0-9]*) ([1-9][0-9]*)$/);
+                if (!quota) { throw new Error("Unknown CPU limit"); }
+                if (quota[1] !== "max") { buildCpus = Math.min(buildCpus, Number(quota[1]) / Number(quota[2])); }
+                const used = Number(fs.readFileSync(`${current}/memory.current`, "utf8").trim());
+                if (!Number.isSafeInteger(used) || used < 0) { throw new Error("Unknown memory usage"); }
+                for (const name of ["memory.max", "memory.high"]) {
+                  const limit = fs.readFileSync(`${current}/${name}`, "utf8").trim();
+                  if (limit !== "max") {
+                    if (!/^[0-9]+$/.test(limit) || !Number.isSafeInteger(Number(limit))) { throw new Error("Unknown memory limit"); }
+                    availableBytes = Math.min(availableBytes, Math.max(0, Number(limit) - used));
+                  }
+                }
+                current = path.dirname(current);
+              }
+              limitsKnown = true;
+            }
+          } catch {
+            // A missing controller or unreadable limit is not evidence of spare capacity.
+          }
+          // Leave half the CPU capacity and 8 GiB beyond a 4 GiB-per-job budget.
+          const nodeBuildJobs = process.env.IMAGE === "runtime" && arch === "arm64" &&
+            limitsKnown && buildCpus >= 16 && availableBytes >= (8 * 4 + 8) * 1024 ** 3 ? 8 : 4;
+          console.log({arch, cpus, memoryBytes, buildCpus, availableBytes, limitsKnown, nodeBuildJobs});
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `node_build_jobs=${nodeBuildJobs}\n`);
           if (os.availableParallelism() < 4 || os.totalmem() < 12 * 1024 ** 3) {
             throw new Error("Container builds require at least 4 CPUs and 12 GiB RAM; select a larger runner");
           }
@@ -129,6 +179,7 @@ jobs:
           build-args: |
             ${{ steps.openclaw-source.outputs.build-args }}
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            ${{ matrix.image == 'runtime' && format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs) || '' }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           labels: |
@@ -153,6 +204,7 @@ jobs:
           build-args: |
             ${{ steps.openclaw-source.outputs.build-args }}
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            ${{ matrix.image == 'runtime' && format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs) || '' }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           labels: |

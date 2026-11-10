@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -122,4 +124,108 @@ test("publication keeps its lock across jobs and reports image success after cha
       ),
     );
   }
+});
+
+test("native runtime compilation uses spare capacity without overruling runner selection", () => {
+  const check = JSON.parse(
+    execFileSync(
+      process.env.OCC_YQ_BIN ?? "yq",
+      ["-o=json", ".", join(root, ".github/workflows/container-check.yml")],
+      { encoding: "utf8" },
+    ),
+  );
+  const prepare = check.jobs.prepare;
+  const armRuntime = prepare.strategy.matrix.include.find(
+    (row) => row.image === "runtime" && row.arch === "arm64",
+  );
+  assert.equal(
+    armRuntime.runner,
+    "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}",
+  );
+  assert.equal(
+    prepare.strategy.matrix.include.find((row) => row.arch === "arm64" && !row.image).runner,
+    "${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}",
+  );
+  const report = prepare.steps.find((step) => step.id === "resources");
+  const script = report.run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+  const GiB = 1024 ** 3;
+  // Execute the shipped reporting step against kernel/API observations. This
+  // checks admission and output wiring, not scheduler capacity or build success.
+  for (const scenario of [
+    { name: "spare ARM capacity", expected: 8 },
+    { name: "smaller override", cpus: 8, expected: 4 },
+    { name: "busy host", free: 39 * GiB, expected: 4 },
+    { name: "process memory limit", constrained: 24 * GiB, expected: 4 },
+    { name: "ancestor memory limit", max: 32 * GiB, expected: 4 },
+    { name: "ancestor memory pressure", high: 48 * GiB, used: 9 * GiB, expected: 4 },
+    { name: "ancestor CPU quota", quota: "800000 100000", expected: 4 },
+    { name: "fractional CPU quota", quota: "50000 100000", expected: 4 },
+    { name: "unknown controllers", missing: true, expected: 4 },
+    { name: "legacy cgroup", cgroup: "2:cpu:/slice/leaf", expected: 4 },
+    { name: "controller remains unchanged", image: "controller", expected: 4 },
+    { name: "AMD64 remains unchanged", arch: "x64", expected: 4 },
+  ]) {
+    const arch = scenario.arch ?? "arm64";
+    const output = [];
+    const observed = [];
+    const files = {
+      "/proc/self/cgroup": scenario.cgroup ?? "0::/slice/leaf\n",
+      "/sys/fs/cgroup/cgroup.controllers": "cpu memory",
+      "/sys/fs/cgroup/slice/leaf/cpu.max": "max 100000",
+      "/sys/fs/cgroup/slice/leaf/memory.max": "max",
+      "/sys/fs/cgroup/slice/leaf/memory.high": "max",
+      "/sys/fs/cgroup/slice/leaf/memory.current": "0",
+      "/sys/fs/cgroup/slice/cpu.max": scenario.quota ?? "max 100000",
+      "/sys/fs/cgroup/slice/memory.max": String(scenario.max ?? "max"),
+      "/sys/fs/cgroup/slice/memory.high": String(scenario.high ?? "max"),
+      "/sys/fs/cgroup/slice/memory.current": String(scenario.used ?? 0),
+    };
+    const modules = {
+      "node:path": path,
+      "node:os": {
+        availableParallelism: () => scenario.cpus ?? 16,
+        totalmem: () => 48 * GiB,
+        freemem: () => scenario.free ?? 44 * GiB,
+      },
+      "node:fs": {
+        readFileSync: (name) => {
+          if (scenario.missing || !(name in files)) {
+            throw new Error("unavailable");
+          }
+          return files[name];
+        },
+        appendFileSync: (name, value) => {
+          assert.equal(name, "output");
+          output.push(value);
+        },
+      },
+    };
+    runInNewContext(script, {
+      require: (name) => {
+        assert.ok(name in modules);
+        return modules[name];
+      },
+      process: {
+        arch,
+        env: {
+          IMAGE: scenario.image ?? "runtime",
+          PLATFORM: `linux/${arch === "x64" ? "amd64" : arch}`,
+          GITHUB_OUTPUT: "output",
+        },
+        constrainedMemory: () => scenario.constrained ?? 0,
+        availableMemory: () => 44 * GiB,
+      },
+      console: { log: (value) => observed.push(value) },
+    });
+    assert.deepEqual(output, [`node_build_jobs=${scenario.expected}\n`], scenario.name);
+    assert.equal(observed[0].nodeBuildJobs, scenario.expected, scenario.name);
+  }
+  const builds = prepare.steps.filter((step) => step.uses?.startsWith("docker/build-push-action@"));
+  assert.equal(builds.length, 2);
+  assert.equal(builds[0].with["build-args"], builds[1].with["build-args"]);
+  assert.ok(
+    builds[0].with["build-args"].includes(
+      "format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs)",
+    ),
+  );
 });

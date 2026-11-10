@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-09
-last_updated_session: authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9
+updated: 2026-11-10
+last_updated_session: authoring-run/fa776ae0-d057-4981-a158-368024f6a38f
 ---
 
 # Container publication flow
@@ -82,7 +82,10 @@ Failure blocks assembly, smoke and upload. Assembly uses the same checkout, buil
 base and platform. Local assembly can run independently of
 [local source verification](../../deploy/runtime/README.md#verify-runtime-source).
 
-Each job checks its architecture and logs actual CPU, memory and free disk.
+The `resources` step checks architecture, CPU, memory and cgroup-v2 ancestor
+limits, then logs capacity and Node compiler jobs. ARM runtime can select eight;
+unknown or smaller limits retain four. Both build stages consume that output.
+See [build settings](../release/configuration.md#build-settings) for the budget.
 Before runtime smoke, `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d,
 Helm and yq on either architecture. The standard AMD64 override requires 36 GiB free.
 Below that threshold, cleanup checks required roots and skips unsafe paths.
@@ -305,6 +308,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-10 00:50: Select ARM runtime compiler parallelism from observed capacity. (authoring-run/fa776ae0-d057-4981-a158-368024f6a38f - 13f2bf05a5c39bf01c35290583122f08ed7ae5ab)
 
 - 2026-11-09 05:23: Bind native smoke to the original OCI config with either Docker image store. (authoring-run/0cf74a54-fba6-49b1-950c-18d296f43bd9 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
