@@ -77,6 +77,37 @@ Python toolchains. Its receipt records capacity and removal duration. An explici
 selected installed browser is validated by a sandboxed launch and page evaluation;
 these jobs do not install an unused Playwright browser alongside it.
 
+## Select candidate images and charts
+
+For local preparation of the `openshell` lane, preload the candidate images
+into the selected Docker engine. Select all six inputs together:
+
+- `OCC_TEST_OPENSHELL_SOURCE_REVISION`: the full lowercase Git commit.
+- `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, and
+  `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`: named references with SHA-256 digests.
+- `OCC_TEST_OPENSHELL_HELM_CHART` and
+  `OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART`: absolute paths to
+  `deploy/helm/openshell` and `deploy/helm/openshell-workspace` in one checkout.
+
+The checkout's HEAD must match the selected commit. Both chart directories must
+contain exactly that commit's files, contents, and executable modes. Symlinks
+and added files, including ignored files, are rejected. Each image's
+`org.opencontainers.image.revision` label must match the same commit.
+These checks establish source consistency; retain the image builder's provenance
+and smoke-test receipts separately.
+
+Preflight reads the gateway chart with Helm from a temporary copy of the
+verified files. It removes that copy and rejects an incomplete or mismatched
+selection before creating cluster resources. Preparation retains verified
+copies in the run's private cluster directory for Helm and the prepared
+scenarios. Lane cleanup removes them. The prepared environment records the
+source revision and the gateway chart copy's `appVersion`. The gateway scenario
+uses that version to verify the installed StatefulSet's version label.
+Scenarios that run their own installer prepare their own inputs. Without a
+candidate selection, preparation uses the pinned release charts and images.
+A mirror reference with the same released image digest keeps this release path.
+An image with a different digest requires the complete candidate selection.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:
