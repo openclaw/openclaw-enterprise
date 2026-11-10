@@ -2559,8 +2559,15 @@ async function inspectK3dCriImage(lane, node, reference, envName) {
       continue;
     }
     const { status } = JSON.parse(result.stdout);
-    if (!status?.repoDigests?.includes(reference)) {
+    if (
+      !Array.isArray(status?.repoDigests) ||
+      !status.repoDigests.every((digest) => typeof digest === "string") ||
+      !status.repoDigests.includes(reference)
+    ) {
       throw new Error(`CRI on ${node} does not match the imported ${envName} digest.`);
+    }
+    if (status.pinned !== undefined && typeof status.pinned !== "boolean") {
+      throw new Error(`CRI on ${node} reported a malformed ${envName} image pin.`);
     }
     if (status.pinned === true) {
       return;
@@ -2805,9 +2812,17 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
   const line = listed.stdout
     .split(/\r?\n/)
     .find((entry) => entry.split(/\s+/)[0] === importReference);
-  const digest = line?.match(/sha256:[a-f0-9]{64}/i)?.[0];
-  if (!digest) {
+  const [, mediaType, digest] = line?.split(/\s+/) ?? [];
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest ?? "")) {
     throw new Error(`Unable to find imported OCI manifest digest for ${importReference}.`);
+  }
+  if (
+    ![
+      "application/vnd.oci.image.manifest.v1+json",
+      "application/vnd.docker.distribution.manifest.v2+json",
+    ].includes(mediaType)
+  ) {
+    throw new Error(`Imported ${importReference} does not identify an image manifest.`);
   }
   // Workloads use the actual imported platform manifest, not a registry index digest.
   // The approved source image remains recorded and was verified before transport.
