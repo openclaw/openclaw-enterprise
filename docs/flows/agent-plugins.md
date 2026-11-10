@@ -94,8 +94,8 @@ and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 The optional `NativeCodexPluginCatalogReader` uses stdio `plugin/list`, rejects
 invalid results and releases its pipes on teardown. On POSIX, it sends SIGTERM to
-its owned process group, then SIGKILL after one second even if the launcher exits
-first. Windows retains direct-child teardown. HTTP uses the hosted reader.
+its owned process group, then SIGKILL after one second when that group still
+exists. Windows retains direct-child teardown. HTTP uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 

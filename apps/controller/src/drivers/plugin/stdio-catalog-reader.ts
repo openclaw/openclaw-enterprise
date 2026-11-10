@@ -166,17 +166,22 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         // Own the POSIX group until escalation, even if that launcher exits first.
         if (process.platform !== "win32" && child.pid !== undefined) {
           const pid = child.pid;
-          const stopGroup = (signal: NodeJS.Signals) => {
+          const signalGroup = (name: NodeJS.Signals): string | undefined => {
             try {
-              process.kill(-pid, signal);
-            } catch {
-              // An already-exited group has nothing left to terminate.
+              process.kill(-pid, name);
+              return undefined;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code;
             }
           };
-          stopGroup("SIGTERM");
-          // Keep this timer referenced: closing pipes must not let the caller exit
-          // before an unresponsive descendant receives SIGKILL.
-          setTimeout(() => stopGroup("SIGKILL"), CHILD_KILL_GRACE_MS);
+          // ESRCH means the group is already gone, so a later SIGKILL would only
+          // hold the caller. A launcher that exited and left a descendant still
+          // has a live group, and that group still escalates.
+          if (signalGroup("SIGTERM") !== "ESRCH") {
+            // Keep this timer referenced: closing pipes must not let the caller exit
+            // before an unresponsive descendant receives SIGKILL.
+            setTimeout(() => signalGroup("SIGKILL"), CHILD_KILL_GRACE_MS);
+          }
         } else if (child.exitCode === null && child.signalCode === null) {
           const kill = setTimeout(() => child.kill("SIGKILL"), CHILD_KILL_GRACE_MS);
           kill.unref();
