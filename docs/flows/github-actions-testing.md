@@ -59,8 +59,8 @@ graph TD
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
 `loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
-`scripts/ci/test-suites/<lane>.json` references. Lanes own their tests, environment,
-required inputs and preparation settings.
+`scripts/ci/test-suites/<lane>.json` references. Lanes own tests, environments,
+inputs and preparation.
 
 `run-tests.mjs:selectLane` and the action validate lane-owned focused paths before setup.
 Focused results retain expected cases, environment and cleanup;
@@ -69,14 +69,13 @@ Focused results retain expected cases, environment and cleanup;
 `CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
 
 Pull requests compare the verified merge with its first parent using that parent’s
-policy; the second parent must match the event head. Canonical main pushes compare
-the complete `before` to verified `after` range using `before` policy. Missing history,
+policy; the second parent must match the event head. Canonical main pushes use `before` policy
+for the complete `before`→verified `after` diff. Missing history,
 forced pushes, and older policies retain full CI.
 Decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`,
-and `.png` illustrations under `specs/rfcs/` to docs mode. Other image paths and
-extensions retain full CI. Generated API references,
-executables and symlinks require full CI.
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown, `docs/docs.json`
+and `specs/rfcs/**/*.png`. Generated API references, other images, executables and
+symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
@@ -84,9 +83,8 @@ the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and 
 
 `CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
-source. Docs mode produces no test artifacts. The impact summary shows mode, fixed reason
-and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
-evidence is reported as unavailable.
+source. Docs mode produces no test artifacts. The impact summary reports mode, fixed reason and accepted lanes, excluding paths and
+raw output. Selector errors fail the job; missing evidence is unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
@@ -167,7 +165,11 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+Whole files run with scoped environments and one owning lane each; differing prerequisites require separate files. The reporter records case names, locations and outcomes. Results and logs retain failure messages (600 characters) and top frames (240). Redaction removes repository paths, replaces nonpublic job/child environment values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` values as `[redacted]`; generated values require a matching shape.
+
+HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
+
+For captured Skipper failures, `skipper-release.ts:runSkipperOperation` provides the reporter and `skipperFailureSummary` with an operation label, bounded exit code and allowlisted signal/error code. Structured diagnostics exclude response bodies, credentials and identities.
 
 `scripts/ci/openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle
 categories; `run-tests.mjs:runNode` adds lane/file labels. Installation ordinals
@@ -265,7 +267,9 @@ awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-10 19:00: Treat regular RFC PNG illustrations as documentation for CI selection. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
+- 2026-11-10 19:00: Classify RFC PNG illustrations as documentation. (authoring-run/320d719f-dd4a-44fd-968c-59c377d1a5bc - b3f542cdf738ffcbc4c351e7c9123228ae76a415)
+
+- 2026-11-10 18:32: Preserve safe Installed Skipper operation details for asynchronous failures. (authoring-run/0336b456-2d89-4535-9e04-eeb36c2970d9 - b4528e53458339a1df59473f068142675b1982a5)
 
 - 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
