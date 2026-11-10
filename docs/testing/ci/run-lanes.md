@@ -88,9 +88,11 @@ native container verification or authorize publication.
 
 ### Find a retained runtime before building locally
 
-Before a cold local build, check whether CI already produced the exact source
-revision. This discovery uses GitHub CLI access to Actions and `jq`; it does not
-load an image or qualify a release. Use the full commit SHA, not a branch name:
+Before a cold local build, check CI runs triggered by pushes to `main` for the
+exact source revision. This example does not search manual, pull-request or
+merge-group runs; an empty result rules out only matching main-push runs.
+Discovery uses GitHub CLI access to Actions and `jq`; it does not load an image
+or qualify a release. Use the full commit SHA, not a branch name:
 
 ```bash
 SOURCE_SHA='<full-40-character-commit>'
@@ -148,8 +150,9 @@ jq '{sourceSha, runId, producerAttempt, platform, archiveSha256,
      indexDigest, platformManifestDigest, configDigest}' "$RECEIPT_DIR/receipt.json"
 ```
 
-Compare the receipt's source, run, attempt and platform with the intended local
-run. Its `archiveSha256` covers `runtime.tar`. Discovery and a matching receipt
+Compare `sourceSha` with the intended Enterprise commit, `runId` with `RUN_ID`,
+`producerAttempt` with the successful `PRODUCER_ATTEMPT`, and `platform` with the
+local target platform. Its `archiveSha256` covers `runtime.tar`. Discovery and a matching receipt
 alone do not verify downloaded image bytes, native behavior or installed
 acceptance. The existing runtime-artifact helper accepts only same-workflow
 consumers; there is no supported local import command. Do not set `GITHUB_*`
