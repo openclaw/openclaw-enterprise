@@ -11,9 +11,9 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
-import { isSameGitHubRepository } from "../repo/credentials/client-contracts.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
-import { isGitHubWireCredential } from "../repo/github/credentials/wire-credential.ts";
+import { isSameGitHubRepository } from "../repo/access/client-contracts.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
+import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 
 function closedRequest(route: EgressRoute, request: EgressRequest): boolean {
   const { grant } = route.binding;

@@ -7,7 +7,7 @@ that should use it. Platform operators set Installation and Driver options in
 trusted startup YAML, not in Agent Configurations.
 
 - To reuse launch settings when creating Agents, use [Presets](presets.md).
-- To change a model or other Agent settings and put them into use, follow
+- To deploy model or other Agent settings, follow
   [Agent revisions](../guides/topics/agent-revisions.md).
 - To choose Agent credentials or enable a channel, see
   [Configuration secrets and channels](configuration/secrets.md).
@@ -57,11 +57,14 @@ unsupported settings, and unavailable Drivers stop startup before requests run.
 
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
-none. API and worker must use the same trusted value. See
+none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
 
-See [network egress modes](configuration/network-egress.md) for `networkEgressMode` defaults and Driver requirements.
+[Network egress modes](configuration/network-egress.md) defines `networkEgressMode` defaults and Driver requirements.
+The optional `iam` block declares the
+[Default users](authorization/default-users.md#installation-iam-configuration)
+Roles, Groups, and bindings.
 
 The optional `observability` block sets one external console destination:
 

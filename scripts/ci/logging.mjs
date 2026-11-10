@@ -1,8 +1,9 @@
 import { createServer } from "node:net";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { ensureImage } from "./image-pull.ts";
 import { ownedName } from "./resource-names.ts";
 
@@ -94,13 +95,6 @@ function assertCluster(cluster) {
     throw new Error("cluster.context must select the owned k3d context.");
   }
   return { ...cluster, directory, kubeconfig: resolve(cluster.kubeconfig) };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 async function assertExistingDirectory(path, description) {

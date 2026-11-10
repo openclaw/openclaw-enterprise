@@ -35,6 +35,14 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
 // synchronous CLI can authenticate without blocking the test runner's event loop.
 async function installationServer(t, fixture, scenario = "success") {
   const requestLog = join(fixture.directory, "http-requests.jsonl");
+  const tlsDirectoryFile = join(fixture.directory, "browser-tls-directory");
+  fixture.writeBrowserTlsDirectory = () =>
+    writeFile(
+      tlsDirectoryFile,
+      fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY ??
+        join(fixture.env.TMPDIR, "openclaw-development"),
+    );
+  await fixture.writeBrowserTlsDirectory();
   const child = spawn(
     process.execPath,
     [
@@ -42,8 +50,11 @@ async function installationServer(t, fixture, scenario = "success") {
       "-e",
       `
 import http from "node:http";
+import https from "node:https";
+import tls from "node:tls";
+import path from "node:path";
 import fs from "node:fs";
-const server = http.createServer((request, response) => {
+const handler = (request, response) => {
   const authorized = request.headers["x-api-key"] === ${JSON.stringify(serviceKey)};
   fs.appendFileSync(${JSON.stringify(requestLog)}, JSON.stringify({ method: request.method, url: request.url, authorized }) + "\\n");
   response.setHeader("content-type", "application/json");
@@ -61,15 +72,30 @@ const server = http.createServer((request, response) => {
     return;
   }
   response.end(JSON.stringify({ data: { id: ${JSON.stringify(scenario === "api-mismatch" ? mismatchedInstallationId : matchingInstallationId)} }, meta: { requestId: "req_fixture" } }));
-});
-server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
+};
+const server = http.createServer(handler);
+// Read the real launcher's generated key at handshake time, after startup wrote it.
+const browser = https.createServer({ SNICallback(_name, done) {
+  try {
+    const directory = fs.readFileSync(${JSON.stringify(tlsDirectoryFile)}, "utf8");
+    done(null, tls.createSecureContext({
+      cert: fs.readFileSync(path.join(directory, "browser-tls.crt")),
+      key: fs.readFileSync(path.join(directory, "browser-tls.key")),
+    }));
+  } catch (error) { done(error); }
+}}, handler);
+server.listen(0, "127.0.0.1", () => browser.listen(0, "127.0.0.1", () =>
+  process.stdout.write(JSON.stringify({ http: server.address().port, https: browser.address().port }) + "\\n")));
+
 `,
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   t.after(() => stopProcess(child));
   const [port] = await once(child.stdout, "data");
-  fixture.env.OPENCLAW_DEV_PORT = String(port).trim();
+  const ports = JSON.parse(String(port).trim());
+  fixture.env.OPENCLAW_DEV_PORT = String(ports.http);
+  fixture.env.OCC_DEVELOPMENT_BROWSER_PORT = String(ports.https);
   return requestLog;
 }
 
@@ -79,8 +105,10 @@ async function kubernetesFixture(t, scenario = "success", options = {}) {
   fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
   fixture.requestLog = await installationServer(t, fixture, scenario);
-  fixture.start = (args = []) =>
-    runDevUp([...args, "--", "--env-file", fixture.emptyEnv], fixture.env);
+  fixture.start = async (args = []) => {
+    await fixture.writeBrowserTlsDirectory();
+    return runDevUp([...args, "--", "--env-file", fixture.emptyEnv], fixture.env);
+  };
   return fixture;
 }
 

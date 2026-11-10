@@ -1,3 +1,4 @@
+import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
@@ -21,6 +22,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
+  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositoryStandingApproval,
   RepositorySessionReadRepository,
@@ -35,6 +37,8 @@ import {
 import type {
   ConnectionTemplate,
   OAuthConnectionTemplateVersion,
+  ConnectionSession,
+  SavedConnection,
   AccessBinding,
   Agent,
   AgentRead,
@@ -90,7 +94,7 @@ import {
   validPluginApprovers,
   isBackendId,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
@@ -135,6 +139,12 @@ export interface InstallationRepository extends InstallationReadRepository {
   holdPrincipalAccount(principalId: string): Promise<boolean>;
   /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
   holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
+  /**
+   * Holds the Installation's IAM configuration lock until COMMIT: shared before a write of
+   * durable authority (an Owner binding, a deploy-time grant, or a Group membership), exclusive
+   * while OCC applies the `iam` configuration, so the two commit one after the other.
+   */
+  holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
 }
 
 export interface NamespaceReadRepository {
@@ -362,6 +372,7 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
 export interface ConnectionTemplateReadRepository {
   listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
+  hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
   countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
   listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
   findOAuthConnectionTemplateVersion(
@@ -395,6 +406,72 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
     changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
   ): Promise<Readonly<ConnectionTemplate> | undefined>;
   deleteConnectionTemplate(templateId: string): Promise<boolean>;
+}
+
+/** Private Secret identity used only by the Token Service. No credential material is stored here. */
+export interface ConnectionTokenCustody {
+  readonly namespaceId: string;
+  readonly sourceId: string;
+  readonly secret: Readonly<Secret>;
+  readonly scheduledVersion?: string;
+  readonly nextRefreshAt?: string;
+}
+
+export interface SavedConnectionReadRepository {
+  findTokenCustody(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<Readonly<ConnectionTokenCustody & { due: boolean }> | undefined>;
+  listDueConnectionTokens(
+    installationId: string,
+    limit: number,
+    afterSourceId?: string,
+  ): Promise<readonly Readonly<SavedConnection>[]>;
+  findSavedConnection(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<SavedConnection> | undefined>;
+  listRevokingConnections(
+    installationId: string,
+    limit: number,
+    afterSourceId?: string,
+  ): Promise<readonly Readonly<SavedConnection>[]>;
+  listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<SavedConnection>[]>;
+}
+
+export interface SavedConnectionRepository extends SavedConnectionReadRepository {
+  createTokenCustody(custody: ConnectionTokenCustody): Promise<void>;
+  recordTokenSchedule(
+    namespaceId: string,
+    sourceId: string,
+    schedule:
+      | "due"
+      | "stopped"
+      | {
+          readonly scheduledVersion: string;
+          readonly nextRefreshAt: string;
+          readonly grantedScopes: readonly string[];
+        },
+  ): Promise<void>;
+  requestConnectionRevocation(
+    namespaceId: string,
+    sourceId: string,
+    principalId: string,
+  ): Promise<void>;
+  confirmConnectionRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
+  createSavedConnection(connection: SavedConnection): Promise<Readonly<SavedConnection>>;
+  deleteSavedConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
+  createConnectionSession(session: ConnectionSession): Promise<Readonly<ConnectionSession>>;
+  consumeConnectionSession(
+    stateHash: string,
+    actorId: string,
+    sessionId: string,
+    at: string,
+  ): Promise<Readonly<ConnectionSession> | undefined>;
+  takeExpiredConnectionSessions(
+    at: string,
+    limit: number,
+  ): Promise<readonly Pick<ConnectionSession, "namespaceId" | "credentialSourceId">[]>;
 }
 
 export interface PresetReadRepository {
@@ -969,10 +1046,12 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     typeof revision.harness !== "object" ||
     revision.harness === null ||
     Array.isArray(revision.harness) ||
-    Object.keys(revision.harness).length !== 3 ||
+    Object.keys(revision.harness).length !== 5 ||
     !Object.hasOwn(revision.harness, "id") ||
     !Object.hasOwn(revision.harness, "version") ||
     !Object.hasOwn(revision.harness, "mode") ||
+    asRecord(revision.harness.overrides) === undefined ||
+    asRecord(revision.harness.configuration) === undefined ||
     !isNonEmptyString(revision.harness.id) ||
     !isNonEmptyString(revision.harness.version) ||
     (revision.harness.mode !== "embedded" && revision.harness.mode !== "dedicated") ||
@@ -1054,6 +1133,8 @@ export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
+  /** Whether this revision completed maintenance requiring fresh repository execution. */
+  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
   hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }
@@ -1098,6 +1179,7 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly connectionTemplates: ConnectionTemplateReadRepository;
+  readonly savedConnections: SavedConnectionReadRepository;
   readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
   readonly credentialSources: CredentialSourceReadRepository;
@@ -1119,6 +1201,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly connectionTemplates: ConnectionTemplateRepository;
+  readonly savedConnections: SavedConnectionRepository;
   readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
   readonly credentialSources: CredentialSourceRepository;
@@ -1179,6 +1262,9 @@ interface PlatformSnapshot {
     Readonly<StoredOAuthClient> & { cleanupAfter?: string }
   >;
   readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
+  readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
+  readonly savedConnections: Map<string, Readonly<SavedConnection>>;
+  readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -1202,6 +1288,7 @@ interface PlatformSnapshot {
   readonly repositoryStandingApprovals: Map<string, Readonly<RepositoryStandingApproval>>;
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
+  readonly repositoryWithdrawals: Map<string, Readonly<ControllerWork>>;
   readonly audit: Readonly<AuditEvent>[];
   readonly operations: Readonly<PlatformOperation>[];
 }
@@ -1303,6 +1390,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
+    connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
+    savedConnections: new Map(snapshot.savedConnections),
+    connectionSessions: new Map(snapshot.connectionSessions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
@@ -1341,6 +1431,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     servicePrincipals: new Map(snapshot.servicePrincipals),
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
+    repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
     ),
@@ -1646,6 +1737,17 @@ function assertCredentialSource(source: CredentialSource): void {
   }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
+  const validOwner =
+    source.ownerCapability === "token_service"
+      ? source.type === "oauth2-refresh-token" &&
+        source.egress === undefined &&
+        source.driverId === undefined
+      : (source.ownerCapability === "credential_gateway" ||
+          (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
+        typeof source.driverId === "string" &&
+        source.driverId.length >= 1 &&
+        source.driverId.length <= 200 &&
+        source.driverId === source.driverId.trim();
   if (
     !credentialSourceIdentifier.test(source.id) ||
     !namespaceIdentifier.test(source.namespaceId) ||
@@ -1669,12 +1771,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
-    (source.ownerCapability !== "credential_gateway" &&
-      (source.ownerCapability !== "credential_proxy" || source.egress === undefined)) ||
-    typeof source.driverId !== "string" ||
-    source.driverId.length < 1 ||
-    source.driverId.length > 200 ||
-    source.driverId !== source.driverId.trim() ||
+    !validOwner ||
     (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
   ) {
     throw new ScopeViolationError("The credential source is invalid.");
@@ -1725,6 +1822,8 @@ function repositories(
     holdPrincipalAccount: async () => true,
     // Memory authentication owns its sessions outside platform State.
     holdAuthenticationSession: async () => false,
+    // One in-process State applies each unit of work alone; there is nothing to serialize with.
+    holdIAMConfiguration: async () => undefined,
   };
 
   const namespaces: NamespaceRepository = {
@@ -1937,6 +2036,10 @@ function repositories(
       Array.from(snapshot.connectionTemplates.values()).filter(
         (template) => template.namespaceId === namespaceId,
       ).length,
+    hasOtherConnectionIssuer: async (issuer) =>
+      [...snapshot.oauthConnectionTemplateVersions.values()].some(
+        (version) => version.oauthClientId !== undefined && version.issuer !== issuer,
+      ),
     listConnectionTemplates: async () =>
       Object.freeze(
         Array.from(snapshot.connectionTemplates.values())
@@ -2080,6 +2183,13 @@ function repositories(
       if (!snapshot.connectionTemplates.has(templateId)) {
         return false;
       }
+      if (
+        [...snapshot.savedConnections.values(), ...snapshot.connectionSessions.values()].some(
+          (connection) => connection.connectionTemplateId === templateId,
+        )
+      ) {
+        throw new ResourceStateConflictError("The connection template is in use.");
+      }
       snapshot.connectionTemplates.delete(templateId);
       for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
@@ -2087,6 +2197,203 @@ function repositories(
         }
       }
       return true;
+    },
+  };
+
+  const assertConnectionScope = (record: SavedConnection | ConnectionSession): void => {
+    const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
+      record;
+    const template = snapshot.connectionTemplates.get(connectionTemplateId);
+    if (
+      !snapshot.credentialSources.has(agentKey(namespaceId, credentialSourceId)) ||
+      !template ||
+      (template.namespaceId !== undefined && template.namespaceId !== namespaceId) ||
+      !snapshot.oauthConnectionTemplateVersions.has(
+        versionKey(connectionTemplateId, connectionTemplateVersion),
+      )
+    ) {
+      throw new ResourceStateConflictError(
+        "The connection must use a source and template in its scope.",
+      );
+    }
+  };
+  const savedConnections: SavedConnectionRepository = {
+    findTokenCustody: async (namespaceId, sourceId) => {
+      const custody = snapshot.connectionTokenCustody.get(agentKey(namespaceId, sourceId));
+      return (
+        custody &&
+        immutableCopy({
+          ...custody,
+          due:
+            custody.nextRefreshAt !== undefined && Date.parse(custody.nextRefreshAt) <= Date.now(),
+        })
+      );
+    },
+    createTokenCustody: async (custody) => {
+      const key = agentKey(custody.namespaceId, custody.sourceId);
+      if (snapshot.connectionTokenCustody.has(key)) {
+        throw new Error("Connection token custody already exists.");
+      }
+      snapshot.connectionTokenCustody.set(key, storedCopy(custody));
+    },
+    recordTokenSchedule: async (namespaceId, sourceId, schedule) => {
+      const key = agentKey(namespaceId, sourceId);
+      const account = snapshot.savedConnections.get(key);
+      if (account && typeof schedule === "object") {
+        snapshot.savedConnections.set(
+          key,
+          storedCopy({ ...account, grantedScopes: schedule.grantedScopes }),
+        );
+      }
+      const custody = snapshot.connectionTokenCustody.get(key);
+      if (!custody) {
+        throw new Error("Connection token custody is missing.");
+      }
+      const { nextRefreshAt: _previous, ...existing } = custody;
+      let next: ConnectionTokenCustody = existing;
+      if (schedule === "due") {
+        next = { ...existing, nextRefreshAt: new Date().toISOString() };
+      } else if (schedule !== "stopped") {
+        next = { ...existing, ...schedule };
+      }
+      snapshot.connectionTokenCustody.set(key, storedCopy(next));
+    },
+    listDueConnectionTokens: async (installationId, limit, afterSourceId) => {
+      if (snapshot.installation?.id !== installationId) {
+        return [];
+      }
+      const now = new Date().toISOString();
+      const due = [...snapshot.savedConnections.values()].filter((account) => {
+        const next = snapshot.connectionTokenCustody.get(
+          agentKey(account.namespaceId, account.credentialSourceId),
+        )?.nextRefreshAt;
+        return (
+          !account.revocationRequestedBy &&
+          next !== undefined &&
+          next <= now &&
+          account.credentialSourceId > (afterSourceId ?? "")
+        );
+      });
+      return immutableCopy(
+        due
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .slice(0, limit),
+      );
+    },
+    findSavedConnection: async (namespaceId, credentialSourceId) => {
+      const found = snapshot.savedConnections.get(agentKey(namespaceId, credentialSourceId));
+      return found === undefined ? undefined : immutableCopy(found);
+    },
+    listRevokingConnections: async (installationId, limit, afterSourceId) => {
+      if (snapshot.installation?.id !== installationId) {
+        return [];
+      }
+      return Object.freeze(
+        Array.from(snapshot.savedConnections.values())
+          .filter(
+            (account) =>
+              account.revocationRequestedBy !== undefined &&
+              (afterSourceId === undefined || account.credentialSourceId > afterSourceId),
+          )
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .slice(0, limit)
+          .map((account) => immutableCopy(account)),
+      );
+    },
+    requestConnectionRevocation: async (namespaceId, sourceId, principalId) => {
+      const key = agentKey(namespaceId, sourceId);
+      const current = snapshot.savedConnections.get(key);
+      if (current && current.revocationRequestedBy === undefined) {
+        snapshot.savedConnections.set(
+          key,
+          storedCopy({ ...current, revocationRequestedBy: principalId }),
+        );
+      }
+    },
+    confirmConnectionRevocation: async (namespaceId, sourceId, at) => {
+      const key = agentKey(namespaceId, sourceId);
+      const current = snapshot.savedConnections.get(key);
+      if (current?.revocationRequestedBy !== undefined && current.revokedAt === undefined) {
+        snapshot.savedConnections.set(key, storedCopy({ ...current, revokedAt: at }));
+      }
+    },
+    listNamespaceConnections: async (namespaceId) =>
+      Object.freeze(
+        Array.from(snapshot.savedConnections.values())
+          .filter(
+            (connection) =>
+              connection.namespaceId === namespaceId &&
+              connection.revocationRequestedBy === undefined,
+          )
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .map((connection) => immutableCopy(connection)),
+      ),
+    createSavedConnection: async (connection) => {
+      assertInitialized(snapshot);
+      assertConnectionScope(connection);
+      const version = snapshot.oauthConnectionTemplateVersions.get(
+        versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
+      );
+      const client = snapshot.clientRegistrations.get(connection.oauthClientId);
+      if (
+        !version ||
+        !isDeepStrictEqual(version.destinations, connection.destinations) ||
+        version.issuer !== connection.issuer ||
+        version.tokenUrl !== connection.tokenUrl ||
+        version.oauthClientId !== connection.oauthClientId ||
+        client?.clientId !== connection.clientId ||
+        version.mcp?.serverUrl !== connection.mcpServerUrl ||
+        version.mcp?.resource !== connection.resource
+      ) {
+        throw new ResourceStateConflictError(
+          "The saved account must match its approved template version and OAuth client.",
+        );
+      }
+      const key = agentKey(connection.namespaceId, connection.credentialSourceId);
+      if (snapshot.savedConnections.has(key)) {
+        throw new ResourceConflictError("The credential source is already connected.");
+      }
+      const saved = immutableCopy(connection);
+      snapshot.savedConnections.set(key, saved);
+      return immutableCopy(saved);
+    },
+    deleteSavedConnection: async (namespaceId, credentialSourceId) =>
+      snapshot.savedConnections.delete(agentKey(namespaceId, credentialSourceId)),
+    createConnectionSession: async (session) => {
+      assertInitialized(snapshot);
+      assertConnectionScope(session);
+      if (snapshot.connectionSessions.has(session.stateHash)) {
+        throw new ResourceConflictError("The connection session already exists.");
+      }
+      const saved = immutableCopy(session);
+      snapshot.connectionSessions.set(saved.stateHash, saved);
+      return immutableCopy(saved);
+    },
+    consumeConnectionSession: async (stateHash, actorId, sessionId, at) => {
+      const attempt = snapshot.connectionSessions.get(stateHash);
+      if (
+        !attempt ||
+        attempt.actorId !== actorId ||
+        attempt.sessionId !== sessionId ||
+        attempt.expiresAt <= at
+      ) {
+        return undefined;
+      }
+      snapshot.connectionSessions.delete(stateHash);
+      return immutableCopy(attempt);
+    },
+    takeExpiredConnectionSessions: async (at, limit) => {
+      const expired = [...snapshot.connectionSessions.values()]
+        .filter((session) => session.expiresAt <= at)
+        .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt))
+        .slice(0, limit);
+      for (const session of expired) {
+        snapshot.connectionSessions.delete(session.stateHash);
+      }
+      return expired.map(({ namespaceId, credentialSourceId }) => ({
+        namespaceId,
+        credentialSourceId,
+      }));
     },
   };
 
@@ -2781,7 +3088,18 @@ function repositories(
           "The credential source is referenced by active platform state.",
         );
       }
-      snapshot.credentialSources.delete(agentKey(namespaceId, credentialSourceId));
+      const key = agentKey(namespaceId, credentialSourceId);
+      snapshot.credentialSources.delete(key);
+      snapshot.connectionTokenCustody.delete(key);
+      snapshot.savedConnections.delete(key);
+      for (const [hash, session] of snapshot.connectionSessions) {
+        if (
+          session.namespaceId === namespaceId &&
+          session.credentialSourceId === credentialSourceId
+        ) {
+          snapshot.connectionSessions.delete(hash);
+        }
+      }
       deleteResourceAccessBindings("credential_source", credentialSourceId);
       return true;
     },
@@ -3758,6 +4076,28 @@ function repositories(
     },
     deleteAccessBinding: async (namespaceId, bindingId) =>
       snapshot.bindings.delete(iamPolicyKey(namespaceId, bindingId)),
+    // In-memory State is no Native IAM Driver's policy source, so OCC writes no configured
+    // policy or Owner bindings here (OpenClawController.occBindingDriver).
+    listConfiguredPolicy: async () =>
+      Object.freeze({ roles: Object.freeze([]), groups: Object.freeze([]), bindings: [] }),
+    putConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
+    },
+    deleteConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
+    },
+    createConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
+    },
+    deleteConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
+    },
+    createOCCBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
+    },
+    deleteConfiguredBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
+    },
     listServicePrincipals: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.servicePrincipals.values()).filter(
@@ -3828,6 +4168,58 @@ function repositories(
         agent.activeRevisionId === owner.revisionId
       );
     },
+    (owner, at) => {
+      const namespace = snapshot.namespaces.get(owner.namespaceId);
+      const agent = snapshot.agents.get(agentKey(owner.namespaceId, owner.agentId));
+      if (
+        namespace?.status !== "ready" ||
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== owner.revisionId
+      ) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      const original = snapshot.operations.find(
+        (operation) =>
+          operation.kind === "agent_revision" &&
+          operation.target === undefined &&
+          operation.namespaceId === owner.namespaceId &&
+          operation.resourceId === owner.revisionId,
+      );
+      if (!original) {
+        throw new ScopeViolationError(
+          "Finite withdrawal requires the original deployment authority.",
+        );
+      }
+      const actorId = original.actorId;
+      const key = repositoryRemovalWorkKey(owner.revisionId);
+      if (!snapshot.repositoryWithdrawals.has(key)) {
+        const time = new Date(at);
+        snapshot.repositoryWithdrawals.set(
+          key,
+          immutableCopy({
+            kind: "lifecycle",
+            idempotencyKey: key,
+            ...owner,
+            actorId,
+            state: "queued",
+            availableAt: time,
+            attemptCount: 0,
+            createdAt: time,
+            updatedAt: time,
+          }),
+        );
+      }
+    },
+    (owner) => {
+      const withdrawal = snapshot.repositoryWithdrawals.get(
+        repositoryRemovalWorkKey(owner.revisionId),
+      );
+      return (
+        withdrawal?.namespaceId === owner.namespaceId &&
+        withdrawal.agentId === owner.agentId &&
+        withdrawal.revisionId === owner.revisionId
+      );
+    },
   );
 
   const provisioningUnavailable = async (): Promise<never> => {
@@ -3843,6 +4235,7 @@ function repositories(
     namespaces,
     configurations,
     connectionTemplates,
+    savedConnections,
     presets,
     secrets,
     credentialSources,
@@ -3966,6 +4359,7 @@ function repositories(
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,
+      hasRepositoryExecutionRedeployRequired: async () => false,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.
       hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) =>
         snapshot.operations.some(
@@ -3976,6 +4370,10 @@ function repositories(
             operation.resourceId === revisionId,
         ),
       findWork: async (idempotencyKey) => {
+        const withdrawal = snapshot.repositoryWithdrawals.get(idempotencyKey);
+        if (withdrawal) {
+          return immutableCopy(withdrawal);
+        }
         const operation = snapshot.operations.find(
           (candidate) => operationIdempotencyKey(candidate) === idempotencyKey,
         );
@@ -4136,6 +4534,9 @@ export class InMemoryPlatformState implements PlatformStateStore {
     connectionTemplates: new Map(),
     clientRegistrations: new Map(),
     oauthConnectionTemplateVersions: new Map(),
+    connectionTokenCustody: new Map(),
+    savedConnections: new Map(),
+    connectionSessions: new Map(),
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
@@ -4155,6 +4556,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     servicePrincipals: new Map(),
     repositoryStandingExecutions: new Map(),
     repositoryStandingApprovals: new Map(),
+    repositoryWithdrawals: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],

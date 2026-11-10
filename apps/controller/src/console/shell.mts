@@ -14,6 +14,7 @@ interface Account {
 }
 
 export interface ShellState {
+  debug: boolean;
   session: { user: Account } | null;
   namespaces: readonly Namespace[];
   namespaceId: string | null;
@@ -132,8 +133,8 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 }
 
 const backendTypes = {
-  chatgpt: "ChatGPT",
   github: "GitHub",
+  chatgpt: "ChatGPT",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
@@ -550,9 +551,14 @@ export function createShell({
     const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
+    const focused = document.activeElement;
+    // After admission the reader can Tab to the header's selector while the page read runs.
+    const focusedNamespace =
+      focused === namespaceSelect && namespaceSelect?.closest(".page-header")
+        ? namespaceSelect.value
+        : null;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const focused = document.activeElement;
     const menuFocus =
       focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -632,7 +638,7 @@ export function createShell({
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
     const knownRevision = /^[a-f0-9]{40}$/.test(revision);
-    const debug = route().url.searchParams.get("debug") === "true";
+    const debug = state.debug;
     const diagnostics =
       debug && session
         ? element(
@@ -859,6 +865,12 @@ export function createShell({
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
+      }
+    }
+    if (focusedNamespace && document.activeElement === document.body) {
+      const replacement = scopeSelector?.querySelector("select");
+      if (replacement?.value === focusedNamespace && !replacement.disabled) {
+        replacement.focus({ preventScroll: true });
       }
     }
     return { view, refresh, diagnostics, scopeSelector, actions };

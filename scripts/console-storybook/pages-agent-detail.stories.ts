@@ -16,6 +16,8 @@ export const HeaderActions = story("agentHeaderActions");
 export const EarlierFailedVersion = story("earlierFailedVersion");
 export const EarlierSupersededVersion = story("earlierSupersededVersion");
 export const LongVersionHistory = story("longVersionHistory");
+export const RetainedHarnessHistory = story("retainedHarnessHistory");
+export const RetainedHarnessWithoutOverrides = story("retainedHarnessWithoutOverrides");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const ConfigurationSaveRefused = story("configurationSaveRefused");
@@ -70,6 +72,7 @@ export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQ
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
 export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
+export const RepositoryAccessRedeployRequired = story("repositoryAccessRedeployRequired");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
   name: "Repository access in new version",
@@ -86,6 +89,10 @@ export const DeploymentRunningActivates = story("deploymentRunningActivates");
 export const DeploymentCompletionFocus = {
   ...story("deploymentCompletionFocus", { openInNewTab: true }),
   name: "Diagnostics focus when deployment completes",
+};
+export const DeploymentRefreshFocus = {
+  ...story("deploymentRefreshFocus", { openInNewTab: true }),
+  name: "Refresh deployment focus when a newer version appears",
 };
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
@@ -121,6 +128,8 @@ export const DeploymentModelProbeFailedConfigurationEditor = story(
 export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDeployAgainUnreadable");
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
+export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
+export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",
@@ -151,6 +160,7 @@ export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
+export const RuntimeLogsSourceSwitchAfterRateLimit = story("runtimeLogsSourceSwitchAfterRateLimit");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
 export const RuntimeLogPodReplaced = story("runtimeLogPodReplaced");
 export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
@@ -308,3 +318,8 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const HarnessOverrides = story("harnessOverrides");
+
+export const HarnessDeploymentPending = story("harnessDeploymentPending");
+export const HarnessDeploymentDenied = story("harnessDeploymentDenied");

@@ -16,7 +16,12 @@ const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)))
 export const keycloakRealmFile = join(repositoryRoot, "tests/fixtures/keycloak/realm-oce.json");
 export const keycloakImageFile = join(repositoryRoot, "tests/fixtures/keycloak/image.json");
 export const keycloakHost = "keycloak.oce.localhost";
+export const keycloakConsoleHost = "console.oce.localhost";
 export const keycloakIssuer = `https://${keycloakHost}/realms/oce`;
+// The OpenShell gateway refuses `localhost` token hosts (it would reach itself), so connection
+// tests post to the token endpoint through this reserved `.test` name (RFC 2606) instead.
+export const keycloakTokenHost = "keycloak.oce.test";
+const keycloakHosts = [keycloakHost, keycloakTokenHost];
 export const keycloakResourceKind = "keycloak-server";
 
 const clientId = "oce-console";
@@ -66,7 +71,7 @@ async function writePrivate(path, data) {
 }
 
 // A two-day private CA and its server leaves: one for Keycloak's DNS name, one for the
-// test's HTTPS Console origin on 127.0.0.1. Same openssl recipe as routing.mjs.
+// test's HTTPS Console DNS origin on loopback. Same openssl recipe as routing.mjs.
 async function createCertificates(directory, execFile) {
   const ca = { certPath: join(directory, "ca.crt"), keyPath: join(directory, "ca.key") };
   await execFile("openssl", [
@@ -91,8 +96,8 @@ async function createCertificates(directory, execFile) {
   ]);
   const leaves = {};
   for (const [name, commonName, subjectAltName] of [
-    ["keycloak", keycloakHost, `DNS:${keycloakHost}`],
-    ["console", "127.0.0.1", "IP:127.0.0.1"],
+    ["keycloak", keycloakHost, keycloakHosts.map((host) => `DNS:${host}`).join(",")],
+    ["console", keycloakConsoleHost, `DNS:${keycloakConsoleHost}`],
   ]) {
     const certPath = join(directory, `${name}.crt`);
     const keyPath = join(directory, `${name}.key`);
@@ -151,22 +156,30 @@ async function createCertificates(directory, execFile) {
   return { ca, leaves };
 }
 
-/** The resolver's answer for the Keycloak name, as text for the prepare log. */
+/** Require reachable IPv4 loopback; macOS may also return its IPv6 loopback alias. */
 async function resolverAnswer(lookupAll) {
-  try {
-    const addresses = (await lookupAll(keycloakHost)).map(({ address }) => address);
-    return { loopbackOnly: addresses.length === 1 && addresses[0] === "127.0.0.1", addresses };
-  } catch (error) {
-    return { loopbackOnly: false, addresses: [], error: error.code ?? error.message };
+  for (const host of keycloakHosts) {
+    try {
+      const addresses = (await lookupAll(host)).map(({ address }) => address);
+      if (
+        !addresses.includes("127.0.0.1") ||
+        addresses.some((address) => address !== "127.0.0.1" && address !== "::1")
+      ) {
+        return { loopbackOnly: false, host, addresses };
+      }
+    } catch (error) {
+      return { loopbackOnly: false, host, addresses: [], error: error.code ?? error.message };
+    }
   }
+  return { loopbackOnly: true };
 }
 
-function describeAnswer({ addresses, error }) {
-  return error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`;
+function describeAnswer({ host, addresses, error }) {
+  return `${host} resolves to ${error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`}`;
 }
 
 function hostsLineFor(resource) {
-  return `127.0.0.1 ${keycloakHost} ${hostsMarker} ${resource.name}`;
+  return `127.0.0.1 ${keycloakHosts.join(" ")} ${hostsMarker} ${resource.name}`;
 }
 
 function loopbackPortAccepts(port) {
@@ -185,7 +198,7 @@ function loopbackPortAccepts(port) {
 // Real DNS, real TLS: the request trusts only the lane CA (plus the system store).
 function httpsJSON(url, { ca, method = "GET", headers = {}, body } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const req = request(url, { method, headers, ca, timeout: 10_000 }, (response) => {
+    const req = request(url, { method, headers, ca, family: 4, timeout: 10_000 }, (response) => {
       let text = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
@@ -335,7 +348,7 @@ export async function prepareKeycloak({
 
   const values = {
     OCE_KEYCLOAK_CLIENT_SECRET: secret(),
-    OCE_KEYCLOAK_REDIRECT_URI: `https://127.0.0.1:${port}/api/auth/providers/oidc/callback`,
+    OCE_KEYCLOAK_REDIRECT_URI: `https://${keycloakConsoleHost}:${port}/api/auth/providers/oidc/callback`,
     OCE_KEYCLOAK_ALICE_PASSWORD: secret(),
     OCE_KEYCLOAK_CAROL_PASSWORD: secret(),
   };
@@ -367,16 +380,16 @@ export async function prepareKeycloak({
   const { ca, leaves } = await step("certificates", () => createCertificates(directory, execFile));
 
   await step("hosts", async () => {
-    // A `::1`-first answer against a loopback-only publication would flake. The log records
-    // each runner image's resolver behaviour (docs/testing/kubernetes.md#keycloak-oidc-tests).
+    // Readiness uses IPv4, matching the container publication. An additional ::1
+    // alias is normal on macOS; nonloopback answers remain forbidden.
     const answer = await resolverAnswer(lookupAll);
     if (answer.loopbackOnly) {
-      log(`Keycloak hosts: ${keycloakHost} resolves to 127.0.0.1; no /etc/hosts line added.`);
+      log(
+        `Keycloak hosts: ${keycloakHosts.join(" and ")} resolve to 127.0.0.1; no /etc/hosts line added.`,
+      );
       return;
     }
-    log(
-      `Keycloak hosts: ${keycloakHost} resolves to ${describeAnswer(answer)}; adding an /etc/hosts line.`,
-    );
+    log(`Keycloak hosts: ${describeAnswer(answer)}; adding an /etc/hosts line.`);
     resource.hostsLine = hostsLineFor(resource);
     await saveState();
     await execFile("sudo", [
@@ -390,7 +403,7 @@ export async function prepareKeycloak({
     const added = await resolverAnswer(lookupAll);
     if (!added.loopbackOnly) {
       throw new Error(
-        `${keycloakHost} still resolves to ${describeAnswer(added)}, not exactly 127.0.0.1; /etc/hosts is not consulted first.`,
+        `${describeAnswer(added)}, not restricted to loopback with 127.0.0.1 present; /etc/hosts is not consulted first.`,
       );
     }
   });
@@ -465,6 +478,7 @@ export async function prepareKeycloak({
     resource,
     env: {
       OCC_TEST_KEYCLOAK_ISSUER: keycloakIssuer,
+      OCC_TEST_KEYCLOAK_TOKEN_ORIGIN: `https://${keycloakTokenHost}`,
       OCC_TEST_KEYCLOAK_CONSOLE_PORT: String(port),
       OCC_TEST_KEYCLOAK_SECRETS_FILE: secretsPath,
       OCC_TEST_KEYCLOAK_CA_CERT: ca.certPath,

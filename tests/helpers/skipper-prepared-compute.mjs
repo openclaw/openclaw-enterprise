@@ -447,8 +447,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     assert.ok(t.threadId && t.turnId);
     return { ...command, threadId: t.threadId, turnId: t.turnId };
   };
-  const modelEvents = async () =>
-    (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024 })).stdout
+  const modelEvents = async (signal) =>
+    (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024, signal })).stdout
       .trim()
       .split("\n")
       .filter((l) => l.startsWith("{"))
@@ -461,10 +461,29 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     await chmod(controlFile + ".next", 0o644);
     await rename(controlFile + ".next", controlFile);
     await checkpoint("native-command-started", { label });
-    assert.equal(
-      await chat("Perform the authorized disposable private Git task " + marker),
-      "SKIPPER_COMPUTE_DONE_" + marker,
-    );
+    const reply = await chat("Perform the authorized disposable private Git task " + marker);
+    const expected = "SKIPPER_COMPUTE_DONE_" + marker;
+    if (reply !== expected) {
+      // Only counts and booleans leave the private journey log. Diagnostics must not
+      // replace the completion assertion if the model log or ledger is unavailable.
+      const observations = await modelEvents(AbortSignal.timeout(10_000))
+        .then((events) => events.filter((e) => e.id === marker))
+        .catch(() => undefined);
+      await checkpoint("native-command-completion-mismatch", {
+        modelDiagnosticsAvailable: observations !== undefined,
+        ...(observations === undefined
+          ? {}
+          : {
+              modelRequests: observations.filter((e) => e.event === "skipper-native-request")
+                .length,
+              modelResults: observations.filter((e) => e.event === "skipper-native-result").length,
+              markerSeen: observations.some(
+                (e) => e.event === "skipper-native-result" && e.markerSeen === true,
+              ),
+            }),
+      }).catch(() => {});
+    }
+    assert.equal(reply, expected);
     const completed = await native(marker);
     const observations = (await modelEvents()).filter((e) => e.id === marker);
     assert.deepEqual(

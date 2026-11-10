@@ -156,6 +156,10 @@ func rewriteState(s *developmentState) (result error) {
 			os.Remove(file.Name())
 		}
 	}()
+	// CreateTemp applies umask; recovery must still read the replacement.
+	if err := file.Chmod(0600); err != nil {
+		return errors.Join(err, file.Close())
+	}
 	_, writeErr := file.Write(data)
 	closeErr := file.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {

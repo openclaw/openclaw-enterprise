@@ -227,11 +227,15 @@ export async function runQaCommand(f, command, args, options = {}) {
 export async function deployQaAgentAndWait(
   f,
   agent,
-  { timeout = 600_000, interval = 1000, now = () => Date.now() } = {},
+  { timeout = 600_000, interval = 1000, now = () => Date.now(), harnessOverrides = undefined } = {},
 ) {
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   agent.stopped = false;
-  agent.revision = await f.api("POST", base + "/deploy");
+  agent.revision = await f.api(
+    "POST",
+    base + "/deploy",
+    harnessOverrides === undefined ? undefined : { harnessOverrides },
+  );
   // A timeout names the deployment's last status and attempt, and how long it had that status
   // (finding 2106: six cells timed out at 600 s with no status).
   let last;

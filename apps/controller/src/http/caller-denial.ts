@@ -30,7 +30,7 @@ const ASK = "Ask an Installation administrator to grant it.";
 
 // A native admin request the caller may not make. The Agent comes from the host name, not from
 // the caller, so the text names no Agent, and an unknown host gets it too.
-export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's native admin UI needs Agent administer on it. ${ASK}`;
+export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's browser UI needs Agent operate or administer on it. ${ASK}`;
 
 /**
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the
@@ -77,8 +77,9 @@ export function callerDenialMessage(
   }
   if (action === "create") {
     // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. No Role can hold a create permission, so no grant helps: only an Installation
-    // administrator creates one, as the console's AGENT_CREATE_DENIED says (finding 2581).
+    // Namespace. Only Roles from the Installation configuration hold a create permission, and
+    // only OCC binds them, so no grant request helps: an Installation administrator creates one,
+    // as the console's AGENT_CREATE_DENIED says (finding 2581).
     const kinds = pluralKind(kind);
     if (resource.kind === "namespace") {
       return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;

@@ -87,10 +87,10 @@ and optional [network egress mode](../configuration/network-egress.md).
 - `backend_id`
 - `gateway_managed_mode`
 - `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
-  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  binds the Installation, actor, Namespace, Agent, key, reviewed Configuration tuple, and normalized Harness overrides.
   Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
   metadata, separate from `admitted_spec` and public revision responses.
-- `admitted_spec`
+- `admitted_spec` (includes requested `harness.overrides` and resolved `harness.configuration`)
 - `admitted_at`
 
 ### `workspace_setups`
@@ -169,9 +169,53 @@ Identifies an independently managed OAuth client and its approved credential des
 - `token_url`, `revocation_url`, `token_endpoint_auth_method`
 - `secret_driver_id`, `cleanup_after`, `created_at`
 
+### `saved_connections`
+
+Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
+
+- `namespace_id`
+- `credential_source_id`
+- `owner_principal_id`
+- `oauth_client_id`, `client_id`, `issuer`, `token_url`
+- `recipient`, `mcp_server_url`, `resource`
+- `requested_scopes`, `granted_scopes`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+Stores the private, single-use OAuth attempt for the initiating principal and browser session.
+
+- `state_hash`
+- `namespace_id`
+- `credential_source_id`
+- `pkce_verifier`
+- `selected_scopes`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `scheduled_version`
+- `next_refresh_at`
+
 ### `credential_sources`
 
-Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
+Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
 
 - `id`
 - `namespace_id`
@@ -179,8 +223,8 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` or `credential_proxy`)
-- `driver_id`
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `driver_id` (Gateway and Proxy sources)
 - `state`
 - `created_at`
 
@@ -372,7 +416,9 @@ Stores human Principals and service identities, including those owned by an Agen
 
 ### `iam_groups`
 
-Defines native IAM groups at Installation or Namespace scope.
+Defines native IAM groups at Installation or Namespace scope, including the
+[configured Groups](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`group_config_` IDs), which OCC can delete.
 
 - `id`
 - `namespace_id`
@@ -380,7 +426,8 @@ Defines native IAM groups at Installation or Namespace scope.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups.
+Links human Principals to their native IAM groups. Rows cannot be updated;
+memberships of a configured Group can be deleted.
 
 - `namespace_id`
 - `group_id`
@@ -388,7 +435,10 @@ Links human Principals to their native IAM groups.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds.
+Defines native IAM roles as sets of actions and resource kinds. Only
+[configured Roles](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`role_config_` IDs) can change; a check constraint keeps them at Installation
+scope without `installation` permissions.
 
 - `id`
 - `namespace_id`
@@ -398,6 +448,9 @@ Defines native IAM roles as sets of actions and resource kinds.
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
+OCC also writes configured Group bindings and the
+[Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
+of creators here.
 
 - `id`
 - `namespace_id`
@@ -510,7 +563,7 @@ Stores expiring browser sessions for signed-in users.
 
 Links a user to their sign-in method. Password methods store a password hash;
 identity-only external methods reject password and provider-token storage.
-See [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+See [External sign-in](../authentication/external-sign-in.md#external-sign-in-profile).
 
 - `id`
 - `account_id`
@@ -550,6 +603,17 @@ Binds an ordinary browser session to its admitted account and method versions.
 - `version`
 - `method_version`
 
+### `human_authentication_results`
+
+Holds outstanding external sign-in results by Installation and attempt. Deleting the
+bound session removes its result. The application role can insert, read, and delete rows.
+
+- `installation_id`
+- `attempt_id`
+- `session_id`
+- `provider_id`
+- `expires_at`
+
 ### `human_authentication_recovery`
 
 Retains the fixed existing password recovery administrator for an Installation.
@@ -573,6 +637,24 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+
+### `native_browser_intents`
+
+Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Consumed atomically; deleted with the parent session or revision.
+
+- `id`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `challenge_hash`, `exchange_hash`
+- `created_at`, `expires_at`
+
+### `native_browser_handles`
+
+Hashed Agent access handles dependent on a live parent human session.
+
+- `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `created_at`, `expires_at`
 
 ### `verification`
 

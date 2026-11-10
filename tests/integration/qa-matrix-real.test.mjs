@@ -59,6 +59,16 @@ test(
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
     }
+    if (selection.oidcAgentChat) {
+      const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "OIDC sign-in, owner setup, real chat and administrative denial",
+        () => runOidcAgentChatScenario(context),
+        "oidc-agent-chat",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
@@ -75,6 +85,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "selected native plugin installation",
         () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.harnessOverrides) {
+      const { verifyQaHarnessOverrides } = await import("../helpers/qa-harness-overrides.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenShell",
+        "revision-owned model destinations and withdrawal",
+        () => verifyQaHarnessOverrides(context, artifacts, selection.presets),
+        "harness-overrides",
       );
     }
     if (selection.linearRead) {

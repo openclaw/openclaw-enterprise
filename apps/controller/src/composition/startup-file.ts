@@ -119,6 +119,7 @@ export async function startupConfiguration(
       "runtime",
       "sandboxNetworkPolicyCeiling",
       "networkEgressMode",
+      "iam",
     ],
     "Installation startup configuration",
   );

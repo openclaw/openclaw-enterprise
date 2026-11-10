@@ -228,12 +228,20 @@
                         "label": "Authorization"
                       },
                       {
+                        "page": "reference/authorization/default-users",
+                        "label": "Default Users"
+                      },
+                      {
                         "page": "reference/service-accounts",
                         "label": "Service Accounts"
                       },
                       {
                         "page": "reference/authentication/external-sign-in",
                         "label": "External Sign-In"
+                      },
+                      {
+                        "page": "reference/authentication/team-enrollment",
+                        "label": "OIDC Account Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -738,12 +746,24 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
                     "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/production-helm-recovery",
+                    "label": "Helm Recovery"
                   },
                   {
                     "page": "guides/deploy/split-layout-upgrade",
@@ -779,6 +799,7 @@
             ],
             "hidden": [
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
@@ -937,6 +958,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",

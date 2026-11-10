@@ -70,7 +70,8 @@ const productionServer = {
   OCC_HOST: "192.0.2.10",
   OCC_PORT: "8080",
   OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+  OCC_AUTH_BASE_URL: "https://console.example.test",
+  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
@@ -365,6 +366,29 @@ test("Installation startup validates the optional external observability URL", a
 
 test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
   const cases = [
+    // These all passed pair ordering but Kubernetes refuses their negative quantities.
+    ...[
+      ["gateway", "Gateway"],
+      ["agent", "Agent"],
+      ["namespace.containerDefaults", "Namespace default"],
+    ].map(([role, description]) => [
+      (configuration) => {
+        const resources = configuration.drivers.compute.configuration.resources;
+        const selected =
+          role === "namespace.containerDefaults"
+            ? resources.namespace.containerDefaults
+            : resources[role];
+        selected.requests.cpu = "-1";
+      },
+      [
+        {
+          path: `/resources/${role.replaceAll(".", "/")}/requests/cpu`,
+          code: "INVALID_FORMAT",
+          message: `${description} CPU requests must be non-negative Kubernetes quantity strings, such as 500m.`,
+        },
+      ],
+      { bootProcesses: role === "gateway" },
+    ]),
     [
       (configuration) => {
         configuration.drivers.compute.configuration.authentication = {
@@ -423,18 +447,19 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
           message: "The end port must be at least the start port.",
         },
       ],
+      { bootProcesses: true },
     ],
   ];
   // All three entrypoints map a ConfigurationValidationError to the code and its details with
-  // the same function, so, as in the observability test, the last case boots them for real.
+  // the same function. Marked negative-resource and ceiling cases boot them for real.
   // The others reach the loader all three call with the file (production mode) and get that
   // function's one-line diagnostic.
-  for (const [index, [mutate, details]] of cases.entries()) {
+  for (const [mutate, details, { bootProcesses = false } = {}] of cases) {
     const configuration = installation();
     configuration.occ.cluster = "production-west";
     mutate(configuration);
     const path = await fixture(t, configuration);
-    if (index < cases.length - 1) {
+    if (!bootProcesses) {
       await assert.rejects(
         loadInstallationConfiguration({
           mode: "production",
@@ -464,6 +489,7 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
       OCC_PORT: "8080",
       OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
       OCC_AUTH_BASE_URL: "https://console.example.test",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
     };
     // All three entrypoints reject before persistence. Ceiling errors must name
     // the Installation input, including its array index, rather than the Agent wrapper.
@@ -519,6 +545,7 @@ test("API and worker refuse a bad observability host or runtime image before ope
         OCC_PORT: "8080",
         OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
         OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
       },
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
@@ -846,21 +873,29 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repositoryPolicy.capability, "repo");
-  // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repositoryPolicy.id, "repository-credentials");
-  assert.equal(worker.repositoryPolicy.id, api.repositoryPolicy.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repositoryPolicy.id });
+  for (const runtime of [api, worker]) {
+    assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+    assert.equal(runtime.repositoryAdmission.policyMode, "built-in");
+    assert.equal(runtime.repositoryAdmission.backendId, registry.backendId);
+  }
+  const policy = api.repositoryAdmission.policy;
+  const workerPolicy = worker.repositoryAdmission.policy;
+  assert.equal(policy.capability, "repo");
+  // The capability name does not replace the operator's opaque policy identity.
+  assert.equal(policy.id, "repository-credentials");
+  assert.equal(workerPolicy.id, policy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: policy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.repository.implementation, api.repositoryPolicy.implementation);
+  assert.equal(api.installation.repository.implementation, policy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repositoryPolicy.resolve(selection);
-  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
+  const resolved = policy.resolveBindings(selection);
+  assert.deepEqual(workerPolicy.resolveBindings(selection), resolved);
   assert.equal(resolved.bindings[0].profile, "git-write");
   assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
   assert.equal(resolved.sessionDurationSeconds, 600);
   assert.throws(
-    () => api.repositoryPolicy.resolve({ ...selection, namespaceId: "ns_other" }),
+    () => policy.resolveBindings({ ...selection, namespaceId: "ns_other" }),
     /permitted/,
   );
   const chatgpt = chatgptInstallation();
@@ -1447,6 +1482,13 @@ test("production embedded replacements preserve their active Service across fail
     servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
+  predecessor.harness = { ...harness, overrides: {} };
+  predecessor.harness.configuration = computeDriver.resolveHarnessConfiguration(
+    predecessor.harness,
+    predecessor.harnessAuth,
+    predecessor.configuration,
+  );
+  predecessor.compute.admission = computeDriver.admitRevision(predecessor);
   const candidate = {
     ...predecessor,
     id: `rev_production-${harness.mode}-candidate`,
@@ -1842,6 +1884,8 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
     boot("apps/controller/src/server.mjs", {
       PATH: process.env.PATH,
       NODE_ENV: "development",
+      OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_CONFIG_PATH: path,
       OCC_HOST: "127.0.0.1",
       OCC_PORT: "8080",

@@ -3,6 +3,7 @@ import test from "node:test";
 import { ControllerWorkspaceFileUnknownOutcomeError } from "../../apps/controller/src/gateway/contracts.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import {
@@ -16,7 +17,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 
 const installationId = "ins_4033697e-6397-4cc6-9b04-8ec17af78cf1";
-const publicOrigin = "http://127.0.0.1";
+const publicOrigin = "https://console.oce.localhost";
 
 const administratorPermissions = [
   { action: "administer", resourceKind: "installation" },
@@ -874,11 +875,14 @@ test("Agent workspace file read aborts provider access on real HTTP client disco
   });
   const address = await app.listen({ host: "127.0.0.1", port: 0 });
   const controller = new AbortController();
-  const response = fetch(
-    new URL(`/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`, address),
+  const response = fetchLoopback(
+    new URL(`/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`, address).href,
     {
       method: "GET",
-      headers: authenticatedHeaders(fixture.app.defaultSession, { origin: publicOrigin }),
+      headers: authenticatedHeaders(fixture.app.defaultSession, {
+        host: new URL(publicOrigin).host,
+        origin: publicOrigin,
+      }),
       signal: controller.signal,
     },
   );

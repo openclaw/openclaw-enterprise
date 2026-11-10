@@ -21,7 +21,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
-const origin = "http://127.0.0.1";
+const origin = "https://console.oce.localhost";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
 export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
@@ -37,6 +37,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
     password: adminPassword,
     authSecret,
     authBaseURL: origin,
+    agentDomain: "agents.oce.localhost",
     installationName: `${label} PostgreSQL test`,
   });
 }
@@ -58,6 +59,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param [options.controllerOptions]
  * @param [options.stateOptions]
  * @param [options.sandboxDriver]
+ * @param [options.secretDriver]
  * @param [options.transportDatabaseUrl]
  * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
@@ -77,6 +79,7 @@ export async function createPostgresAgentApp(
     stateOptions,
     sandboxDriver,
     transportDatabaseUrl = databaseUrl,
+    secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` }),
     poolOptions = {},
   },
 ) {
@@ -90,13 +93,13 @@ export async function createPostgresAgentApp(
     mode: "development",
     installationId: installation.id,
     baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: authSecret,
     pool,
   });
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
   const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
-  const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
@@ -195,5 +198,16 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
+  return {
+    pool,
+    state,
+    controller,
+    computeDriver,
+    app,
+    createApp,
+    principal,
+    inject,
+    deployAgent,
+    adminAccount: { email: adminEmail, password: adminPassword },
+  };
 }

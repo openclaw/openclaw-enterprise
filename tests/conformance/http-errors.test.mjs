@@ -356,7 +356,7 @@ const cases = [
       status: 409,
       code: "RESOURCE_CONFLICT",
       message:
-        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.",
+        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.",
     },
   ],
   [
@@ -1562,7 +1562,8 @@ test("a caller denial names each checked grant without disclosing a Restriction 
         /restriction-1|binding-1|role-1|prn_caller|matching|binding grants/,
         label,
       );
-      // No Role can hold create, so a create denial never asks for a grant (finding 2581).
+      // Only Roles from the Installation configuration hold create, and only OCC binds them, so
+      // a create denial never asks for a grant (finding 2581).
       if (action === "create" && kind !== "installation") {
         assert.match(
           restricted,
