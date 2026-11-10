@@ -1,6 +1,6 @@
 ---
 created: 2026-09-30
-updated: 2026-11-08
+updated: 2026-11-10
 last_updated_session: authoring-run/8719abbf-9776-4ebb-970d-9575222fe52b
 ---
 
@@ -212,6 +212,8 @@ Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
 See the [CLI reference](../reference/cli.md#runtime-status-and-logs) for flags,
 polling and `Retry-After` (`internal/occclient/transport.go:apiError`).
+A cursor poll keeps the initial `tailLines`; timing stays cursor-owned, so the
+poll does not send `sinceSeconds` again or widen the tail.
 Cancellation succeeds only for `runAgentLogs --follow`.
 
 When an Agent has no active revision, a failed fallback notice stops
@@ -247,6 +249,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10: CLI cursor polls keep the initial tailLines; timing stays cursor-owned.
 
 - 2026-11-09 02:46: Propagate fallback notice errors. (authoring-run/f0458286-baf0-414b-845d-eb460e02a598 - 23136d13b45ab43688ea14e771971bfc66378edf)
 
