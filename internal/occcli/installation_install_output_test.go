@@ -24,17 +24,30 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			t.Skip("requires " + tool)
 		}
 	}
-	for _, phase := range []string{"healthy", "intent", "result"} {
-		t.Run(phase, func(t *testing.T) {
+	for _, phase := range []struct {
+		name       string
+		failNotice bool
+		failResult bool
+		failHelm   bool
+	}{
+		{name: "healthy"},
+		{name: "intent", failNotice: true},
+		{name: "result", failResult: true},
+		{name: "helm-failed", failHelm: true},
+		{name: "helm-failed-result", failHelm: true, failResult: true},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
 			for _, setting := range os.Environ() {
 				key, _, _ := strings.Cut(setting, "=")
 				if strings.HasPrefix(key, "HELM_KUBE") || key == "HELM_DRIVER" {
 					t.Setenv(key, "")
 				}
 			}
+			root := t.TempDir()
+			receipt := filepath.Join(root, "receipt")
 			var mu sync.Mutex
 			var releases []json.RawMessage
-			writes := 0
+			creates, updates := 0, 0
 			releaseContentType := "application/json"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -84,10 +97,27 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					mu.Lock()
 					releases = []json.RawMessage{raw}
 					releaseContentType = r.Header.Get("Content-Type")
-					writes++
+					if r.Method == http.MethodPost {
+						creates++
+					} else {
+						updates++
+					}
 					mu.Unlock()
+					if r.Method == http.MethodPost {
+						var dispatch map[string]string
+						if err := readInstallationRecord(receipt, "dispatch.json", &dispatch); err != nil || dispatch["outcome"] != "unknown" {
+							t.Errorf("original dispatch marker before Helm create: %v, err=%v", dispatch, err)
+						}
+						// A failed response after storage makes the real Helm process
+						// exit nonzero while retaining evidence of the initial dispatch.
+						if phase.failHelm {
+							w.WriteHeader(http.StatusInternalServerError)
+							fmt.Fprint(w, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"InternalError","message":"release create response failed","code":500}`)
+							return
+						}
+					}
 					w.Header().Set("Content-Type", r.Header.Get("Content-Type"))
-					if r.Method == "POST" {
+					if r.Method == http.MethodPost {
 						w.WriteHeader(http.StatusCreated)
 					}
 					_, _ = w.Write(raw)
@@ -103,7 +133,6 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			}))
 			defer server.Close()
 			config := installationDoctorKubeconfig(t, server.URL)
-			root := t.TempDir()
 			chart := filepath.Join(root, "chart")
 			if err := os.Mkdir(chart, 0700); err != nil {
 				t.Fatal(err)
@@ -117,33 +146,44 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			if err := os.WriteFile(values, []byte("{}\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			receipt := filepath.Join(root, "receipt")
-			var stdout, stderr bytes.Buffer
-			var output io.Writer = &stdout
+			var outputAttempt, stderr bytes.Buffer
+			var output io.Writer = &outputAttempt
 			failure := errors.New("synthetic output delivery failure")
-			if phase != "healthy" {
+			if phase.failNotice || phase.failResult {
 				remaining := 0
-				if phase == "result" {
+				if phase.failResult {
 					remaining = len(fmt.Sprintf("Installation intent persisted in %s. An interrupted dispatch remains unknown; do not repeat install.\n", receipt))
 				}
-				output = &handoffFailingWriter{remaining: remaining, err: failure}
+				// Record the bytes before the failing writer so the dual-failure case
+				// also proves that the command attempted to report the outcome.
+				output = io.MultiWriter(&outputAttempt, &handoffFailingWriter{remaining: remaining, err: failure})
 			}
 			cmd := New(output, &stderr)
 			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
 			err := cmd.ExecuteContext(t.Context())
-			if phase == "healthy" {
-				if err != nil || !strings.Contains(stdout.String(), "Helm outcome: succeeded.") {
-					t.Fatalf("healthy install: out=%q err=%v stderr=%q", stdout.String(), err, stderr.String())
+			wantOutcome := "succeeded"
+			switch {
+			case phase.failHelm:
+				wantOutcome = "failed"
+				var status *ExitStatusError
+				if !errors.As(err, &status) || status.Code != 1 {
+					t.Errorf("error=%v, want Helm ExitStatusError with code 1", err)
 				}
-			} else if !errors.Is(err, failure) {
-				t.Errorf("error=%v, want the exact output delivery failure", err)
+			case phase.failNotice || phase.failResult:
+				if !errors.Is(err, failure) {
+					t.Errorf("error=%v, want the exact output delivery failure", err)
+				}
+			default:
+				if err != nil {
+					t.Errorf("healthy install: err=%v stderr=%q", err, stderr.String())
+				}
 			}
 			mu.Lock()
-			count := writes
+			createCount, updateCount := creates, updates
 			mu.Unlock()
-			if phase == "intent" {
-				if count != 0 {
-					t.Errorf("Helm mutated release storage %d times after intent output failed", count)
+			if phase.failNotice {
+				if createCount != 0 || updateCount != 0 {
+					t.Errorf("Helm attempted release writes after intent output failed: creates=%d updates=%d", createCount, updateCount)
 				}
 				if _, err := os.Stat(filepath.Join(receipt, "dispatch.json")); !os.IsNotExist(err) {
 					t.Errorf("failed intent output left dispatch evidence: %v", err)
@@ -152,11 +192,18 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					t.Errorf("original persisted intent was lost: %v", err)
 				}
 			} else {
-				if count == 0 {
-					t.Error("real Helm did not write its release")
+				if createCount != 1 {
+					t.Errorf("Helm release writes: creates=%d updates=%d, want one initial create", createCount, updateCount)
 				}
-				if outcome, err := readInstallationOutcome(receipt); err != nil || outcome != "succeeded" {
-					t.Errorf("stored Helm outcome=%q err=%v", outcome, err)
+				var dispatch map[string]string
+				if err := readInstallationRecord(receipt, "dispatch.json", &dispatch); err != nil || dispatch["outcome"] != "unknown" {
+					t.Errorf("stored original dispatch marker: %v, err=%v", dispatch, err)
+				}
+				if outcome, err := readInstallationOutcome(receipt); err != nil || outcome != wantOutcome {
+					t.Errorf("stored Helm outcome=%q err=%v, want %q", outcome, err, wantOutcome)
+				}
+				if !strings.Contains(outputAttempt.String(), "Helm outcome: "+wantOutcome+".") {
+					t.Errorf("missing reported Helm outcome %q in %q", wantOutcome, outputAttempt.String())
 				}
 			}
 		})

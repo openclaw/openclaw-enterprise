@@ -160,13 +160,11 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			finalCtx, done := context.WithTimeout(cmd.Context(), app.parsedTimeout)
 			defer done()
 			result := readInstallationAttempt(finalCtx, frozenConfig, kctx, intent, uid)
-			if _, outputErr := fmt.Fprintf(cmd.OutOrStdout(), "Helm outcome: %s.\n%s\nUse installation doctor or plan with --receipt and the same explicit target. Do not replay an uncertain installation.\n", outcome, result.message); outputErr != nil {
-				return outputErr
-			}
+			_, outputErr := fmt.Fprintf(cmd.OutOrStdout(), "Helm outcome: %s.\n%s\nUse installation doctor or plan with --receipt and the same explicit target. Do not replay an uncertain installation.\n", outcome, result.message)
 			if err != nil {
 				return &ExitStatusError{Code: 1}
 			}
-			return nil
+			return outputErr
 		},
 	}
 	f := cmd.Flags()
