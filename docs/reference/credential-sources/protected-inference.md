@@ -99,8 +99,9 @@ Local function parameter schemas accept `encrypted: true` only on a string schem
 This annotation does not itself encrypt data. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
 `none`, `minimal`, `low`, `medium`, `high` or `xhigh`. It can also include
-`workspaces` with one absolute Git root. The workspace can report a full SHA-1
-or SHA-256 commit hash, a Boolean `has_changes`, and up to 16 Git remote URLs.
+`workspaces` with one absolute Git root. Each entry must include at least one
+of `latest_git_commit_hash` (a lowercase SHA-1 or SHA-256 hash), `has_changes`
+(a Boolean), or `associated_remote_urls` (1–16 named Git remotes).
 The proxy accepts HTTPS URLs without user info and SCP-style URLs with the
 literal `git` transport user. Both forms use plain ASCII repository paths and
 omit queries and fragments. The separate optional
