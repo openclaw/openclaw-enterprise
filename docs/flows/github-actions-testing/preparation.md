@@ -50,12 +50,8 @@ It rejects a partial pair before creating state, so
 build. Omitting both keeps the source-build path; supplying both keeps their
 selected immutable references.
 
-Gateway Routing restores the controller and runtime BuildKit caches through
-`scripts/ci/prepare.mjs:imageBuildArgs`. The shared action supplies cache credentials
-only to preparation. Builds use the checkout and a fixed epoch; they never export
-the cache. Explicit image overrides retain their immutable references. A missing
-cache still builds from source within the existing image budget and test reserve;
-a cache hit is not a guarantee that the full lane will finish on time.
+Gateway Routing restores read-only BuildKit caches through
+`scripts/ci/prepare.mjs:imageBuildArgs`, retaining its image budget and test reserve.
 
 For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
 selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
