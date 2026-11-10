@@ -63,6 +63,7 @@ test("production upgrades check the stock chart before recording evidence or con
   await writeFile(join(checkout, "unrelated.md"), "Outside the chart\n");
   const env = {
     PATH: commandPath(bin, dirname(process.execPath)),
+    ORIGINAL_TOOL_PATH: process.env.PATH,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     OCC_URL: "https://occ.example.invalid",
@@ -102,11 +103,9 @@ test("production upgrades check the stock chart before recording evidence or con
   for (const command of ["helm", "kubectl", "occ"]) {
     await writeCommand(bin, command, "exit 97\n", recorder);
   }
-  // Supply executable lookups for parser tools. This recorder stops the command
-  // at its first read, before either parser would see cluster output.
-  for (const command of ["jq", "yq"]) {
-    await writeCommand(bin, command, "exit 96\n", recorder);
-  }
+  // Parse local values normally; only external commands belong in the cluster log.
+  await writeCommand(bin, "yq", 'PATH="$ORIGINAL_TOOL_PATH" exec yq "$@"\n');
+  await writeCommand(bin, "jq", "exit 96\n", recorder);
   const run = (
     evidence: string,
     gitEnvironment: NodeJS.ProcessEnv = {},
@@ -155,12 +154,15 @@ test("production upgrades check the stock chart before recording evidence or con
 
   const reachesReadiness = async (label: string, gitEnvironment: NodeJS.ProcessEnv = {}) => {
     const evidence = join(directory, label);
-    await assert.rejects(run(evidence, gitEnvironment), { code: 97 });
-    assert.deepEqual(await commandCalls(callLog), [
-      `--kubeconfig ${join(directory, "kubeconfig")} --context fixture --request-timeout=15s get --raw=/readyz`,
-    ]);
-    assert.equal(await readFile(join(evidence, "requested-values.yaml"), "utf8"), "{}\n");
-    await rm(callLog);
+    try {
+      await assert.rejects(run(evidence, gitEnvironment), { code: 97 });
+      assert.deepEqual(await commandCalls(callLog), [
+        `--kubeconfig ${join(directory, "kubeconfig")} --context fixture --request-timeout=15s get --raw=/readyz`,
+      ]);
+      assert.equal(await readFile(join(evidence, "requested-values.yaml"), "utf8"), "{}\n");
+    } finally {
+      await rm(callLog, { force: true });
+    }
   };
 
   await t.test("refuses a case-distinct template hidden by core.ignorecase", async (t) => {
@@ -194,6 +196,43 @@ test("production upgrades check the stock chart before recording evidence or con
   });
 
   await t.test("accepts the clean chart", () => reachesReadiness("clean"));
+  for (const [name, document] of [
+    ["empty", "preprovisionedNamespace: {}\n"],
+    ["null", "preprovisionedNamespace: null\n"],
+  ] as const) {
+    await t.test(`accepts ${name} preprovisioned Namespace settings`, async () => {
+      const values = join(directory, "values.yaml");
+      try {
+        await writeFile(values, document, { mode: 0o600 });
+        await reachesReadiness(`${name}-namespace`);
+      } finally {
+        await writeFile(values, "{}\n", { mode: 0o600 });
+      }
+    });
+  }
+  for (const [name, document] of [
+    ["malformed", "preprovisionedNamespace: [\n"],
+    ["multiple", "{}\n---\n{}\n"],
+  ] as const) {
+    await t.test(`${name} values refuse before cluster access`, async () => {
+      const values = join(directory, `${name}-values.yaml`);
+      const evidence = join(directory, `${name}-values`);
+      await writeFile(values, document, { mode: 0o600 });
+      await assert.rejects(run(evidence, {}, values), {
+        code: 1,
+        stdout: "",
+        stderr:
+          "upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory.\n",
+      });
+      assert.deepEqual(await commandCalls(callLog), []);
+      const errors = await readFile(join(evidence, "preprovisioned-namespace.err"), "utf8");
+      if (name === "malformed") {
+        assert.match(errors, /did not find expected node content/);
+      } else {
+        assert.equal(errors, "");
+      }
+    });
+  }
   const writeDiagnostic =
     "upgrade-production-images: keep the evidence directory and baseline files outside the stock Helm chart.\n";
   await t.test("refuses to create evidence inside the chart through a parent alias", async () => {

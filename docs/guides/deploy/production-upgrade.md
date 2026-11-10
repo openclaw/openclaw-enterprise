@@ -1,9 +1,9 @@
 # Upgrade production images
 
-Upgrade Kubernetes Compute Helm installations using the release checkout's
+Upgrade [Kubernetes Compute releases](production-installation.md) using
 `scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
-See [production installation](production-installation.md) and
-[production Agents](production-agents.md).
+[Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+lack the required chart-owned initializer.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -20,7 +20,7 @@ runtime image and redeploys every running Agent concurrently. Upgrades stop the
 API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
+Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
 
 Configure endpoint and TLS settings in the selected kubeconfig.
@@ -66,17 +66,15 @@ Prepare:
   from the release checkout and restart the Collector even for image-only
   releases. Drift stops preparation unless you pass `--collector-config-reviewed`
   for reviewed settings.
-- PostgreSQL backups for controller migrations that can require data
-  restoration, and Agent-volume backups for runtime releases that can require
-  runtime data restoration.
+- PostgreSQL backups for controller migrations and Agent-volume backups for
+  runtime releases that can require data restoration.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
 and Docker Engine supporting platform-specific inspection and export. Nodes
 matching the control-plane selector must share the host's native `linux/amd64`
-or `linux/arm64`. Freeze those nodes and labels. The helper lists Nodes and, in
-the release namespace, lists ReplicaSets and runs a read-only check with worker
-exec. Local preflight checks protocol compatibility. Check image availability,
+or `linux/arm64`. Freeze those nodes and labels. The helper lists Nodes and
+release namespace ReplicaSets and runs a read-only worker exec check. Local preflight checks protocol compatibility. Check image availability,
 admission, image trust, database durability and session disposal separately.
 
 The serving API must return a complete deployment inventory, even for an empty fleet.
@@ -165,8 +163,8 @@ preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
 settings, including the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
-Select controller and runtime images with their image flags; do not edit those
-image fields or the managed Installation checksum in the copies.
+Select images with their flags; do not edit image fields or the managed
+Installation checksum in candidate files.
 
 Keep the referenced repository registry ConfigMap, broker trust Secrets, and
 other external credential-service configuration unchanged through the release
@@ -181,10 +179,9 @@ Add either or both flags:
 --candidate-installation /secure/occ/candidate-installation.yaml
 ```
 
-The helper saves inputs in private evidence, applies image selections and the
-preserved broker endpoint, then writes the candidate to the
-baseline paths during the upgrade. An Installation change updates its mutable
-Secret or selects the staged immutable successor, and restarts OCC with the new checksum. Retain unchanged candidate files
+The helper saves inputs in private evidence, applies selected images and the
+preserved broker endpoint, then writes candidate baseline files. Installation changes update the mutable Secret or select its staged immutable
+successor and restart OCC with the new checksum. Keep candidate files unchanged
 at these paths for recovery.
 
 ### Apply other Installation changes
@@ -225,17 +222,21 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, rendered Certificate admission, and startup in temporary
-API/worker Jobs.
-Their controller-owned Pods retain chart security and NetworkPolicy labels.
-Unconfirmed Job or child cleanup blocks Secret/policy removal and the upgrade.
+Helm's server dry run, rendered Certificate admission, then startup and migration
+compatibility in temporary Jobs.
+The migration Job uses the candidate controller, initializer's migrator credential/CA, and `scripts/migrate-production.mjs --check`. Recognized pending history
+is allowed; migrations are not applied. The Helm hook rechecks history; separate
+migrations require completion with `--require-current`.
+
+Pods retain chart security and NetworkPolicy labels. Unconfirmed Job or child
+cleanup blocks Secret/policy removal and upgrade.
 
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
 After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-omit `--preflight-only` and use the unused `"$UPGRADE_EVIDENCE"`. Live checks
-repeat. Retain writer and draft freezes through recovery.
+omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
+Keep writer and draft freezes through recovery.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and
@@ -286,10 +287,10 @@ This samples readiness, not routing, model or channel availability. A final-chec
 the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
-If the startup preflight fails, the old release keeps serving. Inspect the
-API and worker preflight logs in the evidence directory. After a cleanup warning
-or interruption, preserve the evidence and lock and follow
-[preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
+Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
+Failed resume prevents further shutdown; writers may already be stopped. Inspect
+current `migration-preflight-resume.*` evidence. Preserve evidence and lock;
+follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
 Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.

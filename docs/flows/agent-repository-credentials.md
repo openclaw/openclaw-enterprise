@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-10"
-last_updated_session: "authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296"
+last_updated_session: "authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440"
 ---
 
 # Agent repository credential flow
@@ -251,36 +251,33 @@ verification stay in force. Codex verifies the named network profile on thread s
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-Stock Git retains commands, remotes, settings and hooks. Configuration rewrites
-canonical HTTPS hosts to their gateway origin. The helper checks host/path,
-generation and deadline before supplying a bearer. `OCE_REPOSITORY_REF` selects
-bindings, not destinations. There is no whole-command preflight or egress confinement.
-See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
-`pushRefAllowlist` selects image-owned hooks.
-`scripts/build-repository-credentials.ts:stage` emits Node launchers that resolve the
-dispatcher from their module URL, supporting symlink chains and package relocation.
+Stock Git keeps commands, remotes, settings and hooks. Configuration routes
+canonical HTTPS hosts to the gateway. The helper checks host, path, generation and
+deadline before returning a bearer. `OCE_REPOSITORY_REF` selects bindings.
+[Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
+`pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
+builds launchers that resolve the dispatcher by module URL through symlinks and relocations.
 `apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
-rejects disallowed destination refs before updates; discovery may contact the service. It delegates arguments and input to common-directory hooks.
-Custom hook paths and API writes remain outside this
-[guardrail](../reference/repository-credentials/push-ref-guardrail.md).
+rejects disallowed refs before updates and passes arguments and input to
+common-directory hooks. See [discovery and hook limits](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/access/client/router.ts:routeRepositoryClient`
-routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
-reference and session, selects private configuration and preserves HOME and shared selection.
+routes `gh` by explicit target or effective remote. It pins generation, ref and
+session, selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
-`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
-validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository);
-cache hints never replace authorization.
+`apps/controller/src/drivers/repo/github/access/routes/request-selection.ts:requestHead`
+accepts [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+For `git-write`, `draftScope` omits the accepted timezone header from planner input.
+The current grant owner authorizes the signed request.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
-uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
-patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
-destination before durable approval. See
-[access levels](../reference/repository-credentials/access-levels.md).
+uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
+Draft heads require concrete refs. Receive-pack rejects disallowed refs before
+durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
-enforces bearer, immutable repository/profile, capacity and deadlines, acquiring
-fresh installation tokens under the same grant until the version deadline.
+checks bearer, fixed repository/profile, capacity and deadlines. It refreshes
+installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
@@ -376,6 +373,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 11:39: Trace scoped GitHub CLI draft request validation. (authoring-run/c50e0843-88eb-48ee-9b60-f931b56fa440 - e8131a4495a3dd34f02bf6f9a5107c994568a313)
 
 - 2026-11-10 07:56: Merge repository flow. (authoring-run/38bf80b2-72d7-4de5-8ae3-6f161a5a5296 - 71d4ad6cdb9587a86c46c64c661a9009d413e51f)
 
