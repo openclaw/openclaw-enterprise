@@ -39,7 +39,7 @@ import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
-import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const executeFile = promisify(execFile);
@@ -3590,6 +3590,77 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   await f.run("--resume");
   assert.equal((await f.state()).version, 2);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
+  for (const mode of [
+    "remove empty",
+    "remove aliased empty",
+    "remove nonempty",
+    "change domain",
+    "add empty",
+    "baseline drift",
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(t, { controllerOnly: true });
+      const baseline = await yamlFile(join(f.directory, "values.json"));
+      baseline.agentNativeAdmin = { domain: "agents.example.test" };
+      if (mode !== "add empty") {
+        baseline.agentNativeAdmin.sharedCookieDomain =
+          mode === "remove nonempty" ? "example.test" : "";
+      }
+      if (mode === "remove aliased empty") {
+        baseline.api ??= {};
+        baseline.api.channelDirectoryProxyUrl = "";
+      }
+      for (const file of ["values.json", "live-values"]) {
+        await writeFile(join(f.directory, file), JSON.stringify(baseline));
+      }
+      if (mode === "remove aliased empty") {
+        // A saved YAML alias and Helm's resolved value describe the same baseline.
+        const { agentNativeAdmin, ...settings } = baseline;
+        const saved = dumpYaml({ ...settings, agentNativeAdmin })
+          .replace(/channelDirectoryProxyUrl: (?:''|"")/, 'channelDirectoryProxyUrl: &empty ""')
+          .replace(/sharedCookieDomain: (?:''|"")/, "sharedCookieDomain: *empty");
+        await writeFile(join(f.directory, "values.json"), saved);
+      }
+      const candidate = structuredClone(baseline);
+      delete candidate.agentNativeAdmin.sharedCookieDomain;
+      if (mode === "change domain") {
+        candidate.agentNativeAdmin.domain = "other.example.test";
+      } else if (mode === "add empty") {
+        candidate.agentNativeAdmin.sharedCookieDomain = "";
+      } else if (mode === "baseline drift") {
+        // Removing the obsolete field from the live baseline must not bypass drift detection.
+        await writeFile(join(f.directory, "values.json"), JSON.stringify(candidate));
+      }
+      const path = join(f.directory, "cookie-candidate.json");
+      await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
+      if (mode === "remove empty" || mode === "remove aliased empty") {
+        // Exercise the normal helper through Helm submission; the retained baseline
+        // must remain attributable while the submitted candidate drops the invalid field.
+        await f.run("--candidate-values", path);
+        const before = await yamlFile(join(f.evidence, "before-live-values.yaml"));
+        const after = await yamlFile(join(f.directory, "live-values"));
+        assert.deepEqual(before, baseline);
+        assert.deepEqual(after.agentNativeAdmin, candidate.agentNativeAdmin);
+        assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+        assert.equal((await f.state()).helmSubmissions, 1);
+      } else {
+        await assert.rejects(
+          f.run("--candidate-values", path),
+          mode === "baseline drift"
+            ? /protected Helm values differ from the live release/
+            : /candidate values change a protected setting/,
+        );
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual([state.api, state.worker], [1, 1]);
+        assert.equal(state.helmSubmissions ?? 0, 0);
+        assert.equal(state.preflight, undefined);
+      }
+    });
+  }
 });
 
 test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
