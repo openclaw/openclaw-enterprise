@@ -33,27 +33,17 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return fmt.Errorf("%s is no longer supported; browser session cookies derive their domain from the Console and Agent hosts", key)
 		}
 	}
-	networkEgressMode, err := r.networkEgressMode()
-	if err != nil {
+	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
 		return err
 	}
-	defaultSandbox, defaultControlPlane := "none", "compose"
-	if networkEgressMode == "public" {
-		defaultSandbox, defaultControlPlane = "openshell", "kubernetes"
+	if err := profile.CheckSandboxDriver(); err != nil {
+		return err
 	}
-	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", defaultSandbox)
-	if sandboxDriver != "none" && sandboxDriver != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	if err := profile.CheckControlPlane(); err != nil {
+		return err
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultControlPlane)
-	if controlPlane != "compose" && controlPlane != "kubernetes" {
-		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
-	}
-	if networkEgressMode == "public" && (sandboxDriver != "openshell" || controlPlane != "kubernetes") {
-		return fmt.Errorf("public network egress requires OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell and OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes for authenticated Credential Gateway delivery; otherwise set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted")
-	}
-	r.env["OCC_DEVELOPMENT_SANDBOX_DRIVER"] = sandboxDriver
-	r.env["OCC_DEVELOPMENT_CONTROL_PLANE"] = controlPlane
+	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
@@ -106,7 +96,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
-	state.NetworkEgressMode = networkEgressMode
+	state.NetworkEgressMode = profile.NetworkEgressMode
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
 	{
@@ -808,14 +798,4 @@ func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, 
 		}
 		return status == "ready", nil
 	})
-}
-
-// networkEgressMode selects a new installation; saved state owns later rendering.
-func (r *runner) networkEgressMode() (string, error) {
-	// TODO(public-egress-images): Enable the proposed public default after bundled images qualify.
-	mode := r.setting("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
-	if mode != "public" && mode != "restricted" {
-		return "", fmt.Errorf("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE must be public or restricted")
-	}
-	return mode, nil
 }

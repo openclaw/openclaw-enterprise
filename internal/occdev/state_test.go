@@ -79,9 +79,9 @@ func TestNetworkEgressChoicePersistsThroughReload(t *testing.T) {
 func TestNewNetworkEgressChoice(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{{"", "restricted"}, {"public", "public"}, {"restricted", "restricted"}} {
 		t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", tc.input)
-		got, err := newRunner(Options{}).networkEgressMode()
-		if err != nil || got != tc.want {
-			t.Fatalf("selection %q = %q, %v", tc.input, got, err)
+		got := ResolveProfile(os.Getenv).NetworkEgressMode
+		if got != tc.want {
+			t.Fatalf("selection %q = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 	for _, controlPlane := range []string{"compose", "kubernetes"} {

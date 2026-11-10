@@ -13,21 +13,18 @@ var developmentDatabaseName = regexp.MustCompile(`^openclaw_k8s_[a-z0-9_]+$`)
 // before Compute dispatch, including callers that otherwise bypass Up.
 func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
-	defaultControlPlane := "compose"
-	if r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] == "kubernetes" && r.env["OCC_DEVELOPMENT_NETWORK_EGRESS_MODE"] == "public" {
-		defaultControlPlane = "kubernetes"
+	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
+		return err
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultControlPlane)
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
-	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
+	if _, err := r.selectedDevelopmentDatabase(profile.ControlPlane); err != nil {
 		return err
 	}
-	if _, selected := r.env["OCC_DEVELOPMENT_DATABASE_NAME"]; selected && r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" {
-		return fmt.Errorf("OCC_DEVELOPMENT_DATABASE_NAME requires Kubernetes Compute")
-	}
-	return nil
+	_, selected := r.env["OCC_DEVELOPMENT_DATABASE_NAME"]
+	return profile.checkDatabaseNameCompute(selected)
 }
 
 func (r *runner) protectedEgressSelection() error {

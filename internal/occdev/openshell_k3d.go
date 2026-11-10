@@ -68,10 +68,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
-	networkEgressMode, err := r.networkEgressMode()
-	if err != nil {
+	profile := resolveProfile(r.env)
+	if err := profile.checkNetworkEgress(); err != nil {
 		return err
 	}
+	networkEgressMode := profile.NetworkEgressMode
 	if networkEgressMode == "public" && sandboxDriver != "openshell" {
 		return fmt.Errorf("public network egress requires OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell; otherwise set OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted")
 	}
