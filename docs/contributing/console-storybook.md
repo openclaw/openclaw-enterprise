@@ -60,6 +60,11 @@ Check keyboard focus, search, navigation, an open dialog, and empty, loading,
 error, permission-denied, and missing-credential stories. The console stays light
 under either system appearance.
 
+In **Components/Native admin → Available on tablet**, check that the 768px preview
+keeps the Agent name readable beside the visible sidebar. The title uses its own
+row below the back link and actions. Open Agent UI must still open the fixture.
+Compare **Available** at desktop and phone widths to check the surrounding layouts.
+
 The Claw palette, type scale, and surface geometry reference
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
 particularly `src/styles/base.css`, `layout.css`, and `components.css`.

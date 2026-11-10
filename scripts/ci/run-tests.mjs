@@ -2169,7 +2169,10 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+  const manifest = normalizeManifest(
+    loadTestSuites(manifestPath, process.env.OCC_CI_SUITE_VIEW),
+    manifestPath,
+  );
 
   if (command === "check-selection") {
     if (!positionals[0] || options.file === undefined) {

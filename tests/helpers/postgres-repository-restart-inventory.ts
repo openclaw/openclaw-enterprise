@@ -21,39 +21,41 @@ import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.
 export async function repositoryRestartInventory(
   t: TestContext,
   revision: AgentRevision,
-  input: Parameters<typeof createOpenShellCapabilities>[0],
+  input: Parameters<typeof createOpenShellCapabilities>[0] | undefined,
   fixture: Pick<
     Awaited<ReturnType<typeof standingExecutionPlatform>>,
     "database" | "observerPool" | "state" | "installation" | "actor" | "controller"
   >,
 ) {
-  const capabilities = createOpenShellCapabilities(input);
-  t.after(() => capabilities.close());
-  const owner = new InstalledDriver(
-    {
-      ...input.sandbox,
-      configuration: input.proxy!.configuration,
-    },
-    { capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! } },
-  );
+  const capabilities = input === undefined ? undefined : createOpenShellCapabilities(input);
+  t.after(() => capabilities?.close());
+  const owner =
+    input !== undefined && capabilities !== undefined
+      ? new InstalledDriver(
+          { ...input.sandbox, configuration: input.proxy!.configuration },
+          {
+            capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
+          },
+        )
+      : undefined;
   const compute = createTestKubernetesComputeDriver(revision.compute.id, {
-    repositoryCredentials: true,
-    protectedDriver: owner,
+    ...(owner === undefined ? {} : { repositoryCredentials: true, protectedDriver: owner }),
   });
   const metadata = {
     name: kubernetesNamespaceName(revision.namespaceId),
     ...compute["ownershipMetadata"]({ namespaceId: revision.namespaceId }),
   };
+  const namespace = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata,
+    status: { phase: "Active" },
+  };
   t.mock.method(compute, "preflight", async () => ({ warnings: [] }));
   t.mock.method(compute, "clients" as never, async () => ({
     core: {
       listNamespace: async () => ({ items: [{ metadata }] }),
-      readNamespace: async () => ({
-        apiVersion: "v1",
-        kind: "Namespace",
-        metadata,
-        status: { phase: "Active" },
-      }),
+      readNamespace: async () => namespace,
     },
   }));
   const drivers = createBackendWorkerDrivers(compute, []);
@@ -69,24 +71,28 @@ export async function repositoryRestartInventory(
   });
   assert.ok(configured);
 
-  const installation = {
-    ...configured.installation,
-    drivers: {
-      ...configured.installation.drivers,
-      sandbox: {
-        ...input.sandbox,
-        configuration: input.proxy!.configuration,
-        definition: {
-          configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-          validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
-          configurationContributions: OpenShellSandboxDriver.configurationContributions,
-        },
-      },
-    },
-  };
+  const installation =
+    input === undefined
+      ? configured.installation
+      : {
+          ...configured.installation,
+          drivers: {
+            ...configured.installation.drivers,
+            sandbox: {
+              ...input.sandbox,
+              configuration: input.proxy!.configuration,
+              definition: {
+                configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
+                validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+                configurationContributions: OpenShellSandboxDriver.configurationContributions,
+              },
+            },
+          },
+        };
   // The worker fixture owns a per-test database and an IAM-only actor. Provision
   // an actual password account there before exercising the authenticated API.
   const authSecret = "standing-execution-local-test-secret-32";
+  const origin = "https://console.oce.localhost";
   const credentials = {
     email: "postgres-admin@openclaw.local",
     password: "postgres-development-password",
@@ -94,7 +100,8 @@ export async function repositoryRestartInventory(
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: fixture.installation.id,
-    baseURL: "http://127.0.0.1",
+    baseURL: origin,
+    agentDomain: "agents.oce.localhost",
     secret: authSecret,
     pool: fixture.observerPool,
   });
@@ -142,30 +149,35 @@ export async function repositoryRestartInventory(
       host: "127.0.0.1",
       databaseUrl: fixture.database.url,
       authSecret,
-      authBaseURL: "http://127.0.0.1",
+      authBaseURL: origin,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     },
     {
       ...drivers,
       installation,
-      protectedDriver: owner,
-      sandboxDriver: capabilities.sandbox,
-      repositoryTransport: capabilities.repositoryTransport,
+      ...(owner === undefined || capabilities === undefined
+        ? {}
+        : {
+            protectedDriver: owner,
+            sandboxDriver: capabilities.sandbox,
+            repositoryTransport: capabilities.repositoryTransport,
+          }),
     },
   );
   t.after(() => app.close());
   const login = await app.inject({
     method: "POST",
     url: "/api/auth/sign-in/email",
-    headers: { host: "127.0.0.1", "content-type": "application/json" },
+    headers: { host: "console.oce.localhost", "content-type": "application/json" },
     payload: JSON.stringify(credentials),
   });
   assert.equal(login.statusCode, 200, login.body);
   const cookies = login.headers["set-cookie"];
-  const headers = authenticatedHeaders({
-    origin: "http://127.0.0.1",
-    cookie: cookieHeaderFromSetCookie(cookies),
-  });
-  return async () => {
+  const headers = authenticatedHeaders(
+    { origin, cookie: cookieHeaderFromSetCookie(cookies) },
+    { host: "console.oce.localhost" },
+  );
+  const read = async () => {
     const response = await app.inject({
       method: "GET",
       url: "/installation/deployment-inventory",
@@ -179,6 +191,7 @@ export async function repositoryRestartInventory(
     assert.equal(agent.activeRevisionId, revision.id);
     return agent.repositoryWorkerRestart;
   };
+  return { read, namespace };
 }
 
 /** Hash complete owner rows so failures reveal no stored credential material. */

@@ -46,7 +46,7 @@ Prepare:
   root to check the chart and live Collector configuration;
 - the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
   [release binary](../cli.md#connect-to-your-installation) or build it with
-  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout;
+  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The CLI reads deployment inventory and deploys Agents;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
@@ -67,8 +67,7 @@ Prepare:
 
 Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
-images on a Linux host running as UID 1000. Docker Engine must support
-platform-specific image inspection and export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
+images on a Linux host running as UID 1000. Docker Engine must support platform-specific inspection/export. Install OpenSSL. Every node matching the control-plane selector must match the host's native
 `linux/amd64` or `linux/arm64` architecture. Freeze eligible nodes and their labels
 during maintenance. The Kubernetes identity must list nodes, read Deployments,
 ReplicaSets and Pods, and run a read-only check in the worker container. Local
@@ -80,17 +79,15 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review runtime drafts before deployment.
-
-Every upgrade needs the serving API’s inventory; controller-only upgrades
-also read retained revisions with `occ agent revision`.
-
-Controller-only upgrades require saved Harness settings and a positive
-[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
-for retained running revisions. Otherwise, stop and settle affected Agents under
-an authorized interruption, or plan normal replacement. Missing or denied inventory
-is not an empty fleet. A changed pre-stop inventory requires new preparation.
-Git continuity still requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
+Review runtime drafts; deployments snapshot them. Every upgrade needs the serving
+API’s inventory endpoint. Controller-only upgrades also read retained revisions
+with `occ agent revision`, requiring saved Harness settings and an accepted
+[repository restart disposition](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments refuse retention, including on the first upgrade from an
+older controller. Stop and settle affected Agents under an authorized interruption,
+or plan normal runtime replacement. Missing or denied inventory is not an empty
+fleet. A changed pre-stop inventory requires new preparation. Git continuity still
+requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
 For OpenShell, changed Harness commands require fresh Agent revisions: existing
 Sandboxes require the original launch specification. Plan an authorized redeployment
@@ -125,9 +122,8 @@ git rev-parse HEAD
 git status --short --untracked-files=all
 ```
 
-Continue only if `git rev-parse HEAD` reports the reviewed commit and the status
-command succeeds with no output. The evidence directory must not exist. The
-helper creates it with mode `0700`. Set the target once in the same shell:
+Continue only if HEAD matches the reviewed commit and status succeeds without
+output. The evidence directory must not exist; it is created with mode `0700`. Set the target once in the same shell:
 
 ```bash
 target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
@@ -138,7 +134,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
+Keep `--values` and `--installation` as the live baseline. Review owner-only copies:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -146,20 +142,20 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidate values may also select a [staged immutable Installation Secret](immutable-installation-upgrade.md).
+Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
-The helper does not convert the baseline automatically. Other configuration
-changes are not supported by this upgrade command.
+Remove obsolete `agentNativeAdmin.sharedCookieDomain` only if empty; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
+The helper does not convert the baseline automatically. Other configuration changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
-The command does not change IAM, authentication, Installation identity, database,
+Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings through these candidate files. Repository settings include the GitHub
-Backend and registry path, Repo Driver, and Compute credential-service peer.
+settings, including the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
 Select controller and runtime images with their image flags; do not edit those
 image fields or the managed Installation checksum in the copies.
 
@@ -245,14 +241,13 @@ Shared-namespace releases refuse this single-cluster layout.
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before startup Jobs or writer changes, the selected case and cleanup must pass
-for the recorded incumbent release image and selected candidate image digests.
-Index, platform-manifest and configuration digests are not interchangeable.
+Before shutdown, both the database-write and configured IAM activation cases must
+pass, including cleanup, for the exact image digests. Index, manifest and config
+digests are distinct.
 
-The receipt stays [frozen through recovery](production-upgrade-recovery.md).
-Operators must establish authenticity. `sourceSha` identifies the runner checkout,
-not image revisions or worktree cleanliness. This proves neither IAM startup
-compatibility nor online or rollback safety; writers still stop.
+[Recovery retains the receipt](production-upgrade-recovery.md). Verify its provenance:
+`sourceSha` identifies the test checkout, not image revisions or worktree cleanliness.
+These checks do not qualify online migration or rollback; writers still stop.
 
 Omit `--runtime-image`:
 
@@ -287,7 +282,7 @@ or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
-Helm migrates, bootstraps and restores Deployments. The helper verifies rollout and OCC access.
+Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.
 
 ```text
 Upgraded controller image; no Agent deployments were requested.

@@ -12,6 +12,13 @@ import {
   currentComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  repositoryRestartInventory,
+  repositoryRestartState,
+} from "../helpers/postgres-repository-restart-inventory.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { waitFor, within } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
@@ -1106,6 +1113,68 @@ test(
     const inventory = await fixture.controller.getInstallationDeploymentInventory(fixture.actor.id);
     assert.deepEqual(inventory.namespaces.find(({ id }) => id === fixture.namespace.id).agents, []);
     assert.deepEqual(await readCleanup(), cleanupBeforeInventory);
+  },
+);
+
+test(
+  "deployment inventory allows a no-repository revision only while Compute owns its Namespace",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const compute = createTestKubernetesComputeDriver("inventory-no-repository");
+    fixture.controller.registerDriver(compute);
+    fixture.controller.selectDriver("compute", compute.id);
+    const owner = await fixture.agent("inventory-no-repository");
+    const configuration = await fixture.controller.createConfiguration(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    await fixture.controller.updateAgent(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      configurationId: configuration.id,
+      gatewayManagedMode: false,
+    });
+    // Admission uses the selected Kubernetes Compute; the worker controls only the
+    // unrelated workload transport, as in the existing revision lifecycle fixtures.
+    const revision = await fixture.controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId: fixture.namespace.id, agentId: owner.id },
+      resolveApprovedHarness,
+    );
+    assert.equal(revision.repositoryCredentials, undefined);
+    assert.equal(revision.egressPlan?.repositoryGit, undefined);
+    assert.equal(revision.egressPlan?.repositoryGitAuthorization, undefined);
+    assert.equal(revision.compute.id, compute.id);
+    assert.equal(revision.compute.implementation, compute.implementation);
+    assert.match(revision.compute.admission, /^model-provider:v1:[a-f0-9]{64}:$/u);
+    await fixture.start({
+      ...fixture.compute,
+      id: compute.id,
+      implementation: compute.implementation,
+    });
+    await waitFor("the admitted no-repository revision to become active", async () => {
+      const status = await fixture.deploymentStatus(owner, revision);
+      return status.status === "succeeded" ? status : undefined;
+    });
+    await fixture.stop();
+
+    // A separately composed API must ask the real Compute owner rather than infer
+    // permission to restart from the absence of repository rows or a warm cache.
+    const inventory = await repositoryRestartInventory(context, revision, undefined, fixture);
+    const before = await repositoryRestartState(fixture.observerPool, revision.id);
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    const labels = inventory.namespace.metadata.labels;
+    const namespaceId = labels["openclaw.dev/namespace"];
+    labels["openclaw.dev/namespace"] = "ns_another_owner";
+    assert.equal(await inventory.read(), "unknown");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    labels["openclaw.dev/namespace"] = namespaceId;
+    assert.equal(await inventory.read(), "not-applicable");
+    assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, revision.id);
   },
 );
 

@@ -3,10 +3,10 @@ import type {
   ProtectedRepositoryGitAuthority,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { RepositoryServiceFactory } from "../../drivers/repo/credentials/backend-contracts.ts";
-import type { ServiceConfig } from "../../drivers/repo/credentials/service-contracts.ts";
-import type { TlsMaterial } from "../../drivers/repo/credentials/internal-contracts.ts";
-import type { GitHubTokenClass } from "../../drivers/repo/github/credentials/types.ts";
+import type { RepositoryServiceFactory } from "../../drivers/repo/access/backend-contracts.ts";
+import type { ServiceConfig } from "../../drivers/repo/access/service-contracts.ts";
+import type { TlsMaterial } from "../../drivers/repo/access/internal-contracts.ts";
+import type { GitHubTokenClass } from "../../drivers/repo/github/access/types.ts";
 
 export interface LoadedConfiguration {
   readonly config: ServiceConfig;

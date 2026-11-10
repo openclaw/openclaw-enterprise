@@ -34,7 +34,7 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -531,23 +531,28 @@ async function repositoryGitJourney(
   // read callback, while the live worker retains its route and launch witness.
   const inventory =
     pendingSuccessor === "cold-worker"
-      ? await repositoryRestartInventory(
-          t,
-          revision,
-          {
-            sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
-            createSandbox: (configuration, selection) =>
-              new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
-            backend: { ...backend, client: { ...backend.client, close: async () => {} } } as never,
-            operatorOwnedKubernetesResources: false,
-            repository: {
-              configuration: runtime.configuration,
-              resolveDelivery: createGitHubRepositoryDeliveryResolver(peer.registry),
+      ? (
+          await repositoryRestartInventory(
+            t,
+            revision,
+            {
+              sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
+              createSandbox: (configuration, selection) =>
+                new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
+              backend: {
+                ...backend,
+                client: { ...backend.client, close: async () => {} },
+              } as never,
+              operatorOwnedKubernetesResources: false,
+              repository: {
+                configuration: runtime.configuration,
+                resolveDelivery: createGitHubRepositoryDeliveryResolver(peer.registry),
+              },
+              proxy: { id, configuration: opts, preparedProviders: [] },
             },
-            proxy: { id, configuration: opts, preparedProviders: [] },
-          },
-          f,
-        )
+            f,
+          )
+        ).read
       : undefined;
   const queued = await f.observerPool.query(
     "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1",

@@ -12,7 +12,7 @@ import {
   PostgresPlatformState,
   DependencyUnavailableError,
 } from "../../packages/occ/src/index.ts";
-import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
+import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { servePrivateRepositoryRequest } from "../../apps/controller/src/backends/repository-credentials/private-request-server.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
@@ -398,11 +398,7 @@ test(
       }),
       { mode: 0o600 },
     );
-    const operator = join(
-      appRoot,
-      "drivers/repo/github/credentials/client",
-      `operator.${appExtension}`,
-    );
+    const operator = join(appRoot, "drivers/repo/github/access/client", `operator.${appExtension}`);
     const result = await run(process.execPath, [
       operator,
       "open",

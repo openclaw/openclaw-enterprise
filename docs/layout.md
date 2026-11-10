@@ -53,8 +53,8 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
 | `apps/controller/src/console/`                            | Browser console modules, styles, and assets.                                                                 |
-| `apps/controller/src/drivers/repo/credentials/`           | Private repository credential contracts, sessions, custody, lifecycle, listeners, and transport.             |
-| `apps/controller/src/drivers/repo/github/credentials/`    | GitHub credential backend, grant policy, authentication, provider transport, and Git/gh clients.             |
+| `apps/controller/src/drivers/repo/access/`                | Private repository credential contracts, sessions, custody, lifecycle, listeners, and transport.             |
+| `apps/controller/src/drivers/repo/github/access/`         | GitHub credential backend, grant policy, authentication, provider transport, and Git/gh clients.             |
 | `apps/controller/src/composition/repository-credentials/` | Protected file loading, key/TLS assembly, configuration checking, and separate service startup.              |
 | `packages/contracts/src/`                                 | Shared resource models, Driver contracts under `drivers/`, and API schemas under `api/`.                     |
 | `packages/occ/src/`                                       | Platform lifecycle and resource ownership, persistence ports and state implementations, and controller work. |
@@ -92,9 +92,9 @@ uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
 `packages/contracts/src/drivers/repo/index.ts`, implemented by `drivers/repo/github/policy.ts`
 and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
-- `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
+- `drivers/repo/access/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
-- `drivers/repo/github/credentials/`: GitHub policy, backend and closed Git/gh client bundle.
+- `drivers/repo/github/access/`: GitHub policy, backend and closed Git/gh client bundle.
 - `drivers/repo/github/public-read/`: credential-free public GitHub reader and its Agent skill.
 - `backends/repository-credentials/control-client.ts`: configured private-service
   connection and complete response validation.
@@ -140,6 +140,8 @@ graph. The full `deploy/runtime/Dockerfile` uses the repository root as its buil
 context to include the emitted client router in the Agent image.
 `deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
 checksum, and fixed build timestamp used by that runtime recipe and its callers.
+`deploy/runtime/node/` owns the runtime's pinned Node source, termination patch,
+native build and verification. Its patch inventory is separate from OpenClaw's.
 
 Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
 and are embedded in rendered container commands; they ship with the chart.

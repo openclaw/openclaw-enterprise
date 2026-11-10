@@ -1382,7 +1382,8 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
   // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
-  // Full Integration allocation while ordinary CI uses four CPUs.
+  // Full Integration allocation while ordinary CI uses four CPUs. Observability
+  // retains four CPUs here while ordinary CI qualifies two CPUs.
   const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1409,7 +1410,11 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
   for (const lane of pinned) {
     assert.equal(
       runnerFor(job, lane),
-      lane === "k3d-fixture-state" ? "blacksmith-8vcpu-ubuntu-2404" : ciRunners.get(lane),
+      lane === "k3d-fixture-state"
+        ? "blacksmith-8vcpu-ubuntu-2404"
+        : lane === "k3d-observability"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : ciRunners.get(lane),
       lane,
     );
   }
@@ -2732,7 +2737,13 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-4vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability"
+          ? "blacksmith-2vcpu-ubuntu-2404"
+          : "blacksmith-4vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [
@@ -3047,7 +3058,7 @@ test("shared runtime consumers omit idle builders and preserve source builders",
   }
 });
 
-test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration.yml");
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
@@ -3107,6 +3118,14 @@ test("full aggregate attributes image coverage to its consumer and producer jobs
     assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
     assert.equal(output["pr-safe-same-sha"].result, "success");
     assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
+  }
+  for (const selection of ["all", "openshell"]) {
+    const output = execute(selection, { openshell: { result: "failure" } });
+    const lanes = ["openshell-policy", "openshell-installers"];
+    assert.deepEqual(output.openshell, { result: "failure", lanes });
+    for (const lane of lanes) {
+      assert.equal(output[lane], undefined);
+    }
   }
   const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
   assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");

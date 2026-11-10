@@ -99,6 +99,7 @@ backend:
       repo: repository-credentials
 repository:
   id: repository-credentials
+  policyMode: built-in
   configuration:
     sessionDurationSeconds: 86400
   nativeSender:
@@ -111,10 +112,14 @@ repository:
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match `repository.id`. Startup rejects the retired Installation `drivers.repo`
-selection; see [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check). The registry's Backend
-ID must match the definition, and the session duration must fit the registry's
-maximum. Unsupported Driver packages or configuration keys fail startup.
+must match `repository.id`. New installations can set `repository.policyMode` to
+`built-in` to use the registry policy without registering a public Repo Driver.
+Omitting the setting preserves legacy registration and selection. A built-in
+installation rejects a separate Repo Driver registration. Startup rejects the
+retired Installation `drivers.repo` selection. The registry's Backend ID must
+match the definition, and the session duration must fit the registry's maximum.
+See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
+for delivery settings.
 
 The API, worker, and credential service consume the same immutable, versioned
 registry ConfigMap. Its exact Namespace, repository, and profile policies own

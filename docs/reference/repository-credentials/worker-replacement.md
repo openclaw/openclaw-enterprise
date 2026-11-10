@@ -62,3 +62,10 @@ omitted values before stopping either writer. Stop and settle affected Agents
 under an authorized interruption, or plan normal revision replacement. A missing
 endpoint or denied inventory does not establish an empty fleet. Runtime upgrades
 keep their explicit replacement and dispatch journal.
+
+For the first upgrade from a controller that returns inventory without this
+assessment, even a revision without repository access cannot establish
+`not-applicable`. Stop and settle retained running Agents before preparation, or
+use the authorized runtime replacement workflow. A complete inventory with no
+retained running revisions needs no assessment. The helper never infers an empty
+fleet or bypasses this check to upgrade the controller first.

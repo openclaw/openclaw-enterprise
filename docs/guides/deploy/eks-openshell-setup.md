@@ -92,7 +92,7 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 
 ### Refresh API network policies after the node groups join
 
-EKS can add an API endpoint after the first EndpointSlice appears. Once both node groups are ready, collect the current addresses below. Repeat this check immediately before installing OCC or when certificate admission times out.
+EKS control-plane addresses can change after initial setup. Once both node groups are ready, collect the current addresses below. Repeat this check immediately before installing or upgrading OCC, and when webhook admission times out.
 
 ```bash
 # API clients can reach the Service IP or a backing endpoint.
@@ -117,7 +117,9 @@ webhook_cidrs=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
 printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 ```
 
-Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach the admission webhook ports. Use the refreshed `API_CIDRS` when rendering OCC values. Confirm that cert-manager can admit a certificate request and issue a Ready certificate under strict NetworkPolicy before continuing.
+Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
+
+Before changing OCC workloads, verify real API-server admission through every installed prerequisite webhook using its owning infrastructure procedure. Controller readiness alone does not prove webhook connectivity. For cert-manager, also confirm that a certificate request produces a Ready certificate under strict NetworkPolicy. The production upgrade command checks server-side admission for rendered Certificates before stopping the controllers.
 
 ### Authenticate the image builder to ECR
 
@@ -189,6 +191,6 @@ After activation, check accepted/programmed Gateway and HTTPRoute status, ready 
 
 In the Console **Workspace files** tab, read all four paths, save and reload a harmless change, then restore the original. Previously absent files should report `NOT_FOUND` with editable fields, not `DEPENDENCY_UNAVAILABLE`. A bound PVC or healthy OCC API alone does not prove routing. Across Pod replacement, compare PVC identities and existing session IDs to verify retained Gateway state. Record resource ownership, backups, credential renewal and recovery responsibilities using [production handoff](production-handoff.md).
 
-For later upgrades, use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
+For later upgrades, first repeat the [API and webhook policy refresh](#refresh-api-network-policies-after-the-node-groups-join). Then use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
 
 To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).

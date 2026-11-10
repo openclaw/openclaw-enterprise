@@ -126,6 +126,8 @@ if (args[0] === "inspect") {
     "prepare / Prepare runtime (arm64)",
     "Assemble controller OCI image",
     "Assemble runtime OCI image",
+    "prepare / Smoke runtime (amd64)",
+    "prepare / Smoke runtime (arm64)",
   ].map((name) => ({
     name,
     head_sha: sourceSha,
@@ -349,7 +351,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       () => jobs.push({ ...jobs[1] }),
       /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
     ],
-    [() => jobs.pop(), /^Exactly one successful Assemble runtime OCI image job/],
+    [() => jobs.splice(6, 1), /^Exactly one successful Assemble runtime OCI image job/],
     [
       () => jobs.splice(1, 1),
       /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
@@ -369,6 +371,12 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       /^prepare \/ Prepare controller \(arm64\) job must have succeeded/,
     ],
     [() => (jobs[6].conclusion = "failure"), /^Assemble runtime OCI image job must have succeeded/],
+    // Retained build/assembly metadata never excuses a missing or failed native smoke job.
+    [() => jobs.pop(), /^Exactly one successful prepare \/ Smoke runtime \(arm64\) job/],
+    [
+      () => (jobs[7].conclusion = "failure"),
+      /^prepare \/ Smoke runtime \(amd64\) job must have succeeded/,
+    ],
     [
       // The selected attempt's own jobs decide: attempt 1 succeeded, but rerun attempt 2's
       // runtime assembly failed.

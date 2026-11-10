@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
+import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
 import { downloadPinnedArtifact } from "./routing.mjs";
 
 const openShellVersion = "0.1.6";
@@ -68,13 +69,6 @@ function assertCluster(cluster) {
     throw new Error("cluster.context must select the owned k3d context.");
   }
   return { ...cluster, directory, kubeconfig };
-}
-
-function assertInsideDirectory(parent, child, description) {
-  const relativePath = relative(parent, resolve(child));
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error(`${description} must stay inside ${parent}.`);
-  }
 }
 
 function assertPrivateDirectory(info, path) {

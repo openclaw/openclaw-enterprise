@@ -746,6 +746,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
                     "page": "guides/deploy/immutable-installation-upgrade",
                     "label": "Immutable Installation"
                   },
@@ -953,6 +957,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",

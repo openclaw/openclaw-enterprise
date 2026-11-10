@@ -35,13 +35,19 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
-import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
-const execute = promisify(execFile);
+const executeFile = promisify(execFile);
+const execute = (command, args, options = {}) =>
+  executeFile(command, args, {
+    ...options,
+    env: withoutShellStartup(options.env ?? process.env),
+  });
 const helmTargetOverrides = [
   "HELM_KUBEAPISERVER",
   "HELM_KUBECAFILE",
@@ -77,11 +83,15 @@ const injectedFault = { code: 9 };
 
 // The fixture's helm stands in for the real binary; chart cases still render with it.
 const realHelm = (
-  await execute("bash", ["-c", "command -v helm"]).catch(() => ({ stdout: "" }))
+  await execute("bash", ["--noprofile", "--norc", "-c", "command -v helm"]).catch(() => ({
+    stdout: "",
+  }))
 ).stdout.trim();
 const commandPath = async (name, fallback) =>
   (
-    await execute("bash", ["-c", `command -v ${name}`]).catch(() => ({ stdout: "" }))
+    await execute("bash", ["--noprofile", "--norc", "-c", `command -v ${name}`]).catch(() => ({
+      stdout: "",
+    }))
   ).stdout.trim() || fallback;
 const shimTools = {
   bash: "/bin/bash",
@@ -93,7 +103,11 @@ const shimTools = {
 // fixtures' commands while it runs.
 function spawnResult(command, args, options, stderrFd = "pipe") {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", stderrFd] });
+    const child = spawn(command, args, {
+      ...options,
+      env: withoutShellStartup(options.env ?? process.env),
+      stdio: ["ignore", "pipe", stderrFd],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
@@ -111,6 +125,17 @@ const yqRaw = (value) => (value === undefined || value === null ? "null" : Strin
 // yq's `//`: the alternative replaces a missing, null or false value.
 const yqOr = (value, alternative) =>
   value === undefined || value === null || value === false ? alternative : value;
+
+const testCertificate = {
+  apiVersion: "cert-manager.io/v1",
+  kind: "Certificate",
+  metadata: { name: "gateway-certificate", namespace: "system" },
+  spec: {
+    secretName: "gateway-tls",
+    dnsNames: ["gateway.example.test"],
+    issuerRef: { name: "gateway-issuer", kind: "Issuer" },
+  },
+};
 
 // Unless a case selects the real chart, a stand-in renders only what the startup
 // preflight reads: each controller container's image and Installation mount.
@@ -654,6 +679,31 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("apply") && args.includes("--dry-run=server")) {
+      assert.ok(args.includes("--server-side"));
+      assert.ok(args.includes("--force-conflicts"));
+      assert.ok(args.includes("--field-manager=occ-upgrade-preflight"));
+      assert.equal(fileArg("--namespace"), "system");
+      const submitted = JSON.parse(readFileSync(fileArg("--filename"), "utf8"));
+      assert.equal(submitted.apiVersion, "v1");
+      assert.equal(submitted.kind, "List");
+      assert.ok(submitted.items.length > 0);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      if (state.realChart) {
+        for (const item of submitted.items) {
+          assert.equal(item.apiVersion, "cert-manager.io/v1");
+          assert.equal(item.kind, "Certificate");
+        }
+      } else {
+        assert.deepEqual(submitted.items, [testCertificate]);
+        log("certificate-admission");
+      }
+      if (take("refuse-certificate-admission")) {
+        return fail(1, "certificate webhook refused dry-run");
+      }
+      return io.exit(0);
+    }
     if (args.includes("create") && args.includes("--raw")) {
       assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
       const review = JSON.parse(await io.readInput());
@@ -1620,6 +1670,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
           },
         },
       );
+      if (take("revision-read-failure")) {
+        return fail(1, "revision read failed after output");
+      }
     } else if (args.includes("configuration") && args.includes("get")) {
       // The Agent's saved Configuration (its draft), as OCC returns it.
       const id = args.at(-1);
@@ -1856,6 +1909,7 @@ async function fixture(
     recoveryHooks = false,
     initializationResources,
     preflightPolicy = false,
+    certificate = false,
     preflightFault = null,
     kubernetesNamespaces = [],
     kubernetesDenied = false,
@@ -2068,6 +2122,7 @@ async function fixture(
     activeRevisionResponse,
     names,
     configurationValues,
+    ...(certificate ? { recoveryCandidateResources: [testCertificate] } : {}),
     olderDraftRules,
     unavailableDraftResolver,
     version: 1,
@@ -2296,9 +2351,10 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     id: "rev_old",
     namespaceId: "ns_test",
     agentId: "agt_test",
+    configuration: { privateSetting: "tenant-native-value" },
     harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
   };
-  for (const [name, response] of [
+  for (const [name, response, readFailure = false] of [
     [
       "missing settings",
       { ...snapshot, harness: { id: "codex", version: "1", mode: "dedicated" } },
@@ -2306,12 +2362,6 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     ["null settings", { ...snapshot, harness: { ...snapshot.harness, configuration: null } }],
     ["array overrides", { ...snapshot, harness: { ...snapshot.harness, overrides: [] } }],
     ["wrong revision", { ...snapshot, id: "rev_other" }],
-    ["empty output", ""],
-    ["duplicate documents", JSON.stringify(snapshot) + "\n" + JSON.stringify(snapshot)],
-    [
-      "invalid then valid",
-      JSON.stringify({ ...snapshot, id: "rev_other" }) + "\n" + JSON.stringify(snapshot),
-    ],
     [
       "unreadable snapshot",
       {
@@ -2322,6 +2372,14 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       },
     ],
     ["denied read", "denied"],
+    ["empty snapshot output", ""],
+    ["malformed snapshot output", "{"],
+    ["failed read after valid output", snapshot, true],
+    ["duplicate snapshots", `${JSON.stringify(snapshot)}\n${JSON.stringify(snapshot)}`],
+    [
+      "invalid snapshot followed by valid snapshot",
+      `${JSON.stringify({ ...snapshot, id: "rev_other" })}\n${JSON.stringify(snapshot)}`,
+    ],
   ]) {
     await t.test(name, async (t) => {
       const f = await fixture(t, {
@@ -2329,9 +2387,90 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
         controllerOnly: true,
         activeRevisionResponse: response,
       });
-      await assert.rejects(f.run(), /active revision rev_old|active Harness/u);
+      if (readFailure) {
+        await f.failNext("revision-read-failure");
+      }
+      await assert.rejects(
+        f.run(),
+        readFailure || response === "denied"
+          ? /cannot read active revision/u
+          : /missing or unreadable saved Harness settings/u,
+      );
       assert.deepEqual(await f.events(), ["revision-read rev_old"]);
       const state = await f.state();
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+      assert.deepEqual(state.preflight?.created ?? [], []);
+      const inventoryFiles = await readdir(join(f.evidence, "inventory"));
+      if (readFailure) {
+        assert.deepEqual(
+          inventoryFiles.filter((file) => file.endsWith(".json")),
+          ["deployment-inventory.json", "restart-preflight.json"],
+        );
+      }
+      for (const file of inventoryFiles) {
+        assert.doesNotMatch(
+          await readFile(join(f.evidence, "inventory", file), "utf8"),
+          /tenant-native-value/u,
+        );
+      }
+    });
+  }
+  const agent = {
+    id: "agt_valid",
+    status: "active",
+    desiredRuntimeState: "stopped",
+    executionMode: "dedicated",
+    activeRevisionId: "rev_old",
+    deploymentInProgress: false,
+  };
+  const namespace = { id: "ns_test", status: "ready", agents: [agent] };
+  // One valid row must not hide another row whose state cannot be classified.
+  for (const [name, field, value] of [
+    ["missing deployment state", "deploymentInProgress", undefined],
+    ["null deployment state", "deploymentInProgress", null],
+    ["nonboolean deployment state", "deploymentInProgress", "false"],
+    ["missing desired runtime state", "desiredRuntimeState", undefined],
+    ["unknown desired runtime state", "desiredRuntimeState", "unknown"],
+    ["missing Agent status", "status", undefined],
+    ["missing Agent ID", "id", undefined],
+    ["unknown execution mode", "executionMode", "unknown"],
+    ["null active revision", "activeRevisionId", null],
+  ]) {
+    await t.test(name, async (t) => {
+      const invalid = { ...agent, id: "agt_test", desiredRuntimeState: "running", [field]: value };
+      const f = await fixture(t, {
+        controllerOnly: true,
+        inventoryNamespaces: [{ ...namespace, agents: [invalid, agent] }],
+      });
+      await assert.rejects(f.run(), /deployment inventory/u);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.deepEqual(state.preflight?.created ?? [], []);
+      assert.equal(state.version, 1);
+      assert.equal(state.api, 1);
+      assert.equal(state.worker, 1);
+      assert.equal(state.dispatches, 0);
+    });
+  }
+  for (const [name, namespaces] of [
+    ["missing Namespaces", undefined],
+    ["nonarray Namespaces", {}],
+    ["missing Agents", [{ ...namespace, agents: undefined }]],
+    ["missing Namespace ID", [{ ...namespace, id: undefined }]],
+    ["unknown Namespace status", [{ ...namespace, status: "unknown" }]],
+  ]) {
+    await t.test(name, async (t) => {
+      // The same common inventory gate protects runtime upgrades as well.
+      const f = await fixture(t, {
+        inventoryResponses: [{ installationId: "ins_test", namespaces }],
+      });
+      await assert.rejects(f.run(), /deployment inventory/u);
+      assert.deepEqual(await f.events(), []);
+      const state = await f.state();
+      assert.deepEqual(state.preflight?.created ?? [], []);
       assert.equal(state.version, 1);
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
@@ -2367,8 +2506,22 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
       assert.equal(state.dispatches, 0);
+      assert.deepEqual(state.preflight?.created ?? [], []);
     },
   );
+  await t.test("a stopped Agent may omit its active revision", async (t) => {
+    const { activeRevisionId, ...stopped } = agent;
+    const f = await fixture(t, {
+      controllerOnly: true,
+      inventoryNamespaces: [{ ...namespace, agents: [stopped] }],
+    });
+    await f.run();
+    assert.ok(existsSync(join(f.evidence, "completed")));
+    assert.equal(
+      (await f.events()).some((event) => event.startsWith("revision-read")),
+      false,
+    );
+  });
   await t.test("valid snapshot preserves controller-only behavior", async (t) => {
     const f = await fixture(t, {
       agent: true,
@@ -2379,6 +2532,27 @@ test("controller-only upgrades refuse incompatible active Harness snapshots befo
     assert.equal((await f.state()).dispatches, 0);
     assert.ok(existsSync(join(f.evidence, "completed")));
     assert.equal((await f.events())[0], "revision-read rev_old");
+    const files = await readdir(join(f.evidence, "inventory"));
+    const summaries = files.filter(
+      (file) =>
+        file.endsWith(".json") &&
+        ![
+          "deployment-inventory.json",
+          "restart-preflight.json",
+          "before-stop.json",
+          "before-stop-selection.json",
+        ].includes(file),
+    );
+    assert.equal(summaries.length, 1);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(f.evidence, "inventory", summaries[0]), "utf8")),
+      {
+        namespaceId: "ns_test",
+        agentId: "agt_test",
+        revisionId: "rev_old",
+        savedHarnessSettings: "readable",
+      },
+    );
   });
 });
 
@@ -2411,8 +2585,6 @@ function restartInventory(
 // These cases exercise the shipped shell and real jq against external command
 // responses. Driver integration separately proves the server's assessment.
 test("repository restart preflight refuses unsafe or incomplete retained fleets before writes", async (t) => {
-  const malformed = restartInventory();
-  delete malformed.namespaces[0].agents[0].deploymentInProgress;
   for (const [name, response, expected] of [
     ...["original-worker-required", "unknown", "missing", "future-value"].map((disposition) => [
       disposition,
@@ -2434,14 +2606,13 @@ test("repository restart preflight refuses unsafe or incomplete retained fleets 
         JSON.stringify(restartInventory()),
       /inventory is incomplete/u,
     ],
-    ["missing namespaces", { installationId: "ins_test" }, /inventory is incomplete/u],
-    ["missing field", malformed, /inventory is incomplete/u],
   ]) {
     await t.test(name, async (t) => {
       const f = await fixture(t, { controllerOnly: true, inventoryResponses: [response] });
       await assert.rejects(f.run(), expected);
       assert.deepEqual(await f.events(), []);
       const state = await f.state();
+      assert.deepEqual(state.preflight?.created ?? [], []);
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
       assert.equal(state.version, 1);
@@ -2910,7 +3081,7 @@ function controllerCompatibilityResults() {
         counts,
         tests: [
           {
-            name: "Logical restore preserves reviewed canonical and Provider migration histories",
+            name: "Released controller remains usable after configured IAM activation",
             status: "passed",
             file: path,
           },
@@ -2985,8 +3156,24 @@ test("controller compatibility preserves Agent continuity through interrupted up
   assert.equal((await f.state()).worker, 1);
 });
 
+async function assertCompatibilityReceiptRejected(t, change) {
+  const f = await fixture(t, { controllerOnly: true });
+  const receipt = controllerCompatibilityResults();
+  change(receipt);
+  const path = join(f.directory, "compatibility.json");
+  await writeFile(path, JSON.stringify(receipt));
+  await assert.rejects(
+    f.run("--controller-compatibility-results", path),
+    /controller compatibility receipt must pass/,
+  );
+  assert.deepEqual(await f.events(), []);
+  return f;
+}
+
 test("controller compatibility rejects unqualified evidence before changing writers", async (t) => {
   const changes = {
+    "missing IAM activation": (r) => (r.files[0].tests[0].name = "Another passing case"),
+    "IAM result from another file": (r) => (r.files[0].tests[0].file = r.files[1].path),
     "unselected green": (r) => (r.files[0].tests[1].name = "Another migration case"),
     "failed selected case": (r) => (r.files[0].tests[1].status = "failed"),
     "skipped selected case": (r) => (r.files[0].tests[1].status = "skipped"),
@@ -3011,16 +3198,7 @@ test("controller compatibility rejects unqualified evidence before changing writ
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      const f = await assertCompatibilityReceiptRejected(subtest, change);
       assert.equal((await f.state()).api, 1);
       assert.equal((await f.state()).worker, 1);
       assert.equal(existsSync(join(f.evidence, "prepared")), false);
@@ -3037,16 +3215,7 @@ test("controller compatibility rejects contradictory runner summaries", async (t
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
@@ -3066,16 +3235,7 @@ test("controller compatibility rejects passing summaries with explicit failure e
   };
   for (const [name, change] of Object.entries(changes)) {
     await t.test(name, async (subtest) => {
-      const f = await fixture(subtest, { controllerOnly: true });
-      const receipt = controllerCompatibilityResults();
-      change(receipt);
-      const path = join(f.directory, "compatibility.json");
-      await writeFile(path, JSON.stringify(receipt));
-      await assert.rejects(
-        f.run("--controller-compatibility-results", path),
-        /controller compatibility receipt must pass/,
-      );
-      assert.deepEqual(await f.events(), []);
+      await assertCompatibilityReceiptRejected(subtest, change);
     });
   }
 });
@@ -3883,6 +4043,115 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   await f.run("--resume");
   assert.equal((await f.state()).version, 2);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("controller upgrades remove only an explicitly omitted empty cookie override", async (t) => {
+  for (const mode of [
+    "remove empty",
+    "remove aliased empty",
+    "remove nonempty",
+    "change domain",
+    "add empty",
+    "baseline drift",
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(t, { controllerOnly: true });
+      const baseline = await yamlFile(join(f.directory, "values.json"));
+      baseline.agentNativeAdmin = { domain: "agents.example.test" };
+      if (mode !== "add empty") {
+        baseline.agentNativeAdmin.sharedCookieDomain =
+          mode === "remove nonempty" ? "example.test" : "";
+      }
+      if (mode === "remove aliased empty") {
+        baseline.api ??= {};
+        baseline.api.channelDirectoryProxyUrl = "";
+      }
+      for (const file of ["values.json", "live-values"]) {
+        await writeFile(join(f.directory, file), JSON.stringify(baseline));
+      }
+      if (mode === "remove aliased empty") {
+        // A saved YAML alias and Helm's resolved value describe the same baseline.
+        const { agentNativeAdmin, ...settings } = baseline;
+        const saved = dumpYaml({ ...settings, agentNativeAdmin })
+          .replace(/channelDirectoryProxyUrl: (?:''|"")/, 'channelDirectoryProxyUrl: &empty ""')
+          .replace(/sharedCookieDomain: (?:''|"")/, "sharedCookieDomain: *empty");
+        await writeFile(join(f.directory, "values.json"), saved);
+      }
+      const candidate = structuredClone(baseline);
+      delete candidate.agentNativeAdmin.sharedCookieDomain;
+      if (mode === "change domain") {
+        candidate.agentNativeAdmin.domain = "other.example.test";
+      } else if (mode === "add empty") {
+        candidate.agentNativeAdmin.sharedCookieDomain = "";
+      } else if (mode === "baseline drift") {
+        // Removing the obsolete field from the live baseline must not bypass drift detection.
+        await writeFile(join(f.directory, "values.json"), JSON.stringify(candidate));
+      }
+      const path = join(f.directory, "cookie-candidate.json");
+      await writeFile(path, JSON.stringify(candidate), { mode: 0o600 });
+      if (mode === "remove empty" || mode === "remove aliased empty") {
+        // Exercise the normal helper through Helm submission; the retained baseline
+        // must remain attributable while the submitted candidate drops the invalid field.
+        await f.run("--candidate-values", path);
+        const before = await yamlFile(join(f.evidence, "before-live-values.yaml"));
+        const after = await yamlFile(join(f.directory, "live-values"));
+        assert.deepEqual(before, baseline);
+        assert.deepEqual(after.agentNativeAdmin, candidate.agentNativeAdmin);
+        assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
+        assert.equal((await f.state()).helmSubmissions, 1);
+      } else {
+        await assert.rejects(
+          f.run("--candidate-values", path),
+          mode === "baseline drift"
+            ? /protected Helm values differ from the live release/
+            : /candidate values change a protected setting/,
+        );
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual([state.api, state.worker], [1, 1]);
+        assert.equal(state.helmSubmissions ?? 0, 0);
+        assert.equal(state.preflight, undefined);
+      }
+    });
+  }
+});
+
+test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, candidates: true });
+  const path = join(f.directory, "candidate-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  values.database = { ...values.database, upgradeMigration: "separate" };
+  await writeFile(path, JSON.stringify(values));
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    (error) => error.code === 3 && /separate database deployment/.test(error.stderr),
+  );
+  const stopped = await f.state();
+  assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
+  assert.equal(stopped.helmSubmissions ?? 0, 0);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  // A replacement with the same labels and replica count does not own this handoff.
+  const stateFile = join(f.directory, "state.json");
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      ...stopped,
+      deploymentIdentities: {
+        ...stopped.deploymentIdentities,
+        worker: { uid: "replacement-worker" },
+      },
+    }),
+  );
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    /worker Deployment changed/,
+  );
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  await writeFile(stateFile, JSON.stringify(stopped));
+  await f.run("--resume", "--migration-history-checked");
+  assert.equal((await f.state()).helmSubmissions, 1);
 });
 
 test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
@@ -7711,6 +7980,32 @@ test("a staged retry with replaced local values still cannot replace the publish
   assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
   assert.equal((await f.state()).helmSubmissions, 1);
   assert.equal(await readFile(join(f.evidence, "parameters.json"), "utf8"), preparation);
+});
+
+test("certificate admission refusal leaves the incumbent controllers running", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.failNext("refuse-certificate-admission");
+  await assert.rejects(f.run(), /certificate admission preflight failed/);
+  assert.deepEqual(await f.events(), ["certificate-admission"]);
+  const state = await f.state();
+  assert.equal(state.api, 1);
+  assert.equal(state.worker, 1);
+  assert.equal(state.version, 1);
+  assert.equal(
+    await readFile(join(f.evidence, "preflight-certificates.err"), "utf8"),
+    "certificate webhook refused dry-run\n",
+  );
+});
+
+test("successful certificate admission precedes shutdown and Helm submission", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, certificate: true });
+  await f.run();
+  assert.deepEqual(await f.events(), [
+    "certificate-admission",
+    "scale-api",
+    "scale-worker",
+    "migration",
+  ]);
 });
 
 test("failed attempt preparation preserves native dry-run diagnostics before stopping writers", async (t) => {
