@@ -47,12 +47,12 @@ func TestDevelopmentSignInRefusesEveryOtherProfile(t *testing.T) {
 	cases := map[string]struct {
 		key, value, want string
 	}{
-		"docker compute":   {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker", "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes"},
-		"unset compute":    {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "", "OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes"},
-		"compose plane":    {"OCC_DEVELOPMENT_CONTROL_PLANE", "compose", "Kubernetes-only profile"},
-		"unset plane":      {"OCC_DEVELOPMENT_CONTROL_PLANE", "", "Kubernetes-only profile"},
-		"openshell":        {"OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none"},
-		"unknown provider": {"OCC_DEVELOPMENT_SIGN_IN", "github", "must be keycloak or unset"},
+		"docker compute":                   {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker", "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes"},
+		"unset compute defaults to docker": {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "", "OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes"},
+		"compose plane":                    {"OCC_DEVELOPMENT_CONTROL_PLANE", "compose", "Kubernetes-only profile"},
+		"unset plane defaults to compose":  {"OCC_DEVELOPMENT_CONTROL_PLANE", "", "Kubernetes-only profile"},
+		"openshell":                        {"OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none"},
+		"unknown provider":                 {"OCC_DEVELOPMENT_SIGN_IN", "github", "must be keycloak or unset"},
 	}
 	for name, test := range cases {
 		env := keycloakProfileEnv()
