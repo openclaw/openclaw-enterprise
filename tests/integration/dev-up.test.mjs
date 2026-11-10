@@ -205,14 +205,18 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.match(repeated.stderr, /no such file or directory/);
 });
 
-test("restricted Kubernetes Compute defaults to the Compose control plane", async (t) => {
+test("Kubernetes Compute defaults to restricted egress and the Compose control plane", async (t) => {
   const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_NETWORK_EGRESS_MODE;
   delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
 
-  // Restricted Kubernetes Compute keeps the Compose control-plane default.
   const result = await fixture.start();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Control plane: Compose/);
+  const state = JSON.parse(
+    await readFile(join(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY, "state.json"), "utf8"),
+  );
+  assert.equal(state.networkEgressMode, "restricted");
   const cleaned = await runDevDown(fixture.env);
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });

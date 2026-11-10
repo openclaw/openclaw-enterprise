@@ -2,9 +2,9 @@
 
 Set top-level `networkEgressMode: public` or `networkEgressMode: restricted`
 in the Installation file read by both API and worker. The
-[protected Kubernetes setup](../../guides/deploy/kubernetes-setup.md) and new
-Kubernetes development installations select `public`. Ordinary installation
-profiles select `restricted`. Omission means `restricted`; changing a
+[protected Kubernetes setup](../../guides/deploy/kubernetes-setup.md) and the
+development launcher default to `restricted` with the bundled images. Ordinary
+installation profiles require `restricted`. Omission means `restricted`; changing a
 startup file does not change an admitted Agent revision. Deploy a successor to
 use the new choice. The full Agent revision response records its selected mode.
 

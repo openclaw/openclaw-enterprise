@@ -110,7 +110,7 @@ for supported engines, images, and security restrictions.
 
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` or `openshell`; public egress defaults to and requires `openshell`. OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_NETWORK_EGRESS_MODE` — `public` (new installation default) or `restricted`; saved choices survive reload. See [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_NETWORK_EGRESS_MODE` — `restricted` (default) or `public`; saved choices survive reload. See [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` or `kubernetes`; public egress defaults to and requires `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
 - `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).

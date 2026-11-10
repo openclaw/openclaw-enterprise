@@ -812,7 +812,8 @@ func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, 
 
 // networkEgressMode selects a new installation; saved state owns later rendering.
 func (r *runner) networkEgressMode() (string, error) {
-	mode := r.setting("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "public")
+	// TODO(public-egress-images): Enable the proposed public default after bundled images qualify.
+	mode := r.setting("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	if mode != "public" && mode != "restricted" {
 		return "", fmt.Errorf("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE must be public or restricted")
 	}

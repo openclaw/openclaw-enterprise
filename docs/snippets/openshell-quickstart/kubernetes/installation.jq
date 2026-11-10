@@ -1,4 +1,4 @@
-($ARGS.named.networkEgressMode // "public") as $networkEgressMode |
+($ARGS.named.networkEgressMode // "restricted") as $networkEgressMode |
 if $networkEgressMode != "public" and $networkEgressMode != "restricted" then
   error("networkEgressMode must be public or restricted")
 else

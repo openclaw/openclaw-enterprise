@@ -14,7 +14,7 @@ var developmentDatabaseName = regexp.MustCompile(`^openclaw_k8s_[a-z0-9_]+$`)
 func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
 	defaultControlPlane := "compose"
-	if r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] == "kubernetes" && r.setting("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "public") == "public" {
+	if r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] == "kubernetes" && r.env["OCC_DEVELOPMENT_NETWORK_EGRESS_MODE"] == "public" {
 		defaultControlPlane = "kubernetes"
 	}
 	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultControlPlane)

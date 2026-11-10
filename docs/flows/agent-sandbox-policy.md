@@ -126,10 +126,8 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-The protected Kubernetes quickstart and `internal/occdev/up.go` select public
-mode with external credential custody. Ordinary installation profiles require
-restricted mode. `installationControllerOptions` gives API and worker the same
-choice; omission remains restricted.
+`installationControllerOptions` supplies the Installation mode to the API and
+worker, defaulting to restricted. See [egress modes](../reference/configuration/network-egress.md) for profile defaults.
 
 `packages/occ/src/index.ts:admitAgentDeployment` checks Compute and Sandbox
 `publicNetworkEgress` support after authorization. `assertCredentialGatewayDelivery`
@@ -138,10 +136,9 @@ Sandbox and Credential Gateway owners. Kubernetes Compute rechecks delivery on
 execution and rejects public embedded Secret bindings. Dedicated channel bindings
 remain in the separate Gateway.
 
-Admission freezes `networkEgressMode` independently of `sandboxPolicy`.
-PostgreSQL constrains the mode in the immutable `admitted_spec`. When an older
-snapshot omits it, `revisionFromRow` supplies `restricted` so replay checks the
-loaded OpenShell policy even after the Installation selects public egress.
+Admission freezes `networkEgressMode` separately from `sandboxPolicy`. PostgreSQL
+constrains the value in `admitted_spec`. For older snapshots, `revisionFromRow`
+supplies `restricted` so replay checks the loaded OpenShell policy.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`

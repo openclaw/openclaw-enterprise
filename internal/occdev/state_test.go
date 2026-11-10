@@ -77,7 +77,7 @@ func TestNetworkEgressChoicePersistsThroughReload(t *testing.T) {
 }
 
 func TestNewNetworkEgressChoice(t *testing.T) {
-	for _, tc := range []struct{ input, want string }{{"", "public"}, {"public", "public"}, {"restricted", "restricted"}} {
+	for _, tc := range []struct{ input, want string }{{"", "restricted"}, {"public", "public"}, {"restricted", "restricted"}} {
 		t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", tc.input)
 		got, err := newRunner(Options{}).networkEgressMode()
 		if err != nil || got != tc.want {
@@ -111,12 +111,13 @@ func TestPublicDevelopmentProfileRequiresAuthenticatedSupportedOpenShell(t *test
 	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
 	t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "")
 	t.Setenv("OCC_DEVELOPMENT_DATABASE_NAME", "openclaw_k8s_public")
-	// CLI preflight must use the same public-default control plane as Up.
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "public")
+	// Public mode selects the Kubernetes control plane in both CLI preflight and Up.
 	if err := CheckDevelopmentProfile(); err != nil {
 		t.Fatalf("public default database preflight: %v", err)
 	}
 	for _, tc := range []struct{ name, sandbox, controlPlane, message string }{
-		{"new public default", "", "", "bundled OpenShell 0.1.6 does not support public network egress"},
+		{"explicit public mode with stock images", "", "", "bundled OpenShell 0.1.6 does not support public network egress"},
 		{"direct secrets", "none", "kubernetes", "authenticated Credential Gateway delivery"},
 		{"unauthenticated management", "openshell", "compose", "authenticated Credential Gateway delivery"},
 	} {
