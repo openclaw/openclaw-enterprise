@@ -31,12 +31,12 @@ import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
-  allowsPreparedGitGrantRead,
-  allowsPreparedGitGrantWrite,
+  preparedGitGrantContents,
   gitGrantOperationAllowed,
   preparedGitRedemption,
   type PreparedGitGrantApproval,
   type PreparedGitGrantApprovals,
+  type PreparedGitGrantMode,
   type PreparedGitGrantBinding,
   type PreparedGitGrantRequest,
   type PreparedGitRedemption,
@@ -394,6 +394,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
   private readonly grantApprovals: PreparedGitGrantApprovals | undefined;
+  private readonly grantMode: PreparedGitGrantMode | undefined;
 
   constructor(
     pool: PostgresPool,
@@ -402,6 +403,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     policy: Policy,
     custody: RepositoryGitCustody,
     grantApprovals?: PreparedGitGrantApprovals,
+    grantMode?: PreparedGitGrantMode,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
@@ -433,6 +435,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.authority = authority;
     this.policy = policy;
     this.grantApprovals = grantApprovals;
+    this.grantMode = grantMode;
   }
 
   /** Background discovery only. Admission and key lookup are not reachable from use().
@@ -866,7 +869,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           (wide && !installationRecipient(this.proxy)) ||
           (!includeValue &&
             (grant.profile !== "github-repository" ||
-              (!allowsPreparedGitGrantRead(grant) && !allowsPreparedGitGrantWrite(grant))))
+              !preparedGitGrantContents(grant, this.grantMode)))
         ) {
           return unprepared;
         }
@@ -1170,14 +1173,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     ) {
       return fail();
     }
-    if (
-      grantDecision &&
-      (!installed?.route ||
-        grant.profile !== "github-repository" ||
-        (!allowsPreparedGitGrantRead(grant) && !allowsPreparedGitGrantWrite(grant)) ||
-        !gitGrantOperationAllowed(q.operation, allowsPreparedGitGrantWrite(grant)))
-    ) {
-      return fail();
+    if (grantDecision) {
+      const contents =
+        grant.profile === "github-repository" && preparedGitGrantContents(grant, this.grantMode);
+      if (
+        !installed?.route ||
+        !contents ||
+        !gitGrantOperationAllowed(q.operation, contents === "write")
+      ) {
+        return fail();
+      }
     }
     const installation = "installationId" in q;
     let repositoryId;

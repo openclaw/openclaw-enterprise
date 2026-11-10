@@ -58,8 +58,12 @@ export function openShellRepositoryConfiguration(
   );
   const grant = value.grantRedemption;
   const profile = value.grantRedemptionProfile;
-  if (profile !== undefined && (profile !== "selected-repository-write" || grant === undefined)) {
-    throw new Error("OpenShell Git write profile requires explicit Git grant redemption.");
+  if (
+    profile !== undefined &&
+    ((profile !== "selected-repository-write" && profile !== "selected-repository-set") ||
+      grant === undefined)
+  ) {
+    throw new Error("OpenShell Git grant profile requires explicit Git grant redemption.");
   }
   if (
     grant !== undefined &&

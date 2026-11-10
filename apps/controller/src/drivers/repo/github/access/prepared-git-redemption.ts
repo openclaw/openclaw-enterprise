@@ -6,6 +6,7 @@ import type {
   RequestCredentialMaterial,
 } from "@openclaw-enterprise/contracts";
 import type { postgresRequestCredentialApprovals } from "@openclaw-enterprise/occ";
+import { maxSelectedGitHubRepositories } from "./repository-grant.ts";
 import type { InstalledGitRoute } from "./prepared-repository-git.ts";
 
 /** Private, worker-local port. Existing protected senders cannot invoke grant redemption. */
@@ -29,21 +30,26 @@ type GitGrantScope = {
   readonly permissions: Readonly<Record<string, string>>;
 };
 
-function exactScope(scope: GitGrantScope, contents: "read" | "write"): boolean {
-  return (
-    scope.repositories.length === 1 &&
-    Object.keys(scope.permissions).length === 2 &&
-    scope.permissions.contents === contents &&
-    scope.permissions.metadata === "read"
-  );
-}
+export type PreparedGitGrantProfile = "selected-repository-write" | "selected-repository-set";
+export type PreparedGitGrantMode = true | PreparedGitGrantProfile;
 
-export function allowsPreparedGitGrantRead(scope: GitGrantScope): boolean {
-  return exactScope(scope, "read");
-}
-
-export function allowsPreparedGitGrantWrite(scope: GitGrantScope): boolean {
-  return exactScope(scope, "write");
+/** Default grant redemption stays read-only and accepts one repository. */
+export function preparedGitGrantContents(
+  scope: GitGrantScope,
+  mode: PreparedGitGrantMode | false | undefined,
+): "read" | "write" | undefined {
+  const limit = mode === "selected-repository-set" ? maxSelectedGitHubRepositories : 1;
+  const { contents, metadata } = scope.permissions;
+  if (
+    !mode ||
+    scope.repositories.length < 1 ||
+    scope.repositories.length > limit ||
+    Object.keys(scope.permissions).length !== 2 ||
+    metadata !== "read"
+  ) {
+    return;
+  }
+  return contents === "read" || (mode !== true && contents === "write") ? contents : undefined;
 }
 
 export function gitGrantOperationAllowed(

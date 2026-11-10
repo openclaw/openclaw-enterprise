@@ -419,7 +419,9 @@
         "another fixture cannot inherit a stopped Agent's custody",
         "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request",
         "selected read grant bounds ordinary Git push",
-        "selected write grant bounds ordinary Git push"
+        "selected write grant bounds ordinary Git push",
+        "selected repository set authorizes native Git read",
+        "selected repository set authorizes native Git write"
       ]
     },
     {
