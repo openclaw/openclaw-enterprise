@@ -132,9 +132,9 @@ ephemeral storage on the rendered Agent container.
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 `agentResources`. Optional `runtimeClassName` applies to the Agent Pod and
 native OpenClaw's workspace preparation Pod. Startup rejects malformed IDs,
-duplicates, and requests above limits. Check admission and scheduling before
-replacement. Deploy a new revision after changes. A mismatched Sandbox fails
-adoption.
+duplicates, and requests above limits. Before replacement, check scheduling and
+the provider ServiceAccount's `get` access to that RuntimeClass. Redeploy after
+changes. Adoption checks the exact Sandbox spec.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
 Sandbox processes as the workload identity, normally `10001:10001`.
