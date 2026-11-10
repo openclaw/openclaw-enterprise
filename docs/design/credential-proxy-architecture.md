@@ -30,7 +30,7 @@ The worker signs an App JWT and sends it to GitHub in a `POST /app/installations
 
 ![The sender captures the request, calls the OCC exchange through the Driver listener, sends an authorized request and holds the reply for filtering.](../assets/credential-proxy/generic-exchange.png)
 
-The generic `CredentialProxyExchange` also governs what comes back. A qualified sender can ask OCC to resolve a credential, recheck permission just before sending, and protect the complete response before releasing it to the caller. The OpenShell Git hook above authorizes a different protocol. Its allow reply establishes neither exact dispatch nor response filtering. [Walk through a GitHub metadata request](credential-proxy.md#read-one-repositorys-identity).
+For a GitHub metadata read, OCC asks Token Service for a token after it authorizes the request. Token Service can reuse a usable token or start or join issuance for that grant. A qualified sender can ask OCC to resolve a credential, recheck permission just before sending, and protect the complete response before releasing it to the caller. The OpenShell Git hook above returns a decision for a token the supervisor already holds. [Walk through a GitHub metadata request](credential-proxy.md#read-one-repositorys-identity).
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>

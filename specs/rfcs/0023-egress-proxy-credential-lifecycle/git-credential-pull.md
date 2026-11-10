@@ -13,21 +13,24 @@ Today the worker installs the credential through the OpenShell management API. I
 ### What changes for Git?
 
 ```mermaid
-flowchart LR
-    W["OCE worker<br/>prepare installation token"]
-    G["Remove from token delivery<br/>Gateway provider update"]
-    R["Add on cache miss<br/>OCE checks operation and recipient"]
-    S["Credential Proxy"]
-    A["OCE worker<br/>authorize this request"]
-    W --> G --> S
-    W -.-> R -.->|"Release scoped token"| S
-    S -->|"Both paths"| A
-    classDef removed fill:#fce8e6,stroke:#b42318,color:#651813
-    classDef added fill:#dcf5e5,stroke:#147d44,color:#104728
-    class G removed
-    class R added
+sequenceDiagram
+    participant S as OpenShell supervisor
+    participant G as OpenShell Gateway
+    participant W as OCE worker
+    alt Current delivery at startup or renewal
+        W->>G: Install prepared token
+        G->>S: Deliver provider update
+    else Proposed delivery on first use
+        opt Supervisor has no usable token for this grant
+            S->>W: Request token for held Git operation
+            W->>W: Check execution, recipient and grant
+            W-->>S: Return scoped token on allow
+        end
+    end
+    S->>W: Authorize held Git request and loaded version
+    W-->>S: Allow or deny
 ```
 
-Red marks the provider update that pull would replace for Git. Green and dashed arrows mark the proposed release check. Sandbox provisioning and other Gateway uses have their own lifecycle.
+A miss in the supervisor cache can use a token OCE has already prepared. The proposal changes Git token delivery. Sandbox provisioning and other Gateway uses have their own lifecycle.
 
 The open contract question is the first request. Today's `authorize` takes the version already installed at the recipient. Checking the operation **before releasing any token bytes** needs an earlier decision, followed by evidence that the same recipient installed that version. The proposal grants the proxy no general Secret lookup. See the [repository Git authority](../../../packages/contracts/src/protected-repository-git.ts).
