@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import {
   AdoptError,
   JOURNAL_ANNOTATION,
-  applyAdoption,
+  applyAdoption as applyAdoptionScript,
   createKubectl,
   finalizeAdoption,
-  planAll,
-  revertAdoption,
+  planAll as planAllScript,
+  revertAdoption as revertAdoptionScript,
   storageNamespaceName,
 } from "../../scripts/split-layout-adopt.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -21,7 +21,169 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 // adoption depends on: UID preconditions on delete, the PVC protection finalizer, the reclaim
 // policy of a released volume, pre-bound claim references, Deployment scaling and Namespace
 // deletion. It does not prove kubectl's own flag handling; the scratch-cluster proof does.
-const RESOURCES = {
+type FixtureMetadata = {
+  name: string;
+  namespace?: string;
+  uid?: string;
+  resourceVersion?: string;
+  creationTimestamp?: string;
+  deletionTimestamp?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+  ownerReferences?: { apiVersion?: string; kind?: string; name?: string; uid?: string }[];
+};
+type FixtureSpec = {
+  replicas?: number;
+  template?: { spec: { containers: { image: string }[] } };
+  volumes?: { persistentVolumeClaim?: { claimName?: string }; [key: string]: unknown }[];
+  claimRef?: { kind?: string; namespace?: string; name?: string; uid?: string };
+  volumeName?: string;
+  storageClassName?: string;
+  persistentVolumeReclaimPolicy?: string;
+  [key: string]: unknown;
+};
+type FixtureObject = {
+  metadata: FixtureMetadata;
+  apiVersion?: string;
+  kind?: string;
+  spec?: FixtureSpec;
+  status?: { phase?: string; replicas?: number; availableReplicas?: number };
+  data?: Record<string, string>;
+  [key: string]: unknown;
+};
+type Failure = (args: string[], input: string | undefined) => boolean;
+type AdoptionOptions = {
+  archive: string;
+  namespaceIds?: string[];
+  dropResources?: string[];
+  acceptOauthReconnect?: boolean;
+  sleep?: (milliseconds: number) => Promise<void>;
+  timeoutMs?: number;
+};
+type Kubectl = ReturnType<typeof createKubectl>;
+// The JavaScript command infers empty default option arrays as never[].
+const applyAdoption = applyAdoptionScript as (
+  kubectl: Kubectl,
+  options: AdoptionOptions,
+) => ReturnType<typeof applyAdoptionScript>;
+const revertAdoption = revertAdoptionScript as (
+  kubectl: Kubectl,
+  options: Pick<AdoptionOptions, "archive" | "namespaceIds" | "sleep" | "timeoutMs">,
+) => ReturnType<typeof revertAdoptionScript>;
+const planAll = planAllScript as (
+  kubectl: Kubectl,
+  options?: Pick<AdoptionOptions, "namespaceIds" | "dropResources" | "acceptOauthReconnect">,
+) => ReturnType<typeof planAllScript>;
+
+function required<T>(value: T | undefined): T {
+  assert.ok(value !== undefined);
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function assertOptionalFields(
+  object: Record<string, unknown>,
+  keys: readonly string[],
+  expected: "string" | "number",
+): void {
+  for (const key of keys) {
+    if (object[key] !== undefined) {
+      assert.equal(typeof object[key], expected);
+    }
+  }
+}
+
+function assertStringMap(value: unknown): void {
+  for (const item of Object.values(record(value))) {
+    string(item);
+  }
+}
+
+function assertClaimReference(
+  value: unknown,
+): asserts value is NonNullable<FixtureSpec["claimRef"]> {
+  assertOptionalFields(record(value), ["kind", "namespace", "name", "uid"], "string");
+}
+
+function assertFixtureObject(value: unknown): asserts value is FixtureObject {
+  const object = record(value);
+  const metadata = record(object.metadata);
+  string(metadata.name);
+  assertOptionalFields(
+    metadata,
+    ["namespace", "uid", "resourceVersion", "creationTimestamp", "deletionTimestamp"],
+    "string",
+  );
+  for (const key of ["labels", "annotations"]) {
+    if (metadata[key] !== undefined) {
+      assertStringMap(metadata[key]);
+    }
+  }
+  if (metadata.ownerReferences !== undefined) {
+    for (const owner of array(metadata.ownerReferences)) {
+      assertOptionalFields(record(owner), ["apiVersion", "kind", "name", "uid"], "string");
+    }
+  }
+  if (object.spec !== undefined) {
+    const spec = record(object.spec);
+    assertOptionalFields(spec, ["replicas"], "number");
+    assertOptionalFields(
+      spec,
+      ["volumeName", "storageClassName", "persistentVolumeReclaimPolicy"],
+      "string",
+    );
+    if (spec.claimRef !== undefined) {
+      assertClaimReference(spec.claimRef);
+    }
+    if (spec.template !== undefined) {
+      for (const container of array(record(record(spec.template).spec).containers)) {
+        string(record(container).image);
+      }
+    }
+    if (spec.volumes !== undefined) {
+      for (const volume of array(spec.volumes)) {
+        const claim = record(volume).persistentVolumeClaim;
+        if (claim !== undefined) {
+          assertOptionalFields(record(claim), ["claimName"], "string");
+        }
+      }
+    }
+  }
+  if (object.status !== undefined) {
+    const status = record(object.status);
+    assertOptionalFields(status, ["phase"], "string");
+    assertOptionalFields(status, ["replicas", "availableReplicas"], "number");
+  }
+  assertOptionalFields(object, ["apiVersion", "kind"], "string");
+  if (object.data !== undefined) {
+    assertStringMap(object.data);
+  }
+}
+
+function fixtureObject(value: unknown): FixtureObject {
+  assertFixtureObject(value);
+  return value;
+}
+
+function array(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+const RESOURCES: Record<string, { kind: string; apiVersion: string; cluster?: boolean }> = {
   namespaces: { kind: "Namespace", apiVersion: "v1", cluster: true },
   persistentvolumes: { kind: "PersistentVolume", apiVersion: "v1", cluster: true },
   persistentvolumeclaims: { kind: "PersistentVolumeClaim", apiVersion: "v1" },
@@ -50,15 +212,16 @@ const RESOURCES = {
     apiVersion: "gateway.envoyproxy.io/v1alpha1",
   },
 };
-const resourceOfKind = (kind) =>
-  Object.entries(RESOURCES).find(([, spec]) => spec.kind === kind)[0];
+const resourceOfKind = (kind: string): string =>
+  required(Object.entries(RESOURCES).find(([, spec]) => spec.kind === kind))[0];
 
-function mergePatch(target, patch) {
+function mergePatch(target: unknown, patch: unknown): unknown {
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     return patch;
   }
-  const result = target !== null && typeof target === "object" ? { ...target } : {};
-  for (const [key, value] of Object.entries(patch)) {
+  const result: Record<string, unknown> =
+    target !== null && typeof target === "object" ? { ...target } : {};
+  for (const [key, value] of Object.entries(record(patch))) {
     if (value === null) {
       delete result[key];
     } else {
@@ -69,35 +232,36 @@ function mergePatch(target, patch) {
 }
 
 function fakeCluster() {
-  const store = new Map();
+  const store = new Map<string, FixtureObject>();
   let serial = 0;
-  const calls = [];
-  const failures = [];
-  const applied = [];
+  const calls: string[] = [];
+  const failures: Failure[] = [];
+  const applied: { manager: string | undefined; body: FixtureObject }[] = [];
   // Simulates an APIService that is down: kubectl prints the groups it reached and exits 1.
-  const discovery = { unavailable: false, drop: [] };
-  const key = (resource, namespace, name) =>
-    `${resource}/${RESOURCES[resource].cluster ? "" : namespace}/${name}`;
-  const put = (resource, object) => {
+  const discovery: { unavailable: boolean; drop: string[] } = { unavailable: false, drop: [] };
+  const key = (resource: string, namespace: string | undefined, name: string | undefined) =>
+    `${resource}/${required(RESOURCES[resource]).cluster ? "" : namespace}/${name}`;
+  const put = (resource: string, object: FixtureObject) => {
     serial += 1;
     object.metadata.uid ??= `uid-${serial}`;
     object.metadata.resourceVersion = String(serial);
     object.metadata.creationTimestamp ??= "2026-09-28T00:00:00Z";
-    object.apiVersion = RESOURCES[resource].apiVersion;
-    object.kind = RESOURCES[resource].kind;
+    object.apiVersion = required(RESOURCES[resource]).apiVersion;
+    object.kind = required(RESOURCES[resource]).kind;
     store.set(key(resource, object.metadata.namespace, object.metadata.name), object);
     return object;
   };
-  const get = (resource, namespace, name) => store.get(key(resource, namespace, name));
-  const items = (resource, namespace) =>
+  const get = (resource: string, namespace: string | undefined, name: string | undefined) =>
+    store.get(key(resource, namespace, name));
+  const items = (resource: string, namespace: string | undefined) =>
     [...store.entries()]
       .filter(
         ([entry, object]) =>
           entry.startsWith(`${resource}/`) &&
-          (RESOURCES[resource].cluster || object.metadata.namespace === namespace),
+          (required(RESOURCES[resource]).cluster || object.metadata.namespace === namespace),
       )
       .map(([, object]) => object);
-  const mounted = (namespace, claim) =>
+  const mounted = (namespace: string | undefined, claim: string) =>
     items("pods", namespace).some((pod) =>
       (pod.spec?.volumes ?? []).some((volume) => volume.persistentVolumeClaim?.claimName === claim),
     );
@@ -111,9 +275,9 @@ function fakeCluster() {
         !mounted(claim.metadata.namespace, claim.metadata.name)
       ) {
         store.delete(entry);
-        const volume = get("persistentvolumes", undefined, claim.spec.volumeName);
-        if (volume?.spec.claimRef?.uid === claim.metadata.uid) {
-          if (volume.spec.persistentVolumeReclaimPolicy === "Delete") {
+        const volume = get("persistentvolumes", undefined, required(claim.spec).volumeName);
+        if (volume !== undefined && volume.spec?.claimRef?.uid === claim.metadata.uid) {
+          if (required(volume.spec).persistentVolumeReclaimPolicy === "Delete") {
             store.delete(key("persistentvolumes", undefined, volume.metadata.name));
           } else {
             volume.status = { phase: "Released" };
@@ -121,22 +285,25 @@ function fakeCluster() {
         }
         continue;
       }
-      const volume = get("persistentvolumes", undefined, claim.spec.volumeName);
-      const reference = volume?.spec.claimRef;
+      const volume = get("persistentvolumes", undefined, required(claim.spec).volumeName);
+      const reference = volume?.spec?.claimRef;
       if (
         claim.status?.phase !== "Bound" &&
-        reference?.namespace === claim.metadata.namespace &&
+        volume !== undefined &&
+        reference !== undefined &&
+        reference.namespace === claim.metadata.namespace &&
         reference.name === claim.metadata.name &&
         (reference.uid === undefined || reference.uid === claim.metadata.uid) &&
-        (volume.spec.storageClassName ?? "") === (claim.spec.storageClassName ?? "")
+        (required(volume.spec).storageClassName ?? "") ===
+          (required(claim.spec).storageClassName ?? "")
       ) {
-        reference.uid = claim.metadata.uid;
+        reference.uid = required(claim.metadata.uid);
         volume.status = { phase: "Bound" };
         claim.status = { phase: "Bound" };
       }
     }
   };
-  const remove = (resource, object) => {
+  const remove = (resource: string, object: FixtureObject) => {
     if (resource === "persistentvolumeclaims") {
       object.metadata.deletionTimestamp = "2026-10-09T00:00:00Z";
       return;
@@ -155,18 +322,18 @@ function fakeCluster() {
       }
     }
   };
-  const flag = (args, name) => {
+  const flag = (args: string[], name: string) => {
     const index = args.indexOf(name);
     return index === -1 ? undefined : args[index + 1];
   };
-  const run = (args, input) => {
+  const run = (args: string[], input?: string) => {
     calls.push(args.join(" "));
     const failure = failures.findIndex((match) => match(args, input));
     if (failure !== -1) {
       failures.splice(failure, 1);
       return { status: 1, stdout: "", stderr: "injected failure" };
     }
-    const ok = (value) => ({
+    const ok = (value: unknown) => ({
       status: 0,
       stdout: value === undefined ? "" : JSON.stringify(value),
       stderr: "",
@@ -178,7 +345,7 @@ function fakeCluster() {
           return {
             status: discovery.unavailable ? 1 : 0,
             stdout: Object.keys(RESOURCES)
-              .filter((resource) => !RESOURCES[resource].cluster)
+              .filter((resource) => !required(RESOURCES[resource]).cluster)
               .filter((resource) => !discovery.drop.includes(resource))
               .join("\n"),
             stderr: discovery.unavailable
@@ -188,8 +355,8 @@ function fakeCluster() {
         case "apply": {
           // Server-side apply of Namespace metadata: records the manager, merges the fields.
           assert.ok(args.includes("--server-side"));
-          const body = JSON.parse(input);
-          const resource = resourceOfKind(body.kind);
+          const body = fixtureObject(JSON.parse(required(input)));
+          const resource = resourceOfKind(required(body.kind));
           const object = get(resource, body.metadata.namespace, body.metadata.name);
           applied.push({
             manager:
@@ -198,11 +365,13 @@ function fakeCluster() {
             body,
           });
           return ok(
-            structuredClone(put(resource, mergePatch(object, { metadata: body.metadata }))),
+            structuredClone(
+              put(resource, fixtureObject(mergePatch(object, { metadata: body.metadata }))),
+            ),
           );
         }
         case "get": {
-          const resource = args[1];
+          const resource = required(args[1]);
           const named = args[2] !== undefined && !args[2].startsWith("-");
           if (named) {
             const object = get(resource, namespace, args[2]);
@@ -223,8 +392,8 @@ function fakeCluster() {
           });
         }
         case "create": {
-          const body = JSON.parse(input);
-          const resource = resourceOfKind(body.kind);
+          const body = fixtureObject(JSON.parse(required(input)));
+          const resource = resourceOfKind(required(body.kind));
           if (get(resource, body.metadata.namespace, body.metadata.name) !== undefined) {
             return { status: 1, stdout: "", stderr: `${body.metadata.name} already exists` };
           }
@@ -236,29 +405,30 @@ function fakeCluster() {
           return ok(structuredClone(created));
         }
         case "patch": {
-          const [, resource, name] = args;
+          const resource = required(args[1]);
+          const name = required(args[2]);
           const object = get(resource, namespace, name);
           if (object === undefined) {
             return { status: 1, stdout: "", stderr: `${name} not found` };
           }
-          const patch = JSON.parse(flag(args, "-p"));
-          let next;
+          const patch: unknown = JSON.parse(required(flag(args, "-p")));
+          let next: FixtureObject;
           if (flag(args, "--type") === "json") {
             next = structuredClone(object);
-            for (const { op, path, value } of patch) {
+            for (const operation of array(patch)) {
+              const { op, path, value } = record(operation);
               assert.equal(path, "/spec/claimRef");
               assert.ok(op === "replace" || op === "add");
-              next.spec.claimRef = value;
+              assertClaimReference(value);
+              required(next.spec).claimRef = value;
             }
           } else {
-            next = mergePatch(object, patch);
+            next = fixtureObject(mergePatch(object, patch));
           }
-          if (resource === "deployments.apps" && next.spec.replicas !== undefined) {
-            next.status = {
-              replicas: next.spec.replicas,
-              availableReplicas: next.spec.replicas,
-            };
-            if (next.spec.replicas === 0) {
+          const replicas = next.spec?.replicas;
+          if (resource === "deployments.apps" && replicas !== undefined) {
+            next.status = { replicas, availableReplicas: replicas };
+            if (replicas === 0) {
               for (const pod of items("pods", next.metadata.namespace)) {
                 if (pod.metadata.labels?.app === name) {
                   store.delete(key("pods", pod.metadata.namespace, pod.metadata.name));
@@ -270,11 +440,13 @@ function fakeCluster() {
         }
         case "delete": {
           assert.equal(args[1], "--raw");
-          const { preconditions } = JSON.parse(input);
-          const parts = args[2].split("/").filter(Boolean);
+          const preconditions = record(record(JSON.parse(required(input))).preconditions);
+          const parts = required(args[2]).split("/").filter(Boolean);
           const name = parts.at(-1);
           const plural = parts.at(-2);
-          const resource = Object.keys(RESOURCES).find((entry) => entry.split(".")[0] === plural);
+          const resource = required(
+            Object.keys(RESOURCES).find((entry) => entry.split(".")[0] === plural),
+          );
           const objectNamespace =
             parts.includes("namespaces") && plural !== "namespaces"
               ? parts[parts.indexOf("namespaces") + 1]
@@ -313,10 +485,10 @@ function fakeCluster() {
 const id = "ns_11111111-1111-4111-8111-111111111111";
 const storage = storageNamespaceName(id);
 const tenantNamespace = `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
-const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
+const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
 const dedicated = digest("agent-dedicated");
 const embedded = digest("agent-embedded");
-const owned = (agent) => ({
+const owned = (agent?: string) => ({
   labels: {
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
     "openclaw.dev/namespace": id,
@@ -363,7 +535,7 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
     ["oce-openclaw-tenant-worker", "openclaw-enterprise-worker"],
     ["oce-openclaw-tenant-api", "openclaw-enterprise-api"],
     ["oce-openclaw-tenant-configuration", "openclaw-enterprise-api"],
-  ]) {
+  ] satisfies [string, string][]) {
     for (const namespace of [storage, tenantNamespace]) {
       put("rolebindings.rbac.authorization.k8s.io", {
         metadata: { name: role.replace("oce-openclaw-tenant", "grant"), namespace },
@@ -372,7 +544,13 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
       });
     }
   }
-  const claim = (namespace, name, pv, agent, storageClassName) => {
+  const claim = (
+    namespace: string,
+    name: string,
+    pv: string,
+    agent: string,
+    storageClassName: string,
+  ) => {
     put("persistentvolumes", {
       metadata: { name: pv, annotations: { "test.example/data": `bytes of ${name}` } },
       spec: {
@@ -444,7 +622,7 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
   for (const [name, agent] of [
     [`agent-${dedicated}`, "agent-dedicated"],
     [`gateway-${embedded}`, "agent-embedded"],
-  ]) {
+  ] satisfies [string, string][]) {
     put("deployments.apps", {
       metadata: { name, namespace: tenantNamespace, ...owned(agent) },
       spec: { replicas: 1 },
@@ -534,22 +712,35 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
   return cluster;
 }
 
-function withArchive(t) {
+function withArchive(t: TestContext) {
   return temporaryDirectory(t, "split-layout-adopt-");
 }
 
 const fast = { sleep: async () => {}, timeoutMs: 50 };
 
-function snapshot({ get }) {
-  const volume = (name) => get("persistentvolumes", undefined, name);
+function writerContainer(writer: FixtureObject): { image: string } {
+  return required(required(required(writer.spec).template).spec.containers[0]);
+}
+
+function journalOf(namespace: FixtureObject): Record<string, unknown> {
+  return record(JSON.parse(required(required(namespace.metadata.annotations)[JOURNAL_ANNOTATION])));
+}
+
+function snapshot({ get }: ReturnType<typeof fakeCluster>) {
+  const volume = (name: string) => get("persistentvolumes", undefined, name);
   return {
-    volumes: ["pv-dedicated-gateway", "pv-dedicated-workspace", "pv-embedded-state"].map(
-      (name) => ({
+    volumes: ["pv-dedicated-gateway", "pv-dedicated-workspace", "pv-embedded-state"].map((name) => {
+      const object = volume(name);
+      return {
         name,
-        data: volume(name)?.metadata.annotations["test.example/data"],
-        reclaim: volume(name)?.spec.persistentVolumeReclaimPolicy,
-      }),
-    ),
+        data:
+          object === undefined
+            ? undefined
+            : required(object.metadata.annotations)["test.example/data"],
+        reclaim:
+          object === undefined ? undefined : required(object.spec).persistentVolumeReclaimPolicy,
+      };
+    }),
     canonicalSecretUid: get("secrets", storage, "occ-model-key")?.metadata.uid,
   };
 }
@@ -559,14 +750,14 @@ test("plan sorts the Harness namespace into moved, copied, archived and dropped 
   const { plans, adopted } = planAll(kubectl);
   assert.deepEqual(adopted, []);
   assert.equal(plans.length, 1);
-  const [plan] = plans;
+  const plan = required(plans[0]);
   assert.equal(plan.storage, storage);
   assert.equal(plan.tenant, tenantNamespace);
   assert.deepEqual(plan.refusals, []);
   assert.deepEqual(plan.claims.sort(), [`gateway-state-${embedded}`, `workspace-${dedicated}`]);
   // Only Agent Secrets are copied; per-revision projections render again on the next deploy.
   assert.deepEqual(plan.secrets, [`transport-${embedded}`]);
-  assert.deepEqual(plan.routes.map(({ resource }) => resource).sort(), [
+  assert.deepEqual(plan.routes.map(({ resource }: { resource: string }) => resource).sort(), [
     "httproutes.gateway.networking.k8s.io",
     "securitypolicies.gateway.envoyproxy.io",
   ]);
@@ -583,7 +774,9 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   const cluster = releasedInstallation();
   const { kubectl, get, items } = cluster;
   const before = snapshot(cluster);
-  const transport = structuredClone(get("secrets", tenantNamespace, `transport-${embedded}`));
+  const transport = structuredClone(
+    required(get("secrets", tenantNamespace, `transport-${embedded}`)),
+  );
 
   await applyAdoption(kubectl, { archive, ...fast });
 
@@ -593,32 +786,48 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
     ["worker", 0],
   ]) {
     assert.equal(
-      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`).spec.replicas,
+      required(
+        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
+          .spec,
+      ).replicas,
       replicas,
     );
   }
-  assert.equal(get("namespaces", undefined, storage).metadata.labels["openclaw.dev/namespace"], id);
   assert.equal(
-    get("namespaces", undefined, tenantNamespace).metadata.labels["openclaw.dev/namespace"],
+    required(required(get("namespaces", undefined, storage)).metadata.labels)[
+      "openclaw.dev/namespace"
+    ],
+    id,
+  );
+  assert.equal(
+    required(required(get("namespaces", undefined, tenantNamespace)).metadata.labels)[
+      "openclaw.dev/namespace"
+    ],
     undefined,
   );
   // Each claim keeps its volume, data and reclaim policy, now in the adopted namespace.
   for (const [name, pv] of [
     [`workspace-${dedicated}`, "pv-dedicated-workspace"],
     [`gateway-state-${embedded}`, "pv-embedded-state"],
-  ]) {
-    const claim = get("persistentvolumeclaims", storage, name);
-    assert.equal(claim.status.phase, "Bound");
-    assert.equal(claim.spec.volumeName, pv);
-    assert.equal(claim.spec.storageClassName, "local-path");
-    assert.equal(claim.metadata.labels["openclaw.dev/agent"] !== undefined, true);
-    assert.equal(claim.metadata.annotations["pv.kubernetes.io/bind-completed"], undefined);
+  ] satisfies [string, string][]) {
+    const claim = required(get("persistentvolumeclaims", storage, name));
+    assert.equal(required(claim.status).phase, "Bound");
+    assert.equal(required(claim.spec).volumeName, pv);
+    assert.equal(required(claim.spec).storageClassName, "local-path");
+    assert.equal(required(claim.metadata.labels)["openclaw.dev/agent"] !== undefined, true);
+    assert.equal(
+      required(claim.metadata.annotations)["pv.kubernetes.io/bind-completed"],
+      undefined,
+    );
     assert.equal(get("persistentvolumeclaims", tenantNamespace, name), undefined);
-    assert.equal(get("persistentvolumes", undefined, pv).spec.claimRef.uid, claim.metadata.uid);
+    assert.equal(
+      required(required(required(get("persistentvolumes", undefined, pv)).spec).claimRef).uid,
+      claim.metadata.uid,
+    );
   }
   assert.deepEqual(snapshot(cluster), before);
   // The embedded transport Secret is copied byte for byte with its ownership metadata.
-  const copied = get("secrets", storage, `transport-${embedded}`);
+  const copied = required(get("secrets", storage, `transport-${embedded}`));
   assert.deepEqual(copied.data, transport.data);
   assert.deepEqual(copied.metadata.labels, transport.metadata.labels);
   assert.notEqual(copied.metadata.uid, transport.metadata.uid);
@@ -633,38 +842,41 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   const routes = await open(routesFile);
   try {
     assert.equal((await routes.stat()).mode & 0o777, 0o600);
-    assert.equal(JSON.parse(await routes.readFile("utf8")).length, 2);
+    assert.equal(array(JSON.parse(await routes.readFile("utf8"))).length, 2);
   } finally {
     await routes.close();
   }
   // Canonical storage and the dedicated Gateway were not touched.
-  assert.equal(get("deployments.apps", storage, `gateway-${dedicated}`).spec.replicas, 1);
-  const journal = JSON.parse(
-    get("namespaces", undefined, storage).metadata.annotations[JOURNAL_ANNOTATION],
+  assert.equal(
+    required(required(get("deployments.apps", storage, `gateway-${dedicated}`)).spec).replicas,
+    1,
   );
+  const journal = journalOf(required(get("namespaces", undefined, storage)));
   assert.equal(journal.state, "applied");
   assert.deepEqual(journal.running, ["agent-dedicated", "agent-embedded"]);
 
   // A second apply has nothing left to do, but brings back an API a killed run left stopped.
-  const api = () => get("deployments.apps", "openclaw-system", "openclaw-enterprise-api");
-  api().spec.replicas = 0;
+  const api = () => required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-api"));
+  required(api().spec).replicas = 0;
   api().status = { replicas: 0, availableReplicas: 0 };
   assert.deepEqual(await applyAdoption(kubectl, { archive, ...fast }), []);
-  assert.equal(api().spec.replicas, 1);
+  assert.equal(required(api().spec).replicas, 1);
   await assert.rejects(finalizeAdoption(kubectl, fast), /upgrade it first/);
   // Only the archive apply used can bring the routes back; a wrong one changes nothing.
-  const adopted = structuredClone(get("namespaces", undefined, storage));
+  const adopted = structuredClone(required(get("namespaces", undefined, storage)));
   await assert.rejects(
     revertAdoption(kubectl, { archive: `${archive}-other`, ...fast }),
     /was adopted with --archive/,
   );
-  assert.deepEqual(get("namespaces", undefined, storage), adopted);
+  assert.deepEqual(required(get("namespaces", undefined, storage)), adopted);
 
   // The upgrade helper starts the new release.
   for (const component of ["api", "worker"]) {
-    const writer = get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`);
-    writer.spec.template.spec.containers[0].image = "controller@sha256:current";
-    writer.spec.replicas = 1;
+    const writer = required(
+      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`),
+    );
+    writerContainer(writer).image = "controller@sha256:current";
+    required(writer.spec).replicas = 1;
   }
   await assert.rejects(
     revertAdoption(kubectl, { archive, ...fast }),
@@ -681,7 +893,9 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   await finalizeAdoption(kubectl, fast);
   assert.equal(get("namespaces", undefined, tenantNamespace), undefined);
   assert.equal(
-    get("namespaces", undefined, storage).metadata.annotations[JOURNAL_ANNOTATION],
+    required(required(get("namespaces", undefined, storage)).metadata.annotations)[
+      JOURNAL_ANNOTATION
+    ],
     undefined,
   );
   // Deleting the old namespace released no data: every volume moved before it went.
@@ -694,16 +908,18 @@ test("revert before the upgrade restores the released layout exactly", async (t)
   const { kubectl, get, items } = cluster;
   const before = snapshot(cluster);
   const claimsBefore = items("persistentvolumeclaims", tenantNamespace)
-    .map(({ metadata, spec }) => [metadata.name, spec.volumeName])
+    .map(({ metadata, spec }) => [metadata.name, required(spec).volumeName])
     .sort();
 
   await applyAdoption(kubectl, { archive, ...fast });
   // The old API serves after apply; revert stops it before it changes anything.
-  const apiReplicasAtFirstChange = [];
+  const apiReplicasAtFirstChange: (number | undefined)[] = [];
   cluster.failures.push((args) => {
     if (args[0] === "patch" && args[1] === "namespaces") {
       apiReplicasAtFirstChange.push(
-        get("deployments.apps", "openclaw-system", "openclaw-enterprise-api").spec.replicas,
+        required(
+          required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-api")).spec,
+        ).replicas,
       );
     }
     return false;
@@ -712,35 +928,53 @@ test("revert before the upgrade restores the released layout exactly", async (t)
   assert.equal(apiReplicasAtFirstChange[0], 0);
 
   assert.equal(
-    get("namespaces", undefined, storage).metadata.labels["openclaw.dev/namespace"],
+    required(required(get("namespaces", undefined, storage)).metadata.labels)[
+      "openclaw.dev/namespace"
+    ],
     undefined,
   );
   assert.equal(
-    get("namespaces", undefined, tenantNamespace).metadata.labels["openclaw.dev/namespace"],
+    required(required(get("namespaces", undefined, tenantNamespace)).metadata.labels)[
+      "openclaw.dev/namespace"
+    ],
     id,
   );
   assert.equal(
-    get("namespaces", undefined, storage).metadata.annotations[JOURNAL_ANNOTATION],
+    required(required(get("namespaces", undefined, storage)).metadata.annotations)[
+      JOURNAL_ANNOTATION
+    ],
     undefined,
   );
   assert.deepEqual(
     items("persistentvolumeclaims", tenantNamespace)
-      .map(({ metadata, spec, status }) => [metadata.name, spec.volumeName, status.phase])
+      .map(({ metadata, spec, status }) => [
+        metadata.name,
+        required(spec).volumeName,
+        required(status).phase,
+      ])
       .sort(),
     claimsBefore.map((entry) => [...entry, "Bound"]),
   );
   assert.deepEqual(snapshot(cluster), before);
   assert.equal(get("secrets", storage, `transport-${embedded}`), undefined);
-  const route = get("httproutes.gateway.networking.k8s.io", tenantNamespace, `gateway-${embedded}`);
+  const route = required(
+    get("httproutes.gateway.networking.k8s.io", tenantNamespace, `gateway-${embedded}`),
+  );
   assert.deepEqual(route.spec, { hostnames: ["agent.example.test"] });
-  assert.equal(route.metadata.ownerReferences[0].uid, "service-uid");
+  assert.equal(required(required(route.metadata.ownerReferences)[0]).uid, "service-uid");
   assert.equal(items("securitypolicies.gateway.envoyproxy.io", tenantNamespace).length, 1);
   for (const name of [`agent-${dedicated}`, `gateway-${embedded}`]) {
-    assert.equal(get("deployments.apps", tenantNamespace, name).spec.replicas, 1);
+    assert.equal(
+      required(required(get("deployments.apps", tenantNamespace, name)).spec).replicas,
+      1,
+    );
   }
   for (const component of ["api", "worker"]) {
     assert.equal(
-      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`).spec.replicas,
+      required(
+        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
+          .spec,
+      ).replicas,
       1,
     );
   }
@@ -754,27 +988,24 @@ test("an interrupted rebind resumes without releasing the volume", async (t) => 
   // The old claim is gone and the new one not yet created when the run dies. With the
   // release's Delete policy this is the moment a missing Retain step would lose the data.
   failures.push(
-    (args, input) => args[0] === "create" && JSON.parse(input).kind === "PersistentVolumeClaim",
+    (args, input) =>
+      args[0] === "create" && record(JSON.parse(required(input))).kind === "PersistentVolumeClaim",
   );
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
-  const journal = JSON.parse(
-    get("namespaces", undefined, storage).metadata.annotations[JOURNAL_ANNOTATION],
-  );
+  const journal = journalOf(required(get("namespaces", undefined, storage)));
   assert.equal(journal.state, "applying");
   assert.equal(
-    get("namespaces", undefined, storage).metadata.labels["openclaw.dev/namespace"],
+    required(required(get("namespaces", undefined, storage)).metadata.labels)[
+      "openclaw.dev/namespace"
+    ],
     undefined,
   );
 
   await applyAdoption(kubectl, { archive, ...fast });
-  assert.equal(
-    JSON.parse(get("namespaces", undefined, storage).metadata.annotations[JOURNAL_ANNOTATION])
-      .state,
-    "applied",
-  );
+  assert.equal(journalOf(required(get("namespaces", undefined, storage))).state, "applied");
   assert.deepEqual(snapshot(cluster), before);
   // The replicas recorded before the first stop survive the resumed run.
-  assert.equal(journal.writers.api.replicas, 1);
+  assert.equal(record(record(journal.writers).api).replicas, 1);
 });
 
 test("a claim mid-move survives a crash and still binds on the next run", async (t) => {
@@ -786,13 +1017,14 @@ test("a claim mid-move survives a crash and still binds on the next run", async 
   failures.push((args) => args[0] === "patch" && args[args.indexOf("--type") + 1] === "json");
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
   assert.equal(
-    get("persistentvolumes", undefined, "pv-dedicated-workspace").status.phase,
+    required(required(get("persistentvolumes", undefined, "pv-dedicated-workspace")).status).phase,
     "Released",
   );
   await applyAdoption(kubectl, { archive, ...fast });
   assert.deepEqual(snapshot(cluster), before);
   assert.equal(
-    get("persistentvolumeclaims", storage, `workspace-${dedicated}`).status.phase,
+    required(required(get("persistentvolumeclaims", storage, `workspace-${dedicated}`)).status)
+      .phase,
     "Bound",
   );
 });
@@ -817,14 +1049,15 @@ test("a Pod that keeps mounting a claim stops apply before the claim is deleted"
     /Pods in .* to release their claims; still mounting: workspace-export/,
   );
   assert.equal(
-    get("persistentvolumeclaims", tenantNamespace, `workspace-${dedicated}`).metadata
+    required(get("persistentvolumeclaims", tenantNamespace, `workspace-${dedicated}`)).metadata
       .deletionTimestamp,
     undefined,
   );
   // Revert brings the old release back even from this early stop.
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(
-    get("deployments.apps", "openclaw-system", "openclaw-enterprise-api").spec.replicas,
+    required(required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-api")).spec)
+      .replicas,
     1,
   );
 });
@@ -864,18 +1097,30 @@ test("apply returns only once the old API serves again", async (t) => {
   let unavailableReads = 0;
   const kubectl = {
     ...cluster.kubectl,
-    patch: (resource, name, namespace, type, body) => {
-      if (name === "openclaw-enterprise-api" && body?.spec?.replicas > 0) {
+    patch: (
+      resource: string,
+      name: string,
+      namespace: string | undefined,
+      type: string,
+      body: unknown,
+    ) => {
+      if (
+        name === "openclaw-enterprise-api" &&
+        isRecord(body) &&
+        isRecord(body.spec) &&
+        Number(body.spec.replicas) > 0
+      ) {
         restarted = true;
       }
       return cluster.kubectl.patch(resource, name, namespace, type, body);
     },
     // The Deployment reports no available replica for its first reads after the restart.
-    get: (resource, name, namespace) => {
-      const object = cluster.kubectl.get(resource, name, namespace);
+    get: (resource: string, name: string, namespace: string | undefined) => {
+      const object: unknown = cluster.kubectl.get(resource, name, namespace);
       if (restarted && name === "openclaw-enterprise-api" && unavailableReads < 3) {
         unavailableReads += 1;
-        return { ...object, status: { ...object.status, availableReplicas: 0 } };
+        const deployment = fixtureObject(object);
+        return { ...deployment, status: { ...deployment.status, availableReplicas: 0 } };
       }
       return object;
     },
@@ -886,11 +1131,11 @@ test("apply returns only once the old API serves again", async (t) => {
 
 test("plan refuses tenants adoption cannot carry, and apply then changes nothing", async (t) => {
   const archive = await withArchive(t);
-  const cases = [
+  const cases: [string, (cluster: ReturnType<typeof fakeCluster>) => unknown, RegExp][] = [
     [
       "an existing (external) tenant namespace",
       ({ get }) => {
-        get("namespaces", undefined, tenantNamespace).metadata.annotations[
+        required(required(get("namespaces", undefined, tenantNamespace)).metadata.annotations)[
           "openclaw.dev/namespace-lifecycle"
         ] = "external";
       },
@@ -972,7 +1217,7 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
     [
       "a terminating tenant namespace",
       ({ get }) => {
-        get("namespaces", undefined, tenantNamespace).metadata.deletionTimestamp =
+        required(get("namespaces", undefined, tenantNamespace)).metadata.deletionTimestamp =
           "2026-10-09T00:00:00Z";
       },
       /terminating/,
@@ -981,7 +1226,7 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
   for (const [description, mutate, expected] of cases) {
     const cluster = releasedInstallation();
     mutate(cluster);
-    const [plan] = planAll(cluster.kubectl).plans;
+    const plan = required(planAll(cluster.kubectl).plans[0]);
     assert.match(plan.refusals.join("\n"), expected, description);
     const calls = cluster.calls.length;
     await assert.rejects(applyAdoption(cluster.kubectl, { archive, ...fast }), AdoptError);
@@ -996,7 +1241,9 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
 test("an already shared or adopted tenant and another tenant's storage name are left alone", () => {
   const cluster = releasedInstallation();
   const { put, get } = cluster;
-  get("namespaces", undefined, storage).metadata.labels["openclaw.dev/namespace"] = id;
+  required(required(get("namespaces", undefined, storage)).metadata.labels)[
+    "openclaw.dev/namespace"
+  ] = id;
   put("namespaces", {
     metadata: {
       name: "oce-shared",
@@ -1028,10 +1275,12 @@ test("an operator can accept OAuth reconnects and drop a confirmed resource kind
   });
   // An unmanaged object the operator confirmed is disposable, e.g. a Sandbox provider's.
   put("services", { metadata: { name: "sandbox-proxy", namespace: tenantNamespace } });
-  const [plan] = planAll(kubectl, {
-    acceptOauthReconnect: true,
-    dropResources: ["services"],
-  }).plans;
+  const plan = required(
+    planAll(kubectl, {
+      acceptOauthReconnect: true,
+      dropResources: ["services"],
+    }).plans[0],
+  );
   assert.deepEqual(plan.refusals, []);
   assert.deepEqual(plan.reconnectAgents, ["agent-dedicated"]);
   await applyAdoption(kubectl, {
@@ -1041,11 +1290,9 @@ test("an operator can accept OAuth reconnects and drop a confirmed resource kind
     ...fast,
   });
   for (const component of ["api", "worker"]) {
-    get(
-      "deployments.apps",
-      "openclaw-system",
-      `openclaw-enterprise-${component}`,
-    ).spec.template.spec.containers[0].image = "controller@sha256:current";
+    writerContainer(
+      required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`)),
+    ).image = "controller@sha256:current";
   }
   // The confirmed kind does not stop finalize either; an object added after apply does.
   put("configmaps", { metadata: { name: "added-later", namespace: tenantNamespace } });
@@ -1084,7 +1331,7 @@ test("discovery tolerates an unavailable API group but not a missing core kind",
   const archive = await withArchive(t);
   const cluster = releasedInstallation();
   cluster.discovery.unavailable = true;
-  assert.equal(planAll(cluster.kubectl).plans[0].refusals.length, 0);
+  assert.equal(required(planAll(cluster.kubectl).plans[0]).refusals.length, 0);
   cluster.discovery.drop = ["persistentvolumeclaims"];
   assert.throws(() => planAll(cluster.kubectl), /did not list persistentvolumeclaims/);
   await assert.rejects(applyAdoption(cluster.kubectl, { archive, ...fast }), AdoptError);
@@ -1094,7 +1341,7 @@ test("discovery tolerates an unavailable API group but not a missing core kind",
 const other = "ns_22222222-2222-4222-8222-222222222222";
 const otherStorage = storageNamespaceName(other);
 
-function addSecondTenant(put) {
+function addSecondTenant(put: ReturnType<typeof fakeCluster>["put"]) {
   const otherOwned = {
     labels: {
       "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -1117,7 +1364,7 @@ function addSecondTenant(put) {
     ["oce-openclaw-tenant-worker", "openclaw-enterprise-worker"],
     ["oce-openclaw-tenant-api", "openclaw-enterprise-api"],
     ["oce-openclaw-tenant-configuration", "openclaw-enterprise-api"],
-  ]) {
+  ] satisfies [string, string][]) {
     put("rolebindings.rbac.authorization.k8s.io", {
       metadata: { name: role, namespace: otherStorage },
       roleRef: { kind: "ClusterRole", name: role },
@@ -1134,24 +1381,27 @@ test("a second tenant adopted later keeps the OCC replicas recorded before the f
   // Planned after OCC is already stopped.
   addSecondTenant(put);
   await applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast });
-  const journal = JSON.parse(
-    get("namespaces", undefined, otherStorage).metadata.annotations[JOURNAL_ANNOTATION],
-  );
-  assert.equal(journal.writers.worker.replicas, 1);
+  const journal = journalOf(required(get("namespaces", undefined, otherStorage)));
+  assert.equal(record(record(journal.writers).worker).replicas, 1);
   // Reverting one tenant keeps the worker stopped while the other stays adopted.
   await revertAdoption(kubectl, { archive, namespaceIds: [other], ...fast });
   assert.equal(
-    get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker").spec.replicas,
+    required(
+      required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker")).spec,
+    ).replicas,
     0,
   );
   assert.equal(
-    get("deployments.apps", "openclaw-system", "openclaw-enterprise-api").spec.replicas,
+    required(required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-api")).spec)
+      .replicas,
     1,
   );
   // Reverting the rest brings OCC back at its original size, not the zero the second run saw.
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(
-    get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker").spec.replicas,
+    required(
+      required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker")).spec,
+    ).replicas,
     1,
   );
 });
@@ -1163,13 +1413,11 @@ test("apply refuses to adopt more tenants once the controller runs other images"
   await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
   // The control plane is upgraded before every tenant was adopted.
   for (const component of ["api", "worker"]) {
-    const deployment = get(
-      "deployments.apps",
-      "openclaw-system",
-      `openclaw-enterprise-${component}`,
+    const deployment = required(
+      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`),
     );
-    deployment.spec.template.spec.containers[0].image = "controller@sha256:current";
-    deployment.spec.replicas = 1;
+    writerContainer(deployment).image = "controller@sha256:current";
+    required(deployment.spec).replicas = 1;
     deployment.status = { replicas: 1, availableReplicas: 1 };
   }
   addSecondTenant(put);
@@ -1180,12 +1428,15 @@ test("apply refuses to adopt more tenants once the controller runs other images"
   // The new release keeps serving and the second tenant is untouched.
   for (const component of ["api", "worker"]) {
     assert.equal(
-      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`).spec.replicas,
+      required(
+        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
+          .spec,
+      ).replicas,
       1,
     );
   }
   assert.equal(
-    get("namespaces", undefined, otherStorage).metadata.annotations?.[JOURNAL_ANNOTATION],
+    required(get("namespaces", undefined, otherStorage)).metadata.annotations?.[JOURNAL_ANNOTATION],
     undefined,
   );
 });
@@ -1194,27 +1445,26 @@ test("each writer is compared with its own recorded images, and a rollback lets 
   const archive = await withArchive(t);
   const cluster = releasedInstallation();
   const { kubectl, put, get } = cluster;
-  const worker = () => get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker");
-  worker().spec.template.spec.containers[0].image = "worker@sha256:released";
+  const worker = () =>
+    required(get("deployments.apps", "openclaw-system", "openclaw-enterprise-worker"));
+  writerContainer(worker()).image = "worker@sha256:released";
   await applyAdoption(kubectl, { archive, namespaceIds: [id], ...fast });
   // Only the worker was upgraded.
-  worker().spec.template.spec.containers[0].image = "worker@sha256:current";
-  worker().spec.replicas = 1;
+  writerContainer(worker()).image = "worker@sha256:current";
+  required(worker().spec).replicas = 1;
   worker().status = { replicas: 1, availableReplicas: 1 };
   addSecondTenant(put);
   await assert.rejects(
     applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast }),
     /openclaw-enterprise-worker runs other images than apply recorded/,
   );
-  assert.equal(worker().spec.replicas, 1);
+  assert.equal(required(worker().spec).replicas, 1);
   // After a rollback to the recorded images (API and worker still differ), apply continues.
-  worker().spec.template.spec.containers[0].image = "worker@sha256:released";
+  writerContainer(worker()).image = "worker@sha256:released";
   await applyAdoption(kubectl, { archive, namespaceIds: [other], ...fast });
-  const journal = JSON.parse(
-    get("namespaces", undefined, otherStorage).metadata.annotations[JOURNAL_ANNOTATION],
-  );
-  assert.deepEqual(journal.writers.worker.images, ["worker@sha256:released"]);
-  assert.equal(worker().spec.replicas, 0);
+  const journal = journalOf(required(get("namespaces", undefined, otherStorage)));
+  assert.deepEqual(record(record(journal.writers).worker).images, ["worker@sha256:released"]);
+  assert.equal(required(worker().spec).replicas, 0);
 });
 
 test("a crash between copying a Secret and recording it still lets revert remove the copy", async (t) => {
@@ -1224,7 +1474,7 @@ test("a crash between copying a Secret and recording it still lets revert remove
   // The copy is created; the journal update that records it fails.
   let created = false;
   failures.push((args, input) => {
-    if (args[0] === "create" && JSON.parse(input).kind === "Secret") {
+    if (args[0] === "create" && record(JSON.parse(required(input))).kind === "Secret") {
       created = true;
       return false;
     }
@@ -1238,7 +1488,10 @@ test("a crash between copying a Secret and recording it still lets revert remove
     ["worker", 0],
   ]) {
     assert.equal(
-      get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`).spec.replicas,
+      required(
+        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
+          .spec,
+      ).replicas,
       replicas,
     );
   }
@@ -1251,16 +1504,18 @@ test("revert restores the reclaim policy of a claim apply had not moved yet", as
   const cluster = releasedInstallation({ reclaimPolicy: "Delete" });
   const { kubectl, get, failures } = cluster;
   // Retain is set on the first volume; the claim delete that follows fails.
-  failures.push((args) => args[0] === "delete" && args[2].includes("persistentvolumeclaims"));
+  failures.push(
+    (args) => args[0] === "delete" && required(args[2]).includes("persistentvolumeclaims"),
+  );
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
   assert.equal(
-    get("persistentvolumes", undefined, "pv-dedicated-workspace").spec
+    required(required(get("persistentvolumes", undefined, "pv-dedicated-workspace")).spec)
       .persistentVolumeReclaimPolicy,
     "Retain",
   );
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(
-    get("persistentvolumes", undefined, "pv-dedicated-workspace").spec
+    required(required(get("persistentvolumes", undefined, "pv-dedicated-workspace")).spec)
       .persistentVolumeReclaimPolicy,
     "Delete",
   );
