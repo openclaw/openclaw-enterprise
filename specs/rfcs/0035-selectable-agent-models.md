@@ -16,6 +16,8 @@ OCC admits catalog entries for explicitly selected model IDs alongside the prima
 
 Compute supplies those models to the native runtime. Dedicated OpenClaw checks the metadata and destination of each model it adds to its worker catalog. The Credential Gateway applies the same destination check to each added model. Adding a model cannot widen the credential's destination grant. A wildcard or alias in an advanced policy does not add a provider catalog entry.
 
+When a Credential Proxy protects inference, OCC derives the sender grant from the revision's primary model and its explicitly selected session models. The proxy checks the request body's model ID against that exact list before sending the key. Other models offered by the provider are outside this grant. The selected protocol, destination, operation, and tool restrictions still apply.
+
 ## Verification
 
 Deploy an Agent with two model IDs on one provider. Check that a new session uses the default, switch to the other model for a turn, and confirm another new session still uses the default. Exercise admission with a model on a different provider, an unselected catalog row and a second model with a conflicting destination. Each should fail before activation.
