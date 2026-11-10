@@ -56,7 +56,7 @@
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
-    "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/update-contributors.test.ts",
@@ -70,7 +70,7 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/integration/bootstrap-volume.test.mjs",
+    "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.mjs",
     "tests/conformance/kubernetes-configuration.test.mjs",
     "tests/conformance/occ-read.test.mjs",
@@ -362,7 +362,7 @@
       "path": "tests/integration/bootstrap-output.test.mjs"
     },
     {
-      "path": "tests/integration/bootstrap-volume.test.mjs"
+      "path": "tests/integration/bootstrap-volume.test.ts"
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
@@ -422,7 +422,7 @@
       "path": "tests/integration/production-healthcheck.test.mjs"
     },
     {
-      "path": "tests/integration/production-image-upgrade.test.mjs"
+      "path": "tests/integration/production-image-upgrade.test.ts"
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
