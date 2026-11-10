@@ -10,21 +10,26 @@ This amendment to [RFC-0008](index.md) proposes deleting the public
 can change which repositories an Agent can select, veto standing approval, or
 add Compute lifecycle hooks. Built-in GitHub repository policy began as an
 opt-in in [PR #5135](https://github.com/openclaw/openclaw-enterprise/pull/5135).
-Retirement depends on making this policy the default for configured GitHub
-installations, a separate change proposed in
-[draft PR #5184](https://github.com/openclaw/openclaw-enterprise/pull/5184).
-File and programmatic installations that use the retired contract must switch to
-explicit Git configuration or leave Git disabled.
+It became the default for configured GitHub installations in
+[PR #5184](https://github.com/openclaw/openclaw-enterprise/pull/5184).
 
 ## Repository policy and delivery
 
 Remove Repo Driver registration and selection, including independent policy
-extensions, veto callbacks, and Compute hooks supplied by Repo Drivers. Remove
-`drivers.repo` from the GitHub Backend schema. Use the built-in policy for every
-Git-enabled GitHub installation. Bind explicit Git configuration to the existing
-unique GitHub Backend ID and validate the ID against the registry. A Backend
-declaration alone leaves Git disabled. Startup rejects retired inputs, including
-a legacy registration that uses the built-in policy's ID.
+extensions, veto callbacks, and Compute hooks supplied by Repo Drivers. Use the
+built-in policy for every Git-enabled GitHub installation. Bind explicit Git
+configuration to the existing unique GitHub Backend ID and validate the ID against
+the registry. Without a selected repository, Git stays disabled. A stale
+`drivers.repo` cannot enable it.
+
+At file intake, accept the legacy `backend[].drivers.repo` only on the selected
+GitHub Backend, when `repo` is the sole member of the `drivers` object and its
+value matches `repository.id`. Discard the legacy object before validating the
+normalized Backend schema, building runtime configuration, or deriving the
+protected configuration identity. Canonical files omit the legacy field. Reject
+mismatches, malformed shapes, and extra members. Reject retired inputs in
+programmatic Backend definitions and runtime registration, including a legacy
+Repo Driver registration that uses the built-in policy's ID.
 
 The OpenClaw Control Plane (OCC) and the worker use the bound policy for catalog,
 admission, and renewal. Preserve Namespace IAM, exact grant and profile binding,
@@ -37,11 +42,12 @@ native delivery.
 
 ## Operator cutover
 
-Removing `drivers.repo` changes the protected configuration identity even if the
-Backend ID and registry contents match. Use the new identity for new admissions.
-Existing Agent revisions, attempts, and receipts keep their recorded identity.
-Only the original owner can settle that work. Sessions stay with their original
-configuration.
+The matching legacy file and the canonical file produce the same runtime
+configuration and protected identity. That identity can differ from the previous
+release even when the Backend ID and registry contents match. When the identity
+changes, use the new identity for new admissions. Existing Agent revisions,
+attempts, and receipts keep their recorded identity. Only the original owner can
+settle that work. Sessions stay with their original configuration.
 
 Before upgrading, inventory live Agent revisions, standing approvals, outstanding
 attempts, and prepared provider obligations. Pause new admissions and renewals.
@@ -57,15 +63,20 @@ disabled where the built-in rules cannot enforce a required constraint.
 
 ## Acceptance criteria
 
-- File and programmatic startup accept valid explicit Git configuration and
-  reject retired inputs before Driver registration or credential effects. An
-  installation with Git disabled remains usable.
+- File and programmatic startup accept valid explicit Git configuration. Verify
+  that the matching legacy file and the canonical file produce the same runtime
+  configuration and protected identity. Reject malformed or mismatched legacy
+  fields, extra members, and retired programmatic registration before Driver
+  registration or credential effects. Verify that a canonical file without a
+  selected repository starts with Git disabled. Refuse a stale legacy field in
+  that case before Driver registration or credential effects.
 - Exercise catalog, admission, and worker renewal through their normal callers.
   A late denial or withdrawn approval prevents creation of an Agent revision at
   deployment. When either occurs at renewal, the worker creates no attempt, opens
   no sender session, and delivers no credentials.
-- Exercise native and protected delivery independently. The new protected
-  configuration refuses a plan saved under the old identity without calling the
-  native sender. The original owner settles retained work from the identity
-  recorded with it, even if the Agent revision is missing. Missing or mismatched
-  ownership leaves settlement unresolved.
+- Exercise native and protected delivery independently. After a change in
+  protected configuration identity, the new configuration refuses a plan saved
+  under the old identity without calling the native sender. The original owner
+  settles retained work from the identity recorded with it, even if the Agent
+  revision is missing. Missing or mismatched ownership leaves settlement
+  unresolved.
