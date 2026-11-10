@@ -30,6 +30,7 @@
   "include": [
     "**/*.test.ts",
     "conformance/kubernetes-teardown-cases.ts",
+    "integration/postgres-agent-provisioning-fixture.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
