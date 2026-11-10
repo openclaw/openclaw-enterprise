@@ -2084,3 +2084,72 @@ test("discard refuses identity collisions before deleting restorable resources",
   );
   assert.equal(role.id, source.id);
 });
+
+test("resumed imports retain identity ownership for skipped tenants", async () => {
+  const fixture = await createFixture();
+  const selected = await seedTenant(fixture);
+  const skipped = await created(fixture, "/namespaces", { name: "previous-source" });
+  await markReady(fixture, skipped.id);
+  // Different resource collections can retain the same opaque ID. The old Role
+  // mapping must not masquerade as completion of another tenant's AccessBinding.
+  await fixture.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.iamPolicy.createRole({
+      id: selected.binding.id,
+      namespaceId: skipped.id,
+      name: "previous-source-role",
+      permissions: [{ action: "read", resourceKind: "configuration" }],
+    }),
+  );
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(
+    ({ id }) => id === selected.namespace.id || id === skipped.id,
+  );
+  const oldTarget = await created(fixture, "/namespaces", { name: "previous-target" });
+  const target = await created(fixture, "/namespaces", { name: "next-target" });
+  await markReady(fixture, oldTarget.id);
+  await markReady(fixture, target.id);
+  const oldRole = await created(fixture, `/namespaces/${oldTarget.id}/iam/roles`, {
+    name: "previous-source-role",
+    permissions: [{ action: "read", resourceKind: "configuration" }],
+  });
+  // This is the map an earlier import of only previous-source retained. Keeping
+  // the same bundle while changing --skip must not erase its identity ownership.
+  const state: SavedState = {
+    ids: { [skipped.id]: oldTarget.id, [selected.binding.id]: oldRole.id },
+    deployed: [],
+  };
+  const before = structuredClone(state);
+  let requests = 0;
+  let saves = 0;
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    fetchImpl(url, init) {
+      requests += 1;
+      return asAdministrator(fixture)(url, init);
+    },
+  });
+  await assert.rejects(
+    importTenants(
+      api,
+      bundle,
+      { "team-a": { "model-key": "synthetic" } },
+      {
+        state,
+        save: () => {
+          saves += 1;
+        },
+        skip: [string(skipped.name)],
+        names: { "team-a": "next-target" },
+        deploy: false,
+      },
+    ),
+    /source IDs overlap/u,
+  );
+  assert.equal(requests, 0);
+  assert.equal(saves, 0);
+  assert.deepEqual(state, before);
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/access-bindings`)).data,
+    [],
+  );
+});

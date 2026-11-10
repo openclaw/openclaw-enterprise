@@ -71,7 +71,8 @@ name without quoting its contents.
 
 The importer rejects duplicate source Namespace IDs across the whole bundle,
 including skipped tenants, before any request or map save. Its flat ID map also
-refuses defining source IDs shared across resource kinds or selected Namespaces;
+refuses defining source IDs shared across resource kinds or Namespaces, including
+skipped tenants whose mappings may remain from an earlier run;
 ordinary references to one identity may repeat. Discard applies the same check
 before any request, preserving resources the importer cannot restore. Export
 still preserves those opaque identities for recovery. It checks required
@@ -162,3 +163,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 - 2026-11-10 17:52: Refuse ambiguous source identities before creating an import ID map. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - f2a43c7c0195b23eb8e21bf2252caa3d5c4fd795)
 
 - 2026-11-10 17:58: Check restorable identity mappings before discarding source resources. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - c73c87cc8f0bb04e7233337d7f51c26a84ed8990)
+
+- 2026-11-10 18:05: Preserve skipped tenants in the retained identity index. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - d8b4d60f867432d23dc7225cd40899733affceff)

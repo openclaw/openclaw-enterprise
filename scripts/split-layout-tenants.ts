@@ -743,7 +743,7 @@ export async function exportTenants(
   return bundle;
 }
 
-function mappedResourceKinds(namespaces: Resource[], allNamespaces = namespaces) {
+function mappedResourceKinds(namespaces: Resource[]) {
   const mappedKinds = new Map<unknown, { kind: string; namespaceId: unknown }>();
   const registerIdentity = (id: unknown, kind: string, namespaceId: unknown) => {
     const previous = mappedKinds.get(id);
@@ -754,7 +754,7 @@ function mappedResourceKinds(namespaces: Resource[], allNamespaces = namespaces)
     }
     mappedKinds.set(id, { kind, namespaceId });
   };
-  for (const namespace of allNamespaces) {
+  for (const namespace of namespaces) {
     registerIdentity(namespace.id, "namespaces", namespace.id);
   }
   for (const namespace of namespaces) {
@@ -1041,6 +1041,7 @@ export async function importTenants(
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
   const allNamespaces = readNamespaces(bundle);
+  const mappedKinds = mappedResourceKinds(allNamespaces);
   const namespaces = allNamespaces.filter(({ name }) => !skip.includes(name));
   const targetName = (namespace: Resource) => ownValue(names, namespace.name) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
@@ -1056,7 +1057,6 @@ export async function importTenants(
       `ID map (--map).ids: expected nonempty string values and keys of at most 200 code points. ${recoverInput}`,
     );
   }
-  const mappedKinds = mappedResourceKinds(namespaces, allNamespaces);
   for (const [key, value] of Object.entries(savedIds)) {
     requireResourceId(value, mappedKinds.get(key)?.kind ?? "opaque", "ID map (--map).ids");
   }

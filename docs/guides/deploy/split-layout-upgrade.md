@@ -185,8 +185,8 @@ Configurations, workspace files, transcripts and Secret values.
    Choose separate targets or skip a source; review an old conflicting map and
    any already imported resources before retrying. Malformed saved IDs and duplicate
    source Namespace IDs, including skipped sources, are refused before any API request.
-   Import also refuses source IDs shared by different resource kinds or selected
-   Namespaces: its flat map cannot keep their destinations separate. Preserve the
+   Import also refuses source IDs shared by different resource kinds or
+   Namespaces, including skipped sources: its flat map cannot keep their destinations separate. Preserve the
    export and restore those colliding resources manually; do not alter IDs in the bundle.
 
    It creates the Namespaces and exits `3` while they are `provisioning`.
