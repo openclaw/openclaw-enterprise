@@ -1830,6 +1830,15 @@ if ((helm_complete == 0)); then
     remaining_seconds=$((deadline - SECONDS))
     ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
   }
+  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
+  handoff="$evidence_dir/database-migration-handoff.json"
+  separate_handoff=0
+  if [[ "$upgrade_migration" == separate && ! -f "$evidence_dir/helm-started" ]]; then
+    separate_handoff=1
+    if [[ -e "$handoff" || -L "$handoff" ]]; then
+      require_private_file "$handoff"
+    fi
+  fi
   # Validate both writers before stopping either one.
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
@@ -1844,6 +1853,12 @@ if ((helm_complete == 0)); then
       .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
+    if ((separate_handoff)) && [[ -f "$handoff" ]]; then
+      jq -e --arg component "$component" --slurpfile handoff "$handoff" '
+        .spec.replicas == 0 and (.metadata | {uid, generation}) == $handoff[0][$component]
+      ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
+        die "The $component Deployment changed during the separate database deployment. Preserve the database and reconcile the writer before resuming."
+    fi
     # Test and scale atomically: a replacement or concurrent edit must not be stopped.
     jq '[
       {op: "test", path: "/metadata/uid", value: .metadata.uid},
@@ -1883,8 +1898,16 @@ if ((helm_complete == 0)); then
       die "OCC identity or replicas changed during quiescence; migration was not started."
   done
 
-  upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
-  if [[ "$upgrade_migration" == separate ]] && ((migration_history_checked == 0)); then
+  if ((separate_handoff)) && { [[ ! -f "$handoff" ]] || ((migration_history_checked == 0)); }; then
+    if [[ ! -f "$handoff" ]]; then
+      staged_handoff=$(mktemp "$evidence_dir/database-migration-handoff.XXXXXXXX")
+      jq -nes --slurpfile api "$evidence_dir/quiescence-api-deployment.json" \
+        --slurpfile worker "$evidence_dir/quiescence-worker-deployment.json" '
+        {api: $api[0].metadata, worker: $worker[0].metadata} |
+        with_entries(.value |= {uid, generation}) | select(all(.[]; (.generation | type) == "number"))
+      ' >"$staged_handoff" || die "Cannot record the stopped Deployment generations."
+      mv "$staged_handoff" "$handoff"
+    fi
     die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run node scripts/migrate-production.mjs in the selected controller image against this Installation with the dedicated migrator credential. Confirm --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
   fi
 

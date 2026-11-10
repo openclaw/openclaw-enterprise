@@ -3599,13 +3599,31 @@ test("a separate database deployment pauses after quiescence and before Helm eve
   await f.failNext("fail-scale-worker");
   await assert.rejects(f.run(), injectedFault);
   await assert.rejects(
-    f.run("--resume"),
+    f.run("--resume", "--migration-history-checked"),
     (error) => error.code === 3 && /separate database deployment/.test(error.stderr),
   );
   const stopped = await f.state();
   assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
   assert.equal(stopped.helmSubmissions ?? 0, 0);
   assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  // A replacement with the same labels and replica count does not own this handoff.
+  const stateFile = join(f.directory, "state.json");
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      ...stopped,
+      deploymentIdentities: {
+        ...stopped.deploymentIdentities,
+        worker: { uid: "replacement-worker" },
+      },
+    }),
+  );
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    /worker Deployment changed/,
+  );
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  await writeFile(stateFile, JSON.stringify(stopped));
   await f.run("--resume", "--migration-history-checked");
   assert.equal((await f.state()).helmSubmissions, 1);
 });

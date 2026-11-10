@@ -140,7 +140,7 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-Candidate values may also select a [staged immutable Installation Secret](immutable-installation-upgrade.md).
+Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
@@ -150,10 +150,9 @@ The helper does not convert the baseline automatically. Other configuration
 changes are not supported by this upgrade command.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
-The command does not change IAM, authentication, Installation identity, database,
+Candidate files cannot change IAM, authentication, Installation identity, database credentials,
 bootstrap, native administration, Compute identity or cluster trust, or repository
-settings through these candidate files. Repository settings include the GitHub
-Backend and registry path, Repo Driver, and Compute credential-service peer.
+settings through these candidate files. This includes the GitHub Backend, registry path, Repo Driver and Compute credential-service peer.
 Select controller and runtime images with their image flags; do not edit those
 image fields or the managed Installation checksum in the copies.
 
@@ -282,26 +281,7 @@ or interruption, preserve the evidence and lock and follow
 [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
-By default Helm migrates, bootstraps and restores Deployments. To deploy the
-database separately, set `database.upgradeMigration: separate` in the reviewed
-candidate values. Use a candidate controller image that supports `--require-current`.
-The helper exits **3** after both writers stop and before submitting Helm.
-
-1. Keep the maintenance window active. Use the [maintenance Job](auth-maintenance.md#run-the-command)
-   with the selected immutable candidate image, this database's migrator credential and CA,
-   and args `["scripts/migrate-production.mjs"]`. Wait for the Job to finish.
-2. If its outcome is uncertain, preserve its logs and confirm the Job and Pods are terminal.
-   Check the same image and database with `["scripts/migrate-production.mjs","--require-current"]`.
-   Proceed only after exit zero and `migration.checked` with history `completed`.
-3. Repeat the upgrade command with `--resume --migration-history-checked` and the original
-   evidence directory. The helper rechecks quiescence. The Helm hook verifies the full
-   candidate history before bootstrap and service replacement. The helper verifies rollout and OCC access.
-
-The migration advisory lock serializes migrators. The operator keeps other writers,
-autoscalers and deployment clients stopped across both steps. A Helm rollback cannot
-reverse committed SQL. Keep the old services stopped after migration unless a separately
-qualified recovery restores their matching database. The selected mode persists in Helm
-values until a reviewed candidate selects `hook`.
+Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.
 
 ```text
 Upgraded controller image; no Agent deployments were requested.
