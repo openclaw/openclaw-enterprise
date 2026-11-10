@@ -212,7 +212,7 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-RWX Harness or Gateway claims are rejected during reconciliation and final
+RWX workspace or Gateway claims are rejected during reconciliation and final
 Agent deletion.
 
 As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
@@ -221,15 +221,19 @@ required; the Driver never force detaches a disk. A local-path PV keeps its node
 affinity and cannot move its data to another node. Cross-node rescheduling needs
 an appropriate portable StorageClass, not RWX.
 
-Both claims retain Namespace and Agent owners across version and Gateway Pod
-changes. Reconciliation rejects foreign, terminating, or incompatible claims
+Both claims retain Namespace and Agent ownership across replacements. Reconciliation rejects foreign, terminating, or incompatible claims
 without mutation. Claims precede consumers; readiness uses the Gateway workload.
 Waiting for `Bound` before creating Pods would deadlock `WaitForFirstConsumer`
-storage classes. Stopping or retiring an Agent revision retains
-both claims, including when the gateway has already stopped. Agent deletion
+storage classes. Revision stop and retirement retain
+both claims, even after Gateway shutdown. Agent deletion
 retires every Agent revision before its final cleanup hook deletes the owned claims
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
 for retry and preserves the Agent's database identity.
+
+## Optional scratch storage
+
+For `/sandbox/scratch` storage, see [configuration](configuration.md#scratch-volumes)
+and [setup](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage).
 
 ## Managed native configuration
 

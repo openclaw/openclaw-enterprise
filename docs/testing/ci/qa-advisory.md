@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with four groups of test jobs:
 
 - **QA matrix:** Console Secret management with Standard Codex Agents on Compose
   and Kubernetes installations.
-- **OpenShell:** eleven jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
+- **OpenShell:** fourteen jobs with at most ten running at once for sandbox policy, credentials, Git expiry, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 - **OIDC Agent chat:** Keycloak sign-in, ordinary-owner setup, a real Agent reply,
@@ -64,6 +64,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                               |
 | ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                             |
+| `scratch-volume`        | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                     |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                 |
 | `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                                         |
 | `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | Explicitly attached Default users, signed admission claims, Keycloak sign-in, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
@@ -80,10 +81,10 @@ defines their applicability.
 
 ### Scenario details
 
-The OpenShell jobs cover `sandbox-policy` and `plugin-install` automatically.
+The OpenShell jobs cover `sandbox-policy`, `scratch-volume` and `plugin-install` automatically.
 To select these scenarios locally through the QA matrix, prepare their OpenShell
-fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
-[plugin installation](../openshell.md#codex-plugin-installation).
+fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector),
+[scratch storage](../openshell.md#openshell-sandbox) or [plugin installation](../openshell.md#codex-plugin-installation).
 
 The OpenClaw `model-ui` case checks the example Console theme through sign-in
 and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
@@ -115,7 +116,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the twelve files in the
+The selection job reads the fourteen files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -130,6 +131,8 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                      | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
 | [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)             | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)        | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
+| [Scratch storage](../../../tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs)    | Real scratch and workspace writes, immutable binding, and missing/wrong-UID claim refusal.                                                                                       |
+| [Namespace bootstrap](../../../tests/integration/namespace-driver-openshell-k3d-real.test.ts)       | Namespace gateways and Workspaces before Agents, followed by deployment and model turns.                                                                                         |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs)  | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)       | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 | [Finite repository retention](../../../tests/integration/openshell-git-retention-real.test.ts)      | Natural expiry and a separate two-Agent withdrawal: B reads before worker replacement; A remains denied afterward.                                                               |
@@ -169,7 +172,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, OIDC Agent chat, all twelve OpenShell jobs, and three local installation jobs.
+This starts the QA matrix, OIDC Agent chat, all fourteen OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -183,7 +186,7 @@ OpenShell files or the local installation suite. For those suites, follow
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes the explicit `sandbox-policy`, `plugin-install`,
+`all` excludes the explicit `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
 `openshell-linear-read`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
@@ -194,6 +197,12 @@ Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
 runtime images. Follow the [native browser proof](../native-agent-browser.md)
 for inputs, execution and proof limits. It does not use the ordinary matrix's
 installation launcher.
+
+Select `scratch-volume` with `kubernetes` and `Codex`. It reuses the
+[real scratch entrypoint](../openshell.md#openshell-sandbox) against an explicitly
+prepared disposable OpenShell environment. This Codex case uses an OpenAI API key,
+with endpoint `https://api.openai.com/v1`. It does not qualify NVMe backing or
+node-loss recovery.
 
 Select `codex-search-config` alone. It requires `OCC_TEST_QA_CODEX_MODEL_BASE_URL`,
 `OCC_TEST_QA_CODEX_MODEL`, and an API key through `OCC_TEST_QA_MODEL_API_KEY` or
@@ -221,6 +230,7 @@ are under [integration environments](configuration.md#environments).
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | OpenClaw model  | `OCC_TEST_QA_OPENAI_KEY_FILE`                                                                                                                                                          |
 | Codex           | `OCC_TEST_QA_CODEX_TOKEN_FILE`: authorized service-account PAT                                                                                                                         |
+| Scratch storage | `OCC_TEST_QA_OPENAI_KEY_FILE`, `OCC_TEST_QA_OPENAI_MODEL`, and `OCC_TEST_QA_SANDBOX_ENV`: protected prepared OpenShell environment file, including its migrator connection.            |
 | Git             | `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1`, `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`, and `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE` or absolute managed `OCC_TEST_QA_GITHUB_OBSERVER_BINARY` |
 | Slack           | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE`, `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`, `OCC_TEST_QA_SLACK_CHANNEL_ID`                                          |
 
@@ -252,6 +262,13 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 ```
 
 `TEST_ENV_FILE` is the private environment file described above.
+For scratch only, keep those private inputs and select:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=scratch-volume \
+  node --env-file="$TEST_ENV_FILE" --test tests/integration/qa-matrix-real.test.mjs
+```
 
 ## Results and limits
 
@@ -280,7 +297,7 @@ time. Unknown or malformed records and other stdout remain private. Commands wit
 protected output produce no timing artifact.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all eleven
+because it runs one file; complete advisory OpenShell coverage requires all fourteen
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the

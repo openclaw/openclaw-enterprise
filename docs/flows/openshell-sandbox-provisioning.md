@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
+last_updated_session: authoring-run/0029d37a-209b-4105-8242-a8c48c959c81
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -210,8 +210,14 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
-mount-specific `safe.directory` and `push.negotiate=true`.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes scratch.
+Preparation/activation call `verifyScratchVolume` after predecessor shutdown;
+`sandboxWorkspaceMounts` checks its exact tuple. OpenShell's `workspaceVolumeMounts`
+preserves `/sandbox/scratch`; `filesystemPolicy` permits writes. Native permissions
+stay unchanged. Cleanup retains operator-owned scratch; see [contract](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes).
+
+`sandboxDataMount` validates mounts. `OpenShellGitRuntime.prepare` supplies
+process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
@@ -240,8 +246,7 @@ Readiness does not attest HMAC plugin status.
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
 the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
-checks ownership and setup material without further reads. OpenShell keeps provider
-output private and maps failures to `OpenShellSandboxConfigurationFailure`.
+checks ownership and setup material without further reads. OpenShell keeps provider output private; failures become `OpenShellSandboxConfigurationFailure`.
 Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
 at admission and supervisor replacement. WebSocket rewriting is unsupported:
 device proofs sign the literal token.
@@ -249,25 +254,22 @@ Renewal requires expired stored setup, later live expiry and unchanged endpoint,
 TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
 foreign ownership/drift prevents creation.
 
-Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths mount
-below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
-`harnessHome` for native hook credentials. Codex hooks use the provider-file
-Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created
-`state` child to avoid root-owned mounts and symlinks.
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
-and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
-clearing inherited setgid. OpenClaw prepares its children on retry; retained state
-and workspace permissions stay unchanged. Permission failures stop startup.
-Workspace, node identity, sessions and images stay separate. The supervisor probes
-`/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
+State uses `/sandbox/.openclaw-runtime`; subpaths use
+`/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under `harnessHome`
+for native hooks. Codex hooks use provider-file Gateway CA and
+node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created `state` child,
+avoiding root-owned mounts and symlinks. `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
+and `NATIVE_WORKER_ENTRYPOINT` set `0700` and clear setgid before setup/migration;
+OpenClaw retries child preparation. Retained workspace/state permissions persist; failures stop startup. Workspace, identity, sessions and images remain
+separate. The supervisor probes `/tmp`; native `TMPDIR` uses private runtime-home `tmp`.
 
-`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
-revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
-completed preparation exits successfully on SIGTERM with normal termination grace.
-Sandbox creation waits for every writer Pod.
-Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
-and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
+`prepareNativeWorkspace` privatizes retained PVC subpaths in a restricted revision
+Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
+completed preparation exits successfully on SIGTERM with normal grace. Sandbox
+creation waits for every writer Pod. Admission requires `userNamespaces: false`,
+one optional operator-mode ServiceAccount and the pinned Gateway's default identity.
+Preparation has no model credentials, ServiceAccount tokens, capabilities or direct
+Pod creation.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
@@ -433,6 +435,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 21:04: Trace scratch PVC admission and mounts. (authoring-run/0029d37a-209b-4105-8242-a8c48c959c81 - 8b0d0518cb8786253d9632ae4beb8a75758a2e61)
 
 - 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
 
