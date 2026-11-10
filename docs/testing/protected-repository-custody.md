@@ -54,8 +54,10 @@ the Codex executable pinned by the [runtime Dockerfile](../../deploy/runtime/Doc
 
 ```sh
 env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
-  -u OPENCLAW_ENTERPRISE_CI_PREFIX pnpm exec node --env-file="$PG_RUN_DIR/test.env" \
-  --run test:external-git-conversation
+  -u OPENCLAW_ENTERPRISE_CI_PREFIX OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION=1 \
+  node --env-file="$PG_RUN_DIR/test.env" --test \
+  --test-name-pattern="a capable external Driver reduces Git" \
+  tests/integration/postgres-external-protected-git.test.ts
 ```
 
 Require the four check receipts `model-before`, `git-fetched`, `git-refused`,
