@@ -22,6 +22,7 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   OpenClawController,
+  PostgresPlatformState,
   ResourceConflictError,
   ScopeViolationError,
   ServiceAccountCredentialSecretExistsError,
@@ -53,6 +54,35 @@ const backend = Object.freeze({
   }),
   drivers: Object.freeze({ service_account: "service-account-driver-conformance" }),
 });
+
+type ChatGPTDriverArguments = ConstructorParameters<
+  typeof import("../../apps/controller/src/drivers/service-account/chatgpt.ts").ChatGPTServiceAccountDriver
+>;
+
+const chatGPTDriverIdentity = {
+  id: backend.id,
+  drivers: { service_account: "chatgpt-service-accounts" },
+} satisfies Pick<ChatGPTDriverArguments[0], "id" | "drivers">;
+
+// These provider scenarios use in-memory controller state. A real database
+// connection or an unused credential storage operation fails the fixture.
+const unusedDatabasePool = {
+  async connect() {
+    assert.fail("unexpected database connection");
+  },
+  async end() {},
+} satisfies ConstructorParameters<typeof PostgresPlatformState>[0];
+const unusedCredentialStorage: ChatGPTDriverArguments[3] = {
+  async storeServiceAccountCredential() {
+    assert.fail("unexpected credential write");
+  },
+  async findServiceAccountCredential() {
+    assert.fail("unexpected credential lookup");
+  },
+  async deleteServiceAccountCredential() {
+    assert.fail("unexpected credential deletion");
+  },
+};
 
 async function fixture({
   selectServiceAccountDriver = true,
@@ -565,27 +595,26 @@ test("outer transaction failure compensates selected Driver account and credenti
   );
 });
 
-test("the ChatGPT account name is cut by whole characters, never half of a surrogate pair", async () => {
+test("the ChatGPT account name is cut by whole characters, never half of a surrogate pair", async (t) => {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
   const names: string[] = [];
   const stop = new Error("stop after the provider call");
-  const driver: unknown = Reflect.construct(ChatGPTServiceAccountDriver, [
-    {
-      id: "openai",
-      drivers: { service_account: "chatgpt-service-accounts" },
-      client: {
-        async createServiceAccount({ name }: { name: string }) {
-          names.push(name);
-          throw stop;
-        },
-      },
-    },
-    {},
-    {},
-    {},
-  ]);
-  assert.ok(driver instanceof ChatGPTServiceAccountDriver);
+  const client = new ChatGPTClient({
+    workspaceId: backend.configuration.workspaceId,
+    adminKey: "synthetic-test-key",
+  });
+  const captureName: ChatGPTClient["createServiceAccount"] = async ({ name }) => {
+    names.push(name);
+    throw stop;
+  };
+  t.mock.method(client, "createServiceAccount", captureName);
+  const driver = new ChatGPTServiceAccountDriver(
+    { ...chatGPTDriverIdentity, client },
+    new OpenClawController(installation),
+    new PostgresPlatformState(unusedDatabasePool),
+    unusedCredentialStorage,
+  );
   const id = "sa_11111111-1111-4111-8111-111111111111";
   // One ASCII character puts every emoji on an odd UTF-16 offset, so a 160-unit cut would
   // fall inside the last emoji that starts before it.
@@ -1062,7 +1091,7 @@ test("a ChatGPT credential revocation never sends a dot path segment", async () 
   });
 });
 
-test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {
+test("a ChatGPT account delete that applied but answered an error completes on retry", async (t) => {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
   await withFakeChatGPT(async ({ client, server, workspaceId }) => {
@@ -1076,17 +1105,25 @@ test("a ChatGPT account delete that applied but answered an error completes on r
       workspaceId,
     };
     const secrets = new Set(["service-account-own"]);
-    const driver: unknown = Reflect.construct(ChatGPTServiceAccountDriver, [
-      { id: "openai", drivers: { service_account: "chatgpt-service-accounts" }, client },
-      { transact: (work: (unit: object) => unknown) => work({}) },
-      { queryInTransaction: async () => ({ rows: [binding], rowCount: 1 }) },
-      {
-        async deleteServiceAccountCredential({ secretRef }: { secretRef: { name: string } }) {
-          secrets.delete(secretRef.name);
-        },
+    const state = new PostgresPlatformState(unusedDatabasePool);
+    // Supply the account binding while the real Driver and client exercise provider deletion.
+    const readBinding: PostgresPlatformState["queryInTransaction"] = async () => ({
+      rows: [binding],
+      rowCount: 1,
+    });
+    t.mock.method(state, "queryInTransaction", readBinding);
+    const credentialStorage: ChatGPTDriverArguments[3] = {
+      ...unusedCredentialStorage,
+      async deleteServiceAccountCredential({ secretRef }) {
+        secrets.delete(secretRef.name);
       },
-    ]);
-    assert.ok(driver instanceof ChatGPTServiceAccountDriver);
+    };
+    const driver = new ChatGPTServiceAccountDriver(
+      { ...chatGPTDriverIdentity, client },
+      new OpenClawController(installation),
+      state,
+      credentialStorage,
+    );
     const account: ServiceAccount = {
       id: "sa_own",
       namespaceId: "ns_own",
