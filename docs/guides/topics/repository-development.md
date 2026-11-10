@@ -43,11 +43,15 @@ pnpm 11.15.1 with its complete package-manager integrity pin, and Bun 1.4.4.
 The runtime includes Git and gh; Bun and the development dependency graph need
 separate preparation. Stop if the checkout's pins differ from this example.
 
-Run the following in the Agent's Bash shell. Set `OCE_WORKSPACE` to its approved
-writable workspace and `OCE_REPO` to the trusted checkout within it. Keep the
-new tools directory outside the checkout. Use a private `0700` temporary
-directory under `/tmp`: protected credential fixtures reject shared writable
-ancestors, and short paths also avoid Unix-socket length limits.
+Run these blocks and your final publication or handoff commands in one dedicated
+Bash script (`bash path/to/script.sh`); do not source it into the caller's shell.
+Set `OCE_WORKSPACE` to the approved writable workspace and `OCE_REPO` to the
+trusted checkout within it. Keep the new tools directory outside the checkout.
+Use a private `0700` temporary directory under `/tmp`: protected credential
+fixtures reject shared writable ancestors, and short paths avoid Unix-socket
+length limits. The exit trap keeps that directory through the last command and
+removes it on success or failure without changing the caller's environment or
+file-creation mask.
 
 ```bash
 set -euo pipefail
@@ -66,9 +70,20 @@ mkdir -p "$OCE_TOOLS/bin" "$OCE_TOOLS/bun" "$OCE_TOOLS/cache/corepack" \
   "$OCE_TOOLS/cache/npm" "$OCE_TOOLS/cache/pnpm"
 export COREPACK_HOME="$OCE_TOOLS/cache/corepack"
 export npm_config_cache="$OCE_TOOLS/cache/npm"
-TMPDIR=$(mktemp -d /tmp/oce-dev.XXXXXXXX)
-chmod 700 "$TMPDIR"
-export TMPDIR
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if ! rm -rf -- "$OCE_TMPDIR"; then
+    printf '%s\n' 'Could not remove the private temporary directory.' >&2
+    if [ "$status" -eq 0 ]; then status=1; fi
+  fi
+  exit "$status"
+}
+OCE_TMPDIR=$(mktemp -d /tmp/oce-dev.XXXXXXXX)
+trap cleanup EXIT
+readonly OCE_TMPDIR
+chmod 700 "$OCE_TMPDIR"
+export TMPDIR="$OCE_TMPDIR"
 export PATH="$OCE_TOOLS/bin:$PATH"
 corepack enable --install-directory "$OCE_TOOLS/bin"
 test "$(pnpm --version)" = 11.15.1
@@ -107,7 +122,7 @@ and inspect the Agent's network policy if a download is denied.
 
 ## Install and check the development graph
 
-Continue in the same shell and checkout. The runtime sets `NODE_ENV=production`,
+Continue in the same script and checkout. The runtime sets `NODE_ENV=production`,
 so explicitly include development dependencies:
 
 ```bash
@@ -135,8 +150,8 @@ prepared [docs package checks](../../contributing/documentation.md), not runtime
 tests. A skipped case is not a pass, and these setup commands do not qualify the
 full test suite inside the Sandbox.
 
-Keep logs and exit statuses, then remove only the private temporary directory
-you created after all checks finish. Tests using local UDP listeners can also
+Keep logs and exit statuses outside the temporary directory so they survive
+script exit. Tests using local UDP listeners can also
 be incompatible with Sandbox network enforcement; public TCP downloads do not establish UDP fixture support.
 Report that limitation and run those checks in the supported contributor test
 environment. Do not weaken the Sandbox or label an incomplete suite successful.
@@ -144,8 +159,18 @@ environment. Do not weaken the Sandbox or label an incomplete suite successful.
 ## Review and publish the work
 
 Review the diff and unexpected manifest or lockfile changes. Report the exact
-source revision, checks that passed, failures and missing prerequisites. Then
-use normal `git commit`, `git push` and `gh pr create` within the task's
-authorization. Verify the remote commit and PR. If publication has an uncertain
-outcome, inspect it before retrying. The repository's review and merge policy
-continues to apply.
+source revision, checks that passed, failures and missing prerequisites.
+Before publication, verify the active repository grant as well as the task's
+authorization. The linked Git walkthrough restores read-only access; its temporary
+push grant does not include pull-request writes. `git push` requires
+`contents: write`; `gh pr create` also requires `pull_requests: write`. See
+[prepared Git and draft PR permissions](../../reference/repository-credentials/prepared-native-git.md).
+
+With read-only access, hand off the local diff or commit to an authorized publisher
+without attempting either operation. If only pushing is permitted, use normal
+`git commit` and `git push`, verify the remote branch and commit, then hand those
+to someone authorized to open the PR. Run `gh pr create` only when its permission
+is also granted, and verify the resulting PR. Keep these commands inside the
+script so hooks retain a valid `TMPDIR`. If publication has an uncertain outcome,
+inspect it before retrying. The repository's review and merge policy continues
+to apply.
