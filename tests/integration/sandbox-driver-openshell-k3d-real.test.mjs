@@ -2004,6 +2004,7 @@ async function prepareProductionInstallation(
     gatewayManagedMode,
     withOAuthToolSources = true,
     enableCompatibilityBridges = harnessId === "openclaw",
+    sandboxExtraMounts,
   } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
@@ -2132,6 +2133,9 @@ async function prepareProductionInstallation(
     };
   }
   configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "20Gi";
+  if (sandboxExtraMounts !== undefined) {
+    configuration.drivers.sandbox.configuration.kubernetes.sandboxExtraMounts = sandboxExtraMounts;
+  }
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     await apiServerPodProxySourceCidrs();
   if (harnessId === "openclaw") {
@@ -7301,6 +7305,11 @@ if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }
 
+const nativeExtraMounts = Object.freeze([
+  { subPath: "matter/originals", mountPath: "/sandbox/matter/originals", readOnly: true },
+  { subPath: "matter/record", mountPath: "/sandbox/matter/record", readOnly: false },
+]);
+
 // Exercise the regular dedicated Agent path with live inference and a real
 // administrator-origin chat. Direct tools.invoke probes are recorded separately:
 // an unavailable tool in a model response is not an invocation-denial proof.
@@ -7316,6 +7325,8 @@ test(
       gatewayManagedMode: false,
       withOAuthToolSources: false,
       enableCompatibilityBridges: false,
+      // Codex skips the native workspace preparer that creates extra subpaths for the Sandbox UID.
+      ...(selectedHarness === "openclaw" ? { sandboxExtraMounts: nativeExtraMounts } : {}),
     });
     const apiSecret = await resource(
       "secret",
@@ -7574,6 +7585,56 @@ test(
       marker: taskMarker,
       executedOnHarnessPod: true,
     });
+
+    if (selectedHarness === "openclaw") {
+      const agentMounts = topology.harnessPod.spec.containers.find(
+        ({ name }) => name === "agent",
+      ).volumeMounts;
+      const dataVolume = agentMounts.find(
+        ({ mountPath }) => mountPath === "/sandbox/enterprise",
+      )?.name;
+      assert.deepEqual(
+        nativeExtraMounts.map(({ mountPath }) => {
+          const mount = agentMounts.find((entry) => entry.mountPath === mountPath);
+          return {
+            name: mount?.name,
+            subPath: mount?.subPath,
+            mountPath,
+            readOnly: mount?.readOnly === true,
+          };
+        }),
+        nativeExtraMounts.map((mount) => ({ name: dataVolume, ...mount })),
+      );
+      const [originals, record] = nativeExtraMounts.map(({ mountPath }) => mountPath);
+      const mountMarker = `MOUNTS-${randomUUID()}`;
+      const recordPath = `${record}/${mountMarker}`;
+      const mountProgram = [
+        "const fs=require('node:fs');",
+        `let ro='WRITTEN';try{fs.writeFileSync('${originals}/${mountMarker}','')}catch(e){ro=e.code}`,
+        `fs.writeFileSync('${recordPath}','${mountMarker}');const rw=fs.readFileSync('${recordPath}','utf8');`,
+        `fs.rmSync('${recordPath}');console.log(ro,rw,fs.existsSync('${recordPath}'))`,
+      ].join("");
+      const mountTask = toolCallSpec("exec", {
+        command: `node -e ${JSON.stringify(mountProgram)}`,
+        awaitResults: true,
+      });
+      await turn(mountTask.prompt, mountMarker);
+      const mountEvidence = await native.assertSessionToolCallEvidence(topology.agent, {
+        sessionKey,
+        turnMarker: mountMarker,
+        ...mountTask.evidence,
+        resultPattern: `EROFS ${mountMarker} false`,
+        expectedExitCode: 0,
+      });
+      const mountinfo = (
+        await execPod(topology.harnessPod, topology.placement, ["cat", "/proc/self/mountinfo"])
+      ).stdout
+        .split("\n")
+        .map((line) => line.split(" "))
+        .filter((fields) => nativeExtraMounts.some(({ mountPath }) => fields[4] === mountPath))
+        .map((fields) => `${fields[4]} ${fields[5]}`);
+      proof.modelTurns.push({ kind: "extra-mounts", ...mountEvidence, mountinfo });
+    }
 
     const scheduledMarker = `SCHEDULED-${randomUUID()}`;
     const scheduledCall = toolCallSpec("agents_list", {});
