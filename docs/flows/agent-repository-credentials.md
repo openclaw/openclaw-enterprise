@@ -130,8 +130,9 @@ selects GitHub policy with a registry-matched Backend ID.
 Startup snapshots validated policy before loading packages or registries; that snapshot
 determines policy construction and protected Driver identity.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds the owner,
-rejecting missing or mismatched ownership. `repository.policyMode: built-in` omits
-public Repo Driver registration; separate registration is refused.
+rejecting missing or mismatched ownership. File-based `repository` configuration
+binds the built-in GitHub policy and rejects a separate public Repo Driver.
+Programmatic callers can still register and select their own Repo Driver.
 Startup rejects `drivers.repo`.
 
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`
