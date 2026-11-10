@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { RepositoryMaterialStore } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts";
 import { repositoryMaterialSpec } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
-import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { repositoryCleanupFailureCode } from "../../apps/controller/src/worker/repository-credentials.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 

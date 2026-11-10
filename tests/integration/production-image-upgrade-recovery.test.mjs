@@ -35,13 +35,19 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { withoutShellStartup } from "../helpers/environment.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 import { loadYaml, yamlDocuments } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
-const execute = promisify(execFile);
+const executeFile = promisify(execFile);
+const execute = (command, args, options = {}) =>
+  executeFile(command, args, {
+    ...options,
+    env: withoutShellStartup(options.env ?? process.env),
+  });
 const helmTargetOverrides = [
   "HELM_KUBEAPISERVER",
   "HELM_KUBECAFILE",
@@ -77,11 +83,15 @@ const injectedFault = { code: 9 };
 
 // The fixture's helm stands in for the real binary; chart cases still render with it.
 const realHelm = (
-  await execute("bash", ["-c", "command -v helm"]).catch(() => ({ stdout: "" }))
+  await execute("bash", ["--noprofile", "--norc", "-c", "command -v helm"]).catch(() => ({
+    stdout: "",
+  }))
 ).stdout.trim();
 const commandPath = async (name, fallback) =>
   (
-    await execute("bash", ["-c", `command -v ${name}`]).catch(() => ({ stdout: "" }))
+    await execute("bash", ["--noprofile", "--norc", "-c", `command -v ${name}`]).catch(() => ({
+      stdout: "",
+    }))
   ).stdout.trim() || fallback;
 const shimTools = {
   bash: "/bin/bash",
@@ -93,7 +103,11 @@ const shimTools = {
 // fixtures' commands while it runs.
 function spawnResult(command, args, options, stderrFd = "pipe") {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", stderrFd] });
+    const child = spawn(command, args, {
+      ...options,
+      env: withoutShellStartup(options.env ?? process.env),
+      stdio: ["ignore", "pipe", stderrFd],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
@@ -654,6 +668,34 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       }
     }
   } else if (tool === "kubectl") {
+    if (args.includes("create") && args.includes("--raw")) {
+      assert.equal(fileArg("--raw"), "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews");
+      const review = JSON.parse(await io.readInput());
+      assert.deepEqual(review, {
+        apiVersion: "authorization.k8s.io/v1",
+        kind: "SelfSubjectAccessReview",
+        spec: {
+          resourceAttributes: {
+            namespace: "system",
+            verb: "update",
+            group: "",
+            resource: "secrets",
+            name: state.secret.metadata.name,
+          },
+        },
+      });
+      state.installationUpdateReviews = (state.installationUpdateReviews ?? 0) + 1;
+      save();
+      if (state.reviewUnavailable) {
+        return fail(1, "private self-review diagnostic");
+      }
+      delete review.spec.resourceAttributes.group; // Kubernetes omits the empty core API group.
+      out({
+        ...review,
+        status: { allowed: !state.denyInstallationUpdate, reason: "private self-review reason" },
+      });
+      return io.exit(0);
+    }
     if (
       !state.recoveryResources &&
       state.installationInitializer &&
@@ -1089,6 +1131,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       log("scale-" + component);
     } else if (args.includes("replace")) {
       const secret = JSON.parse(await io.readInput());
+      if (state.denyInstallationUpdate) {
+        return fail(1, "fixture denied named Secret update");
+      }
       if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
         return fail(11);
       }
@@ -2746,6 +2791,43 @@ test("controller compatibility requires a value and an explicit controller selec
   assert.deepEqual(await f.events(), []);
 });
 
+for (const preflightOnly of [true, false]) {
+  test(`mutable Installation update denial on fresh ${preflightOnly ? "preflight" : "apply"}`, async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyInstallationUpdate = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const installation = join(f.directory, "installation.json");
+    const before = await readFile(installation);
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /Kubernetes denied update on Installation Secret system\/occ-installation-startup/,
+      );
+      assert.doesNotMatch(error.stderr, /private self-review reason/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), []);
+    const after = await f.state();
+    assert.equal(after.installationUpdateReviews, 1);
+    assert.equal(after.api, 1);
+    assert.equal(after.worker, 1);
+    assert.deepEqual(after.secret, state.secret);
+    assert.deepEqual(await readFile(installation), before);
+  });
+}
+
+test("unavailable mutable Installation update review warns and permits the actual update", async (t) => {
+  const f = await fixture(t);
+  const state = await f.state();
+  state.reviewUnavailable = true;
+  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+  const result = await f.run();
+  assert.match(result.stderr, /Could not verify update access to the Installation Secret/);
+  assert.doesNotMatch(result.stderr, /private self-review diagnostic/);
+  assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced", "migration"]);
+});
+
 for (const preflightOnly of [false, true]) {
   test(`immutable Installation Secret refuses changed data before ${preflightOnly ? "preflight-only succeeds" : "stopping writers"}`, async (t) => {
     const f = await fixture(t);
@@ -2774,6 +2856,7 @@ test("immutable Installation Secret permits an upgrade with equivalent YAML", as
   await f.run();
   assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   assert.deepEqual((await f.state()).secret, state.secret);
+  assert.equal((await f.state()).installationUpdateReviews ?? 0, 0);
 });
 
 test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
@@ -2788,6 +2871,7 @@ test("resume refuses a pending Installation write if the Secret became immutable
   await assert.rejects(f.run("--resume"), /Installation Secret .* is immutable/);
   assert.deepEqual(await f.events(), events);
   assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  assert.equal((await f.state()).installationUpdateReviews, 1);
 });
 
 async function immutableInstallationSwitch(t, options = {}) {
@@ -2830,6 +2914,7 @@ async function immutableInstallationSwitch(t, options = {}) {
 
 async function assertImmutableInstallationRetained(f) {
   const state = await f.state();
+  assert.equal(state.installationUpdateReviews ?? 0, 0);
   assert.deepEqual(state.secret, f.original);
   assert.deepEqual(state.installationSuccessor, f.successor);
   assert.ok(!(await f.events()).includes("secret-replaced"));
@@ -3503,6 +3588,44 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   await f.run("--resume");
   assert.equal((await f.state()).version, 2);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
+});
+
+test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, candidates: true });
+  const path = join(f.directory, "candidate-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  values.database = { ...values.database, upgradeMigration: "separate" };
+  await writeFile(path, JSON.stringify(values));
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    (error) => error.code === 3 && /separate database deployment/.test(error.stderr),
+  );
+  const stopped = await f.state();
+  assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
+  assert.equal(stopped.helmSubmissions ?? 0, 0);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  // A replacement with the same labels and replica count does not own this handoff.
+  const stateFile = join(f.directory, "state.json");
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      ...stopped,
+      deploymentIdentities: {
+        ...stopped.deploymentIdentities,
+        worker: { uid: "replacement-worker" },
+      },
+    }),
+  );
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    /worker Deployment changed/,
+  );
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  await writeFile(stateFile, JSON.stringify(stopped));
+  await f.run("--resume", "--migration-history-checked");
+  assert.equal((await f.state()).helmSubmissions, 1);
 });
 
 test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {

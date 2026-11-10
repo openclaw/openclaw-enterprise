@@ -65,7 +65,9 @@ func (r *runner) concurrently(ctx context.Context, steps ...func(context.Context
 	}
 	stage, selectedCleanupFailed := startupFailureDetails(first)
 	if cleanupFailed && !selectedCleanupFailed {
-		return &startupFailure{stage: stage, cleanupFailed: true, err: first}
+		failure := startupError(stage, first).(*startupFailure)
+		failure.cleanupFailed = true
+		return failure
 	}
 	return first
 }

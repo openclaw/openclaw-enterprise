@@ -16,7 +16,7 @@ import {
   issueResponse,
   pullResponse,
 } from "../fixtures/repository-credentials/builders.mjs";
-import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
+import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/access/prepared-draft-pull.ts";
 
 test("development token Driver admits exact REST methods, read-only GraphQL and configured Git routes", async (t) => {
   const { factory, bind } = await createGitHubPlanningFixture(t);

@@ -12,7 +12,7 @@ import { inflateRawSync } from "node:zlib";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -4949,6 +4949,8 @@ test("shipped startup names a rejected OpenShell policy without logging its name
           NODE_ENV: "development",
           OCC_HOST: "127.0.0.1",
           OCC_PORT: "18081",
+          OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
           OCC_CONFIG_PATH: path,
         },
         encoding: "utf8",

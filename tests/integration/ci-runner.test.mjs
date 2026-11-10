@@ -13,10 +13,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
+import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -73,6 +74,162 @@ function run(root, args, env = {}, { timeout } = {}) {
     timeout,
   });
 }
+
+test("installed Skipper failure summary reads the actual runner result without exposing errors", async (t) => {
+  for (const scenario of ["assertion", "rejection", "file failure"]) {
+    await t.test(scenario, async (t) => {
+      const root = join(await fixture(t), "private-source-canary");
+      await mkdir(join(root, "tests/integration"), { recursive: true });
+      await mkdir(join(root, "tests/helpers"), { recursive: true });
+      const path = "tests/integration/skipper-prepared-git-installed.test.mjs";
+      const name = "installed journey";
+      const lines = [
+        'import assert from "node:assert/strict";',
+        'import test from "node:test";',
+        'import { fail } from "../helpers/private-helper.mjs";',
+        `test("${name}", async () => {`,
+      ];
+      await writeFile(
+        join(root, "tests/helpers/private-helper.mjs"),
+        [
+          "export async function fail() {",
+          "  await Promise.resolve();",
+          "  throw new Error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL);",
+          "}",
+        ].join("\n"),
+      );
+      if (scenario === "assertion") {
+        lines.push('  assert.equal(process.env.CI_RUNNER_FIXTURE_CREDENTIAL, "expected");');
+      } else if (scenario === "rejection") {
+        lines.push("  await fail();");
+      }
+      lines.push("});");
+      if (scenario === "file failure") {
+        // A failing file after a passing case has no failed test to select.
+        lines.push(
+          "setImmediate(() => { throw new Error(process.env.CI_RUNNER_FIXTURE_CREDENTIAL); });",
+        );
+      }
+      await writeFile(join(root, path), lines.join("\n"));
+      await writeJson(join(root, "manifest.json"), {
+        version: 1,
+        lanes: { installed: { files: [{ path, expectedTests: [name] }] } },
+        groups: { ci: ["installed"] },
+      });
+      const result = run(root, [
+        "run",
+        "installed",
+        "--root",
+        root,
+        "--manifest",
+        "manifest.json",
+        "--state",
+        "state/installed.json",
+        "--results",
+        "results/installed.json",
+      ]);
+      assert.equal(result.status, 1);
+      const raw = await readFile(join(root, "results/installed.json"), "utf8");
+      const summary = JSON.parse(raw);
+      const fallback = result.stderr + result.stdout + raw;
+      const diagnostic = skipperFailureSummary(raw, root, fallback);
+      const category = {
+        assertion: "ERR_ASSERTION",
+        rejection: "ERR_TEST_FAILURE",
+        "file failure": "post-test-async-activity",
+      }[scenario];
+      assert.ok(diagnostic.endsWith(`, ${category}`));
+      if (scenario !== "file failure") {
+        assert.match(diagnostic, /^skipper-prepared-git-installed\.test\.mjs:5:\d+, /);
+        assert.ok(summary.issues.some((entry) => entry.code === "expected-test-not-passed"));
+      } else {
+        assert.equal(summary.files[0].tests[0].status, "passed");
+        assert.ok(summary.files[0].fileFailure);
+      }
+      assert.doesNotMatch(
+        diagnostic,
+        /secretauthvalue|private-source-canary|expected|installed journey/,
+      );
+
+      const error =
+        summary.files[0].tests.find((entry) => entry.status === "failed")?.error ??
+        summary.files[0].fileFailure.error;
+      if (scenario === "rejection") {
+        const malformed = structuredClone(summary);
+        const selected = malformed.files[0].tests.find((entry) => entry.status === "failed").error;
+        delete selected.message;
+        delete selected.frame;
+        for (const field of ["cause", "location"]) {
+          const invalid = structuredClone(malformed);
+          invalid.files[0].tests.find((entry) => entry.status === "failed").error[field] =
+            "invalid";
+          assert.equal(
+            skipperFailureSummary(JSON.stringify(invalid), root, "bwrap"),
+            "location unavailable, bwrap",
+          );
+        }
+      }
+      // Keep specific signals with this error, never from unrelated lane output.
+      error.message = "native command failed secretauthvalue";
+      assert.match(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        /, native command failed$/,
+      );
+      error.message = "secretauthvalue";
+      error.frame = undefined;
+      // Missing/invalid coordinates must not leak arbitrary source paths.
+      for (const location of [
+        undefined,
+        { file: join(root, "private-input.mjs"), line: 5, column: 2 },
+        { file: join(root, path), line: -1, column: 2 },
+        { file: join(root, path), line: 5, column: 1_000_001 },
+      ]) {
+        error.location = location;
+        assert.match(
+          skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+          new RegExp(`^location unavailable, ${category}$`),
+        );
+      }
+      // The text fallback must not undo the structured coordinate boundary.
+      for (const coordinates of [
+        "0:2",
+        "5:0",
+        "1000001:2",
+        "5:1000001",
+        "5:999999999999999999999",
+      ]) {
+        error.frame = `at skipper-prepared-git-installed.test.mjs:${coordinates}`;
+        assert.equal(
+          skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+          `location unavailable, ${category}`,
+        );
+        assert.equal(
+          skipperFailureSummary("not JSON", root, `${error.frame} bwrap`),
+          "location unavailable, bwrap",
+        );
+      }
+      error.frame = "at skipper-prepared-git-installed.test.mjs:1000000:1";
+      assert.equal(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        `skipper-prepared-git-installed.test.mjs:1000000:1, ${category}`,
+      );
+      error.frame = undefined;
+      if (summary.files[0].fileFailure) {
+        summary.files[0].fileFailure.diagnosticKind = "secretauthvalue-category";
+      }
+      error.code = "secretauthvalue-code";
+      error.cause = { code: "secretauthvalue-cause" };
+      assert.equal(
+        skipperFailureSummary(JSON.stringify(summary), root, "bwrap"),
+        "location unavailable, unclassified",
+      );
+    });
+  }
+  assert.equal(
+    skipperFailureSummary("not JSON", "/unused", "bwrap"),
+    "location unavailable, bwrap",
+  );
+});
 
 function mixedPrecisionEventBoundary({ namespace, pod, second, laterCount = 199 }) {
   const event = (uid, reason, timestamp) => ({
@@ -197,6 +354,58 @@ async function writePrepare(root) {
   );
 }
 
+test(
+  "memory samples identify renamed processes without exposing executable paths or arguments",
+  { skip: process.platform !== "linux" && "reads /proc" },
+  async (t) => {
+    const root = await fixture(t);
+    const bin = join(root, "bin");
+    const output = join(root, "memory.log");
+    await mkdir(bin);
+    const pgid = procStat(process.pid).pgid;
+    // Fix the process inventory, but resolve the real executable through /proc.
+    // The second PID represents a process that exited after ps sampled it.
+    await writeFile(
+      join(bin, "ps"),
+      `#!/bin/sh\nprintf '%s\\n' '2048 ${process.pid} ${process.ppid} ${pgid} MainThread' '1024 2147483647 1 1 vanished'\n`,
+      { mode: 0o755 },
+    );
+    await writeFile(join(bin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const child = spawn(
+      "bash",
+      [join(repositoryRoot, "scripts/ci/memory-sampler.sh"), output, "60"],
+      {
+        env: { ...runnerEnv(), PATH: `${bin}:${process.env.PATH}` },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    t.after(() => child.kill("SIGTERM"));
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 5_000);
+    child.stdout.on("data", (data) => {
+      stdout += data;
+      if (stdout.includes("memory-sampler")) {
+        child.kill("SIGTERM");
+      }
+    });
+    child.stderr.on("data", (data) => (stderr += data));
+    await new Promise((resolvePromise, reject) => {
+      child.on("error", reject);
+      child.on("close", resolvePromise);
+    }).finally(() => clearTimeout(timer));
+    const samples = await readFile(output, "utf8");
+    const executable = basename(await realpath(process.execPath));
+    assert.ok(
+      samples.includes(`2048 ${process.pid} ${process.ppid} ${pgid} ${executable} MainThread`),
+      samples,
+    );
+    assert.ok(samples.includes("1024 2147483647 1 1 unknown vanished"), samples);
+    assert.ok(stdout.includes(`top=${executable}:2MiB`), stdout);
+    assert.doesNotMatch(samples + stdout + stderr, /secretauthvalue|--test|\/proc\/|\/bin\//);
+  },
+);
+
 test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.jsonl");
@@ -207,7 +416,9 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     join(root, "tests/integration/first.test.mjs"),
     [
       'import assert from "node:assert/strict";',
+      'import { writeFileSync } from "node:fs";',
       'import test from "node:test";',
+      "writeFileSync(process.env.CI_RUNNER_PROCESS_RECORD, String(process.ppid));",
       'test("first file sees scoped env", () => {',
       '  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, "one");',
       "  assert.equal(process.env.ACTIONS_RUNTIME_TOKEN, undefined);",
@@ -272,6 +483,7 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       resultsPath,
     ],
     {
+      CI_RUNNER_PROCESS_RECORD: join(root, "state/process-group"),
       ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
       ACTIONS_RESULTS_URL: "https://cache.example.test/",
       OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
@@ -294,6 +506,11 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     ["tests/integration/first.test.mjs", "tests/integration/second.test.mjs"],
   );
   assert.equal(summary.files[0].cleanup.status, "passed");
+  // The test child reports its real parent, the detached Node runner's group leader.
+  assert.equal(
+    summary.files[0].processGroupId,
+    Number(await readFile(join(root, "state/process-group"), "utf8")),
+  );
   assert.ok(
     summary.files.every(
       (file) => Number.isInteger(file.wallDurationMs) && file.wallDurationMs >= 0,
@@ -920,7 +1137,7 @@ test("QA lane forwards selected models and observer input and retains outcomes a
     join(root, file),
     `import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
@@ -1158,6 +1375,8 @@ waitingTest(
     // The Node test runner leads its own process group, apart from this test's.
     assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
     assert.equal(pids.pgid, pids.runner);
+    const summary = JSON.parse(await readFile(join(root, "results/orphan.json"), "utf8"));
+    assert.equal(summary.files[0].processGroupId, pids.pgid);
     assert.equal(pids.grandchildPgid, pids.runner);
     assert.notEqual(pids.pgid, procStat(process.pid).pgid);
   },
@@ -3331,6 +3550,106 @@ test("the redactor removes structured, multi-word and short secret values", asyn
   ]) {
     assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
   }
+});
+
+test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {
+  const { selectPolicyProbeCommand } = await import("../helpers/openshell-policy-probe.mjs");
+  const uri = "http://private-fixture.invalid:8083/policy-probe";
+  const event = (command) => ({
+    method: "item/completed",
+    params: { item: { type: "commandExecution", command } },
+  });
+  const first = event("/usr/bin/python3.11 -c 'import urllib.request' # private-model-content");
+  const correct = event(
+    `/usr/bin/python3.11 -c 'import urllib.request; urllib.request.urlopen("${uri}")'`,
+  );
+  let calls = 0;
+  // A later correct command must not turn the first command's failure into success.
+  assert.throws(
+    () =>
+      selectPolicyProbeCommand([first, correct], { uri, port: 8083 }, () => {
+        calls += 1;
+        throw new Error("diagnostic write failed");
+      }),
+    { code: "ERR_ASSERTION" },
+  );
+  assert.equal(calls, 1);
+  assert.equal(
+    selectPolicyProbeCommand([correct], { uri, port: 8083 }, () => {
+      calls += 1;
+    }),
+    correct.params.item,
+  );
+  assert.equal(calls, 1, "successful probes emit no failure receipt");
+
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/policy.json");
+  const statePath = join(root, "state/policy.json");
+  await writeFile(
+    join(root, "tests/integration/policy.test.mjs"),
+    [
+      'import test from "node:test";',
+      `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.mjs", import.meta.url).href)};`,
+      `const first = ${JSON.stringify(first)};`,
+      `const later = ${JSON.stringify(event(first.params.item.command + " # later-command"))};`,
+      `const prefix = ${JSON.stringify(event("echo private-model-content"))};`,
+      `const correct = ${JSON.stringify(correct)};`,
+      'test("retains original guard", (t) => {',
+      '  for (const check of ["second-agent-control-request", "second-agent-denied-request"]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ kind: "openshell-network-policy-check", check }));',
+      `  selectPolicyProbeCommand([...Array(9).fill(prefix), first, ...Array(8).fill(later), correct], { uri: ${JSON.stringify(uri)}, port: 8083 }, (receipt) => {`,
+      '    t.diagnostic("openclaw-ci-measurement " + JSON.stringify({ ...receipt, raw: "private-extra-content", commands: receipt.commands.map(c => ({ ...c, raw: "private-extra-content" })) }));',
+      '    for (const invalid of [{ ...receipt, candidateCount: -1 }, { ...receipt, commands: Array(9).fill(receipt.commands[0]) }, { ...receipt, port: 80 }, { ...receipt, targetHash: "private-extra-content" }, { ...receipt, commands: receipt.commands.map(c => ({ ...c, hash: "private-extra-content" })) }]) t.diagnostic("openclaw-ci-measurement " + JSON.stringify(invalid));',
+      "  });",
+      "});",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { policy: { files: [{ path: "tests/integration/policy.test.mjs" }] } },
+    groups: { ci: ["policy"] },
+  });
+  const result = run(root, [
+    "run",
+    "policy",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.files[0].tests[0].error.cause.code, "ERR_ASSERTION");
+  const [control, denial, receipt] = summary.files[0].measurements;
+  assert.equal(control.check, "second-agent-control-request");
+  assert.equal(denial.check, "second-agent-denied-request");
+  assert.equal(
+    summary.files[0].measurements.length,
+    3,
+    "invalid or oversized receipts are rejected",
+  );
+  assert.equal(receipt.commandCount, 19);
+  assert.equal(receipt.candidateCount, 10);
+  assert.equal(receipt.selectedIndex, 9);
+  assert.equal(receipt.laterUriMatches, 1, "a later match beyond the detail cap remains visible");
+  assert.equal(receipt.commands.length, 8);
+  assert.equal(
+    receipt.commands[0].hash,
+    createHash("sha256").update(first.params.item.command).digest("hex"),
+  );
+  assert.equal(receipt.commands[0].hasExpectedUri, false);
+  assert.equal(receipt.commands[0].hasInterpreter, true);
+  assert.equal(receipt.commands[0].hasUrllib, true);
+  assert.equal(receipt.targetHash, createHash("sha256").update(uri).digest("hex"));
+  const retained =
+    JSON.stringify(summary) +
+    (await readFile(`${statePath}.diagnostics.json`, "utf8")) +
+    result.stdout +
+    result.stderr;
+  assert.doesNotMatch(retained, /private-fixture|private-model-content|private-extra-content/);
 });
 
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
@@ -5641,12 +5960,16 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
-    "lane-failed",
     "missing-lane-output",
     "missing-need",
     "need-not-success",
     "source-sha-mismatch",
   ]);
+  // A different revision's failure cannot describe this revision's runtime lane.
+  assert.deepEqual(
+    summary.lanes.map((lane) => lane.lane),
+    ["baseline"],
+  );
 });
 
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
@@ -5863,7 +6186,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   }
 });
 
-test("aggregate fails when a supplied non-lane need failed even if lane artifacts pass", async (t) => {
+test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
   await writeJson(join(root, "manifest.json"), {
@@ -5898,7 +6221,7 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     baseline: { result: "success" },
   });
 
-  const result = run(root, [
+  const args = [
     "aggregate",
     "ci",
     "--manifest",
@@ -5909,7 +6232,8 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     "results",
     "--needs",
     "needs.json",
-  ]);
+  ];
+  const result = run(root, args);
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
@@ -5919,6 +6243,62 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     ["need-not-success"],
   );
   assert.equal(summary.issues[0].need, "audit");
+
+  // A matrix parent carries its job conclusion, never a conclusion for each
+  // child. Unselected siblings may remain in a shared workflow's parent list.
+  for (const state of ["success", "failure", "cancelled", "skipped", undefined]) {
+    await writeJson(join(root, "needs.json"), {
+      matrix: { result: state, lanes: ["baseline", "unselected-sibling"] },
+    });
+    const observed = run(root, args);
+    assert.equal(observed.status, state === "success" ? 0 : 1, observed.stderr);
+    const aggregated = JSON.parse(observed.stdout);
+    assert.deepEqual(
+      aggregated.issues.map((entry) => entry.code),
+      state === "success" ? [] : ["need-not-success"],
+    );
+    assert.equal(aggregated.lanes[0].status, "passed");
+    if (state !== "success") {
+      assert.equal(aggregated.issues[0].need, "matrix");
+    }
+  }
+
+  // Valid artifacts cannot replace missing ownership, and malformed ownership
+  // must fail even when a separate direct job could otherwise satisfy the lane.
+  await writeJson(join(root, "needs.json"), {});
+  const missing = run(root, args);
+  assert.equal(missing.status, 1);
+  assert.deepEqual(
+    JSON.parse(missing.stdout).issues.map((entry) => entry.code),
+    ["missing-need"],
+  );
+  for (const lanes of [null, "baseline", [], [""], ["baseline", "baseline"], [1]]) {
+    await writeJson(join(root, "needs.json"), {
+      baseline: { result: "success" },
+      matrix: { result: "success", lanes },
+    });
+    const malformed = run(root, args);
+    assert.equal(malformed.status, 1);
+    assert.ok(
+      JSON.parse(malformed.stdout).issues.some((entry) => entry.code === "invalid-need-lanes"),
+    );
+  }
+
+  for (const other of [
+    { baseline: { result: "success" } },
+    { another: { result: "success", lanes: ["baseline"] } },
+  ]) {
+    await writeJson(join(root, "needs.json"), {
+      matrix: { result: "success", lanes: ["baseline"] },
+      ...other,
+    });
+    const ambiguous = run(root, args);
+    assert.equal(ambiguous.status, 1);
+    assert.deepEqual(
+      JSON.parse(ambiguous.stdout).issues.map((entry) => entry.code),
+      ["ambiguous-need"],
+    );
+  }
 });
 
 test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
@@ -5968,7 +6348,7 @@ test('scenario', { signal: controller.signal }, async (t) => {
   }
 });
 
-test("first-Agent command timing pairs runtime outcomes before CI projection", async (t) => {
+test("first-Agent command timing pairs runtime and manifest outcomes before CI projection", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/runtime-outcomes.json");
   await mkdir(join(root, "bin"));
@@ -5979,6 +6359,18 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
   );
   const runtime = "[occ-dev-timing] stage=runtime-build elapsed_ms=11 failed=true";
   const outcome = "[occ-dev-outcome] stage=runtime-build outcome=";
+  const manifest = "openshell-agent-sandbox-manifest";
+  const manifestTiming = `[occ-dev-timing] stage=${manifest} elapsed_ms=13 failed=true`;
+  const manifestOutcome = `[occ-dev-outcome] stage=${manifest} outcome=`;
+  const reasons = [
+    "selected-input",
+    "http-status",
+    "transport",
+    "deadline",
+    "canceled",
+    "integrity",
+    "local-io",
+  ];
   const lines = [
     runtime,
     outcome + "nonzero-exit",
@@ -6001,7 +6393,13 @@ test("first-Agent command timing pairs runtime outcomes before CI projection", a
     outcome + "signaled",
     "[occ-dev-timing] stage=openshell-workspace-render elapsed_ms=7 failed=true",
     "[occ-dev-timing] stage=private-outcome-canary elapsed_ms=9 failed=true",
-    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false",
+    ...reasons.flatMap((reason) => [manifestTiming, manifestOutcome + reason]),
+    manifestOutcome + "deadline",
+    manifestTiming,
+    manifestOutcome + "private-outcome-canary",
+    `[occ-dev-timing] stage=${manifest} elapsed_ms=3 failed=false`,
+    manifestOutcome + "deadline",
+    "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false routing_operation=manifest-download routing_controller=cert-manager",
   ];
   await writeFile(
     join(root, "bin/occ"),
@@ -6039,7 +6437,26 @@ test("a failed local setup reports only paired outcomes", async (t) => {
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   await assert.rejects(localFirstAgentStack(t), /Start Local Setup exited with status 23/);
-  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ kind: "local-first-agent-startup-failure", primaryStage: "private-outcome-canary", cleanupFailed: true, parentContextDone: false }));
+  const legacy = { kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false };
+  // Old CLI receipts remain valid; projection strips unrelated fields and rejects
+  // invalid detail values instead of retaining arbitrary command output.
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify(legacy));
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "controller-rollout", routingController: "envoy-gateway", error: "private-outcome-canary" }));
+  t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, routingOperation: "node-pod-cidr" }));
+  for (const fields of [
+    { primaryStage: "private-outcome-canary" },
+    { routingOperation: "private-outcome-canary" },
+    { routingOperation: null },
+    { routingController: "private-outcome-canary" },
+    { routingController: null },
+    { routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "cert-manager" },
+    { routingOperation: "node-pod-cidr", routingController: "envoy-gateway" },
+    { primaryStage: "rollback", routingOperation: "manifest-apply" },
+    { primaryStage: "rollback", routingController: "cert-manager" },
+  ]) {
+    t.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...legacy, ...fields }));
+  }
   t.diagnostic('openclaw-ci-measurement {"kind":"local-first-agent-startup-failure","private-outcome-canary":');
   t.diagnostic('openclaw-ci-measurement private-outcome-canary');
   t.diagnostic("ordinary setup diagnostic survives");
@@ -6096,7 +6513,19 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         failed: 1,
         elapsedMs: 7,
       },
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: manifest,
+        count: reasons.length + 2,
+        failed: reasons.length + 1,
+        elapsedMs: 13 * (reasons.length + 1) + 3,
+      },
     ],
+  );
+  assert.deepEqual(
+    measurements.filter(({ kind }) => kind === "local-first-agent-manifest-failure"),
+    reasons.map((reason) => ({ kind: "local-first-agent-manifest-failure", reason })),
   );
   assert.deepEqual(
     measurements.filter(({ kind }) => kind === "local-first-agent-startup-failure"),
@@ -6106,6 +6535,29 @@ test("a failed local setup reports only paired outcomes", async (t) => {
         primaryStage: "routing",
         cleanupFailed: true,
         parentContextDone: false,
+        routingOperation: "manifest-download",
+        routingController: "cert-manager",
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+        routingOperation: "controller-rollout",
+        routingController: "envoy-gateway",
+      },
+      {
+        kind: "local-first-agent-startup-failure",
+        primaryStage: "routing",
+        cleanupFailed: true,
+        parentContextDone: false,
+        routingOperation: "node-pod-cidr",
       },
     ],
   );
@@ -6128,18 +6580,29 @@ test("startup observations require one terminal record from a failed dev-up", as
     join(root, "tests/helpers/local-first-agent-stack.mjs"),
     await readFile(join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs")),
   );
-  const record =
+  const legacyRecord =
     "[occ-dev-startup] primary_stage=routing cleanup_failed=true parent_context_done=false\n";
+  const record =
+    legacyRecord.trimEnd() +
+    " routing_operation=controller-rollout routing_controller=envoy-gateway\n";
   await writeFile(
     join(root, "bin/occ"),
     `#!${process.execPath}
 const record = ${JSON.stringify(record)};
+const legacyRecord = ${JSON.stringify(legacyRecord)};
 const scenario = process.env.OCC_FIXTURE_STARTUP_CASE;
 if (process.argv[3] === "down") {
   process.stdout.write(record);
   process.exit(1);
 }
-if (scenario === "stderr") process.stderr.write(record);
+if (scenario === "legacy") process.stdout.write(legacyRecord);
+else if (scenario === "operation-only") process.stdout.write(legacyRecord.trimEnd() + " routing_operation=node-pod-cidr\\n");
+else if (scenario === "invalid-operation") process.stdout.write(record.replace("controller-rollout", "private-outcome-canary"));
+else if (scenario === "invalid-controller") process.stdout.write(record.replace("envoy-gateway", "private-outcome-canary"));
+else if (scenario === "controller-only") process.stdout.write(record.replace(" routing_operation=controller-rollout", ""));
+else if (scenario === "node-cidr-controller") process.stdout.write(record.replace("controller-rollout", "node-pod-cidr"));
+else if (scenario === "nonrouting") process.stdout.write(record.replace("primary_stage=routing", "primary_stage=rollback"));
+else if (scenario === "stderr") process.stderr.write(record);
 else if (scenario === "duplicate") process.stdout.write(record + record);
 else if (scenario === "malformed") process.stdout.write(record + "[occ-dev-startup] invalid\\n");
 else if (scenario === "early") process.stdout.write(record + "later operation\\n");
@@ -6174,21 +6637,32 @@ test("reject ambiguous or non-failure startup records", async (t) => {
   process.env.OPENAI_API_KEY = "invented-fixture-input";
   delete process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   delete process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
-  for (const scenario of ["stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
+  for (const scenario of ["invalid-operation", "invalid-controller", "controller-only", "node-cidr-controller", "nonrouting", "stderr", "duplicate", "malformed", "early", "truncated", "incomplete", "overflow", "signal", "success"]) {
     process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
     if (scenario === "success") await localFirstAgentStack(t);
     else await assert.rejects(localFirstAgentStack(t), /Start Local Setup/);
   }
-  process.env.OCC_FIXTURE_STARTUP_CASE = "valid";
-  await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
-    const observation = startupFailureObservation();
-    // Deliberately split the genuine stdout across every boundary.
-    for (const character of error.stdout) observation.write(character);
-    assert.deepEqual(observation.finish(error.code, error.signal, error.killed), {
-      kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
+  for (const [scenario, details] of [
+    ["valid", { routingOperation: "controller-rollout", routingController: "envoy-gateway" }],
+    ["operation-only", { routingOperation: "node-pod-cidr" }],
+    ["legacy", {}],
+    // Check intake directly so reporter rejection cannot hide an invalid pair.
+    ["node-cidr-controller", null],
+  ]) {
+    process.env.OCC_FIXTURE_STARTUP_CASE = scenario;
+    await assert.rejects(promisify(execFile)(${JSON.stringify(join(root, "bin/occ"))}, ["dev", "up"]), (error) => {
+      const observation = startupFailureObservation();
+      // Deliberately split the genuine stdout across every boundary.
+      for (const character of error.stdout) observation.write(character);
+      assert.deepEqual(observation.finish(error.code, error.signal, error.killed), details === null ? undefined : {
+        kind: "local-first-agent-startup-failure", primaryStage: "routing", cleanupFailed: true, parentContextDone: false,
+        ...details,
+      });
+      // Cancellation takes precedence even when a complete valid line was buffered.
+      assert.equal(observation.finish(error.code, error.signal, true), undefined);
+      return true;
     });
-    return true;
-  });
+  }
 });
 `,
   );

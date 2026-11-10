@@ -101,7 +101,7 @@ test(
 );
 
 // The realm's one redirect URI names this origin, so it is OCC_AUTH_BASE_URL.
-const origin = `https://127.0.0.1:${consolePort}`;
+const origin = `https://console.oce.localhost:${consolePort}`;
 const adminEmail = "keycloak-recovery@example.test";
 // realm-oce.json fixes alice's user ID, so her subject is known before sign-in.
 const aliceSubject = "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001";
@@ -174,6 +174,7 @@ async function prepareInstallation(t) {
       Object.freeze({
         ...oidcUpgradeSettings(adminId, endpoints, { tokenAuth, displayName: "Keycloak" }),
         OCC_AUTH_BASE_URL: origin,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       }),
   };
   const roles = await installationRoles(state, pool);
@@ -350,6 +351,17 @@ async function assertAliceSignedIn({ prepared, page }, callback, result) {
     async () => (await (await fetch("/api/auth/session")).json()).data,
   );
   assert.equal(session.user.id, prepared.aliceId);
+  const cookies = await page.context().cookies(origin);
+  const sharedSession = cookies.find(
+    (cookie) => cookie.name === "__Secure-openclaw_occ_shared.session_token",
+  );
+  assert.equal(sharedSession?.domain, ".oce.localhost");
+  assert.equal(sharedSession?.secure, true);
+  assert.equal(sharedSession?.httpOnly, true);
+  assert.equal(
+    cookies.find((cookie) => cookie.name === "__Host-occ_known_device")?.domain,
+    "console.oce.localhost",
+  );
   assert.equal((await confirmed.json()).data.sessionKey, session.sessionKey);
   return session;
 }

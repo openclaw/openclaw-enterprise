@@ -37,7 +37,7 @@ export const GATEWAY_MANAGED_MODE_DENIED =
   "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
-  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+  "Not authorized: opening this Agent's browser UI needs Agent operate or administer on it. Ask an Installation administrator to grant it.";
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
@@ -994,7 +994,7 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // Native admin status for a caller without Agent administer, on an Installation with native admin
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
-  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
+  `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
 // A request path no route has (finding D764): a trailing slash says so; any other names no route.
 export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
 export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";

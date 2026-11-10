@@ -649,7 +649,7 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
       "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
       environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
-    fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
+    fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/router.js");
     process.stdout.write("native-repository-shell-ready\\n");
     // The proof is complete. The Codex binary, a grandchild that holds this
     // probe's pipes, takes about 5 s to exit after SIGTERM or EOF. This node is
@@ -1545,7 +1545,7 @@ const preparation = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOS
   stdio: "inherit",
 });
 assert.equal(preparation.status, 0, "repository native Git initialization failed");
-assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js"));
+assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js"));
 const brokerCaBundle = fs.readdirSync("/run/oce/repository-credentials/sessions")
   .map((name) => "/run/oce/repository-credentials/sessions/" + name + "/ca-bundle.pem")
   .find((filename) => fs.existsSync(filename));

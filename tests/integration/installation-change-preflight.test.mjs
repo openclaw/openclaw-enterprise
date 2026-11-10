@@ -171,6 +171,26 @@ test(
   },
 );
 
+test(
+  "a separate database deployment requires current history only on upgrade",
+  tooling,
+  async () => {
+    const values = { "database.upgradeMigration": "separate" };
+    for (const isUpgrade of [false, true]) {
+      const { hook } = await render(values, isUpgrade);
+      const migration = hook.initContainers.find(({ name }) => name === "migration");
+      assert.deepEqual(migration.args, [
+        "scripts/migrate-production.mjs",
+        isUpgrade ? "--require-current" : "--expect-empty",
+      ]);
+    }
+    await assert.rejects(
+      render({ "database.upgradeMigration": "seperate" }, true),
+      /must be hook or separate/,
+    );
+  },
+);
+
 async function runCheck(t, configuration, files = {}, environment = () => ({})) {
   const directory = await temporaryDirectory(t, "occ-installation-check-");
   const path = join(directory, "installation.yaml");

@@ -422,6 +422,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       gatewayRouting: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
+      agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
         password: { claimName: "absent-bootstrap" },
