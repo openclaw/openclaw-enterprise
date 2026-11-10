@@ -817,6 +817,13 @@ function revisionHarnessSourceId(revision: Readonly<AgentRevision>): string | un
     : undefined;
 }
 
+/** An IAM Driver failure during the finalizing delete recheck; the deletion retries. */
+class FinalizeRecheckUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("The IAM Driver was unavailable for the finalizing delete recheck.", { cause });
+  }
+}
+
 interface AgentDeletionDispatchResult extends DispatchResult {
   readonly namespace?: Readonly<Namespace>;
   readonly agent?: Readonly<Agent>;
@@ -3194,44 +3201,73 @@ export class ControllerWorker {
         throw new Error("The worker Agent deletion context is unavailable.");
       }
       const abandoned = result.abandonedProvisioningEffect;
-      const finalized = await this.state.transactWithQueue(async (unit, queue) => {
-        // The finalizer records this claim's actor on AGENT_DELETED, and that record is what
-        // later shows the actor its deletion completed. Recheck the actor's delete grant here,
-        // not only before teardown: an administrator can revoke it while teardown runs. As in
-        // provisioning's fence, hold the IAM configuration lock shared, then the Namespace lock
-        // that every Namespace policy write takes, so a revocation commits before this check
-        // (which then sees it) or waits until this transaction ends. Native IAM reads policy on
-        // this transaction. An IAM Driver that decides outside this database cannot be fenced:
-        // a revocation it accepts during the one decision round trip and this commit is missed.
-        // Identity removal is classified ACTOR_REVOKED by the same check.
-        await unit.installations.holdIAMConfiguration("shared");
-        await unit.namespaces.lockNamespace(claim.namespaceId);
-        const denied = await this.authorizeAgentAction(claim, agent, "delete");
-        if (denied !== undefined) {
-          return { denied, completed: undefined };
+      // The failure paths below report the same teardown context this success carried.
+      const context = {
+        agent,
+        ...(result.namespace === undefined ? {} : { namespace: result.namespace }),
+        ...(result.revisions === undefined ? {} : { revisions: result.revisions }),
+      };
+      let finalized: {
+        readonly denied: DispatchResult | undefined;
+        readonly completed: "completed" | "cleanup-pending" | undefined;
+      };
+      try {
+        finalized = await this.state.transactWithQueue(async (unit, queue) => {
+          // The finalizer records this claim's actor on AGENT_DELETED and, in the same
+          // statement, as rechecked (occ.agent_deletion_rechecks). Both records are what later
+          // show the actor its deletion completed. Recheck the actor's delete grant here,
+          // not only before teardown: an administrator can revoke it while teardown runs. As
+          // in provisioning's fence, hold the IAM configuration lock shared, then the Namespace
+          // lock that every Namespace policy write takes, so a revocation commits before this
+          // check (which then sees it) or waits until this transaction ends.
+          //
+          // Native IAM, the only IAM Driver in this repository, reads policy on this
+          // transaction, so it leaves no window. An IAM Driver that decides outside this
+          // database cannot be fenced: a revocation it accepts after its decision is missed
+          // until this transaction commits. That window includes the finalizer's own lock
+          // waits below (the Agent row, repository_session_attempts FOR UPDATE) and any
+          // caching or propagation delay on the Driver's side. Identity removal is
+          // classified ACTOR_REVOKED by the same check.
+          await unit.installations.holdIAMConfiguration("shared");
+          await unit.namespaces.lockNamespace(claim.namespaceId);
+          let denied: DispatchResult | undefined;
+          try {
+            denied = await this.authorizeAgentAction(claim, agent, "delete");
+          } catch (error) {
+            // Roll back and retry, as when the check before teardown cannot reach IAM.
+            throw new FinalizeRecheckUnavailableError(error);
+          }
+          if (denied !== undefined) {
+            return { denied, completed: undefined };
+          }
+          if (abandoned !== undefined) {
+            // Committed only with the finalizer's claim check in this transaction.
+            await unit.provisioning.settleEffect(abandoned.workId, abandoned.receipt);
+          }
+          const completed = await queue.completeAgentDeletion(
+            claim,
+            claim.namespaceId,
+            claim.agentId!,
+          );
+          if (completed === "cleanup-pending") {
+            await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
+          }
+          return { denied: undefined, completed };
+        }, this.queueOptions);
+      } catch (error) {
+        if (!(error instanceof FinalizeRecheckUnavailableError)) {
+          throw error;
         }
-        if (abandoned !== undefined) {
-          // Committed only with the finalizer's claim check in this transaction.
-          await unit.provisioning.settleEffect(abandoned.workId, abandoned.receipt);
-        }
-        const completed = await queue.completeAgentDeletion(
-          claim,
-          claim.namespaceId,
-          claim.agentId!,
-        );
-        if (completed === "cleanup-pending") {
-          await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
-        }
-        return { denied: undefined, completed };
-      }, this.queueOptions);
+        await this.finalizeAgentDeletion(claim, {
+          outcome: "retry",
+          code: "DEPENDENCY_UNAVAILABLE",
+          ...context,
+        });
+        return;
+      }
       if (finalized.denied !== undefined) {
         // Teardown already ran; a retry or an authorized takeover repeats it idempotently.
-        await this.finalizeAgentDeletion(claim, {
-          ...finalized.denied,
-          namespace: result.namespace,
-          agent,
-          revisions: result.revisions,
-        });
+        await this.finalizeAgentDeletion(claim, { ...finalized.denied, ...context });
         return;
       }
       if (finalized.completed === "cleanup-pending") {
