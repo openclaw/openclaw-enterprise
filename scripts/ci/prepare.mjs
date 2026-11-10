@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
@@ -408,34 +408,54 @@ const commandKillGraceMs =
 
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const processGroup = options.processGroup === true && process.platform !== "win32";
+    const spawnOptions = {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
-      stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
-      // Its own process group lets a timeout reach every descendant, not only
-      // the direct child (finding 840).
-      detached: options.processGroup === true,
-    });
+    };
+    // Reuse cleanup's supervisor to anchor the group ID until its last signal.
+    const child = processGroup
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          ...spawnOptions,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(command, args, {
+          ...spawnOptions,
+          stdio: options.stdio ?? [options.input ? "pipe" : "ignore", "pipe", "pipe"],
+        });
+    let commandResult;
+    let signalError;
+    if (processGroup) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+    }
     const signalCommand = (signal) => {
-      if (options.processGroup === true && child.pid) {
+      if (processGroup) {
         try {
-          process.kill(-child.pid, signal);
-          return;
-        } catch {
-          // The group is gone; signal the child alone.
+          if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+            process.kill(-child.pid, signal);
+          }
+        } catch (error) {
+          if (error.code !== "ESRCH") {
+            signalError ??= error;
+          }
         }
+        return;
       }
       child.kill(signal);
     };
     // A separate group no longer receives the terminal's or runner's signals.
     // Pass them on while the command runs, then let the default action stop us.
-    // Each such command adds one listener per signal; only k3d create uses it.
+    // Each command with an owned process group adds one listener per signal.
     const forwardSignal = (signal) => {
       stopForwardingSignals();
       signalCommand(signal);
       process.kill(process.pid, signal);
     };
-    const forwardedSignals = options.processGroup === true ? ["SIGINT", "SIGTERM"] : [];
+    const forwardedSignals = processGroup ? ["SIGINT", "SIGTERM"] : [];
     const stopForwardingSignals = () => {
       for (const signal of forwardedSignals) {
         process.removeListener(signal, forwardSignal);
@@ -485,7 +505,7 @@ function execFile(command, args, options = {}) {
       stderr = (stderr + chunk.toString()).slice(-(options.maxOutputChars ?? Infinity));
     });
     function commandError(message, properties = {}) {
-      const error = new Error(message);
+      const error = new Error(message, signalError ? { cause: signalError } : undefined);
       error.command = command;
       error.args = args;
       error.stdout = stdout;
@@ -519,18 +539,45 @@ function execFile(command, args, options = {}) {
         timedOut: true,
       });
     }
-    child.on("error", (error) =>
+    child.on("error", (error) => {
+      if (processGroup && child.pid !== undefined) {
+        // An IPC or signal error is not a failed fork. Keep ownership and the
+        // timeout until the supervisor exits or the pipe-abandonment bound.
+        signalError ??= error;
+        return;
+      }
       finish(() => {
         error.command = command;
         error.args = args;
         error.stdout = stdout;
         error.stderr = stderr;
         reject(preparationError(error, "spawn"));
-      }),
-    );
+      });
+    });
     // Exit can precede pipe drain; callers need complete diagnostics to classify failures.
     child.on("close", (code, signal) => {
       finish(() => {
+        if (processGroup && !timedOut) {
+          if (!commandResult) {
+            reject(commandError("Preparation command supervisor exited without a result."));
+            return;
+          }
+          ({ code, signal } = commandResult);
+          if (commandResult.error) {
+            const error = Object.assign(
+              new Error(commandResult.error.message),
+              commandResult.error,
+              {
+                command,
+                args,
+                stdout,
+                stderr,
+              },
+            );
+            reject(preparationError(error, "spawn"));
+            return;
+          }
+        }
         if (timedOut) {
           reject(timedOutError(code, signal));
         } else if (code === 0) {
@@ -547,6 +594,9 @@ function execFile(command, args, options = {}) {
         }
       });
     });
+    if (processGroup) {
+      child.send({ command, args });
+    }
   });
 }
 
@@ -2108,23 +2158,110 @@ async function validateLoopbackKubeconfig(
   }
 }
 
+// Retain only the fixed fixture Dockerfile's numbered operations and states.
+// Build arguments, container output and error details can contain credentials.
+function fixtureBuildProgress(error) {
+  const steps = new Map();
+  for (const output of [error.stdout, error.stderr]) {
+    if (typeof output !== "string") {
+      continue;
+    }
+    const start = Math.max(0, output.length - 32_768);
+    const lines = output.slice(start).split("\n");
+    if (start > 0 && output[start - 1] !== "\n") {
+      lines.shift();
+    }
+    for (const [index, rawLine] of lines.entries()) {
+      const line =
+        index < lines.length - 1 && rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (/\p{Cc}/u.test(line)) {
+        continue;
+      }
+      const operation = /^#([0-9]{1,4}) \[([0-9]{1,4}\/[0-9]{1,4})\] (FROM|RUN|COPY)(?: |$)/.exec(
+        line,
+      );
+      if (operation) {
+        steps.set(operation[1], { label: `#${operation[1]} [${operation[2]}] ${operation[3]}` });
+      } else {
+        const state = /^#([0-9]{1,4}) (DONE|CACHED|ERROR)(?:$|:| [0-9]+(?:\.[0-9]+)?s$)/.exec(line);
+        const step = state && steps.get(state[1]);
+        if (step) {
+          step.state = state[2];
+        }
+      }
+      if (steps.size > 8) {
+        steps.delete(steps.keys().next().value);
+      }
+    }
+  }
+  return (
+    [...steps.values()]
+      .map(({ label, state }) => (state ? `${label} ${state}` : label))
+      .join("; ") || "no numbered Dockerfile steps captured"
+  );
+}
+
 // The fixture build needs no cluster, so lanes can overlap it with k3d creation.
 async function buildFixtureImage(statePath, state) {
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
+  const run = (stage, args, limitMs) =>
+    k3dStage(state, stage, async () => {
+      if (!Number.isFinite(limitMs) || limitMs <= 0 || limitMs > 2_147_483_647) {
+        throw new Error(
+          `Fixture image preparation ${stage} requires a valid finite command timeout.`,
+        );
+      }
+      const budgetMs = imageBuildBudgetMs();
+      if (budgetMs !== undefined && budgetMs < 1_000) {
+        throw new Error(
+          `Fixture image preparation ${stage} was not started: the lane keeps ` +
+            `${imageBuildTestReserveMs} ms before its deadline for remaining preparation and tests.`,
+        );
+      }
+      const timeoutMs = Math.min(limitMs, budgetMs ?? limitMs);
+      try {
+        return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+          timeoutMs,
+          processGroup: process.platform !== "win32",
+        });
+      } catch (error) {
+        if (stage === "fixture-image-build") {
+          try {
+            progress(
+              state.lane,
+              `Fixture image build steps (captured tail): ${fixtureBuildProgress(error)}`,
+            );
+          } catch {
+            // Diagnostics must preserve the original build failure.
+          }
+        }
+        if (error.timedOut) {
+          throw new Error(`Fixture image preparation ${stage} timed out after ${timeoutMs} ms.`, {
+            cause: error,
+          });
+        }
+        if (error.code === "ENOENT") {
+          throw new Error(
+            `Missing required command on PATH: ${process.env.OCC_DOCKER_BIN ?? "docker"}`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+    });
+  await run(
+    "fixture-engine-version",
+    ["version", "--format", "{{.Server.Version}}"],
+    imageCommandTimeoutMs,
+  );
   const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/fixture:local`;
   const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
   await writeState(statePath, state);
-  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "build",
-    "--pull=false",
-    "-t",
-    image,
-    fixtureDockerContext,
-  ]);
+  // Allow slow fixture builds while keeping a finite cap outside hosted lanes.
+  await run(
+    "fixture-image-build",
+    ["build", "--pull=false", "-t", image, fixtureDockerContext],
+    30 * 60_000,
+  );
   await markResourceReady(statePath, state, resource);
   return { image, resourceId: resource.id };
 }
@@ -3432,7 +3569,18 @@ async function prepareLane({ lane, statePath, file }) {
         saveState: () => writeState(resolvedStatePath, state),
       }),
     );
+    const existingCaPath = env.NODE_EXTRA_CA_CERTS;
     Object.assign(env, keycloak.env);
+    if (existingCaPath && existingCaPath !== env.NODE_EXTRA_CA_CERTS) {
+      // The same test process verifies both private Gateway TLS and the IdP.
+      const certificates = await Promise.all([
+        readFile(existingCaPath, "utf8"),
+        readFile(env.NODE_EXTRA_CA_CERTS, "utf8"),
+      ]);
+      const combinedCaPath = join(dirname(resolvedStatePath), "combined-test-ca.pem");
+      await writeFile(combinedCaPath, certificates.join("\n"), { mode: 0o600 });
+      env.NODE_EXTRA_CA_CERTS = combinedCaPath;
+    }
     await markResourceReady(resolvedStatePath, state, keycloak.resource);
   }
 

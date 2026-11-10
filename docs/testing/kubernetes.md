@@ -226,11 +226,11 @@ container, private files, and the line it added. If passwordless `sudo` is
 unavailable, add this line yourself before preparation and remove it afterward:
 
 ```sh
-echo '127.0.0.1 keycloak.oce.localhost' | sudo tee -a /etc/hosts
+echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-The hostname must resolve to exactly `127.0.0.1`; a resolver that returns `::1`
-can cause failure. For preparation errors, check the named step: image pull,
+Resolve both names to `127.0.0.1`, optionally also `::1`, with no nonloopback
+answers. Readiness uses IPv4 to match Docker. For preparation errors, check the named step: image pull,
 port availability, placeholders, hosts resolution, or the printed Keycloak log
 for readiness errors.
 
@@ -293,12 +293,12 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 
 ### Native Gateway sharing
 
-The `gateway-routing` lane selects `tests/integration/native-admin-k3d-real.test.mjs`.
-The Dedicated case provisions native access on the first revision. Sharing cases
-check model turns, read/operate-only denial, and WebSocket closure after Agent
-permission withdrawal or session expiry, with device enrollment retained.
-Envoy logs verify denial before upstream I/O. These cases do not qualify
-account enrollment, per-chat authority, Git, or OpenShell.
+The `gateway-routing` lane checks native browser access, `agent:operate` chat,
+administration denial, and WebSocket closure after permission withdrawal or
+session expiry. Its combined QA journey adds real Keycloak sign-in. See
+[Native Agent browser tests](native-agent-browser.md) for selection, prerequisites,
+cleanup, and proof boundaries. These tests do not qualify automatic account
+enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 

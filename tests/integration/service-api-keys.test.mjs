@@ -1,3 +1,4 @@
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -38,10 +39,10 @@ test("service API keys authenticate scoped automation without replacing sessions
   const authOptions = {
     installationId,
     mode: "development",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
+    agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: false,
   };
   const auth = createControllerAuth(authOptions);
   const credentials = { email: "admin@example.invalid", password: `test-password-${randomUUID()}` };
@@ -78,7 +79,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     auth,
     iamDriver,
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: authOptions.baseURL },
     computeDriver,
     secretDriver: createTestSecretDriver(),
     configurationDriver: createTestConfigurationDriver(),
@@ -102,13 +103,20 @@ test("service API keys authenticate scoped automation without replacing sessions
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
-  const session = await signInWithEmailPassword({ origin, ...credentials });
+  const session = await signInWithEmailPassword({
+    origin,
+    headers: { origin: authOptions.baseURL },
+    ...credentials,
+  });
   async function request(
     method,
     path,
     { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
   ) {
-    const response = await fetch(`${origin}${path}`, jsonRequestInit(method, body, headers));
+    const response = await fetchLoopback(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, { host: "console.oce.localhost", ...headers }),
+    );
     assert.equal(response.headers.get("cache-control"), "no-store");
     return { status: response.status, ...(await response.json()) };
   }
@@ -223,10 +231,17 @@ test("service API keys authenticate scoped automation without replacing sessions
       assert.equal(denial.details.iamEvidence.identityId, principal.id);
       // Session requests carry no key; key management names the key acted on and its name.
       for (const id of configurationIds) {
-        const deleted = await fetch(`${origin}/namespaces/${namespaceId}/configurations/${id}`, {
-          method: "DELETE",
-          headers: { cookie: session.cookie, origin: authOptions.baseURL },
-        });
+        const deleted = await fetchLoopback(
+          `${origin}/namespaces/${namespaceId}/configurations/${id}`,
+          {
+            method: "DELETE",
+            headers: {
+              host: "console.oce.localhost",
+              cookie: session.cookie,
+              origin: authOptions.baseURL,
+            },
+          },
+        );
         assert.equal(deleted.status, 204);
       }
       assert.equal(
@@ -1296,14 +1311,14 @@ test("service API keys authenticate scoped automation without replacing sessions
 test("service key issuance cannot exceed the caller's own IAM grants", async (t) => {
   const installationId = `ins_${randomUUID()}`;
   const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
-  const baseURL = "http://127.0.0.1";
+  const baseURL = "https://console.oce.localhost";
   const auth = createControllerAuth({
     installationId,
     mode: "development",
     baseURL,
+    agentDomain: "agents.oce.localhost",
     secret: `test-secret-${randomUUID()}`,
     memoryDatabase,
-    secureCookies: false,
   });
   const adminCredentials = {
     email: "admin@example.invalid",
@@ -1360,7 +1375,7 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     auth,
     iamDriver: new NativeIAMDriver({ loadNativeIAMState: async () => policy }),
     auditSink,
-    development: { enabled: true, installationId },
+    development: { enabled: true, installationId, browserOrigin: baseURL },
     computeDriver: createDevelopmentComputeDriver(),
     secretDriver: createTestSecretDriver(),
     configurationDriver: createTestConfigurationDriver(),
@@ -1375,12 +1390,20 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
-  const adminSession = await signInWithEmailPassword({ origin, ...adminCredentials });
-  const operatorSession = await signInWithEmailPassword({ origin, ...operatorCredentials });
+  const adminSession = await signInWithEmailPassword({
+    origin,
+    headers: { origin: baseURL },
+    ...adminCredentials,
+  });
+  const operatorSession = await signInWithEmailPassword({
+    origin,
+    headers: { origin: baseURL },
+    ...operatorCredentials,
+  });
   async function request(method, path, { headers, body } = {}) {
-    const response = await fetch(
+    const response = await fetchLoopback(
       `${origin}${path}`,
-      jsonRequestInit(method, body, { origin: baseURL, ...headers }),
+      jsonRequestInit(method, body, { host: "console.oce.localhost", origin: baseURL, ...headers }),
     );
     return { status: response.status, ...(await response.json()) };
   }

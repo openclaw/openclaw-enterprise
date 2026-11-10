@@ -175,7 +175,7 @@ const requiresOpenShellK3d = {
 };
 const installationName = "OpenClaw OpenShell SandboxDriver integration";
 const authSecret = "openshell-sandbox-driver-auth-secret-32";
-const authBaseURL = "http://127.0.0.1";
+const authBaseURL = "https://console.oce.localhost";
 const adminCredentials = Object.freeze({
   email: "admin-openshell-sandboxdriver@example.test",
   password: "openshell-sandboxdriver-admin-password",
@@ -2351,7 +2351,7 @@ async function prepareProductionInstallation(
 
   const existing = await new PostgresPlatformState(observerPool).loadInstallation();
   const controllerAuthBaseURL =
-    controllerPort === undefined ? authBaseURL : `http://127.0.0.1:${controllerPort}`;
+    controllerPort === undefined ? authBaseURL : `https://console.oce.localhost:${controllerPort}`;
   if (existing !== undefined) {
     assert.equal(existing.name, installationName);
   } else {
@@ -2361,6 +2361,7 @@ async function prepareProductionInstallation(
       password: adminCredentials.password,
       authSecret,
       authBaseURL: controllerAuthBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName,
     });
   }
@@ -2371,6 +2372,7 @@ async function prepareProductionInstallation(
     databaseUrl,
     authSecret,
     authBaseURL: controllerAuthBaseURL,
+    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers,
     gatewayApiKeyPath,
   });

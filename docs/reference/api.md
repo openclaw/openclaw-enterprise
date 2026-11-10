@@ -86,7 +86,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 50 operations |
+| [Agents](#agents) | 52 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -3763,7 +3763,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It omits nativeAdmin and agentProvisioning, which apply only to guided provisioning and need Installation administration. |
+| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration. |
 | `data.capabilities.credentialSources` | `object` | No | — |
 | `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
@@ -3783,6 +3783,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -4011,6 +4012,8 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`](#post-namespacesnamespaceidagentsagentidnativeadminconfirm) | Confirm a native Agent browser challenge |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
@@ -4156,6 +4159,7 @@ Create a Namespace-owned Agent
 | `credentialSources` | `array<object>` | No | max items: 64; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
+| `expectedConfigurationGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
 | `initialWorkspaceFiles` | `object` | No | — |
@@ -4164,6 +4168,7 @@ Create a Namespace-owned Agent
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `nativeAdmin` | `boolean` | No | Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6640,11 +6645,12 @@ Resolve native admin UI launch availability for one Agent
 
 **Operation ID:** `getAgentNativeAdmin`
 
-**Permissions:** Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 
@@ -6670,7 +6676,9 @@ Resolve native admin UI launch availability for one Agent
 | `data` | `object` | Yes | — |
 | `data.activeRevisionId` | `string` | No | — |
 | `data.host` | `string` | No | — |
+| `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
 | `meta` | `object` | Yes | — |
@@ -6681,6 +6689,168 @@ Example response
 {
   "data": {
     "status": "stopped"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminconfirm"></span>
+
+Confirm a native Agent browser challenge
+
+**Operation ID:** `confirmAgentNativeAdmin`
+
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` | "sssssssssssssssssssssssssssssssssssssssssss" |
+| `origin` | header | `string` | Yes | — | "https://console.example.com" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `challenge` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `intentId` | `string (uuid)` | Yes | — |
+
+Example request
+```json
+{
+  "challenge": "ccccccccccccccccccccccccccccccccccccccccccc",
+  "intentId": "123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | Yes | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | No | — |
+| `data.origin` | `string` | No | — |
+| `data.redeemUrl` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "exchange": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "intentId": "123e4567-e89b-42d3-a456-426614174000",
+    "redeemUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/redeem"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminlaunch"></span>
+
+Create a browser-bound native Agent launch
+
+**Operation ID:** `launchAgentNativeAdmin`
+
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` | "sssssssssssssssssssssssssssssssssssssssssss" |
+| `origin` | header | `string` | Yes | — | "https://console.example.com" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | No | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | Yes | — |
+| `data.origin` | `string` | Yes | — |
+| `data.redeemUrl` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "intentId": "123e4567-e89b-42d3-a456-426614174000",
+    "landingUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/launch?intent=123e4567-e89b-42d3-a456-426614174000",
+    "origin": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -8533,11 +8703,12 @@ Resolve an authorized Agent from a copied native chat link
 
 **Operation ID:** `resolveAgentNativeAdminReturn`
 
-**Permissions:** Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `administer` | `agent` | `requested` |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
 
 ##### Parameters
 

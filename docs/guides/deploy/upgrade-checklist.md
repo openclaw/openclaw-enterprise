@@ -48,7 +48,7 @@ command; use this page as its migration inventory.
       one of those paths, or to the OpenClaw commit or Codex version the
       Dockerfile pins, needs the new runtime image. For example, the repository
       credential client in
-      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
+      `apps/controller/src/drivers/repo/github/access/client/` is built into
       the runtime image. Other controller source ships only in the controller
       image. This includes the Agent Pod specs that the controller renders, such
       as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:

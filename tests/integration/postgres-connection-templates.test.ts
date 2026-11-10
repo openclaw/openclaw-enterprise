@@ -194,13 +194,14 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: controller.installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: options.authSecret,
       pool,
     });
     const reader = await auth.createAccount({ ...member, name: "Template reader" });
     await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
-    const session = await signedInHeaders(app, "http://127.0.0.1", member);
+    const session = await signedInHeaders(app, "https://console.oce.localhost", member);
     const denied = await app.inject({
       method: "POST",
       url: "/oauth-clients",

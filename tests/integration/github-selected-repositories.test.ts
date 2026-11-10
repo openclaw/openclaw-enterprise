@@ -3,8 +3,8 @@ import test from "node:test";
 import {
   prepareProviderScope,
   providerRequestOptions,
-} from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 
 const grant = {
   id: "selected-grant",
@@ -75,7 +75,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import {
   validateGitHubRepositoryRegistry,
   resolveSelectedRepositoryGrant,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 
 test("ordinary fresh selections resolve one or N repositories without broadening explicit historical grants", () => {
   const createRegistry = (bPermissions = grant.permissions) =>
