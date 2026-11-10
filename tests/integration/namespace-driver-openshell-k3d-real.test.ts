@@ -20,6 +20,7 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 const kubernetesRequire = createRequire(require.resolve("@kubernetes/client-node"));
 const { loadAll } = kubernetesRequire("js-yaml") as { loadAll: (source: string) => unknown[] };
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
@@ -39,9 +40,14 @@ import {
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { createScopedController } from "../helpers/openshell-sandbox-workflows.mjs";
+import {
+  createScopedController,
+  withFirstPrepareRevisionFailureDiagnostic,
+} from "../helpers/openshell-sandbox-workflows.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { redactedQaTail } from "../helpers/qa-secrets.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -145,7 +151,17 @@ test(
     const gatewayHelpers = {
       kubectl: fixture.kubectl,
       applyManifest: fixture.applyManifest,
-      resource: fixture.resource,
+      async resource(kind: string, name: string, namespace?: string) {
+        if (namespace === undefined) {
+          return fixture.resource(kind, name, namespace);
+        }
+        // Polling needs actual absence, without exposing raw kubectl stderr or Secret data.
+        const resource = await fixture.maybeResource(kind, name, namespace);
+        if (resource === undefined) {
+          throw new Error("Kubernetes resource not found.");
+        }
+        return resource;
+      },
       resources: fixture.resources,
       waitFor: fixture.waitFor,
       startPortForwardTarget: fixture.startPortForwardTarget,
@@ -315,7 +331,7 @@ test(
       password: randomBytes(24).toString("base64url"),
     };
     const authSecret = randomBytes(32).toString("hex");
-    const authBaseURL = "http://127.0.0.1";
+    const authBaseURL = "https://console.oce.localhost";
     const environment = { ...env, OCC_CONFIG_PATH: startupPath, OCC_GATEWAY_API_KEY_PATH: keyPath };
     const databaseUrl = env.OCC_TEST_DATABASE_URL!;
     const pool = new pg.Pool({ connectionString: databaseUrl });
@@ -339,7 +355,16 @@ test(
     assert.equal(
       bootstrap.ok,
       true,
-      "shipped bootstrap must succeed before provider infrastructure is available",
+      `shipped bootstrap must succeed before provider infrastructure is available: ${redactedQaTail(
+        bootstrap.stderr,
+        {
+          ...environment,
+          AUTH_SECRET: authSecret,
+          BOOTSTRAP_PASSWORD: credentials.password,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+        { lines: 12, lineChars: 800 },
+      ).join("\n")}`,
     );
     const initial = (await pool.query("select id, name, status from occ.namespaces")).rows;
     assert.equal(initial.length, 1);
@@ -369,6 +394,12 @@ test(
     });
     // Only the transport changes for a loopback test process. Every RPC reaches the actual
     // gateway; Namespace setup, Workspace creation, and results come from shipped Drivers.
+    const transportFailures: {
+      operation: string;
+      errorClass: string | undefined;
+      code: number | undefined;
+      grpcStatus: number | undefined;
+    }[] = [];
     const apiStartupPath = join(directory, "api-installation.json");
     const loadDrivers = async (forApi = false) => {
       if (forApi) {
@@ -398,7 +429,24 @@ test(
                             const method = Reflect.get(gatewayClient, operation) as (
                               ...args: unknown[]
                             ) => unknown;
-                            return method.apply(gatewayClient, args);
+                            try {
+                              return await method.apply(gatewayClient, args);
+                            } catch (error) {
+                              // Keep provider payloads and credential-bearing RPC arguments out of evidence.
+                              transportFailures.push({
+                                operation,
+                                errorClass: error instanceof Error ? error.name : undefined,
+                                code:
+                                  typeof Reflect.get(Object(error), "code") === "number"
+                                    ? Reflect.get(Object(error), "code")
+                                    : undefined,
+                                grpcStatus:
+                                  typeof Reflect.get(Object(error), "grpcStatus") === "number"
+                                    ? Reflect.get(Object(error), "grpcStatus")
+                                    : undefined,
+                              });
+                              throw error;
+                            }
                           };
                         },
                       },
@@ -413,6 +461,18 @@ test(
       }))!;
     };
     const drivers = await loadDrivers(true);
+    const apiLogs: Record<string, unknown>[] = [];
+    const apiDiagnostic = () =>
+      redactedQaTail(
+        JSON.stringify({ events: apiLogs.slice(-12), transportFailures }),
+        {
+          ...environment,
+          AUTH_SECRET: authSecret,
+          BOOTSTRAP_PASSWORD: credentials.password,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+        { lines: 12, lineChars: 8000 },
+      ).join("\n");
     const startApi = (selectedDrivers: typeof drivers) =>
       composeProduction({
         mode: "production",
@@ -420,6 +480,11 @@ test(
         databaseUrl,
         authSecret,
         authBaseURL,
+        nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+        logger: createOccLogger({
+          component: "namespace-proof-api",
+          destination: jsonLineDestination(apiLogs),
+        }),
         drivers: selectedDrivers,
         gatewayApiKeyPath: keyPath,
       });
@@ -431,7 +496,10 @@ test(
       createControllerWorker({
         mode: "production",
         pool: new pg.Pool({ connectionString: databaseUrl }),
-        drivers: selectedDrivers,
+        drivers: {
+          ...selectedDrivers,
+          computeDriver: withFirstPrepareRevisionFailureDiagnostic(selectedDrivers.computeDriver),
+        },
         pollIntervalMs: 100,
         leaseDurationMs: 10_000,
         maxAttempts: 40,
@@ -470,6 +538,13 @@ test(
       const objects = JSON.parse(
         JSON.stringify(prerequisites).replaceAll(templateNamespace, placement),
       ) as KubernetesObject[];
+      // Chart role names can contain the namespace template too. Match the rendered names
+      // before adding the disposable-installation suffix to both sides of each binding.
+      const renderedClusterRoles = new Set(
+        objects
+          .filter((object) => object.kind === "ClusterRole")
+          .map((object) => object.metadata!.name!),
+      );
       for (const object of objects) {
         if (object.kind === "ClusterRole") {
           object.metadata!.name += `-${placement}`;
@@ -477,10 +552,7 @@ test(
         }
         const roleRef = (object as KubernetesObject & { roleRef?: { kind: string; name: string } })
           .roleRef;
-        if (
-          roleRef?.kind === "ClusterRole" &&
-          [...clusterRoles].some((name) => roleRef.name === `${platformNamespace}-${name}`)
-        ) {
+        if (roleRef?.kind === "ClusterRole" && renderedClusterRoles.has(roleRef.name)) {
           roleRef.name += `-${placement}`;
         }
         if (object.kind === "ClusterRoleBinding") {
@@ -615,7 +687,43 @@ test(
         config: { authorized_base_url: modelBaseUrl },
         secrets: { api_key: modelSecret.data.ref },
       });
-      assert.equal(source.status, 201, JSON.stringify(source.error));
+      if (source.status !== 201) {
+        const pod = await fixture.resource("pod", `${service}-0`, placement);
+        const permissions: Record<string, string> = {};
+        for (const verb of ["get", "list", "watch", "create", "update", "patch", "delete"]) {
+          permissions[verb] = String(
+            await fixture
+              .kubectl(
+                "auth",
+                "can-i",
+                verb,
+                "secrets",
+                "--namespace",
+                placement,
+                `--as=system:serviceaccount:${placement}:${pod.spec.serviceAccountName}`,
+                "--quiet=false",
+              )
+              .catch(() => "denied"),
+          ).trim();
+        }
+        const logs = String(
+          await fixture
+            .kubectl("logs", `${service}-0`, "--namespace", placement, "--tail=100")
+            .catch(() => "unavailable"),
+        );
+        apiLogs.push({
+          event: "gateway-registration-diagnostic",
+          permissions,
+          categories: [
+            ...new Set(
+              logs.match(
+                /forbidden|permission denied|deadline exceeded|timed out|connection refused|unreachable|failed to resolve|unable to resolve/giu,
+              ) ?? [],
+            ),
+          ],
+        });
+      }
+      assert.equal(source.status, 201, `${JSON.stringify(source.error)} ${apiDiagnostic()}`);
       assert.deepEqual(source.data.status, { state: "ready" });
       assert.equal(JSON.stringify(source).includes(env.OPENAI_API_KEY!), false);
       const base = createHarnessConfiguration(
@@ -685,11 +793,18 @@ test(
       assert.equal(deployed.data.harness.mode, "dedicated");
       assert.equal(deployed.data.harness.id, "openclaw");
       assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
-      await waitForOpenShellRevisionActivation(fixture.waitFor, {
-        request,
-        agentPath: path,
-        revisionId: deployed.data.id,
-      });
+      try {
+        await waitForOpenShellRevisionActivation(fixture.waitFor, {
+          request,
+          agentPath: path,
+          revisionId: deployed.data.id,
+        });
+      } catch (error) {
+        throw new Error(
+          `${error instanceof Error ? error.message : "Agent activation failed"} ${apiDiagnostic()}`,
+          { cause: error },
+        );
+      }
       const sandbox = await fixture.waitForSandbox(placement, deployed.data);
       const harness = await fixture.waitForProviderHarnessPod(placement, deployed.data);
       assert.equal(harness.metadata.namespace, placement);
@@ -796,7 +911,7 @@ test(
     );
     const workBefore = (
       await pool.query(
-        "select count(*)::int as count from occ.controller_work where work_kind = 'namespace'",
+        "select count(*)::int as count from occ.controller_work where work_kind = 'lifecycle' and namespace_target is not null",
       )
     ).rows[0].count;
     assert.equal((await ungrantedRequest("POST", "/namespaces", { name: "denied" })).status, 403);
@@ -808,7 +923,7 @@ test(
     assert.equal(
       (
         await pool.query(
-          "select count(*)::int as count from occ.controller_work where work_kind = 'namespace'",
+          "select count(*)::int as count from occ.controller_work where work_kind = 'lifecycle' and namespace_target is not null",
         )
       ).rows[0].count,
       workBefore,

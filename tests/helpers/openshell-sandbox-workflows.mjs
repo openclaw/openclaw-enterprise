@@ -1959,7 +1959,7 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
+export function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
   let reported = false;
   return new Proxy(computeDriver, {
     get(target, property) {
