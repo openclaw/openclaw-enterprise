@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ComputeStopYieldedError,
+  type ComputeWorkWait,
   computeStopShouldYield,
   computeWorkWaiting,
   withComputeWorkWaiting,
@@ -19,7 +20,9 @@ import {
   stopYieldRecheckMs,
 } from "../../apps/controller/src/worker/stop-yields.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
+import type { AgentProvisioningRecord } from "../../packages/occ/src/state/agent-provisioning.ts";
 import {
+  type ControllerWork,
   deploymentErrorForWork,
   deploymentProgressForWork,
   revisionAdmittedBeforeWork,
@@ -122,8 +125,8 @@ test("only a Gateway drain skips a yielded redeploy; no wait ends for a stopped 
 });
 
 test("each wait tells the worker which kind it is", async () => {
-  const asked = [];
-  const check = async (wait) => {
+  const asked: ComputeWorkWait[] = [];
+  const check = async (wait: ComputeWorkWait) => {
     asked.push(wait);
     return true;
   };
@@ -171,8 +174,8 @@ test("a yielded stop this worker has not run for ten minutes is forgotten", () =
 
 // A stop as Kubernetes runs it: the Gateway's Pods drain first, then the Harness's terminate.
 // Each wait asks whether it may end now; the Harness is deleted only after the Gateway wait.
-async function drainingStop(steps) {
-  for (const role of ["gateway", "agent"]) {
+async function drainingStop(steps: string[]) {
+  for (const role of ["gateway", "agent"] as const) {
     if (await computeStopShouldYield(role)) {
       throw new ComputeStopYieldedError(`${role} Pods are still terminating`);
     }
@@ -180,8 +183,8 @@ async function drainingStop(steps) {
   }
 }
 
-async function stopRun(ageMs, deadlineMs, workDue = true) {
-  const steps = [];
+async function stopRun(ageMs: number, deadlineMs: number, workDue = true) {
+  const steps: string[] = [];
   try {
     await withComputeWorkWaiting(
       async () => workDue,
@@ -209,7 +212,7 @@ test("a stop yields only its Gateway drain, only to due Work, and only before th
     steps: ["gateway", "agent"],
   });
   // The Harness's own wait never yields, even when the Gateway's is already done.
-  const harnessOnly = [];
+  const harnessOnly: string[] = [];
   await withComputeWorkWaiting(
     async () => true,
     () =>
@@ -384,7 +387,7 @@ const handedOff = {
   },
   createdAt: new Date("2026-10-17T12:00:00.000Z"),
   updatedAt,
-};
+} satisfies AgentProvisioningRecord;
 // A deferred job is queued again with its attempt returned and no lease.
 const deferredWork = {
   kind: "provisioning",
@@ -396,9 +399,12 @@ const deferredWork = {
   attemptCount: 0,
   createdAt: handedOff.createdAt,
   updatedAt,
-};
+} satisfies ControllerWork;
 // The deployment's queued work; its progress reads only the state and the next attempt time.
-const deploymentWork = { state: "queued", availableAt: new Date("2026-10-17T12:00:10.000Z") };
+const deploymentWork = {
+  state: "queued",
+  availableAt: new Date("2026-10-17T12:00:10.000Z"),
+} satisfies Pick<ControllerWork, "state" | "availableAt">;
 const nodePending = deploymentProgressForWork(deploymentWork, {
   at: new Date("2026-10-17T12:00:04.000Z"),
   code: "WORKSPACE_NODE_PENDING",
@@ -460,7 +466,7 @@ test("a job before handoff or finished reports no deployment wait", () => {
       { ...deferredWork, state: "failed_permanent" },
     ],
     [{ ...handedOff, status: "cancelled" }, deferredWork],
-  ]) {
+  ] satisfies [AgentProvisioningRecord, ControllerWork][]) {
     assert.equal(
       Object.hasOwn(provisioningProgress(record, work, now, nodePending), "progress"),
       false,

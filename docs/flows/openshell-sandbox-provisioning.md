@@ -130,7 +130,7 @@ and the [retired local protected profile](../guides/deploy/local-openshell-image
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 policies (maximum 1 MiB) before provisioning; persisted rules augment generated
 rules. See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
-`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` sets routing-file
+`internal/occdev/compose_routing.go:prepareComposePrivateFiles` sets routing-file
 container ownership; Installation files remain `0644` in private state.
 Cleanup validates ownership, deletes cluster/project/volumes and retains partial-failure state.
 

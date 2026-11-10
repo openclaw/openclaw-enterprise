@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-11-10"
-last_updated_session: "authoring-run/c16642a2-889c-409e-833b-d6afc7957d68"
+last_updated_session: "authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -27,7 +27,7 @@ Credential issuance and provider internals are outside this flow.
   Agent deployment action: authorized exact Secret references, same-Namespace
   bindings, exact Agent assignment authority, and an approved Harness/Compute
   selection.
-- Local installer: `scripts/first-agent.mjs:main` uses the bootstrap service key.
+- Local installer: `scripts/first-agent.ts:main` uses the bootstrap service key.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [KubernetesSecretDriver](../../apps/controller/src/drivers/secret/kubernetes/index.ts).
@@ -144,23 +144,21 @@ execution topology.
 
 ### 4. Grant the first local Agent access to its model credential
 
-`scripts/first-agent.mjs:main`;
-`scripts/first-agent.mjs:assertManagedRevision`;
+`scripts/first-agent.ts:main`;
+`scripts/first-agent.ts:assertManagedRevision`;
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
-The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up` installation.
-Before Kubernetes or OCC API calls, it requires the current v3 development marker
-and state from the same checkout.
-The state must select Kubernetes Compute and record the canonical HTTPS Console
-origin, browser port, and Agent domain for its cluster. These browser settings
-are required with either Sandbox Driver; `--control-ui` still requires OpenShell.
-API requests use the recorded loopback HTTP endpoint. The default `sandboxDriver: "none"`
-path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
-`scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket and
-removes inherited Docker TLS settings for container-engine calls. Compose setup
-queries the recorded controller port and PostgreSQL service without another
-daemon's certificates.
+The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up`
+installation. Before Kubernetes or OCC calls, it requires same-checkout v3
+Kubernetes development state and marker. Both Sandbox Drivers require the
+recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.
+API requests use the recorded loopback HTTP endpoint. With `sandboxDriver: "none"`,
+the helper defaults to embedded OpenClaw. Use `--harness codex` for dedicated Codex.
+OpenShell requires `--harness codex`, and `--control-ui` requires OpenShell.
+`scripts/first-agent.ts:loadLocalInstallation` selects the recorded Unix socket
+and removes inherited Docker TLS settings. Compose queries the recorded
+controller port and PostgreSQL service without another daemon's certificates.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -179,42 +177,43 @@ CredentialSource and uses the public Namespace IAM API to grant the Agent princi
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
-`scripts/first-agent.mjs:withRecord` creates the PID lock and atomic record
+`scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
-process umask. It closes the temporary file before renaming and removes a
-failed temporary output without replacing the previous record.
+process umask. An existing lock stops the command before record access or
+provisioning; the helper neither reads nor removes another invocation's lock.
+Only successful exclusive creation registers cleanup, including initialization
+failures. A release failure reports the lock path and sets a failing exit status
+without replacing the original action error. A crash can leave a lock that needs
+[inspected recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-reports-an-existing-lock).
+The helper closes the temporary record before renaming and removes a failed
+temporary output without replacing the previous record.
 
-The tool provisions runtime credentials and requests deployment through
-OCC. A rerun follows a newer revision from a later deploy, after the same
-drift check. If the Agent is stopped, it fails at once and prints the
-`occ agent deploy` command. The check requires the local OpenShell profile's
-Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
-`sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
-or PAT sources. It can recognize a prior PAT Agent revision frozen with
-`workspace-write`; a new deployment uses the current policy. Other workspace or
-Configuration differences fail the drift check. Once OCC selects the version,
-[`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
-tenant namespace through `openclaw.dev/namespace`. The supported local setup is
-single-cluster, so embedded and dedicated Gateways share that physical namespace
-with the provider-owned Harness. The verifier requires the exact Agent labels,
-Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. It requires the OpenAI key in the Gateway container only for embedded
-OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
-local helper does not infer physical placement from the Agent execution mode.
-`scripts/first-agent.mjs:main` distinguishes credential rejection from policy refusal
+The tool provisions runtime credentials and requests deployment through OCC.
+Reruns follow newer revisions after drift checks. A stopped Agent fails immediately
+with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
+`/sandbox/enterprise` workspace and frozen Codex policy: `sandbox: "danger-full-access"`
+and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
+with `workspace-write` are recognized; new deployments use current policy.
+Other workspace or Configuration differences fail drift checks.
+After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.mjs)
+resolves `openclaw.dev/namespace`. In this single-cluster setup, embedded and
+dedicated Gateways share the provider-owned Harness namespace. It requires exact Agent
+labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
+sending the prompt. Embedded OpenClaw requires the key in the Gateway container;
+dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
+belongs to Kubernetes Compute; this helper never infers placement from execution mode.
+`scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
 when reporting failed deployment, before model verification. See [deployment recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-deployment-fails).
-After a model failure, the CLI prints the original error before a bounded
-[diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
-revision-scoped runtime status and log API. The API resolves both Kubernetes and
-OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
-and restart count; changed identities suppress log attribution. It prints container
-state, admitted startup event fields, and fixed classifications of known Codex
-connection failures, fallback and retry messages. It never forwards free-form log
-text or provider bodies. Collection is limited to ten seconds, 64 KiB per response,
-and two container streams per role. Same-stream history gaps retain valid
-observations and mark the sample incomplete. Unavailable or incomplete evidence
-does not change the original failure; startup observations do not establish the
-failed request's cause.
+After a model failure, the CLI prints the original error, then a
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.ts) from revision-scoped
+runtime status and logs. The API resolves Kubernetes and OpenShell Harness
+ownership. Changed Gateway Pod UID or restart count suppresses log attribution.
+Output includes container state, admitted startup fields, and fixed Codex connection,
+fallback and retry classifications; never free-form logs or provider bodies.
+Collection permits ten seconds, 64 KiB per response, and two container streams per
+role. Same-stream gaps retain valid observations but mark evidence incomplete.
+Missing or incomplete evidence preserves the original failure; startup observations
+do not establish the failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -308,8 +307,8 @@ credential at its issuer.
 - A stored Secret with no ready gateway is valid. Update success does not imply
   delivery. Compare Agent revision/Pod identities and use noncredential sentinel values
   for restart assertions.
-- On local failure, rerun the tool with the same Agent name. It prints the Agent
-  and Agent revision IDs only after the model responds.
+- On local failure, resolve any reported lock before rerunning with the same
+  Agent name. Agent and Agent revision IDs print only after the model responds.
 - Source selection, exact Namespace ownership, consumption authorization, missing
   material, and concurrent backend mutations fail closed. Do not retry a denial
   against another driver or model-key source.
@@ -336,6 +335,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:23: Require inspected recovery for existing first-Agent locks; preserve creator-only cleanup. (authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b - 6e4cf8ff54412aa15773039ffc471e029a8dbfa8)
 
 - 2026-11-10 12:13: Distinguish first-Agent deployment policy refusal, authentication failure, and other failure advice. (authoring-run/c16642a2-889c-409e-833b-d6afc7957d68 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 - 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)

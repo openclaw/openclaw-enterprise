@@ -442,8 +442,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
 	buildOption := "--build"
-	if routing != nil {
-		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
+	if routing != nil || state.BrowserPort != 0 {
+		if err := r.prepareComposePrivateFiles(ctx, state, routing != nil); err != nil {
 			return err
 		}
 		buildOption = "--no-build"

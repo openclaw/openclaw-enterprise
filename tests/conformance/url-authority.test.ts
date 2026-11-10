@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { validateModelCredentialReferences } from "../../apps/controller/src/drivers/configuration/model-auth.ts";
 
-const message = (field) =>
+const message = (field: string) =>
   `Configuration field ${field} has an empty authority or a missing //, which parses as a different host. Write an absolute http:// or https:// URL with the host you mean, and save again.`;
 
 test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing scheme slash pair", () => {
-  const refused = [
+  const refused: [OpenClawConfigurationDocument, string][] = [
     [{ proxy: { proxyUrl: "https:///v1" } }, "/proxy/proxyUrl"],
     [{ proxy: { proxyUrl: "https:/v1" } }, "/proxy/proxyUrl"],
     [{ channels: { slack: { proxy: "http:///slack" } } }, "/channels/slack/proxy"],
@@ -52,7 +53,8 @@ test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing
   for (const [values, field] of refused) {
     assert.throws(
       () => validateModelCredentialReferences(values),
-      (error) => {
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
         assert.equal(error.message, message(field));
         return true;
       },
@@ -103,7 +105,8 @@ test("proxy, channel, MCP and plugin URLs refuse an empty authority or a missing
           unresolved: (path) => (path.at(-1) === "proxyUrl" ? ["https:///", ""] : undefined),
         },
       ),
-    (error) => {
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.equal(error.message, message("/proxy/proxyUrl"));
       return true;
     },

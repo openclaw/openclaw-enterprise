@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { assertAllPassed, nodeTestSummary } from "../helpers/node-test-summary.ts";
 
-function report(counts, prefix = "ℹ") {
+function report(counts: Partial<ReturnType<typeof nodeTestSummary>>, prefix = "ℹ") {
   const all = {
     tests: 7,
     suites: 0,

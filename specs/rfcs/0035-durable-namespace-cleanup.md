@@ -6,13 +6,13 @@ author: russellb
 
 # Proposal: persist Namespace cleanup before removing its provider access
 
-- **ID:** RFC-0034
+- **ID:** RFC-0035
 - **Created:** 2026-10-30
 - **Last updated:** 2026-10-30
 - **RFC PR:** [PR #4088](https://github.com/openclaw/openclaw-enterprise/pull/4088)
 - **Implementation plan:** [implementation plan](../plans/0027-durable-namespace-cleanup.md)
 
-Submitted as RFC-0026 in the [original review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103), then provisionally numbered RFC-0027, RFC-0028, RFC-0029, RFC-0030, RFC-0031 and RFC-0032. Main assigned those IDs and RFC-0033 to other proposals. This proposal is now RFC-0034; the plan filename, original dates, submission commits and review links remain unchanged.
+Submitted as RFC-0026 in the [original review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103), then provisionally numbered RFC-0027, RFC-0028, RFC-0029, RFC-0030, RFC-0031, RFC-0032 and RFC-0034. Main assigned those IDs and RFC-0033 to other proposals. This proposal is now RFC-0035; the plan filename, original dates, submission commits and review links remain unchanged.
 
 ## Summary
 

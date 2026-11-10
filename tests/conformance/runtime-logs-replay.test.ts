@@ -1,8 +1,13 @@
-import { openShellLogDecisions } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 
+import { openShellLogDecisions } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
+import {
+  validSandboxPolicyDecision,
+  type RuntimeLogRecord,
+  type SandboxLogLine,
+} from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk, sanitizeSandboxLogLines } from "../../packages/occ/src/index.ts";
 import { validRuntimeDescription } from "../../packages/occ/src/runtime-logs/index.ts";
 
@@ -18,18 +23,124 @@ const update = process.env.UPDATE_RUNTIME_LOG_GOLDENS === "1";
 // numeric-offset normalization and preserves these existing replay inputs.
 const KUBELET_LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) (.*)$/s;
 
-async function manifest() {
-  return JSON.parse(await readFile(new URL("manifest.json", directory), "utf8"));
+type FixtureBase = {
+  file: string;
+  golden: string;
+  provenance: string;
+  origin: string;
+  scrubbed: string;
+};
+type ContainerFixture = FixtureBase & { replay: "kubelet-container"; source: "gateway" | "agent" };
+type SandboxFixture = FixtureBase & {
+  replay: "openshell-sandbox";
+  source: "sandbox";
+  lines?: (lines: SandboxLogLine[]) => SandboxLogLine[];
+};
+type EventFixture = FixtureBase & { replay: "kubernetes-events"; source: "events" };
+type Fixture = ContainerFixture | SandboxFixture | EventFixture;
+type LogReplay = { input: number } & Pick<
+  ReturnType<typeof sanitizeRuntimeLogChunk>,
+  "records" | "withheld"
+>;
+type EventReplay = {
+  input: number;
+  events: ReturnType<typeof validRuntimeDescription>["pods"][number]["events"];
+};
+
+function object(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
 }
 
-function kubeletLines(text) {
+function string(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function array(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+function fixture(value: unknown): Fixture {
+  const item = object(value);
+  const base = {
+    file: string(item.file),
+    golden: string(item.golden),
+    provenance: string(item.provenance),
+    origin: string(item.origin),
+    scrubbed: string(item.scrubbed),
+  };
+  if (item.replay === "kubelet-container") {
+    assert.ok(item.source === "gateway" || item.source === "agent");
+    return { ...base, replay: item.replay, source: item.source };
+  }
+  if (item.replay === "openshell-sandbox") {
+    assert.equal(item.source, "sandbox");
+    return { ...base, replay: item.replay, source: item.source };
+  }
+  if (item.replay !== "kubernetes-events") {
+    throw new Error(`unknown replay ${String(item.replay)}`);
+  }
+  assert.equal(item.source, "events");
+  return { ...base, replay: item.replay, source: item.source };
+}
+
+async function manifest() {
+  const parsed = object(JSON.parse(await readFile(new URL("manifest.json", directory), "utf8")));
+  assert.equal(typeof parsed.count, "number");
+  return { count: parsed.count, fixtures: array(parsed.fixtures).map(fixture) };
+}
+
+function findFixture<T extends Fixture["replay"]>(
+  fixtures: Fixture[],
+  replay: T,
+  predicate: (entry: Fixture) => boolean,
+): Extract<Fixture, { replay: T }> {
+  const entry = fixtures.find(
+    (candidate): candidate is Extract<Fixture, { replay: T }> =>
+      candidate.replay === replay && predicate(candidate),
+  );
+  assert.ok(entry);
+  return entry;
+}
+
+function assertSandboxLine(value: unknown): asserts value is SandboxLogLine {
+  const item = object(value);
+  assert.ok(item.time === null || typeof item.time === "string");
+  for (const key of ["sandboxId", "level", "target", "message", "source"]) {
+    string(item[key]);
+  }
+  for (const field of Object.values(object(item.fields))) {
+    string(field);
+  }
+  assert.ok(item.decision === undefined || validSandboxPolicyDecision(item.decision));
+}
+
+function isLogLine<T extends RuntimeLogRecord>(record: T): record is Extract<T, { type: "line" }> {
+  return record.type === "line";
+}
+
+function logLine(record: RuntimeLogRecord): Extract<RuntimeLogRecord, { type: "line" }> {
+  assert.ok(isLogLine(record));
+  return record;
+}
+
+function logs(result: LogReplay | EventReplay | undefined): LogReplay {
+  assert.ok(result && "records" in result);
+  return result;
+}
+
+function kubeletLines(text: string) {
   const lines = text.split("\n");
   if (lines.at(-1) === "") {
     lines.pop();
   }
   return lines.map((line) => {
     const match = KUBELET_LINE.exec(line);
-    return match === null ? { time: null, raw: line } : { time: match[1], raw: match[2] };
+    return match === null
+      ? { time: null, raw: line }
+      : { time: string(match[1]), raw: string(match[2]) };
   });
 }
 
@@ -38,34 +149,48 @@ function kubeletLines(text) {
 // present, container from `involvedObject.fieldPath`. It omits the driver's Namespace check, safe-integer guard and Event cap, and
 // it is not the product code, so this replay only exercises `validRuntimeDescription`
 // (the node, image and object masking); it proves nothing about the driver's filter.
-function driverEvents(items, podUid) {
-  const time = (value) => (typeof value === "string" ? new Date(value).toISOString() : null);
+function driverEvents(items: Record<string, unknown>[], podUid: string) {
+  const time = (value: unknown) =>
+    typeof value === "string" ? new Date(value).toISOString() : null;
   return items
+    .map((event) => ({
+      event,
+      involvedObject: event.involvedObject == null ? {} : object(event.involvedObject),
+      series: event.series == null ? undefined : object(event.series),
+    }))
     .filter(
-      (event) =>
-        event.involvedObject?.uid === podUid &&
-        event.involvedObject.kind === "Pod" &&
+      ({ event, involvedObject }) =>
+        involvedObject.uid === podUid &&
+        involvedObject.kind === "Pod" &&
         (event.type === "Normal" || event.type === "Warning"),
     )
-    .map((event) => ({
-      type: event.type,
-      container:
-        /^spec\.(?:containers|initContainers|ephemeralContainers)\{([a-z0-9-]+)\}$/.exec(
-          event.involvedObject.fieldPath ?? "",
-        )?.[1] ?? null,
-      reason: event.reason || "Unknown",
-      message: typeof event.message === "string" ? event.message : "",
-      count: Math.max(1, event.series?.count ?? event.count ?? 1),
-      lastObservedAt:
-        time(event.series?.lastObservedTime) ??
-        time(event.lastTimestamp) ??
-        time(event.eventTime) ??
-        time(event.firstTimestamp),
-    }))
+    .map(({ event, involvedObject, series }) => {
+      const count = series?.count ?? event.count ?? 1;
+      assert.ok(typeof count === "number");
+      return {
+        type: event.type,
+        container:
+          /^spec\.(?:containers|initContainers|ephemeralContainers)\{([a-z0-9-]+)\}$/.exec(
+            string(involvedObject.fieldPath ?? ""),
+          )?.[1] ?? null,
+        reason: event.reason || "Unknown",
+        message: typeof event.message === "string" ? event.message : "",
+        count: Math.max(1, count),
+        lastObservedAt:
+          time(series?.lastObservedTime) ??
+          time(event.lastTimestamp) ??
+          time(event.eventTime) ??
+          time(event.firstTimestamp),
+      };
+    })
     .sort((left, right) => (right.lastObservedAt ?? "").localeCompare(left.lastObservedAt ?? ""));
 }
 
-async function replay(entry) {
+function replay(entry: ContainerFixture | SandboxFixture): Promise<LogReplay>;
+function replay(entry: EventFixture): Promise<EventReplay>;
+function replay(entry: Fixture): Promise<LogReplay | EventReplay>;
+async function replay(entry: Fixture): Promise<LogReplay | EventReplay> {
+  const replayKind = entry.replay;
   const text = await readFile(new URL(entry.file, directory), "utf8");
   if (entry.replay === "kubelet-container") {
     const lines = kubeletLines(text);
@@ -83,17 +208,23 @@ async function replay(entry) {
     return { input: lines.length, withheld, records };
   }
   if (entry.replay === "openshell-sandbox") {
-    const chunk = JSON.parse(text);
-    const lines = entry.lines === undefined ? chunk.lines : entry.lines(chunk.lines);
+    const chunk = object(JSON.parse(text));
+    const captured = array(chunk.lines).map((line) => {
+      assertSandboxLine(line);
+      return line;
+    });
+    const lines = entry.lines === undefined ? captured : entry.lines(captured);
     const { records, withheld } = sanitizeSandboxLogLines(
-      { source: "sandbox", sandbox: chunk.sandbox },
+      { source: "sandbox", sandbox: string(chunk.sandbox) },
       openShellLogDecisions(lines),
     );
     return { input: lines.length, withheld, records };
   }
   if (entry.replay === "kubernetes-events") {
-    const { items } = JSON.parse(text);
-    const podUid = items.find((event) => event.involvedObject.kind === "Pod").involvedObject.uid;
+    const items = array(object(JSON.parse(text)).items).map(object);
+    const pod = items.find((event) => object(event.involvedObject).kind === "Pod");
+    assert.ok(pod);
+    const podUid = string(object(pod.involvedObject).uid);
     const events = driverEvents(items, podUid);
     const description = validRuntimeDescription(
       {
@@ -116,12 +247,14 @@ async function replay(entry) {
       },
       "rev_fixture",
     );
-    return { input: items.length, events: description.pods[0].events };
+    const podDescription = description.pods[0];
+    assert.ok(podDescription);
+    return { input: items.length, events: podDescription.events };
   }
-  throw new Error(`unknown replay ${entry.replay}`);
+  throw new Error(`unknown replay ${replayKind}`);
 }
 
-function serialize(value) {
+function serialize(value: unknown) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
@@ -152,7 +285,7 @@ test("the replay manifest lists every fixture on disk and nothing else", async (
     assert.ok(entry.origin.length > 0 && entry.scrubbed.length > 0, entry.file);
   }
   // Every runtime source that reaches the sanitizer has at least one fixture.
-  const sources = new Set(fixtures.map(({ source }) => source));
+  const sources = new Set<string>(fixtures.map(({ source }) => source));
   for (const source of ["gateway", "agent", "sandbox", "events"]) {
     assert.ok(sources.has(source), `no replay fixture for ${source}`);
   }
@@ -169,7 +302,8 @@ test("replayed runtime output matches the committed goldens", async (t) => {
       }
       const expected = await readFile(goldenUrl, "utf8");
       // Never a vacuous pass: a golden with no output would match an empty replay.
-      assert.ok(JSON.parse(expected).input > 0, `${entry.golden} replays no input`);
+      const input = object(JSON.parse(expected)).input;
+      assert.ok(typeof input === "number" && input > 0, `${entry.golden} replays no input`);
       assert.equal(actual, expected, `${entry.file} drifted from ${entry.golden}`);
     });
   }
@@ -177,53 +311,70 @@ test("replayed runtime output matches the committed goldens", async (t) => {
 
 test("real Gateway, wrapper and Codex output is classified, not withheld", async () => {
   const { fixtures } = await manifest();
-  const byFile = Object.fromEntries(
-    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)])),
+  const byFile = new Map(
+    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)] as const)),
   );
 
-  const wrapper = byFile["gateway-wrapper-probe-failed.kubelet.txt"];
+  const wrapper = logs(byFile.get("gateway-wrapper-probe-failed.kubelet.txt"));
   assert.deepEqual(
-    wrapper.records.map(({ kind, level, message }) => [kind, level, message]),
+    wrapper.records.map(logLine).map(({ kind, level, message }) => [kind, level, message]),
     [
       ["wrapper", "error", "openclaw.model_probe"],
       ["wrapper", "error", "runtime.startup_phase"],
       ["wrapper", "error", "Harness model authentication probe failed."],
     ],
   );
-  assert.equal(wrapper.records[0].fields.code, "AUTHENTICATION_FAILED");
+  const firstWrapper = wrapper.records[0];
+  assert.ok(firstWrapper);
+  assert.equal(logLine(firstWrapper).fields?.code, "AUTHENTICATION_FAILED");
 
-  const gateway = byFile["gateway-console-startup.kubelet.txt"];
+  const gateway = logs(byFile.get("gateway-console-startup.kubelet.txt"));
   assert.equal(gateway.withheld, 0);
   assert.equal(gateway.records.length, gateway.input);
-  assert.ok(gateway.records.every(({ kind, time }) => kind === "openclaw" && time !== null));
-  assert.ok(gateway.records.some(({ level }) => level === "warn"));
-  assert.ok(gateway.records.some(({ subsystem }) => subsystem === "gateway/heartbeat"));
+  const gatewayLines = gateway.records.map(logLine);
+  assert.ok(gatewayLines.every(({ kind, time }) => kind === "openclaw" && time !== null));
+  assert.ok(gatewayLines.some(({ level }) => level === "warn"));
+  assert.ok(gatewayLines.some(({ subsystem }) => subsystem === "gateway/heartbeat"));
   // Keys outside the operational allowlist (`intervalMs`, `providers`, `generatedAt`) drop.
-  assert.ok(gateway.records.every(({ fields }) => fields === undefined));
+  assert.ok(gatewayLines.every(({ fields }) => fields === undefined));
 
   // The Harness prints its node setup result as pretty-printed JSON; the whole value is
   // one withheld run, and the wrapper events after it are still classified.
-  const harness = byFile["agent-harness-startup.kubelet.txt"];
+  const harness = logs(byFile.get("agent-harness-startup.kubelet.txt"));
   assert.deepEqual(
     harness.records
       .slice(0, 2)
-      .map(({ type, reason, count, message }) => [type, reason ?? message, count]),
+      .map((record) => [
+        record.type,
+        record.type === "line" ? record.message : record.reason,
+        record.type === "withheld" ? record.count : undefined,
+      ]),
     [
       ["withheld", "malformed", 7],
       ["line", "runtime.startup_phase", undefined],
     ],
   );
   assert.equal(JSON.stringify(harness.records).includes("configPath"), false);
-  assert.ok(harness.records.some(({ message }) => message === "codex.model_probe"));
+  assert.ok(
+    harness.records.some(
+      (record) => record.type === "line" && record.message === "codex.model_probe",
+    ),
+  );
 
-  const codex = byFile["codex-app-server-startup.kubelet.txt"];
+  const codex = logs(byFile.get("codex-app-server-startup.kubelet.txt"));
   assert.equal(codex.withheld, 0);
-  const tracing = codex.records.filter(({ kind }) => kind === "codex");
+  const codexLines = codex.records.filter(isLogLine);
+  const tracing = codexLines.filter(({ kind }) => kind === "codex");
   assert.ok(tracing.length > 20);
-  assert.ok(tracing.every(({ subsystem }) => /^codex_[a-z_]+(::[a-z_]+)*$/.test(subsystem)));
+  assert.ok(
+    tracing.every(
+      ({ subsystem }) =>
+        typeof subsystem === "string" && /^codex_[a-z_]+(::[a-z_]+)*$/.test(subsystem),
+    ),
+  );
   // Plain startup banners stay text; Codex tracing keeps no identifying or path fields.
   assert.ok(
-    codex.records.some(({ kind, message }) => kind === "text" && /listening on/.test(message)),
+    codexLines.some(({ kind, message }) => kind === "text" && /listening on/.test(message)),
   );
   const body = JSON.stringify(tracing);
   for (const dropped of ["installation_id", "server_name", "remote_control_url", ".codex"]) {
@@ -232,7 +383,7 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
   // Plain-text lines are not field-filtered: the one Codex warning that names CODEX_HOME
   // stays as text. Only that line may carry the path.
   assert.deepEqual(
-    codex.records
+    codexLines
       .filter(({ kind, message }) => kind === "text" && message.includes(".codex"))
       .map(({ message }) => message.slice(0, 40)),
     ["WARNING: proceeding, even though we coul"],
@@ -241,14 +392,14 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
 
 test("Codex model connection and network proxy diagnostics keep their text; payload formats stay withheld", async () => {
   const { fixtures } = await manifest();
-  const byFile = Object.fromEntries(
-    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)])),
+  const byFile = new Map(
+    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)] as const)),
   );
-  const summary = ({ records }) =>
-    records.map(({ level, subsystem, message }) => [level, subsystem, message]);
+  const summary = ({ records }: LogReplay) =>
+    records.map(logLine).map(({ level, subsystem, message }) => [level, subsystem, message]);
 
   // Captured: a turn's first model connection on a dedicated Codex Agent.
-  assert.deepEqual(summary(byFile["codex-model-connection.kubelet.txt"]), [
+  assert.deepEqual(summary(logs(byFile.get("codex-model-connection.kubelet.txt"))), [
     ["info", "codex_network_proxy::certs", "generated process-local MITM CA"],
     [
       "warn",
@@ -270,7 +421,7 @@ test("Codex model connection and network proxy diagnostics keep their text; payl
 
   // Upstream formats for a turn that cannot reach the model, then payload-carrying
   // formats from the same targets.
-  const failures = byFile["codex-model-connection-failures.kubelet.txt"];
+  const failures = logs(byFile.get("codex-model-connection-failures.kubelet.txt"));
   const url = "wss://api.openai.com/v1/responses";
   const withheld = "Codex message withheld";
   assert.deepEqual(summary(failures), [
@@ -319,21 +470,25 @@ test("Codex model connection and network proxy diagnostics keep their text; payl
 
 test("OpenShell decisions keep rule and engine; the pinned source never sends a policy generation", async () => {
   const { fixtures } = await manifest();
-  const sandbox = await replay(fixtures.find(({ source }) => source === "sandbox"));
+  const sandbox = await replay(
+    findFixture(fixtures, "openshell-sandbox", ({ source }) => source === "sandbox"),
+  );
   assert.equal(sandbox.withheld, 0);
-  const decisions = sandbox.records.filter(({ fields }) => fields?.action !== undefined);
+  const decisions = sandbox.records
+    .filter(isLogLine)
+    .filter(({ fields }) => fields?.action !== undefined);
   assert.ok(decisions.length >= 6);
   for (const record of decisions) {
     assert.equal(record.contentClass, "activity");
-    assert.ok(record.fields.rule_name, record.message);
-    assert.ok(record.fields.rule_type, record.message);
+    assert.ok(record.fields?.rule_name, record.message);
+    assert.ok(record.fields?.rule_type, record.message);
     // OpenShell 496ebba pushes OCSF lines with an empty field map and its shorthand has
     // no generation, so the console renders "unknown" (upstream ask U2).
-    assert.equal(record.fields.policy_generation, undefined, record.message);
+    assert.equal(record.fields?.policy_generation, undefined, record.message);
   }
-  const denied = decisions.filter(({ fields }) => fields.action === "DENIED");
+  const denied = decisions.filter(({ fields }) => fields?.action === "DENIED");
   assert.deepEqual(
-    denied.map(({ level, fields }) => [level, fields.rule_name, fields.rule_type]),
+    denied.map(({ level, fields }) => [level, fields?.rule_name, fields?.rule_type]),
     [
       ["warn", "-", "opa"],
       ["warn", "-", "ssrf"],
@@ -341,9 +496,11 @@ test("OpenShell decisions keep rule and engine; the pinned source never sends a 
       ["warn", "bypass-detect", "nftables"],
     ],
   );
-  assert.equal(denied[0].fields.reason, "no matching policy");
-  const gatewayOrigin = sandbox.records.find(({ fields }) => fields?.source === "gateway");
-  assert.equal(gatewayOrigin.fields.activity, "CONFIG:LOADED");
+  assert.equal(denied[0]?.fields?.reason, "no matching policy");
+  const gatewayOrigin = sandbox.records
+    .filter(isLogLine)
+    .find(({ fields }) => fields?.source === "gateway");
+  assert.equal(gatewayOrigin?.fields?.activity, "CONFIG:LOADED");
 });
 
 test("OpenShell placeholder addresses resolve to the host its policy DNS mapped, never to the address", async () => {
@@ -352,17 +509,23 @@ test("OpenShell placeholder addresses resolve to the host its policy DNS mapped,
   // just before it names the host; after an apply the host moves to a new address.
   const { fixtures } = await manifest();
   const sandbox = await replay(
-    fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+    findFixture(
+      fixtures,
+      "openshell-sandbox",
+      ({ file }) => file === "sandbox-openshell-placeholder-denials.json",
+    ),
   );
   assert.equal(sandbox.withheld, 0);
-  const denied = sandbox.records.filter(({ decision }) => decision?.decision === "denied");
+  const denied = sandbox.records
+    .filter(isLogLine)
+    .filter(({ decision }) => decision?.decision === "denied");
   assert.deepEqual(
     denied.map(({ decision, fields }) => [
-      decision.binary ?? null,
-      decision.host ?? null,
-      decision.port ?? null,
-      fields.dst_host ?? null,
-      fields.dst_placeholder_ip ?? null,
+      decision?.binary ?? null,
+      decision?.host ?? null,
+      decision?.port ?? null,
+      fields?.dst_host ?? null,
+      fields?.dst_placeholder_ip ?? null,
     ]),
     [
       [
@@ -401,12 +564,20 @@ test("OpenShell placeholder addresses resolve to the host its policy DNS mapped,
   // The same denial read without its mapping record names no host, so nothing can propose
   // the placeholder as a destination.
   const lone = await replay({
-    ...fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+    ...findFixture(
+      fixtures,
+      "openshell-sandbox",
+      ({ file }) => file === "sandbox-openshell-placeholder-denials.json",
+    ),
     lines: (lines) => lines.filter(({ message }) => !message.startsWith("CONFIG:")),
   });
-  const unmapped = lone.records.filter(({ fields }) => fields?.dst_placeholder_ip !== undefined);
+  const unmapped = lone.records
+    .filter(isLogLine)
+    .filter(({ fields }) => fields?.dst_placeholder_ip !== undefined);
   assert.equal(unmapped.length, 3);
   for (const record of unmapped) {
+    assert.ok(record.decision, record.message);
+    assert.ok(record.fields, record.message);
     assert.equal(record.decision.host, undefined, record.message);
     assert.equal(record.fields.dst_host, undefined, record.message);
   }
@@ -414,7 +585,7 @@ test("OpenShell placeholder addresses resolve to the host its policy DNS mapped,
 
 test("an IPv6 placeholder keeps its port apart and resolves through its mapping record", () => {
   // OpenShell writes an IPv6 destination bare, so the port is the last `:<digits>`.
-  const line = (time, message) => ({
+  const line = (time: string, message: string): SandboxLogLine => ({
     time,
     sandboxId: "",
     level: "OCSF",
@@ -438,17 +609,17 @@ test("an IPv6 placeholder keeps its port apart and resolves through its mapping 
     ),
   ]);
   assert.deepEqual(
-    [denied.fields.dst_placeholder_ip, denied.fields.dst_port, denied.decision.host],
+    [denied?.fields.dst_placeholder_ip, denied?.fields.dst_port, denied?.decision?.host],
     ["fd23:6f70:656e::5", "6432", "db.example.com"],
   );
-  assert.deepEqual([real.fields.dst_host, real.decision.port], ["2001:db8::9", 443]);
+  assert.deepEqual([real?.fields.dst_host, real?.decision?.port], ["2001:db8::9", 443]);
 });
 
 test("a placeholder address takes its latest mapping and never a placeholder-shaped name", async () => {
   // Synthetic lines in OpenShell's real record format, replayed through the Driver parser and
   // the sanitizer, so the decision below is what the API and CLI return.
   const { fixtures } = await manifest();
-  const ocsf = (time, message) => ({
+  const ocsf = (time: string, message: string): SandboxLogLine => ({
     time,
     sandboxId: "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
     level: "OCSF",
@@ -457,13 +628,17 @@ test("a placeholder address takes its latest mapping and never a placeholder-sha
     source: "sandbox",
     fields: {},
   });
-  const denied = (time, address) =>
+  const denied = (time: string, address: string) =>
     ocsf(
       time,
       `NET:OPEN [MED] DENIED /usr/bin/curl(0) -> ${address}:443 [reason:transparent_tcp_policy_denied]`,
     );
   const { records } = await replay({
-    ...fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+    ...findFixture(
+      fixtures,
+      "openshell-sandbox",
+      ({ file }) => file === "sandbox-openshell-placeholder-denials.json",
+    ),
     lines: () => [
       ocsf(
         "2026-10-26T20:50:00.000000000Z",
@@ -496,8 +671,9 @@ test("a placeholder address takes its latest mapping and never a placeholder-sha
   });
   assert.deepEqual(
     records
+      .filter(isLogLine)
       .filter(({ decision }) => decision?.decision === "denied")
-      .map(({ decision, fields }) => [fields.dst_placeholder_ip, decision.host ?? null]),
+      .map(({ decision, fields }) => [fields?.dst_placeholder_ip, decision?.host ?? null]),
     [
       ["198.18.0.10", "new.example.com"],
       ["198.18.0.12", null],
@@ -508,7 +684,9 @@ test("a placeholder address takes its latest mapping and never a placeholder-sha
 
 test("real Kubernetes Events mask node, image and object names before they reach the status", async () => {
   const { fixtures } = await manifest();
-  const { events } = await replay(fixtures.find(({ source }) => source === "events"));
+  const { events } = await replay(
+    findFixture(fixtures, "kubernetes-events", ({ source }) => source === "events"),
+  );
   assert.ok(events.length >= 5);
   const body = JSON.stringify(events);
   assert.equal(

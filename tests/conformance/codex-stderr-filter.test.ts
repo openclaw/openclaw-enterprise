@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import type { Readable } from "node:stream";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -9,7 +10,12 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 // Lines in the shape Codex 0.158 `app-server` prints with LOG_FORMAT=json (FmtSpan::FULL).
-const record = (level, target, fields, span) =>
+const record = (
+  level: string,
+  target: string,
+  fields: Record<string, string>,
+  span?: Record<string, string>,
+) =>
   JSON.stringify({
     timestamp: "2026-10-01T07:49:44.100970Z",
     level,
@@ -18,7 +24,7 @@ const record = (level, target, fields, span) =>
     ...(span === undefined ? {} : { span, spans: [] }),
   });
 // Codex 0.158's project-trust startup message, naming each untrusted folder.
-const untrusted = (folders) =>
+const untrusted = (folders: string[]) =>
   "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n" +
   folders
     .map(
@@ -119,17 +125,39 @@ const lines = {
 };
 
 function filter(rustLog = "info,codex_otel=off") {
-  const writes = [];
+  const writes: string[] = [];
   const context = {
-    process: { env: { RUST_LOG: rustLog }, stderr: { write: (text) => writes.push(text) } },
+    process: { env: { RUST_LOG: rustLog }, stderr: { write: (text: string) => writes.push(text) } },
     Date,
     Promise,
+    kept: undefined as unknown,
+    forward: undefined as unknown,
   };
   vm.runInNewContext(
     `${CODEX_STDERR_FILTER_HELPER}\nthis.kept = codexStderrLineKept; this.forward = forwardCodexStderr;`,
     context,
   );
-  return { kept: context.kept, forward: context.forward, writes };
+  const { kept, forward } = context;
+  assert.ok(typeof kept === "function");
+  assert.ok(typeof forward === "function");
+  return {
+    kept: (line: string, at?: number): boolean => {
+      const result: unknown = kept(line, at);
+      assert.ok(typeof result === "boolean");
+      return result;
+    },
+    forward: async (stream: Readable): Promise<void> => {
+      const result: unknown = forward(stream);
+      assert.ok(
+        result !== null &&
+          (typeof result === "object" || typeof result === "function") &&
+          "then" in result &&
+          typeof result.then === "function",
+      );
+      await result;
+    },
+    writes,
+  };
 }
 
 test("the Codex stderr filter drops span lifecycle records except the turn's start and end, and idle noise, below debug", () => {

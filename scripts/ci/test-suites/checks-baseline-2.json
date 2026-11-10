@@ -10,7 +10,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
-    "tests/conformance/startup-environment-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
@@ -43,7 +43,7 @@
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
     "tests/conformance/slack-channel-directory.test.mjs",
-    "tests/conformance/bounded-response-reads.test.mjs",
+    "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
@@ -102,11 +102,11 @@
     "tests/conformance/repository-credentials-sessions.test.mjs",
     "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
-    "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
-    "tests/conformance/node-test-summary.test.mjs",
+    "tests/conformance/node-test-summary.test.ts",
     "tests/conformance/repository-material-store.test.mjs",
-    "tests/conformance/plugin-runtime-templates.test.mjs",
+    "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
     "tests/conformance/slack-proxy-reset.test.mjs",
@@ -121,7 +121,7 @@
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/integration/container-promote.test.ts",
-    "tests/conformance/controller-stop-yields.test.mjs",
+    "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
@@ -321,13 +321,13 @@
       "path": "tests/integration/ssh-compute-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
+      "path": "tests/conformance/runtime-probe-cpu-counter.test.ts"
     },
     {
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
     },
     {
-      "path": "tests/conformance/node-test-summary.test.mjs"
+      "path": "tests/conformance/node-test-summary.test.ts"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
@@ -342,7 +342,7 @@
       "path": "tests/conformance/slack-channel-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/bounded-response-reads.test.mjs"
+      "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
       "path": "tests/conformance/slack-proxy-reset.test.mjs"
@@ -360,7 +360,7 @@
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
-      "path": "tests/conformance/plugin-runtime-templates.test.mjs"
+      "path": "tests/conformance/plugin-runtime-templates.test.ts"
     },
     {
       "path": "tests/integration/plugin-driver-startup.test.mjs"
@@ -409,7 +409,7 @@
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
     {
-      "path": "tests/conformance/startup-environment-boundary.test.mjs"
+      "path": "tests/conformance/startup-environment-boundary.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"
@@ -625,7 +625,7 @@
       "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
     },
     {
-      "path": "tests/conformance/controller-stop-yields.test.mjs"
+      "path": "tests/conformance/controller-stop-yields.test.ts"
     },
     {
       "path": "tests/integration/dev-up-model-provider.test.mjs"
