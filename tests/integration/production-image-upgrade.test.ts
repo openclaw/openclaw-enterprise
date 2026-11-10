@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -14,11 +14,31 @@ import { withoutShellStartup } from "../helpers/environment.ts";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const executeFile = promisify(execFile);
-const execute = (command, args, options = {}) =>
+const execute = (
+  command: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding = {},
+) =>
   executeFile(command, args, {
     ...options,
     env: withoutShellStartup(options.env ?? process.env),
   });
+function assertRecord(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+}
+
+function parseJson(text: string): unknown {
+  return JSON.parse(text);
+}
+
+function processFailure(value: unknown) {
+  assertRecord(value);
+  assert.ok(typeof value.code === "number");
+  assert.ok(typeof value.stdout === "string");
+  assert.ok(typeof value.stderr === "string");
+  return { code: value.code, stdout: value.stdout, stderr: value.stderr };
+}
+
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
   await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
@@ -30,7 +50,7 @@ const upgradeScript = fileURLToPath(
 );
 
 test("quickstart Installation updates preserve the bound Secret and stop on unsafe outcomes", async (t) => {
-  let kubectl;
+  let kubectl: string;
   try {
     kubectl = (
       await execute("bash", ["--noprofile", "--norc", "-c", "command -v kubectl"])
@@ -70,15 +90,17 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
           resourceVersion: "7",
           labels: { retained: "yes" },
           annotations: {
-            "openclaw.dev/installation-id": failure === "identity" ? "ins_other" : "ins_selected",
+            ...(["unannotated", "pod-handoff"].includes(failure)
+              ? {}
+              : {
+                  "openclaw.dev/installation-id":
+                    failure === "identity" ? "ins_other" : "ins_selected",
+                }),
             retained: "yes",
           },
         },
         data: { "custom.yaml": Buffer.from("old").toString("base64"), retained: "a2VlcA==" },
       };
-      if (["unannotated", "pod-handoff"].includes(failure)) {
-        delete secret.metadata.annotations["openclaw.dev/installation-id"];
-      }
       const apiPod = {
         spec: {
           volumes: [
@@ -219,10 +241,7 @@ esac
             FAILURE: failure,
           },
         },
-      ).then(
-        (result) => ({ ...result, code: 0 }),
-        (error) => error,
-      );
+      ).then((result) => ({ ...result, code: 0 }), processFailure);
       const success = !failure || ["unannotated", "pod-handoff"].includes(failure);
       assert.equal(result.code, success ? 0 : 1, result.stderr);
       const commands = await readFile(log, "utf8");
@@ -230,7 +249,9 @@ esac
         assert.match(commands, /exec -i api/);
         assert.doesNotMatch(commands, /exec -i replacement/);
       }
-      const after = JSON.parse(await readFile(join(directory, "secret.json"), "utf8"));
+      const after = parseJson(await readFile(join(directory, "secret.json"), "utf8"));
+      assertRecord(after);
+      assertRecord(after.data);
       assert.deepEqual(
         after.metadata,
         success
@@ -264,7 +285,9 @@ esac
       ) {
         assert.doesNotMatch(commands, /patch secret| upgrade /);
       } else {
-        const patch = JSON.parse(await readFile(join(directory, "submitted-patch.json"), "utf8"));
+        const patch = parseJson(await readFile(join(directory, "submitted-patch.json"), "utf8"));
+        assertRecord(patch);
+        assertRecord(patch.data);
         assert.deepEqual(patch.metadata, {
           uid: secret.metadata.uid,
           resourceVersion: "7",
@@ -273,16 +296,13 @@ esac
         assert.deepEqual(Object.keys(patch.data), ["custom.yaml"]);
       }
       if (!success) {
-        assert.deepEqual(
-          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
-          values,
-        );
+        assert.deepEqual(parseJson(await readFile(join(directory, "values.json"), "utf8")), values);
         assert.doesNotMatch(commands, /rollout status/);
         if (failure === "patch") {
           assert.doesNotMatch(commands, / upgrade /);
         }
       } else {
-        const applied = JSON.parse(await readFile(join(directory, "applied-values.json"), "utf8"));
+        const applied = parseJson(await readFile(join(directory, "applied-values.json"), "utf8"));
         assert.deepEqual(applied, {
           ...values,
           controlPlane: {
@@ -290,7 +310,7 @@ esac
           },
         });
         assert.deepEqual(
-          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
+          parseJson(await readFile(join(directory, "values.json"), "utf8")),
           applied,
         );
         assert.match(commands, /rollout status deployment\/openclaw-enterprise-worker/);
@@ -418,21 +438,25 @@ fi
     { interpreter: "bash" },
   );
 
-  const protectedFiles = {};
-  for (const name of ["kubeconfig", "service-key"]) {
-    const path = join(directory, name);
+  const protectedFiles = {
+    kubeconfig: join(directory, "kubeconfig"),
+    "service-key": join(directory, "service-key"),
+    values: join(directory, "values"),
+    installation: join(directory, "installation"),
+  };
+  for (const path of [protectedFiles.kubeconfig, protectedFiles["service-key"]]) {
     await writeFile(path, "protected\n", { mode: 0o600 });
-    protectedFiles[name] = path;
   }
 
   const baselineRuntimeImage = `registry.example.invalid/runtime@sha256:${"d".repeat(64)}`;
   const liveValues = join(directory, "live-values.json");
   const liveInstallation = join(directory, "live-installation.json");
-  const valuesDocument = JSON.stringify({
+  const values = {
     database: { host: "current.example.invalid" },
     images: { controller: baselineControllerImage },
     installation: { key: "installation.yaml", secretName: "occ-installation-startup" },
-  });
+  };
+  const valuesDocument = JSON.stringify(values);
   const installationDocument = JSON.stringify({
     drivers: {
       compute: {
@@ -444,12 +468,10 @@ fi
   });
   await writeFile(liveValues, valuesDocument, { mode: 0o600 });
   await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
-  protectedFiles.values = join(directory, "values");
-  protectedFiles.installation = join(directory, "installation");
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
   await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
 
-  const upgradeArguments = (evidenceDirectory, images = ["controller", "runtime"]) => [
+  const upgradeArguments = (evidenceDirectory: string, images = ["controller", "runtime"]) => [
     "--kubeconfig",
     protectedFiles.kubeconfig,
     "--context",
@@ -486,7 +508,11 @@ fi
     PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin`,
   };
 
-  async function assertCompletedRunCannotResume(evidence, images, options) {
+  async function assertCompletedRunCannotResume(
+    evidence: string,
+    images: string[],
+    options: ExecFileOptionsWithStringEncoding,
+  ) {
     const commands = await readFile(commandLog, "utf8");
     const files = await readdir(evidence, { recursive: true });
     const parameters = await readFile(join(evidence, "parameters.json"));
@@ -513,7 +539,7 @@ fi
   // Refuse stale recovery input before rendering or mutating the release.
   await writeFile(
     protectedFiles.values,
-    JSON.stringify({ ...JSON.parse(valuesDocument), database: { host: "stale.example.invalid" } }),
+    JSON.stringify({ ...values, database: { host: "stale.example.invalid" } }),
     { mode: 0o600 },
   );
   await assert.rejects(
@@ -542,10 +568,11 @@ fi
       cwd: repository,
       env: environment,
     }),
-    (error) => {
-      assert.equal(error.code, 47, error.stderr);
-      assert.doesNotMatch(error.stderr, /must not grant group or other permissions/);
-      assert.doesNotMatch(error.stderr, /contains no running Agents/);
+    (error: unknown) => {
+      const failure = processFailure(error);
+      assert.equal(failure.code, 47, failure.stderr);
+      assert.doesNotMatch(failure.stderr, /must not grant group or other permissions/);
+      assert.doesNotMatch(failure.stderr, /contains no running Agents/);
       return true;
     },
   );
@@ -562,8 +589,9 @@ fi
         cwd: repository,
         env: environment,
       }),
-      (error) => {
-        assert.equal(error.code, 47, error.stderr);
+      (error: unknown) => {
+        const failure = processFailure(error);
+        assert.equal(failure.code, 47, failure.stderr);
         return true;
       },
     );
@@ -579,9 +607,13 @@ fi
         cwd: repository,
         env: environment,
       }),
-      (error) => {
-        assert.equal(error.code, 1);
-        assert.match(error.stderr, /the protected Installation YAML differs from the live Secret/);
+      (error: unknown) => {
+        const failure = processFailure(error);
+        assert.equal(failure.code, 1);
+        assert.match(
+          failure.stderr,
+          /the protected Installation YAML differs from the live Secret/,
+        );
         return true;
       },
     );
@@ -589,17 +621,18 @@ fi
     for (const [name, documents] of [
       ["scalar", `42\n${installationDocuments}`],
       ["trailing-null", `${installationDocuments}null\n`],
-    ]) {
+    ] satisfies [string, string][]) {
       await writeFile(protectedFiles.installation, documents, { mode: 0o600 });
       await assert.rejects(
         execute(upgradeScript, upgradeArguments(join(directory, `${name}-document-evidence`)), {
           cwd: repository,
           env: environment,
         }),
-        (error) => {
-          assert.equal(error.code, 1);
-          assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
-          assert.doesNotMatch(error.stderr, /differs from the live Secret|jq:|Error:/);
+        (error: unknown) => {
+          const failure = processFailure(error);
+          assert.equal(failure.code, 1);
+          assert.match(failure.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+          assert.doesNotMatch(failure.stderr, /differs from the live Secret|jq:|Error:/);
           return true;
         },
       );
@@ -814,7 +847,7 @@ esac
       /Helm reports pending-upgrade; reconcile the interrupted client before recovery/u,
     ],
     ["failed", /the Helm release changed before this upgrade started/u],
-  ]) {
+  ] satisfies [string, RegExp][]) {
     await t.test(`current Helm status ${state} refuses before further reads`, async () => {
       const evidence = join(directory, `status-${state}`);
       await assert.rejects(
@@ -830,10 +863,10 @@ esac
         }),
         refusal,
       );
-      assert.equal(
-        JSON.parse(await readFile(join(evidence, "current-helm-status.json"), "utf8")).info.status,
-        state,
-      );
+      const status = parseJson(await readFile(join(evidence, "current-helm-status.json"), "utf8"));
+      assertRecord(status);
+      assertRecord(status.info);
+      assert.equal(status.info.status, state);
       const commands = await readFile(commandLog, "utf8");
       const statusReads = commands.split("\n").filter((line) => line.startsWith("helm status "));
       assert.equal(statusReads.length, 2, "one preparation read and one live reread");
@@ -904,8 +937,11 @@ esac
   await rm(readinessCounter, { force: true });
   await rm(runtimeCountCounter, { force: true });
 
-  const lastDispatchEntry = (journal) =>
-    JSON.parse(journal.toString().trimEnd().split("\n").at(-1));
+  const lastDispatchEntry = (journal: Buffer): unknown => {
+    const line = journal.toString().trimEnd().split("\n").at(-1);
+    assert.ok(line !== undefined);
+    return parseJson(line);
+  };
   for (const [name, response] of [
     ["malformed", '{"id":'],
     ["multiple", `${deployResponse}\n{"id":"rev_other"}`],
@@ -989,7 +1025,7 @@ esac
 
 // Argument validation precedes file and cluster access. Keep the kubeconfig
 // absent so an accepted argument reaches a distinct, observable refusal.
-function validationArguments(directory, revision = sourceRevision) {
+function validationArguments(directory: string, revision = sourceRevision) {
   return [
     "--kubeconfig",
     join(directory, "kubeconfig"),
@@ -1025,7 +1061,7 @@ test("production image upgrades bind the source revision before private inputs",
     ["linked", null, /--controller-image must be an approved immutable/u],
     ["external-core-worktree", null, /could not verify the checkout commit/u],
     ["external-git-work-tree", null, /could not verify the checkout commit/u],
-  ]) {
+  ] satisfies [string, string | null, RegExp][]) {
     await t.test(scenario, async (t) => {
       const directory = await temporaryDirectory(t, "occ-upgrade-source-");
       const bin = join(directory, "bin");
@@ -1034,7 +1070,7 @@ test("production image upgrades bind the source revision before private inputs",
       for (const command of ["kubectl", "helm"]) {
         await writeCommand(bin, command, "exit 97\n", { log });
       }
-      const env = { PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin` };
+      const env: NodeJS.ProcessEnv = { PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin` };
       let cwd = repository;
       if (scenario === "unavailable" || scenario === "inherited-git-dir") {
         cwd = directory;
@@ -1049,7 +1085,7 @@ test("production image upgrades bind the source revision before private inputs",
         env.GIT_COMMON_DIR = join(directory, "missing-common-dir");
       }
       let selectedRevision = revision;
-      if (revision === null) {
+      if (selectedRevision === null) {
         // Real Git metadata can name the right commit but a different worktree.
         // Keep repositories and identities local to this disposable fixture.
         const standalone = join(directory, "standalone");
@@ -1060,7 +1096,8 @@ test("production image upgrades bind the source revision before private inputs",
           GIT_CONFIG_GLOBAL: "/dev/null",
         };
         await execute("git", ["init", standalone], { env: gitEnvironment });
-        const git = (args) => execute("git", args, { cwd: standalone, env: gitEnvironment });
+        const git = (args: string[]) =>
+          execute("git", args, { cwd: standalone, env: gitEnvironment });
         const chart = join(standalone, "deploy/helm/openclaw-enterprise");
         await mkdir(chart, { recursive: true });
         await writeFile(
@@ -1110,9 +1147,10 @@ test("production image upgrades bind the source revision before private inputs",
           ],
           { cwd, env },
         ),
-        (error) => {
-          assert.equal(error.code, 1);
-          assert.match(error.stderr, expected);
+        (error: unknown) => {
+          const failure = processFailure(error);
+          assert.equal(failure.code, 1);
+          assert.match(failure.stderr, expected);
           return true;
         },
       );
@@ -1136,16 +1174,17 @@ test("production image upgrades refuse uppercase repository paths and bad digest
     ["--runtime-image", "runtime", "A".repeat(64)],
     ["--controller-image", "controller", "a".repeat(63)],
     ["--controller-image", "controller", "a".repeat(65)],
-  ]) {
+  ] satisfies [string, string, string][]) {
     await assert.rejects(
       execute(
         upgradeScript,
         [...required, flag, `registry.example.invalid/${repositoryName}@sha256:${digest}`],
         { cwd: repository },
       ),
-      (error) => {
+      (error: unknown) => {
+        const failure = processFailure(error);
         assert.match(
-          error.stderr,
+          failure.stderr,
           new RegExp(`${flag} must be an approved immutable SHA-256 image reference`, "u"),
         );
         return true;
@@ -1158,14 +1197,15 @@ test("production image upgrades refuse uppercase repository paths and bad digest
     ["--controller-image", "registry.example.invalid/Controller"],
     ["--broker-image", "registry.example.invalid:5000/team/Repository-credentials:release_1"],
     ["--runtime-image", "Runtime"],
-  ]) {
+  ] satisfies [string, string][]) {
     await assert.rejects(
       execute(upgradeScript, [...required, flag, `${image}@sha256:${"a".repeat(64)}`], {
         cwd: repository,
       }),
-      (error) => {
+      (error: unknown) => {
+        const failure = processFailure(error);
         assert.match(
-          error.stderr,
+          failure.stderr,
           new RegExp(`${flag} repository path must be lowercase`, "u"),
           image,
         );
@@ -1186,15 +1226,18 @@ test("production image upgrades give image references Kubernetes' verdict", asyn
   for (const [index, [label, reference, problem]] of imageReferenceCases.entries()) {
     // Rotate the flag so every flag sees every kind of reference across the table.
     const flag = flags[index % flags.length];
+    assert.ok(flag !== undefined);
+    assert.ok(typeof reference === "string");
     await assert.rejects(
       execute(upgradeScript, [...required, flag, reference], { cwd: repository }),
-      (error) => {
+      (error: unknown) => {
+        const failure = processFailure(error);
         if (immutableImageAccepted(reference, problem)) {
-          assert.doesNotMatch(error.stderr, new RegExp(flag, "u"), `${flag} ${label}`);
-          assert.match(error.stderr, new RegExp(kubeconfig, "u"), `${flag} ${label}`);
+          assert.doesNotMatch(failure.stderr, new RegExp(flag, "u"), `${flag} ${label}`);
+          assert.match(failure.stderr, new RegExp(kubeconfig, "u"), `${flag} ${label}`);
         } else {
           assert.match(
-            error.stderr,
+            failure.stderr,
             new RegExp(
               problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/u.test(reference)
                 ? `${flag} repository path must be lowercase`
@@ -1222,6 +1265,10 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
     revision,
     timeout = "60",
     controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
+  }: {
+    revision?: string;
+    timeout?: string;
+    controllerImage?: string;
   }) => [
     ...validationArguments(directory, revision),
     "--timeout-seconds",
@@ -1240,11 +1287,15 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
       { controllerImage: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
       /--controller-image must be an approved immutable SHA-256 image reference/u,
     ],
-  ]) {
-    await assert.rejects(execute(upgradeScript, argumentsFor(overrides), options), (error) => {
-      assert.match(error.stderr, message);
-      return true;
-    });
+  ] satisfies [Parameters<typeof argumentsFor>[0], RegExp][]) {
+    await assert.rejects(
+      execute(upgradeScript, argumentsFor(overrides), options),
+      (error: unknown) => {
+        const failure = processFailure(error);
+        assert.match(failure.stderr, message);
+        return true;
+      },
+    );
   }
 });
 
@@ -1283,7 +1334,7 @@ fi
     ['{"value":"synthetic-private"', "{}", 2],
     ["{}", '{"value":"synthetic-private"', 2],
     ["{}", "{}", 2, "yes"],
-  ]) {
+  ] satisfies [string, string, number, string?][]) {
     await writeFile(protectedFile, left);
     await writeFile(observedFile, right);
     // Exercise deliberate allexport without importing ambient shell startup options.
@@ -1299,10 +1350,7 @@ fi
           PARTIAL_FAILURE: partial ?? "",
         },
       },
-    ).then(
-      (result) => ({ ...result, code: 0 }),
-      (error) => error,
-    );
+    ).then((result) => ({ ...result, code: 0 }), processFailure);
     assert.equal(result.code, status);
     assert.equal(result.stdout, status === 0 ? "Configurations match.\n" : "");
     assert.doesNotMatch(result.stderr, /synthetic-private/);

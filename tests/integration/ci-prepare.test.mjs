@@ -2790,14 +2790,14 @@ process.exit(2);
     const laneTable = /^ {10}LANE_TABLE: \|\n((?: {12}.*\n)+)/m.exec(ciWorkflow);
     assert.ok(laneTable, "ci.yml declares the CI Impact lane table");
     const fullIntegration = await readFile(
-      join(repositoryRoot, ".github/workflows/full-integration.yml"),
+      join(repositoryRoot, ".github/workflows/full-integration-execution.yml"),
       "utf8",
     );
     const toolProfiles = [
       ...JSON.parse(laneTable[1]).map(({ lane, profile }) => [`ci.yml ${lane}`, lane, profile]),
       ...[
         ...fullIntegration.matchAll(/- lane: ([a-z0-9-]+)\n\s+title: .*\n\s+profile: ([a-z]+)/g),
-      ].map(([, lane, profile]) => [`full-integration.yml ${lane}`, lane, profile]),
+      ].map(([, lane, profile]) => [`full-integration-execution.yml ${lane}`, lane, profile]),
     ];
     for (const [where, lane, profile] of toolProfiles) {
       if (manifest.lanes[lane]?.prepare?.codexSeccomp) {
@@ -2815,7 +2815,10 @@ process.exit(2);
     // so a channel-server outage fails every Compose QA run (finding 1056).
     const workflows = [
       [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
-      [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+      [
+        ".github/workflows/full-integration-execution.yml",
+        (workflow) => workflow.jobs["qa-matrix"].env,
+      ],
     ];
     for (const [path, env] of workflows) {
       const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));

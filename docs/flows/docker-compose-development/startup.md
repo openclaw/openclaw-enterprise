@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-10
-last_updated_session: authoring-run/b1516512-8ce3-4006-b41c-0989435694a2
+last_updated_session: authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6
 ---
 
 # Compose development startup
@@ -322,19 +322,17 @@ sandbox check. Its runtime sets the transport Secret prefix, gateway
 storage class, and memory limits
 of 4 GiB per gateway and 6 GiB per Harness.
 
-With Compose and OpenShell, startup installs the pinned Agent Sandbox controller
-and OpenShell Gateway in k3d and selects operator workspace mode. The
-[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
-owns their placement and resources.
+Compose installs OpenShell in k3d operator workspace mode; see the
+[OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` builds selected services
-before `--no-build` startup. Routing files belong to the API/worker identity; browser
-TLS files belong to the proxy identity. Both retain mode `0600`.
+`internal/occdev/compose_routing.go:prepareComposePrivateFiles` builds selected services
+before `--no-build` startup. Both Compose Kubernetes profiles assign browser TLS
+files to the proxy UID/GID; OpenShell routing files use the API/worker UID/GID.
+Ownership follows each reader's image and Compose user setting, preserving mode `0600`.
 
-The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
-and routing settings. A name-constrained CA signs only the console and wildcard Agent
-hosts. `browser-proxy` terminates HTTPS on loopback; Agent `ClusterIP` Services
-remain behind Envoy.
+The hybrid snapshot adds `compose.native-admin.yaml`. Its CA signs only the
+installation's console and wildcard Agent hosts. `browser-proxy` terminates loopback
+HTTPS; Agent `ClusterIP` Services remain behind Envoy.
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
 passes `OCC_AUTH_BASE_URL` into development admission.
@@ -356,8 +354,8 @@ before exclusive key export; cancellation triggers owned cleanup. OpenShell also
 waits for its bootstrap Namespace and operator-mode Workspace. Namespace readiness
 and repository discovery use `occclient.Client.WithContext` for polling deadlines,
 preserving the original client.
-Hybrid OpenShell startup also requires the generated CA and exact console name
-to reach the controller session route through the HTTPS browser proxy.
+Both Compose Kubernetes profiles verify the HTTPS session route using the
+generated CA and console name.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
@@ -421,6 +419,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
 
 - 2026-11-10 14:26: Classify image-import failures. (authoring-run/b1516512-8ce3-4006-b41c-0989435694a2 - 68319de0899f5de7fe1ed5e9ef800e2dadb88571)
 

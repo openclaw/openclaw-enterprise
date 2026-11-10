@@ -1,3 +1,4 @@
+import { createOccApi, exportTenants, importTenants } from "../../scripts/split-layout-tenants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -2022,6 +2023,93 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
       assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
     }
   }
+
+  // A resumed migration must report each real refusal and continue to the next Agent.
+  const f = await protectedOpenShellComposition(t);
+  for (const profile of ["git-read", "git-full"]) {
+    const agent = await f.createAgent({
+      executionMode: "dedicated",
+      repositoryBindings: [{ repositoryRef: "project", profile }],
+    });
+    await f.prepareDeployment(agent);
+  }
+  const deployedIds = [];
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      const path = new URL(url).pathname;
+      if (init.method === "POST" && path.endsWith("/deploy")) {
+        deployedIds.push(path.split("/").at(-2));
+      }
+      // Preserve the real Fastify response, including its OCC request ID. No
+      // admission decision or error payload is replaced by this transport adapter.
+      const { status, ...payload } = await f.request(
+        init.method,
+        path,
+        init.body === undefined ? undefined : JSON.parse(init.body),
+      );
+      return new Response(status === 204 ? null : JSON.stringify(payload), { status });
+    },
+  });
+  const bundle = await exportTenants(api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === f.namespace.id);
+  const tenant = bundle.namespaces[0];
+  assert.ok(tenant);
+  const restored = { ids: { [tenant.id]: tenant.id }, deployed: [] };
+  for (const collection of [
+    tenant.secrets,
+    tenant.credentialSources,
+    tenant.configurations,
+    tenant.presets,
+    tenant.roles,
+    tenant.accessBindings,
+    tenant.serviceAccounts,
+    tenant.agents,
+  ]) {
+    for (const resource of collection) {
+      restored.ids[resource.id] = resource.id;
+    }
+  }
+  for (const agent of tenant.agents) {
+    restored.ids[agent.servicePrincipalId] = agent.servicePrincipalId;
+    // The source bundle asks to restore running intent from the old Installation.
+    // Target Agents are already recreated and stopped; its selected Proxy now
+    // refuses their saved repository profiles before admitting any revision.
+    agent.desiredRuntimeState = "running";
+  }
+  const values = {
+    [tenant.name]: Object.fromEntries(
+      tenant.secrets.map(({ name }) => [name, "synthetic-admission-model-key"]),
+    ),
+  };
+  const before = structuredClone(restored);
+  let saves = 0;
+  const outcome = await importTenants(api, bundle, values, {
+    state: restored,
+    save: () => {
+      saves += 1;
+    },
+  });
+  assert.equal(outcome.complete, true);
+  assert.equal(outcome.failedDeploys.length, 2);
+  assert.deepEqual(
+    deployedIds,
+    tenant.agents.map(({ id }) => id),
+  );
+  for (const [index, agent] of tenant.agents.entries()) {
+    assert.equal(
+      outcome.failedDeploys[index],
+      `${tenant.name}/${agent.name}: POST ${f.collection}/${agent.id}/deploy: ` +
+        "HTTP 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED " +
+        "A Credential Proxy cannot deliver this repository's Git access level. " +
+        "Use `github-repository` or `git-write` for it, or ask an administrator to " +
+        "use native prepared Git without a Sandbox or Proxy, then deploy again.",
+    );
+    assert.deepEqual((await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data, []);
+  }
+  assert.deepEqual(restored, before);
+  assert.equal(saves, 0);
+  assert.equal(f.gatewayReads(), 0);
 });
 
 test("A Git-only Credential Proxy names repository.openShell instead of a 503 or a bare 404", async (t) => {

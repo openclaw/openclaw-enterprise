@@ -290,7 +290,7 @@ or an immutable saved version.
 - Chooser errors identify variable or form-field problems before any save. Save errors
   come from existing Configuration or Agent admission; retain request and saved
   Configuration IDs when investigating partial or uncertain outcomes.
-- [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
+- [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
   persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
