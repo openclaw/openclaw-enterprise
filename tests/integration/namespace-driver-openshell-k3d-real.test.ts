@@ -36,24 +36,37 @@ import {
   openshellHash,
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
+  waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createScopedController } from "../helpers/openshell-sandbox-workflows.mjs";
+
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  createEnvoyWorkspaceGatewayPlan,
+  ensureEnvoyGatewayControllers,
+  startWorkspaceGatewayHostRelay,
+} from "../helpers/envoy-workspace-gateway.mjs";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL === "1";
 
 test(
-  "bootstrap reconciles an owned OpenShell gateway and Workspace before any Agent, then initializes another Namespace",
+  "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces",
   {
     skip: selected
       ? false
       : "Set OCC_TEST_NAMESPACE_OPENSHELL_REAL=1 with prepared disposable OpenShell infrastructure.",
-    timeout: 900_000,
+    timeout: 2_400_000,
   },
   async (testContext) => {
     const { context } = boundedTeardown(testContext, { label: "Namespace lifecycle bootstrap" });
     const env = process.env;
+    assert.ok(env.OPENAI_API_KEY, "the live Agent proof requires an authorized model credential");
+    assert.ok(
+      env.OCC_TEST_OPENAI_MODEL,
+      "the live Agent proof requires an explicitly selected model",
+    );
     const fixture = createOpenShellKubernetesFixture({
       commandTimeoutMs: 60_000,
       signal: undefined,
@@ -127,6 +140,26 @@ test(
         },
       ]),
     );
+    // Envoy is the Installation's authenticated Agent routing prerequisite. It does not create
+    // the namespace-owned OpenShell gateway or Workspace that this test proves below.
+    const gatewayHelpers = {
+      kubectl: fixture.kubectl,
+      applyManifest: fixture.applyManifest,
+      resource: fixture.resource,
+      resources: fixture.resources,
+      waitFor: fixture.waitFor,
+      startPortForwardTarget: fixture.startPortForwardTarget,
+    };
+    await ensureEnvoyGatewayControllers(gatewayHelpers);
+    const workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
+      context,
+      { platformNamespace },
+      gatewayHelpers,
+    );
+    const gatewayEndpointPort = await startWorkspaceGatewayHostRelay(context, workspaceGateway, {
+      ...gatewayHelpers,
+      gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+    });
     const configuration = createOpenShellInstallationConfiguration({
       authentication: identity.authentication,
       platformNamespace,
@@ -138,6 +171,30 @@ test(
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
       drivers: { sandbox: { configuration: OpenShellSandboxDriverOptions } };
     };
+    const modelBaseUrl = env.OCC_TEST_OPENSHELL_MODEL_BASE_URL ?? "https://api.openai.com/v1";
+    const compute = configuration.drivers.compute.configuration;
+    Object.assign(compute, {
+      gatewayRouting: { ...workspaceGateway.routing, endpointPort: gatewayEndpointPort },
+      network: {
+        ...compute.network,
+        gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+        gatewayClients: undefined,
+      },
+      // The task explicitly permits the supported OpenShell Credential Gateway topology's
+      // existing identity and credential placement. This proof does not change those contracts.
+      servicePrincipalCredentials: { mode: "disabled" },
+      resources: {
+        ...compute.resources,
+        namespace: {
+          ...compute.resources.namespace,
+          quota: { ...compute.resources.namespace.quota, "limits.memory": "20Gi" },
+        },
+      },
+      runtime: {
+        ...compute.runtime,
+        modelProvider: { protocol: "openai-responses", baseUrl: modelBaseUrl },
+      },
+    });
     const templateNamespace = "oce-namespace-template";
     const service = `openshell-${openshellHash(templateNamespace, 10)}`;
     const common = ["--namespace", templateNamespace, `--set-string=fullnameOverride=${service}`];
@@ -241,6 +298,10 @@ test(
         timeoutMs: 30_000,
       },
     });
+    // Resolve each Agent's approved workspace PVC from its workload requirements.
+    Object.assign(configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount, {
+      claimName: undefined,
+    });
     configuration.backend[0]!.configuration = {
       serviceName: service,
       insecureTransport: "network-policy",
@@ -248,7 +309,7 @@ test(
     const startupPath = join(directory, "installation.json");
     const keyPath = join(directory, "gateway-key");
     await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
-    await writeFile(keyPath, randomBytes(32).toString("hex"), { mode: 0o600 });
+    await writeFile(keyPath, workspaceGateway.apiKey, { mode: 0o600 });
     const credentials = {
       email: "namespace-bootstrap@example.test",
       password: randomBytes(24).toString("base64url"),
@@ -379,8 +440,7 @@ test(
     let worker = startWorker(await loadDrivers());
     context.after(() => worker.stop());
     await worker.start();
-    const prepareNamespace = async (id: string) => {
-      const placement = kubernetesNamespaceName(id);
+    const prepareNamespace = async (id: string, placement = kubernetesNamespaceName(id)) => {
       placements.push(placement);
       assert.notEqual(placement, "default");
       await fixture.waitFor(
@@ -509,9 +569,170 @@ test(
       return placement;
     };
     await ready(initial[0].id);
+    testContext.diagnostic(
+      "OpenShell Namespace proof: default gateway and Workspace ready with zero persisted Agents",
+    );
     const later = await request("POST", "/namespaces", { name: "later" });
     assert.equal(later.status, 201);
     assert.notEqual(await ready(later.data.id), kubernetesNamespaceName(initial[0].id));
+    testContext.diagnostic(
+      "OpenShell Namespace proof: later gateway and Workspace ready with zero persisted Agents",
+    );
+
+    // Only now create Agents: both persisted zero-Agent checkpoints above have already proved
+    // the shipped Namespace worker created healthy gateways and owned Workspaces independently.
+    const proveAgent = async (namespaceId: string, name: string) => {
+      const placement = kubernetesNamespaceName(namespaceId);
+      const { client: provider } = await connected(placement);
+      const workspaceBefore = await provider.getWorkspace(placement, AbortSignal.timeout(10_000));
+      const modelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
+        name: "model-key",
+        value: env.OPENAI_API_KEY,
+      });
+      assert.equal(modelSecret.status, 201);
+      assert.equal(JSON.stringify(modelSecret).includes(env.OPENAI_API_KEY!), false);
+      const source = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+        name: "model-source",
+        type: "openai",
+        role: "model",
+        configuration: { base_url: modelBaseUrl },
+        secrets: { api_key: modelSecret.data.ref },
+      });
+      assert.equal(source.status, 201);
+      const base = createHarnessConfiguration(
+        "openclaw",
+        env.OCC_TEST_OPENAI_MODEL!.replace(/^openai\//u, ""),
+      );
+      assert.ok(base.models.providers.openai);
+      const native = {
+        ...base,
+        models: {
+          providers: {
+            openai: {
+              ...base.models.providers.openai,
+              baseUrl: modelBaseUrl,
+              apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+            },
+          },
+        },
+        secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
+        gateway: {
+          ...base.gateway,
+          ...workspaceGateway.nativeOptions.gatewayAuth,
+          auth: {
+            ...workspaceGateway.nativeOptions.gatewayAuth.auth,
+            password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+          },
+          controlUi: { enabled: true, allowedOrigins: ["http://127.0.0.1"] },
+        },
+      };
+      const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
+        name: "namespace-lifecycle-agent",
+        executionMode: "dedicated",
+        harness: "openclaw",
+        credentialSources: { model: source.data.id },
+        configuration: native,
+      });
+      assert.equal(agent.status, 201, JSON.stringify(agent.error));
+      const path = `/namespaces/${namespaceId}/agents/${agent.data.id}`;
+      const deployed = await request("POST", `${path}/deploy`);
+      assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+      await waitForOpenShellRevisionActivation(fixture.waitFor, {
+        request,
+        agentPath: path,
+        revisionId: deployed.data.id,
+      });
+      const sandbox = await fixture.waitForSandbox(placement, deployed.data);
+      const harness = await fixture.waitForProviderHarnessPod(placement, deployed.data);
+      assert.equal(harness.metadata.namespace, placement);
+      await fixture.assertProviderOwnedHarness(placement, deployed.data, sandbox, harness);
+      const workspaceAfter = await provider.getWorkspace(placement, AbortSignal.timeout(10_000));
+      assert.ok(workspaceBefore);
+      assert.ok(workspaceAfter);
+      assert.equal(workspaceAfter.name, workspaceBefore.name);
+      assert.equal(
+        workspaceAfter.id,
+        workspaceBefore.id,
+        "Agent deployment must reuse the Workspace created by Namespace reconciliation",
+      );
+      assert.deepEqual(workspaceAfter.labels, workspaceBefore.labels);
+      const { GatewayClient } = await import(require.resolve("@openclaw/gateway-client"));
+      const hello = Promise.withResolvers();
+      const client = new GatewayClient({
+        url: `wss://${workspaceGateway.routing.hostname}:${gatewayEndpointPort}${path}`,
+        origin: "http://127.0.0.1",
+        edgeAuthHeaders: { "x-api-key": workspaceGateway.apiKey },
+        clientName: "openclaw-control-ui",
+        mode: "ui",
+        role: "operator",
+        scopes: [],
+        deviceIdentity: null,
+        onHelloOk: hello.resolve,
+        onConnectError: hello.reject,
+      });
+      const timeout = setTimeout(
+        () => hello.reject(new Error("Agent gateway connection timed out")),
+        30_000,
+      );
+      try {
+        client.start();
+        await hello.promise;
+        const nonce = `namespace-proof-${randomUUID()}`;
+        const sessionKey = `agent:main:${nonce}`;
+        const sent = await client.request("chat.send", {
+          sessionKey,
+          idempotencyKey: randomUUID(),
+          message: `Reply with exactly this nonce and no other text: ${nonce}`,
+        });
+        await fixture.waitFor(
+          "real Agent model turn completion",
+          async () => {
+            const outcome = await client.request("agent.wait", {
+              runId: sent.runId,
+              timeoutMs: 3_000,
+            });
+            if (["pending", "timeout"].includes(outcome.status) && outcome.endedAt === undefined) {
+              return undefined;
+            }
+            assert.equal(outcome.status, "ok", "the real provider-backed Agent run must succeed");
+            return true;
+          },
+          600_000,
+        );
+        const history = await client.request("chat.history", { sessionKey, limit: 20 });
+        assert.ok(
+          history.messages.some(
+            (message: { role: string; content: string | { type: string; text?: string }[] }) =>
+              message.role === "assistant" &&
+              (typeof message.content === "string"
+                ? message.content
+                : message.content
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n")
+              ).includes(nonce),
+          ),
+          "the real model must return the unique nonce",
+        );
+      } finally {
+        clearTimeout(timeout);
+        await client.stopAndWait();
+      }
+      // Teardown goes through the regular Agent operation before Namespace cleanup can run.
+      assert.equal((await request("DELETE", path)).status, 202);
+      await fixture.waitFor(
+        "Agent deletion",
+        async () => ((await request("GET", path)).status === 404 ? true : undefined),
+        120_000,
+      );
+      await provider.health(AbortSignal.timeout(10_000));
+      assert.ok(await provider.getWorkspace(placement, AbortSignal.timeout(10_000)));
+      testContext.diagnostic(
+        `OpenShell Namespace proof: ${name} Agent completed a real model turn and API teardown`,
+      );
+    };
+    await proveAgent(initial[0].id, "default");
+    await proveAgent(later.data.id, "later");
 
     // IAM denial must commit audit evidence without queuing or provisioning a Namespace.
     const ungranted = {
@@ -640,7 +861,7 @@ test(
     });
     assert.ok(await fixture.maybeResource("secret", `${service}-jwt-keys`, refusedPlacement));
     assert.equal(await fixture.maybeResource("service", service, refusedPlacement), undefined);
-    const remove = async (id: string) => {
+    const remove = async (id: string, { retainBackingNamespace = false } = {}) => {
       assert.equal((await request("DELETE", `/namespaces/${id}`)).status, 202);
       await fixture.waitFor("Namespace cleanup completes through the worker", async () => {
         if ((await request("GET", `/namespaces/${id}`)).status === 404) {
@@ -659,6 +880,9 @@ test(
         );
         return undefined;
       });
+      if (retainBackingNamespace) {
+        return;
+      }
       assert.equal(
         String(
           await fixture.kubectl(
@@ -676,9 +900,96 @@ test(
     await remove(refused.data.id);
     await worker.stop();
     configuration.drivers.compute.configuration.resources.namespace.quota = originalQuota;
+    for (const object of templates) {
+      if (object.kind === "Deployment" || object.kind === "StatefulSet") {
+        object.spec.replicas = 0;
+      }
+    }
     await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
     worker = startWorker(await loadDrivers());
     await worker.start();
+    // A Service can exist without a reachable gateway. Deletion must remove the actual
+    // partially prepared resources rather than retry an RPC to an absent backend forever.
+    const cold = await request("POST", "/namespaces", { name: "gateway-never-started" });
+    assert.equal(cold.status, 201);
+    const coldPlacement = await prepareNamespace(cold.data.id);
+    await fixture.waitFor("unavailable gateway Service created by the Driver", () =>
+      fixture.maybeResource("service", service, coldPlacement),
+    );
+    assert.notEqual((await request("GET", `/namespaces/${cold.data.id}`)).data.status, "ready");
+    await remove(cold.data.id);
+
+    await worker.stop();
+    const externalPlacement = `ext-${randomUUID().slice(0, 8)}`;
+    await fixture.kubectl("create", "namespace", externalPlacement);
+    placements.push(externalPlacement);
+    await fixture.kubectl(
+      "annotate",
+      "namespace",
+      externalPlacement,
+      "openclaw.dev/namespace-lifecycle=external",
+    );
+    await fixture.kubectl(
+      "label",
+      "namespace",
+      externalPlacement,
+      "pod-security.kubernetes.io/enforce=restricted",
+      "pod-security.kubernetes.io/audit=restricted",
+      "pod-security.kubernetes.io/warn=restricted",
+    );
+    await fixture.kubectl(
+      "create",
+      "configmap",
+      "operator-sentinel",
+      "--namespace",
+      externalPlacement,
+      "--from-literal=owner=operator",
+    );
+    const externalUid = (await fixture.resource("namespace", externalPlacement)).metadata.uid;
+    const sentinelUid = (
+      await fixture.resource("configmap", "operator-sentinel", externalPlacement)
+    ).metadata.uid;
+    const external = await request("POST", "/namespaces", {
+      name: "unclaimed-external",
+      existingNamespace: externalPlacement,
+    });
+    assert.equal(external.status, 201);
+    await prepareNamespace(external.data.id, externalPlacement);
+    await worker.start();
+    // Missing operator NetworkPolicies refuse adoption before tenant markers are written.
+    await fixture.waitFor("external adoption fails before claiming infrastructure", async () =>
+      (await request("GET", `/namespaces/${external.data.id}`)).data.status === "failed"
+        ? true
+        : undefined,
+    );
+    const unclaimed = await fixture.resource("namespace", externalPlacement);
+    assert.equal(unclaimed.metadata.labels?.["openclaw.dev/namespace"], undefined);
+    assert.equal(unclaimed.metadata.annotations?.["openclaw.dev/namespace-id"], undefined);
+    assert.equal(await fixture.maybeResource("service", service, externalPlacement), undefined);
+    await remove(external.data.id, { retainBackingNamespace: true });
+    assert.equal(
+      (await fixture.resource("namespace", externalPlacement)).metadata.uid,
+      externalUid,
+    );
+    assert.equal(
+      (await fixture.resource("configmap", "operator-sentinel", externalPlacement)).metadata.uid,
+      sentinelUid,
+    );
+    const cleanupEvidence = (
+      await pool.query(
+        "select details from occ.audit_events where namespace_id = $1 and action = 'openclaw.namespaces.lifecycle.delete'",
+        [external.data.id],
+      )
+    ).rows;
+    assert.ok(cleanupEvidence.length > 0);
+    assert.ok(
+      cleanupEvidence.every(({ details }) =>
+        details.participants?.every(
+          ({ registrationId }: { registrationId: string }) =>
+            registrationId !== drivers.sandboxDriver!.id,
+        ),
+      ),
+    );
     await remove(later.data.id);
     const remaining = await connected(kubernetesNamespaceName(initial[0].id));
     await remaining.client.health(AbortSignal.timeout(10_000));

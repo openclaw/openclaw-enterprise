@@ -150,8 +150,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
-For a runtime upgrade, also save `occ --output json installation deployment-inventory`
-before and after the change; that operation requires the runtime upgrade permissions.
+For every upgrade, save `occ --output json installation deployment-inventory`
+before and after the change using the [required inventory permissions](production-upgrade.md#prepare-the-release).
 Keep inventories private. Check data and backups with the database and storage
 owners; object names alone do not prove retention.
 
@@ -281,12 +281,12 @@ registry index digests can differ.
 
 ## Run the upgrade
 
-Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart and upgrade
-script, and a compatible installed `occ` CLI. From that checkout confirm
-`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. If that source does not
-contain the upgrade script, stop; this procedure cannot be run from it. Do not
-overwrite a working checkout. Install `helm`, `kubectl`, `jq`, `yq` v4, and
-Python 3. Use a fresh
+Use a separate clean checkout at `RELEASE_SOURCE_SHA`, with its chart, upgrade
+script, and a compatible installed `occ` CLI. Confirm
+`git rev-parse HEAD` equals `RELEASE_SOURCE_SHA`. Stop if the upgrade script is missing. Do not
+overwrite a working checkout. Install Node.js, `helm`, `kubectl`, `jq`, `yq` v4,
+and Python 3. Follow `engines.node` in this checkout's `package.json` even without
+repository credentials. Use a fresh
 `UPGRADE_EVIDENCE` directory for each new release; retain it when resuming an
 interrupted release. The script changes the protected
 input files as well as the cluster; it saves their previous contents in that

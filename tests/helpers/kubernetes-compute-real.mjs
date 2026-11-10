@@ -248,7 +248,7 @@ export async function createProvisioningApiFixture(
   const state = new PostgresPlatformState(pool);
   const existingInstallation = await state.loadInstallation();
   const authSecret = "kubernetes-integration-auth-secret-32-bytes";
-  const authBaseURL = "http://127.0.0.1";
+  const authBaseURL = "https://console.oce.localhost";
   const credentials = {
     email: "admin-kubernetes-integration@example.test",
     password: "kubernetes-integration-admin-password",
@@ -261,6 +261,7 @@ export async function createProvisioningApiFixture(
       password: credentials.password,
       authSecret,
       authBaseURL,
+      agentDomain: "agents.oce.localhost",
       installationName: "OpenClaw Kubernetes integration",
       environment: { PATH: process.env.PATH },
     });
@@ -288,6 +289,7 @@ export async function createProvisioningApiFixture(
       databaseUrl,
       authSecret,
       authBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     },
     drivers,
   );
@@ -309,8 +311,8 @@ export async function createProvisioningApiFixture(
       headers: {
         ...authenticatedHeaders(session),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
-        ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
-        host: "127.0.0.1",
+        ...(method === "GET" ? {} : { origin: authBaseURL }),
+        host: new URL(authBaseURL).host,
       },
       remoteAddress: "127.0.0.1",
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),

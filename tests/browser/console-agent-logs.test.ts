@@ -3202,6 +3202,70 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   assert.match((await outputStatus.textContent()) ?? "", /^Showing gateway in /u);
 });
 
+test("switching log sources clears settled rate-limit feedback while the next source reads", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "gateway output before switching")];
+  logs.computeDriver.state.harnessPod = { ready: true };
+  logs.computeDriver.state.harnessLines = [line(1, "agent output before the rate limit")];
+  const { page } = await openRetainedLogs(t, logs);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  const source = page.locator("#runtime-log-source");
+  const logError = page.locator(".log-error");
+  const outputStatus = page.locator(".log-output-status");
+  const logPath = `/namespaces/${logs.namespace.id}/agents/${logs.agent.id}/deployments/${logs.revisionId}/runtime/logs`;
+  const matchesLogRead = (url: URL) =>
+    url.origin === logs.fixture.origin && url.pathname === logPath;
+  await log.getByText("gateway output before switching").waitFor();
+  await source.selectOption("agent");
+  await log.getByText("agent output before the rate limit").waitFor();
+  await waitForIdleFetches(page);
+
+  await page.route(matchesLogRead, (route) => route.fulfill(rateLimitedResponse(5)), {
+    times: 1,
+  });
+  const [rateLimited] = await Promise.all([
+    page.waitForResponse((response) => matchesLogRead(new URL(response.url()))),
+    page.getByRole("button", { name: "Refresh logs" }).click(),
+  ]);
+  assert.equal(rateLimited.status(), 429);
+  assert.equal(new URL(rateLimited.url()).searchParams.get("source"), "agent");
+  await waitForIdleFetches(page);
+  assert.equal(
+    await logError.textContent(),
+    `Too many requests. Try again in 5 seconds. Request ID: ${rateLimitRequestId}`,
+  );
+
+  logs.computeDriver.state.lines = [line(2, "new gateway output")];
+  const gateway = await holdRequests(t, page, matchesLogRead, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let gatewayResponse: Awaited<typeof gateway.requested>;
+  try {
+    await source.selectOption("gateway");
+    gatewayResponse = await gateway.requested;
+    assert.ok(gatewayResponse, "the Gateway read reached the controller");
+    assert.equal(new URL(gatewayResponse.url()).searchParams.get("source"), "gateway");
+    assert.equal(await source.inputValue(), "gateway");
+    assert.equal(await outputStatus.textContent(), "Reading output…");
+    assert.equal(
+      await logError.isHidden(),
+      true,
+      "the Agent error is hidden during the Gateway read",
+    );
+
+    await page.clock.runFor(5_000);
+    assert.equal(await outputStatus.textContent(), "Reading output…");
+    assert.equal(await logError.isHidden(), true, "the Agent retry hint stays hidden after expiry");
+  } finally {
+    gateway.release();
+  }
+  assert.equal(gatewayResponse.status(), 200);
+  await log.getByText("new gateway output").waitFor();
+  await waitForIdleFetches(page);
+});
+
 test("a status refresh keeps Download disabled while a download is pending", async (t) => {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "download stays pending")];

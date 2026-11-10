@@ -54,7 +54,8 @@ Harness configuration selects the Agent's execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
-  shared storage.
+  shared storage. For custom OpenAI-compatible HTTPS endpoints, see
+  [model provider configuration](kubernetes-compute/model-provider.md).
 - **Dedicated:** The gateway and Codex Harness run in separate Pods in the same
   tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness

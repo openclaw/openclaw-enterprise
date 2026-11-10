@@ -25,13 +25,13 @@ import {
   encodeRepositoryCredentialSessionFiles,
   readClientConfiguration,
   requireGhMaterial,
-} from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
-import { launchClient } from "../../apps/controller/src/drivers/repo/github/credentials/client/launch.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
+import { launchClient } from "../../apps/controller/src/drivers/repo/github/access/client/launch.ts";
 import {
   prepareNativeGitConfiguration,
   renderNativeGitConfiguration,
-} from "../../apps/controller/src/drivers/repo/github/credentials/client/native-git.ts";
-import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/client/native-git.ts";
+import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
@@ -70,8 +70,8 @@ async function pairwise(tasks) {
   }
 }
 
-const launcher = resolve("apps/controller/src/drivers/repo/github/credentials/client/launch.ts");
-const helper = resolve("apps/controller/src/drivers/repo/github/credentials/client/git-helper.ts");
+const launcher = resolve("apps/controller/src/drivers/repo/github/access/client/launch.ts");
+const helper = resolve("apps/controller/src/drivers/repo/github/access/client/git-helper.ts");
 const opened = {
   session: { sessionId: "session-test", deadlineWallMs: Date.now() + 86400000 },
   bearer: "controlled_gateway_bearer_0000000000000000000000",
@@ -110,7 +110,7 @@ test("published client files stay owner-readable when umask masks owner read", a
     import { lstat, readFile } from "node:fs/promises";
     import { join } from "node:path";
     import { writeClientConfiguration, readClientConfiguration } from ${JSON.stringify(
-      resolve("apps/controller/src/drivers/repo/github/credentials/client/config.ts"),
+      resolve("apps/controller/src/drivers/repo/github/access/client/config.ts"),
     )};
     process.umask(0o400);
     await writeClientConfiguration(${JSON.stringify(opened)}, ${JSON.stringify(session)}, undefined);
@@ -516,13 +516,13 @@ test("same-origin trust and canonical host conflicts prevent native configuratio
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "project" }]);
   // Shell quoting and Git config quoting are independent; run the emitted helper from a quoted path.
   const quotedRoot = join(material.root, "client 'quoted'");
-  const quotedDirectory = join(quotedRoot, "github/credentials/client");
-  await mkdir(join(quotedRoot, "credentials"), { recursive: true });
+  const quotedDirectory = join(quotedRoot, "github/access/client");
+  await mkdir(join(quotedRoot, "access"), { recursive: true });
   await cp(
-    resolve("apps/controller/src/drivers/repo/credentials/client-contracts.ts"),
-    join(quotedRoot, "credentials/client-contracts.ts"),
+    resolve("apps/controller/src/drivers/repo/access/client-contracts.ts"),
+    join(quotedRoot, "access/client-contracts.ts"),
   );
-  await cp(resolve("apps/controller/src/drivers/repo/github/credentials/client"), quotedDirectory, {
+  await cp(resolve("apps/controller/src/drivers/repo/github/access/client"), quotedDirectory, {
     recursive: true,
   });
   const quoted = join(quotedDirectory, "git-helper.ts");
@@ -652,7 +652,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
     run(
       process.execPath,
       [
-        resolve("apps/controller/src/drivers/repo/github/credentials/client/operator.ts"),
+        resolve("apps/controller/src/drivers/repo/github/access/client/operator.ts"),
         "open",
         "--socket",
         socket,
@@ -746,7 +746,7 @@ test("operator open refuses an unusable --output before admission and names the 
     run(
       process.execPath,
       [
-        resolve("apps/controller/src/drivers/repo/github/credentials/client/operator.ts"),
+        resolve("apps/controller/src/drivers/repo/github/access/client/operator.ts"),
         "open",
         "--socket",
         socket,

@@ -364,6 +364,14 @@ export class ScopeViolationError extends Error {
   }
 }
 
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
+  }
+}
+
 /**
  * Admitted Configuration content cannot select a supported Harness runtime, or a
  * provisioning request names an execution mode the Compute Driver does not provision
@@ -1089,7 +1097,18 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
+
+const CODEX_PERMISSION_DENIALS = [
+  "sandbox-mode-denied",
+  "named-profile-denied",
+  "reviewer-denied",
+] as const;
+
+export type CodexPermissionDenial = (typeof CODEX_PERMISSION_DENIALS)[number];
 
 /** The selected Driver proved that this execution's repository access cannot be resumed.
  * Missing evidence or a failed dependency read must not produce this terminal result. */
@@ -1125,20 +1144,35 @@ export class ComputePreparationFailedError extends Error {
 }
 
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller. Operational
+ * diagnostics may retain the fixed Codex permission denial categories.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;
+  readonly permissionDenials?: readonly CodexPermissionDenial[];
 
-  constructor(code: ActivationFailedCode, message: string) {
+  constructor(
+    code: ActivationFailedCode,
+    message: string,
+    permissionDenials?: readonly CodexPermissionDenial[],
+  ) {
     super(message);
     this.name = "ActivationFailedError";
     this.code = code;
+    if (
+      code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" &&
+      permissionDenials !== undefined
+    ) {
+      const recognized = CODEX_PERMISSION_DENIALS.filter((denial) =>
+        permissionDenials.includes(denial),
+      );
+      if (recognized.length > 0) {
+        this.permissionDenials = Object.freeze(recognized);
+      }
+    }
   }
 }
 

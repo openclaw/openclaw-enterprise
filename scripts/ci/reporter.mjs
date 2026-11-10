@@ -1,4 +1,13 @@
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "./openshell-git-retention.mjs";
 
 const safeOccErrorCodes = new Set([
   "INVALID_REQUEST",
@@ -59,6 +68,7 @@ const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
 const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
 const openShellNativePolicyCheckKind = "openshell-native-policy-check";
+const openShellInitialTurnoverKind = "openshell-initial-turnover";
 const nativePolicyPrimaryChecks = new Set([
   "agent.get",
   "agent.status-200",
@@ -107,14 +117,6 @@ const nativePolicyCleanupChecks = new Set([
   "cleanup.remove-directory",
   "cleanup.resume-worker",
 ]);
-const openShellMeasurementKinds = new Set([
-  openShellStageMeasurementKind,
-  openShellSandboxMeasurementKind,
-  openShellPolicyCheckKind,
-  openShellFixtureTeardownKind,
-  openShellGatewayTurnFailureKind,
-  openShellNativePolicyCheckKind,
-]);
 const openShellPolicyChecks = new Set([
   "installation-discovery",
   "cluster-target-reachability",
@@ -134,6 +136,8 @@ const openShellPolicyChecks = new Set([
   "provider-allow-observed",
   "revision-unchanged",
   "second-agent-isolation",
+  "second-agent-control-request",
+  "second-agent-denied-request",
   "second-agent-cleanup",
   "editing-state-enforcement",
   "grant-revocation",
@@ -170,6 +174,12 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellGitRetentionKind) {
+    return projectOpenShellGitRetention(value);
+  }
+  if (isRecord(value) && value.kind === openShellInitialTurnoverKind) {
+    return safeOpenShellInitialTurnoverMeasurement(value);
+  }
   if (isRecord(value) && value.kind === openShellGatewayTurnFailureKind) {
     const { kind, checkpoint, turn, status } = value;
     const outsideTurn = checkpoint === "gateway-setup" || checkpoint === "native-evidence";
@@ -190,24 +200,8 @@ function safeMeasurement(value) {
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
-      ![
-        "installation",
-        "initial-model",
-        "filesystem-network",
-        "network-policy",
-        "credential-route",
-        "replacement",
-        "untrusted-upstream",
-        "tool-outage",
-        "model-outage",
-        "gateway-outage",
-        "oauth-refresh",
-        "non-model-source",
-        "credential-absence",
-        "credential-withdrawal",
-        "embedded-refusal",
-        "native-policy",
-      ].includes(value.stage) ||
+      !openShellProgress({ kind: value.kind, stage: value.stage, outcome: value.outcome }) ||
+      value.stage === "exposure-auth" ||
       !["passed", "failed"].includes(value.outcome) ||
       !Number.isInteger(value.elapsedMs) ||
       value.elapsedMs < 0 ||
@@ -244,6 +238,56 @@ function safeMeasurement(value) {
       ? { kind: value.kind, check: value.check }
       : undefined;
   }
+  if (isRecord(value) && value.kind === "openshell-policy-probe") {
+    const count = (number) => Number.isSafeInteger(number) && number >= 0;
+    const hash = (text) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
+    if (
+      !(
+        (value.role === "control" && value.port === 8082) ||
+        (value.role === "policy" && value.port === 8083)
+      ) ||
+      !hash(value.targetHash) ||
+      !count(value.commandCount) ||
+      !count(value.candidateCount) ||
+      value.candidateCount > value.commandCount ||
+      !(value.selectedIndex === null
+        ? value.candidateCount === 0
+        : count(value.selectedIndex) &&
+          value.selectedIndex < value.commandCount &&
+          value.candidateCount > 0) ||
+      !count(value.laterUriMatches) ||
+      value.laterUriMatches >
+        (value.selectedIndex === null ? 0 : value.commandCount - value.selectedIndex - 1) ||
+      !Array.isArray(value.commands) ||
+      value.commands.length !== Math.min(8, value.commandCount - (value.selectedIndex ?? 0)) ||
+      !value.commands.every(
+        (command) =>
+          isRecord(command) &&
+          hash(command.hash) &&
+          [command.hasUrllib, command.hasInterpreter, command.hasExpectedUri].every(
+            (flag) => typeof flag === "boolean",
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      role: value.role,
+      port: value.port,
+      targetHash: value.targetHash,
+      commandCount: value.commandCount,
+      candidateCount: value.candidateCount,
+      selectedIndex: value.selectedIndex,
+      laterUriMatches: value.laterUriMatches,
+      commands: value.commands.map(({ hash, hasUrllib, hasInterpreter, hasExpectedUri }) => ({
+        hash,
+        hasUrllib,
+        hasInterpreter,
+        hasExpectedUri,
+      })),
+    };
+  }
   if (isRecord(value) && value.kind === openShellNativePolicyCheckKind) {
     const { kind, stage, primaryCheck, cleanupCheck } = value;
     if (
@@ -260,6 +304,55 @@ function safeMeasurement(value) {
     return ["passed", "failed", "incomplete"].includes(value.outcome)
       ? { kind: value.kind, outcome: value.outcome }
       : undefined;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-startup-failure") {
+    if (
+      ![
+        "unknown",
+        "canceled",
+        "deadline",
+        "controller-image-import",
+        "routing",
+        "network-verification",
+        "network-cleanup",
+        "registry-detach",
+        "platform-namespace",
+        "openshell-preparation",
+        "rollback",
+      ].includes(value.primaryStage) ||
+      typeof value.cleanupFailed !== "boolean" ||
+      typeof value.parentContextDone !== "boolean" ||
+      (value.routingOperation !== undefined &&
+        (value.primaryStage !== "routing" ||
+          ![
+            "manifest-download",
+            "gateway-api-readiness",
+            "manifest-filter",
+            "manifest-write",
+            "manifest-apply",
+            "controller-crd-readiness",
+            "controller-rollout",
+            "gateway-class-apply",
+            "gateway-class-readiness",
+            "node-pod-cidr",
+          ].includes(value.routingOperation))) ||
+      (value.routingController !== undefined &&
+        (value.routingOperation === undefined ||
+          value.routingOperation === "node-pod-cidr" ||
+          !["cert-manager", "envoy-gateway"].includes(value.routingController)))
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      primaryStage: value.primaryStage,
+      cleanupFailed: value.cleanupFailed,
+      parentContextDone: value.parentContextDone,
+      ...(value.routingOperation !== undefined ? { routingOperation: value.routingOperation } : {}),
+      ...(value.routingController !== undefined
+        ? { routingController: value.routingController }
+        : {}),
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -294,6 +387,22 @@ function safeMeasurement(value) {
     }
     return result;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-manifest-failure") {
+    if (
+      ![
+        "selected-input",
+        "http-status",
+        "transport",
+        "deadline",
+        "canceled",
+        "integrity",
+        "local-io",
+      ].includes(value.reason)
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, reason: value.reason };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||
@@ -310,6 +419,19 @@ function safeMeasurement(value) {
         "k3d-image-import",
         "kubernetes-readiness",
         "helm-install",
+        "openshell-image-selection",
+        "openshell-image-validation",
+        "openshell-assets-directory",
+        "openshell-charts",
+        "openshell-agent-sandbox-manifest",
+        "openshell-runtime-class",
+        "openshell-agent-sandbox-apply",
+        "openshell-agent-sandbox-rollout",
+        "openshell-workspace-render",
+        "openshell-gateway-import",
+        "openshell-sandbox-import",
+        "openshell-supervisor-import",
+        "openshell-prepare",
       ].includes(value.stage) ||
       !Number.isInteger(value.count) ||
       value.count < 1 ||
@@ -438,6 +560,153 @@ function safeMeasurement(value) {
     sample: value.sample,
     seconds: Math.round(value.seconds * 10) / 10,
   };
+}
+
+// Shared by the real refresh observer and receipt admission. This establishes
+// original-turn continuity only; it cannot identify an interrupted workspace read.
+export function openShellTurnoverQualification(value) {
+  if (value.requestOutcome === "failed") {
+    return "failed";
+  }
+  if (
+    value.observation !== "complete" ||
+    !value.stableRuntime ||
+    !value.settingsConsistent ||
+    value.httpStatus !== 200 ||
+    !value.nonceMatched ||
+    !value.nodeIdSha256 ||
+    !value.configUnchanged ||
+    !value.policyUnchanged ||
+    !value.configBeforeSha256 ||
+    value.configBeforeSha256 !== value.configAfterSha256 ||
+    !value.policyBeforeSha256 ||
+    value.policyBeforeSha256 !== value.policyAfterSha256 ||
+    !value.providerEnvBeforeSha256 ||
+    !value.providerEnvAfterSha256 ||
+    !Number.isSafeInteger(value.clockOffsetMinMs) ||
+    !Number.isSafeInteger(value.clockOffsetMaxMs) ||
+    value.clockOffsetMinMs > value.clockOffsetMaxMs ||
+    value.startedAtMs > value.finishedAtMs
+  ) {
+    return "incomplete";
+  }
+  const events = [value.turnoverAtMs, value.staleTunnelAtMs];
+  const providerChanged = value.providerEnvBeforeSha256 !== value.providerEnvAfterSha256;
+  if (
+    !providerChanged &&
+    !value.providerEnvChanged &&
+    !value.harness1006LogObserved &&
+    events.every((time) => time === null) &&
+    value.capturedGeneration === null &&
+    value.currentGeneration === null &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs === value.connectedAfterMs
+  ) {
+    return "unexercised";
+  }
+  const inRequest = (time) =>
+    Number.isSafeInteger(time) &&
+    time >= value.startedAtMs + value.clockOffsetMaxMs &&
+    time <= value.finishedAtMs + value.clockOffsetMinMs;
+  if (
+    providerChanged &&
+    value.providerEnvChanged &&
+    value.harness1006LogObserved &&
+    events.every(inRequest) &&
+    Number.isSafeInteger(value.connectedBeforeMs) &&
+    value.connectedBeforeMs <= value.startedAtMs + value.clockOffsetMinMs &&
+    value.connectedAfterMs > value.connectedBeforeMs &&
+    inRequest(value.connectedAfterMs) &&
+    value.turnoverAtMs <= value.staleTunnelAtMs &&
+    value.staleTunnelAtMs <= value.connectedAfterMs &&
+    Number.isSafeInteger(value.capturedGeneration) &&
+    value.capturedGeneration >= 0 &&
+    value.currentGeneration === value.capturedGeneration + 1
+  ) {
+    return "turn-continuity";
+  }
+  return "incomplete";
+}
+
+function safeOpenShellInitialTurnoverMeasurement(value) {
+  if (
+    ![1, 2].includes(value.request) ||
+    !["passed", "failed"].includes(value.requestOutcome) ||
+    !["complete", "unavailable"].includes(value.observation) ||
+    !["turn-continuity", "unexercised", "incomplete", "failed"].includes(value.qualification) ||
+    (value.httpStatus !== null &&
+      !(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599))
+  ) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    request: value.request,
+    requestOutcome: value.requestOutcome,
+    httpStatus: value.httpStatus,
+    observation: value.observation,
+    qualification: value.qualification,
+  };
+  for (const key of ["startedAtMs", "finishedAtMs"]) {
+    if (!(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of ["clockOffsetMinMs", "clockOffsetMaxMs"]) {
+    if (value[key] !== null && !Number.isSafeInteger(value[key])) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "connectedBeforeMs",
+    "connectedAfterMs",
+    "turnoverAtMs",
+    "staleTunnelAtMs",
+    "capturedGeneration",
+    "currentGeneration",
+  ]) {
+    if (value[key] !== null && !(Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nodeIdSha256",
+    "providerEnvBeforeSha256",
+    "providerEnvAfterSha256",
+    "configBeforeSha256",
+    "configAfterSha256",
+    "policyBeforeSha256",
+    "policyAfterSha256",
+  ]) {
+    if (
+      value[key] !== null &&
+      !(typeof value[key] === "string" && /^[a-f0-9]{64}$/.test(value[key]))
+    ) {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  for (const key of [
+    "nonceMatched",
+    "harness1006LogObserved",
+    "durableCommands",
+    "configUnchanged",
+    "policyUnchanged",
+    "providerEnvChanged",
+    "settingsConsistent",
+    "stableRuntime",
+  ]) {
+    if (typeof value[key] !== "boolean") {
+      return undefined;
+    }
+    measurement[key] = value[key];
+  }
+  return measurement.qualification === openShellTurnoverQualification(measurement)
+    ? measurement
+    : undefined;
 }
 
 const modelProbeMeasurementCases = new Set([
@@ -869,6 +1138,28 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   const vocabularies = {
     proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    historyExecOuterStatus: ["completed", "failed", "waiting"],
+    historyExecOuterCode: [
+      "aborted",
+      "invalid_input",
+      "runtime_unavailable",
+      "timeout",
+      "output_limit_exceeded",
+      "snapshot_limit_exceeded",
+      "internal_error",
+    ],
+    historyExecOuterFailurePhase: ["input", "guest", "bridge", "host"],
+    historyExecNestedStatus: ["completed", "failed"],
+    historyExecNestedFailureKind: [
+      "shell-command-not-found",
+      "shell-not-executable",
+      "overall-timeout",
+      "no-output-timeout",
+      "memory-limit",
+      "signal",
+      "aborted",
+      "runtime-error",
+    ],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -924,6 +1215,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyToolProofPresent",
     "historyFinalProofPresent",
     "historySettleExpired",
+    "historyExecBridgeDispatchStarted",
+    "historyExecProofProgramEntryPresent",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -978,6 +1271,35 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
       safe[field] = worker[field];
     }
+  }
+  if (
+    Number.isInteger(worker.historyExecNestedExitCode) &&
+    worker.historyExecNestedExitCode >= 0 &&
+    worker.historyExecNestedExitCode <= 255
+  ) {
+    safe.historyExecNestedExitCode = worker.historyExecNestedExitCode;
+  }
+  if (
+    safe.historyExecNestedExitCode > 0 &&
+    ["write-session-file", "read-session-file", "read-workspace-file", "emit-proof"].includes(
+      worker.historyExecFailureOperation,
+    ) &&
+    [
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "EEXIST",
+      "EISDIR",
+      "ENOTDIR",
+      "ENOSPC",
+      "EROFS",
+      "EMFILE",
+      "EIO",
+      "other",
+    ].includes(worker.historyExecFailureCode)
+  ) {
+    safe.historyExecFailureOperation = worker.historyExecFailureOperation;
+    safe.historyExecFailureCode = worker.historyExecFailureCode;
   }
   return { ...diagnostic, worker: safe };
 }
@@ -1305,14 +1627,43 @@ function outputTail() {
   const partial = { stdout: "", stderr: "" };
   const dropping = { stdout: false, stderr: false };
   let omitted = 0;
+  // A blank before a marker is its separator, even across chunks or stderr.
+  // Keep its position, but do not let it evict an ordinary line until classified.
+  let pendingStdoutBlank;
+  const settleStdoutBlank = () => {
+    if (pendingStdoutBlank?.index < 0) {
+      omitted += 1;
+    }
+    pendingStdoutBlank = undefined;
+  };
   // Trim in batches so a chatty passing file costs amortized constant time per line.
   const trim = (limit) => {
-    if (lines.length > limit) {
-      omitted += lines.length - outputTailLines;
-      lines.splice(0, lines.length - outputTailLines);
+    const pendingIndex = pendingStdoutBlank?.index ?? -1;
+    const count = lines.length - Number(pendingIndex >= 0);
+    if (count > limit) {
+      const excess = count - outputTailLines;
+      const removed = excess + Number(pendingIndex >= 0 && pendingIndex < excess);
+      omitted += excess;
+      lines.splice(0, removed);
+      if (pendingStdoutBlank) {
+        pendingStdoutBlank.index -= removed;
+      }
     }
   };
   const push = (line) => {
+    if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      if (pendingStdoutBlank?.index >= 0) {
+        lines.splice(pendingStdoutBlank.index, 1);
+      }
+      pendingStdoutBlank = undefined;
+      return;
+    }
+    if (line.startsWith("stdout: ")) {
+      settleStdoutBlank();
+      if (line === "stdout: ") {
+        pendingStdoutBlank = { index: lines.length };
+      }
+    }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
   };
@@ -1348,6 +1699,7 @@ function outputTail() {
           push(`${stream}: ${partial[stream]}`);
         }
       }
+      settleStdoutBlank();
       trim(outputTailLines);
       return { lines, omitted };
     },
@@ -1443,6 +1795,20 @@ function location(data = {}) {
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
   const output = outputTail();
+  const progress = [];
+  const readProgress = boundedProgressLines((line) => {
+    if (!line.startsWith(openShellProgressPrefix)) {
+      return;
+    }
+    try {
+      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+      if (value) {
+        progress.push(value);
+      }
+    } catch {
+      // Invalid progress never becomes raw failure output.
+    }
+  });
   let failed = false;
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
@@ -1486,6 +1852,12 @@ export default async function* jsonLinesReporter(source) {
     }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
+        if (event.type === "test:stdout") {
+          readProgress(event.data.message);
+          for (const value of progress.splice(0)) {
+            yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
+          }
+        }
         output.add(event.type.slice(5), event.data.message);
       }
       continue;
@@ -1499,9 +1871,9 @@ export default async function* jsonLinesReporter(source) {
         continue;
       }
       const value = parseMeasurement(message);
-      // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell measurements belong only in the projected record, even on failure.
-      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
+      // Structured receipts, including malformed or unknown kinds, belong only
+      // to safeMeasurement. Never duplicate their raw text into failure output.
+      if (typeof event.data.file === "string" && !message.startsWith(measurementPrefix)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

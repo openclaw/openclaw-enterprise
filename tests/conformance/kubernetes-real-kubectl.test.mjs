@@ -33,12 +33,19 @@ import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
+  assertAllowedCredentialRoute,
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
   modelAtCapacityOutcome,
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  RecordingContext,
+  recordTeardown,
+  registerBoundedTeardownRejectionCases,
+  shortTeardownOptions,
+} from "./kubernetes-teardown-cases.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
@@ -692,6 +699,119 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
   });
 });
 
+test("an allowed credential route failure captures a safe tail before cleanup", async () => {
+  const order = [];
+  const written = [];
+  const captured = Promise.withResolvers();
+  const probe = { httpStatus: "000", connectStatus: "000", exitCode: 52 };
+  const pending = assertAllowedCredentialRoute({
+    probe,
+    sourceType: "codex-pat",
+    destination: "auth.openai.com:443",
+    capture: () => {
+      order.push("capture");
+      return captured.promise;
+    },
+    write: (text) => {
+      order.push("write");
+      written.push(text);
+    },
+  }).finally(() => order.push("cleanup"));
+  assert.deepEqual(order, ["capture"]);
+  // Producer-shaped stock lines from the retained supervisor trace. Earlier events count too:
+  // this inventory makes no clock or causal claim. Other destinations and arbitrary text do not.
+  const prefix = "2026-11-07T10:02:40.494Z 2026-11-07T10:02:40.491Z OCSF ";
+  const close = (host) =>
+    `${prefix}NET:OPEN [MED] DENIED ${host}:443 [reason:L7 tunnel closed before inspection because policy changed: policy generation is stale [captured_generation:1 current_generation:2]]`;
+  captured.resolve(
+    [
+      `${prefix}CONFIG:DETECTED [INFO] Settings poll: config change detected [old_revision:42 new_revision:42 policy_changed:false provider_env_changed:true]`,
+      close("auth.openai.com"),
+      close("other.example"),
+      `${prefix}NET:OPEN [MED] DENIED auth.openai.com:443 [reason:untrusted TLS synthetic-private-value]`,
+      "synthetic-private-value",
+    ].join("\n"),
+  );
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, "ERR_ASSERTION");
+    assert.equal(error.actual, "000");
+    assert.equal(error.expected, "200");
+    assert.match(
+      error.message,
+      /^a command Codex runs must authenticate at the allowed source endpoint\./u,
+    );
+    return true;
+  });
+  assert.deepEqual(order, ["capture", "write", "cleanup"]);
+  assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+    sourceType: "codex-pat",
+    ...probe,
+    uncorrelatedSupervisorTail: {
+      status: "recognized",
+      providerEnvironmentChanges: 1,
+      selectedDestinationStaleGenerationDenials: 1,
+    },
+  });
+});
+
+test("credential route diagnostics distinguish no match and unavailable without replacing failure", async () => {
+  for (const [capture, expected] of [
+    [
+      async () => "unrecognized synthetic-private-value",
+      {
+        status: "no_match",
+        providerEnvironmentChanges: 0,
+        selectedDestinationStaleGenerationDenials: 0,
+      },
+    ],
+    [
+      async () => {
+        throw new Error("synthetic-private-value");
+      },
+      { status: "unavailable" },
+    ],
+    [() => new Promise(() => {}), { status: "unavailable" }],
+  ]) {
+    const written = [];
+    await assert.rejects(
+      assertAllowedCredentialRoute(
+        {
+          probe: { httpStatus: "000", connectStatus: "synthetic-private-value", exitCode: "52" },
+          sourceType: "synthetic-private-value",
+          destination: "auth.openai.com:443",
+          capture,
+          write: (text) => written.push(text),
+        },
+        { timeoutMs: 25 },
+      ),
+      { code: "ERR_ASSERTION", actual: "000", expected: "200" },
+    );
+    assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+      sourceType: null,
+      httpStatus: "000",
+      connectStatus: null,
+      exitCode: null,
+      uncorrelatedSupervisorTail: expected,
+    });
+  }
+  await assert.rejects(
+    assertAllowedCredentialRoute({
+      probe: { httpStatus: "000" },
+      capture: async () => "",
+      write: () => {
+        throw new Error("output closed");
+      },
+    }),
+    { code: "ERR_ASSERTION", actual: "000", expected: "200" },
+  );
+  // A passing route does not collect logs or write a failure diagnostic.
+  await assertAllowedCredentialRoute({
+    probe: { httpStatus: "200" },
+    capture: () => assert.fail("unexpected capture"),
+    write: () => assert.fail("unexpected output"),
+  });
+});
+
 test("a failed outage recovery says why without replacing its failure", async () => {
   const written = [];
   const write = (text) => written.push(text);
@@ -809,33 +929,19 @@ test(
 
 // A test context stand-in: records the hook boundedTeardown registers, and keeps a private field
 // so a member read through the teardown's context must be bound to the real one.
-class RecordingContext {
-  #name = "recorded test";
-  hooks = [];
-  get name() {
-    return this.#name;
-  }
-  diagnostic(message) {
-    return `${this.#name}: ${message}`;
-  }
-  after(hook) {
-    this.hooks.push(hook);
-  }
-}
-
 test(
   "a bounded teardown runs every cleanup last-registered first, also after one fails",
   { timeout: 5_000 },
   async () => {
     // Finding 1711: node:test runs a test's own after hooks first-registered first and skips the
     // rest once one throws, so a failed Namespace delete skipped the worker stop.
-    const testContext = new RecordingContext();
-    const logs = [];
-    const exits = [];
-    const teardown = boundedTeardown(testContext, {
+    const {
+      testContext,
+      teardown,
+      logs,
+      events: exits,
+    } = recordTeardown({
       label: "probe teardown",
-      log: (message) => logs.push(message),
-      exit: () => exits.push("exit"),
     });
     const { context } = teardown;
     const ran = [];
@@ -870,21 +976,14 @@ test(
   },
 );
 
+registerBoundedTeardownRejectionCases();
+
 test(
   "a bounded teardown abandons a stalled cleanup, runs the rest and ends the process",
   { timeout: 5_000 },
   async () => {
-    const testContext = new RecordingContext();
-    const logs = [];
-    const exits = [];
-    const { context } = boundedTeardown(testContext, {
-      stepLimitMs: 50,
-      exitGraceMs: 10,
-      log: (message) => logs.push(message),
-      exit: () => exits.push("exit"),
-      // This file's own test is still running; the stand-in waits the grace alone.
-      settled: (quietMs) => delay(quietMs),
-    });
+    const { testContext, teardown, logs, events: exits } = recordTeardown(shortTeardownOptions);
+    const { context } = teardown;
     const ran = [];
     context.after(() => ran.push("namespace delete"));
     // Never settles, like a worker stop waiting on an operation that ignores its abort.
@@ -903,6 +1002,27 @@ test(
   },
 );
 
+const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+const openShellHelperUrl = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
+  .href;
+const topologyHelperUrl = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url).href;
+
+function attemptedCleanupLines(stdout) {
+  return stdout.match(/^attempted .+$/gm);
+}
+
+const attemptedTopologyCleanups = [
+  "attempted gatewayForward",
+  "attempted worker",
+  "attempted agentWorkloads",
+  "attempted productionApp",
+  "attempted observerPool",
+  "attempted postgresNetwork",
+  "attempted gatewayRuntimeNamespace",
+  "attempted placementNamespace",
+  "attempted temporaryDirectory",
+];
+
 test(
   "the OpenShell proof's installation cleanups all run when its worker stop never settles",
   { timeout: 20_000 },
@@ -911,13 +1031,10 @@ test(
     // worker stop never settles and its poll interval keeps the process alive; every later
     // cleanup must still be attempted, the stalled one named, and the file must exit by itself.
     // Registering all six as one cleanup would attempt only the worker stop.
-    const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
-    const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
-      .href;
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelper)};
-      import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelper)};
+      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
         const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
@@ -938,7 +1055,7 @@ test(
         throw new Error("replacement timed out");
       });
     `);
-    assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
+    assert.deepEqual(attemptedCleanupLines(exited.stdout), [
       "attempted worker stop",
       "attempted port-forwards",
       "attempted production app",
@@ -1001,18 +1118,12 @@ test(
   { timeout: 5_000 },
   async () => {
     // Finding 1722: such a cleanup was kept for a teardown that had already run, so it never ran.
-    const testContext = new RecordingContext();
-    const logs = [];
     const events = [];
-    const { context } = boundedTeardown(testContext, {
-      stepLimitMs: 50,
-      exitGraceMs: 10,
-      log: (message) => logs.push(message),
-      exit: () => events.push("exit"),
-      failFile: () => events.push("fail"),
-      // This file's own test is still running; the stand-in waits the grace alone.
-      settled: (quietMs) => delay(quietMs),
-    });
+    const { testContext, teardown, logs } = recordTeardown(
+      { ...shortTeardownOptions, failFile: () => events.push("fail") },
+      events,
+    );
+    const { context } = teardown;
     const ran = [];
     context.after(() => ran.push("early cleanup"));
     await testContext.hooks[0]();
@@ -1114,8 +1225,6 @@ test(
   },
 );
 
-const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
-
 // Runs a script as its own node:test root, not as a child reporting to this runner, with a TAP
 // report, and returns how it ended.
 async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } = {}) {
@@ -1163,7 +1272,7 @@ test(
         });
       });
     `);
-    assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
+    assert.deepEqual(attemptedCleanupLines(exited.stdout), [
       "attempted early cleanup",
       "attempted worker stop",
     ]);
@@ -1222,7 +1331,7 @@ test(
       });
     `);
     assert.match(exited.stdout, /^not ok 1 - <root>$/m);
-    assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
+    assert.deepEqual(attemptedCleanupLines(exited.stdout), [
       "attempted suite after",
       "attempted second cleanup",
       "attempted file after",
@@ -1308,20 +1417,16 @@ test(
   async () => {
     // A late registration throws to stop the setup; a list that stopped at its first entry would
     // leave every resource behind the later entries (the pools, Namespaces and directories).
-    const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
-      .href;
-    const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
-      .href;
     const exited = await runTestScript(`
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
-      } from ${JSON.stringify(topologyHelper)};
+      } from ${JSON.stringify(topologyHelperUrl)};
       import {
         openShellInstallationCleanupOrder,
         registerOpenShellInstallationCleanups,
-      } from ${JSON.stringify(openShellHelper)};
+      } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       for (const [order, register] of [
         [productionTopologyCleanupOrder, registerProductionTopologyCleanups],
@@ -1347,30 +1452,15 @@ test(
     assert.deepEqual(exited.stdout.match(/^stopped: .+$/gm), ["stopped: true", "stopped: true"]);
     assert.doesNotMatch(exited.stdout, /^not stopped$/m);
     // Newest-first, as the teardown would have run them.
-    assert.deepEqual(
-      exited.stdout.match(/^attempted .+$/gm),
-      [
-        ...[
-          "gatewayForward",
-          "worker",
-          "agentWorkloads",
-          "productionApp",
-          "observerPool",
-          "postgresNetwork",
-          "gatewayRuntimeNamespace",
-          "placementNamespace",
-          "temporaryDirectory",
-        ],
-        ...[
-          "workerStop",
-          "portForwards",
-          "productionApp",
-          "observerPool",
-          "workloadNamespace",
-          "temporaryDirectory",
-        ],
-      ].map((name) => `attempted ${name}`),
-    );
+    assert.deepEqual(attemptedCleanupLines(exited.stdout), [
+      ...attemptedTopologyCleanups,
+      "attempted workerStop",
+      "attempted portForwards",
+      "attempted productionApp",
+      "attempted observerPool",
+      "attempted workloadNamespace",
+      "attempted temporaryDirectory",
+    ]);
   },
 );
 
@@ -1382,8 +1472,6 @@ test(
     // node:test context and rely on its withBoundedTeardown call; the stand-in test replaces the
     // whole helper, so nothing else fails if that call goes. Without a controller image, a
     // dedicated topology stops at its first check, before any cluster call.
-    const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
-      .href;
     const env = { ...process.env };
     for (const name of [
       "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
@@ -1400,7 +1488,7 @@ test(
         "--input-type=module",
         "-e",
         `
-          import { arrangeProductionTopology } from ${JSON.stringify(topologyHelper)};
+          import { arrangeProductionTopology } from ${JSON.stringify(topologyHelperUrl)};
           const hooks = [];
           const testContext = { name: "topology", after: (hook) => hooks.push(hook) };
           const failure = await arrangeProductionTopology(testContext, "dedicated").then(
@@ -1428,16 +1516,13 @@ test(
     // every later cleanup must still be attempted, the failure kept, and the file must exit by
     // itself (the production app's close releases what holds it). Registering them as one
     // cleanup, as before, would attempt only the gateway forward and the worker stop.
-    const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
-      .href;
-    const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelper)};
+      import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
-      } from ${JSON.stringify(topologyHelper)};
+      } from ${JSON.stringify(topologyHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("topology", async (testContext) => {
         const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
@@ -1456,17 +1541,7 @@ test(
         registerProductionTopologyCleanups(context, operations);
       });
     `);
-    assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
-      "attempted gatewayForward",
-      "attempted worker",
-      "attempted agentWorkloads",
-      "attempted productionApp",
-      "attempted observerPool",
-      "attempted postgresNetwork",
-      "attempted gatewayRuntimeNamespace",
-      "attempted placementNamespace",
-      "attempted temporaryDirectory",
-    ]);
+    assert.deepEqual(attemptedCleanupLines(exited.stdout), attemptedTopologyCleanups);
     assert.match(
       exited.stderr,
       /production topology teardown: cleanup worker registered at harness-topology-k3d-real\.mjs:\d+ failed: worker stop failed/,

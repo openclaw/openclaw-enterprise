@@ -166,6 +166,8 @@ export async function reconcileNamespaceLifecycle(
       !eligibility ||
       eligibility.namespaceId !== namespace.id ||
       typeof eligibility.deletionAllowed !== "boolean" ||
+      (eligibility.skipParticipantCleanup !== undefined &&
+        eligibility.skipParticipantCleanup !== true) ||
       (eligibility.failure !== undefined &&
         eligibility.failure !== "retryable" &&
         eligibility.failure !== "permanent")
@@ -174,6 +176,9 @@ export async function reconcileNamespaceLifecycle(
     }
     if (!eligibility.deletionAllowed || eligibility.failure !== undefined) {
       return incomplete(eligibility.failure);
+    }
+    if (eligibility.skipParticipantCleanup === true) {
+      return observe(compute.id, () => compute.deleteNamespace(context.namespace));
     }
   }
   for (const participant of [...participants].reverse()) {

@@ -194,8 +194,11 @@ Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
-one shared dependency version. Alternate
-`NODE_BASE_IMAGE` values must provide Node.js 24.22.1 or newer within the 24 series.
+one shared dependency version.
+
+Node bases require 24.22.1 on Bookworm. See the
+[worker-termination repair](node/README.md) for validation and provenance.
+
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.
 For multi-architecture builds, the frozen npm install selects the stock

@@ -65,6 +65,16 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
+    if (selection.oidcAgentChat) {
+      const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "OIDC sign-in, owner setup, real chat and administrative denial",
+        () => runOidcAgentChatScenario(context),
+        "oidc-agent-chat",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

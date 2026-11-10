@@ -49,9 +49,16 @@ prepare their required cluster, database server, routing, and images; their imag
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
-claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially and prepares the shared resources
-needed by its other files. First-Agent files do not request a separate CI database
+claiming full advisory OpenShell coverage. Full Integration runs two complete OpenShell lanes on separate VMs.
+Each prepares its own shared resources and runs its assigned manifest files
+serially. Each full lane includes source-build cases. The action selects one
+job-owned builder for the lane, and preparation passes that builder and
+`SOURCE_DATE_EPOCH=0` to its tests. The shared stack's image build populates that
+builder even if the Docker engine already holds the image; there is no separate
+warm build. Later installer builds still compile from the checked-out source and
+can reuse matching layers. Explicit image overrides do not populate a build
+cache. The Full Integration Aggregate requires both results for the same
+checkout revision. First-Agent files do not request a separate CI database
 in either mode.
 
 ## Cache and runner limits
@@ -70,7 +77,45 @@ Python toolchains. Its receipt records capacity and removal duration. An explici
 selected installed browser is validated by a sandboxed launch and page evaluation;
 these jobs do not install an unused Playwright browser alongside it.
 
+## Select candidate images and charts
+
+For local preparation of the `openshell` lane, preload the candidate images
+into the selected Docker engine. Select all six inputs together:
+
+- `OCC_TEST_OPENSHELL_SOURCE_REVISION`: the full lowercase Git commit.
+- `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, and
+  `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`: named references with SHA-256 digests.
+- `OCC_TEST_OPENSHELL_HELM_CHART` and
+  `OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART`: absolute paths to
+  `deploy/helm/openshell` and `deploy/helm/openshell-workspace` in one checkout.
+
+The checkout's HEAD must match the selected commit. Both chart directories must
+contain exactly that commit's files, contents, and executable modes. Symlinks
+and added files, including ignored files, are rejected. Each image's
+`org.opencontainers.image.revision` label must match the same commit.
+These checks establish source consistency; retain the image builder's provenance
+and smoke-test receipts separately.
+
+Preflight reads the gateway chart with Helm from a temporary copy of the
+verified files. It removes that copy and rejects an incomplete or mismatched
+selection before creating cluster resources. Preparation retains verified
+copies in the run's private cluster directory for Helm and the prepared
+scenarios. Lane cleanup removes them. The prepared environment records the
+source revision and the gateway chart copy's `appVersion`. The gateway scenario
+uses that version to verify the installed StatefulSet's version label.
+Scenarios that run their own installer prepare their own inputs. Without a
+candidate selection, preparation uses the pinned release charts and images.
+A mirror reference with the same released image digest keeps this release path.
+An image with a different digest requires the complete candidate selection.
+
 ## Interpret timing and proof
+
+OpenShell lifecycle tests print live stage progress with their lane and file:
+`openshell-stage installation started`, followed by `passed` or `failed` when the
+operation settles. Later stages identify model, policy and credential checks.
+A lone `started` message identifies the operation still running or interrupted;
+it does not establish failure or completion. Progress contains fixed categories
+only. Final timing receipts and test results remain the completion evidence.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
@@ -91,7 +136,12 @@ fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
 attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
 resource names are excluded. Concurrent or nested commands can overlap, so do
 not sum these durations as wall time. Fixed setup milestones record offsets from
-startup to place these operations on the wall-clock timeline. Native Pod profiles
+startup to place these operations on the wall-clock timeline. OpenShell asset
+preparation reports its failed operation, such as chart acquisition, rollout,
+workspace rendering, or image import, with elapsed time measured from that
+operation’s start. Success reports the total preparation time. A failed operation
+may reflect cancellation by another setup task; it does not establish the primary
+cause. These records exclude error text, arguments, and output. Native Pod profiles
 report time from the
 deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
@@ -101,7 +151,13 @@ worker proof.
 Native first-Agent proof retains the exact run ID, explicit successful exec flag,
 standalone tool-proof line, and exact final nonce. After a turn is terminal, history
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
-report only counts and flags, not marker values, commands or transcripts. Content
+retain counts and flags, plus the numeric exit code (0–255) when a single nested
+exec result is recognized. The proof program reports fixed operation and error
+categories for failed session-file writes, session/workspace-file reads, or proof
+emission. These categories contain no paths, commands, raw output, or stacks;
+unknown error codes become `other`. A failure before Node starts, or without a
+recognized failure marker, remains unclassified. These observations do not relax
+any success predicate. Content
 shape counts distinguish strings, arrays, recognized text and tool-call parts,
 and unsupported parts. Exec observations distinguish an exact requested command,
 nonempty output, and the recognized `value.aggregated` result envelope from other
@@ -124,6 +180,13 @@ expected case, and cleanup to pass at the same checkout revision. Include tool
 setup, image builds/imports, tests, cleanup, and artifact upload in elapsed time.
 Report runner allocation and protected-environment waiting separately, and keep
 failed or canceled runs separate from successful runtime measurements.
+
+The job summary records phase timings for each physical lane: `openshell`,
+`openshell-policy`, or `openshell-installers`. Use the receipt's lane, source SHA,
+run ID, and attempt to compare matching jobs. The same JSON is retained for seven
+days as `timing-<artifact-prefix>-<lane>-attempt-<attempt>`. Its elapsed time
+covers the lane action through result artifact upload; it excludes earlier checkout and runner or
+environment waiting. Missing checkpoints remain missing measurements.
 
 Parallel workflows repeat installation setup and can use more runner minutes
 even when wall time falls. The OpenShell job cap bounds concurrent VMs; each

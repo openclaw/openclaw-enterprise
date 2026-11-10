@@ -7,11 +7,15 @@ import { protectedText, redactedQaTail } from "./qa-secrets.mjs";
 
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {
-  // The Namespace checkpoint creates no Agent and needs no model credential.
+  // Namespace readiness is proved first, then native OpenClaw Agents complete real model turns.
   const token =
     scenario === "namespace-lifecycle"
       ? undefined
       : await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  const namespaceCredential =
+    scenario === "namespace-lifecycle"
+      ? await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential")
+      : undefined;
   const envFile = process.env.OCC_TEST_QA_SANDBOX_ENV;
   assert.ok(envFile, "OCC_TEST_QA_SANDBOX_ENV must select the prepared OpenShell file environment");
   const env = {
@@ -19,6 +23,13 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     ...(token === undefined
       ? {}
       : { CODEX_ACCESS_TOKEN: token, OCC_TEST_OPENSHELL_HARNESS: "codex" }),
+    ...(namespaceCredential === undefined
+      ? {}
+      : {
+          OPENAI_API_KEY: namespaceCredential,
+          OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_QA_OPENAI_MODEL,
+          OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+        }),
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
     OCC_TEST_OPENSHELL_SCENARIO: scenario === "namespace-lifecycle" ? "full" : scenario,
     OCC_TEST_NAMESPACE_OPENSHELL_REAL: scenario === "namespace-lifecycle" ? "1" : "0",
@@ -71,7 +82,7 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   if (scenario === "namespace-lifecycle") {
     assert.match(
       text,
-      /ok 1 - bootstrap reconciles an owned OpenShell gateway and Workspace before any Agent/,
+      /ok 1 - bootstrap reconciles OpenShell gateways and Workspaces before any Agent/,
     );
   } else {
     assert.match(
@@ -87,7 +98,7 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     return {
       evidence,
       outcome:
-        "real bootstrap and later Namespace gateway and Workspace readiness with zero Agents",
+        "real Namespace gateways and Workspaces before Agents, followed by Agent deployment and model turns",
     };
   }
   return {

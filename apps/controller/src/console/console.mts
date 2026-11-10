@@ -172,7 +172,6 @@ let draftUserId: string | null = null;
 let pinnedSessionKey: string | null = null;
 let externalSessionBinding = false;
 const externalAttemptStorageKeys = {
-  github: "occ.console.githubAttempt",
   google: "occ.console.googleAttempt",
   oidc: "occ.console.oidcAttempt",
 };
@@ -212,11 +211,6 @@ const externalProviders: Record<
   Provider,
   { label: string; origin: string | null; pathname: string | null }
 > = {
-  github: {
-    label: "GitHub",
-    origin: "https://github.com",
-    pathname: "/login/oauth/authorize",
-  },
   google: {
     label: "Google",
     origin: "https://accounts.google.com",
@@ -1390,7 +1384,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
   const usernameHint = element(
     "p",
     { id: "username-hint", className: "muted auth-intro" },
-    "Use your account email.",
+    "Checking sign-in methods…",
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
@@ -1401,7 +1395,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
   );
   const form = element(
     "form",
-    {},
+    { hidden: true },
     element("label", { for: "username" }, "Email"),
     username,
     element("label", { for: "password" }, "Password"),
@@ -1454,25 +1448,33 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     }
     return control;
   };
-  const github = providerButton("github");
   const google = providerButton("google");
   // Created once discovery has supplied its label and endpoint.
   let oidc: HTMLButtonElement | null = null;
   const recovery = button(
     "Recovery sign-in",
     () => {
-      recovery.hidden = true;
       feedback.textContent = "";
-      form.insertBefore(feedback, submit);
-      form.hidden = false;
-      usernameHint.hidden = false;
+      showPasswordForm();
       username.focus();
     },
-    { tone: "link", className: "auth-recovery", hidden: true },
+    { tone: "link", className: "auth-recovery" },
   );
+  function showPasswordForm() {
+    const recoveryFocused = document.activeElement === recovery;
+    recovery.hidden = true;
+    form.insertBefore(feedback, submit);
+    form.hidden = false;
+    usernameHint.hidden = false;
+    usernameHint.textContent = recoveryOnly
+      ? "Use the recovery account's email."
+      : "Use your account email.";
+    if (recoveryFocused) {
+      username.focus();
+    }
+  }
   function setButtonsUnavailable(unavailable: boolean) {
     setUnavailable(submit, unavailable, null);
-    setUnavailable(github, unavailable, null);
     setUnavailable(google, unavailable, null);
     if (oidc !== null) {
       setUnavailable(oidc, unavailable, null);
@@ -1524,6 +1526,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       usernameHint,
       form,
       providers,
+      feedback,
       recovery,
     ),
     ...signInFooter(),
@@ -1533,9 +1536,6 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       const available = responseFields(data);
       if (lifetime.isCurrent(loginView)) {
         externalSessionBinding = available?.sessionBinding === true;
-        if (available?.github === true) {
-          providers.append(github);
-        }
         if (available?.google === true) {
           providers.append(google);
         }
@@ -1544,33 +1544,27 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
           setUnavailable(oidc, pending, null);
           providers.append(oidc);
         }
-        // Only an explicit false hides the form: failed or older discovery keeps it.
-        if (
-          available?.password === false &&
-          (available.github || available.google || available.oidc)
-        ) {
+        // Wait for policy before offering passwords. Recovery remains available
+        // during discovery, and an explicitly opened form is never pulled away.
+        if (available?.password === false && (available.google || available.oidc)) {
           recoveryOnly = true;
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
           }
           usernameHint.textContent = "Use the recovery account's email.";
-          // Never pull the form away from someone already using it.
-          if (
-            !pending &&
-            username.value === "" &&
-            password.value === "" &&
-            !form.contains(document.activeElement)
-          ) {
-            form.hidden = true;
+          if (form.hidden) {
             usernameHint.hidden = true;
-            providers.after(feedback);
-            recovery.hidden = false;
           }
+        } else {
+          showPasswordForm();
         }
       }
     })
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
+      if (lifetime.isCurrent(loginView)) {
+        showPasswordForm();
+      }
     });
 }
 
@@ -1925,7 +1919,7 @@ async function loadPage({
           : (pendingIntent ?? loginDestination(current));
       showLogin(
         providerError !== null
-          ? providerCallbackFailure(authError, providerError.label, authReason)
+          ? providerCallbackFailure(providerError.label, authReason)
           : hadSession &&
               current.feature !== "login" &&
               current.url.pathname !== "/console/" &&

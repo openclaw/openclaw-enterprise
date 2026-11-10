@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
+import { createHumanLogin } from "../../apps/controller/src/auth/human-login.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { jsonChunkDestination } from "./json-lines.mjs";
@@ -25,7 +25,7 @@ export const callbackState = "s".repeat(43);
  * tests check the derivation rather than reuse it.
  */
 export function providerInstanceId(kind, { clientId, issuer }) {
-  assert.ok(["github", "google", "oidc"].includes(kind), `unknown provider kind ${kind}`);
+  assert.ok(["google", "oidc"].includes(kind), `unknown provider kind ${kind}`);
   assert.equal(issuer === undefined, kind !== "oidc", "only OIDC instances include the issuer");
   const input = kind === "oidc" ? `${issuer}\0${clientId}` : clientId;
   return `${kind}:${createHash("sha256").update(input).digest("hex")}`;
@@ -36,8 +36,11 @@ export function providerInstanceId(kind, { clientId, issuer }) {
  * SHA-256 of the client secret, so rotating the secret voids pending attempts. Written out
  * here, not imported from product code.
  */
-export function providerAttemptId(instanceId, clientSecret) {
-  return `${instanceId}:${createHash("sha256").update(clientSecret).digest("hex")}`;
+export function providerAttemptId(instanceId, clientSecret, enrollment = null) {
+  const policy = instanceId.startsWith("oidc:")
+    ? `:${createHash("sha256").update(JSON.stringify(enrollment)).digest("hex")}`
+    : "";
+  return `${instanceId}:${createHash("sha256").update(clientSecret).digest("hex")}${policy}`;
 }
 
 // Runs the actual Better Auth handler and external-provider plugin with a boundary
@@ -123,7 +126,7 @@ export function createLoginFixture({
   });
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
   // It also owns a thrown dependency error and answers it as an outage; that mapping is
-  // proved through the real controller (postgres-github-outage, postgres-github-cookie-commit).
+  // proved through the real controller (postgres-oidc-outage, postgres-oidc-cookie-commit).
   // This boundary records the error and rethrows it, as the handler does, so tests prove the
   // endpoint passed it on unchanged without asserting an answer of the fixture's own.
   const call = async (path, init, ip = "10.0.0.1") => {

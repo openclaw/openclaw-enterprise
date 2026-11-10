@@ -144,11 +144,13 @@ test("Namespace deletion checks eligibility before reverse cleanup and infrastru
   const effects: string[] = [];
   let allowed = false;
   let complete = false;
+  let unclaimed = false;
   const compute = createReadyComputeDriver("compute", {
     async checkNamespaceDeletion() {
       return {
         namespaceId: namespace.id,
         deletionAllowed: allowed,
+        ...(unclaimed ? { skipParticipantCleanup: true as const } : {}),
         ...(allowed ? {} : { failure: "permanent" as const }),
       };
     },
@@ -184,4 +186,9 @@ test("Namespace deletion checks eligibility before reverse cleanup and infrastru
   complete = true;
   assert.deepEqual(await run(), { namespaceId: namespace.id, namespaceDeleted: true });
   assert.deepEqual(effects, ["z", "z", "a", "infrastructure"]);
+  // An unclaimed external namespace cannot be passed to provider cleanup.
+  unclaimed = true;
+  effects.length = 0;
+  assert.deepEqual(await run(), { namespaceId: namespace.id, namespaceDeleted: true });
+  assert.deepEqual(effects, ["infrastructure"]);
 });

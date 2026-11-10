@@ -106,6 +106,27 @@ func developmentCommand() *cobra.Command {
 			return occdev.CheckDevelopmentProfile()
 		},
 	})
+	command.AddCommand(&cobra.Command{
+		Use:    "prepare-browser",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			environment, err := occdev.DockerBrowserEnvironment(repository, true)
+			if err != nil {
+				return err
+			}
+			for _, key := range []string{"OCC_DEVELOPMENT_BROWSER_ORIGIN", "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN", "OCC_DEVELOPMENT_BROWSER_PORT", "OCC_DEVELOPMENT_BROWSER_TLS_CERT", "OCC_DEVELOPMENT_BROWSER_TLS_KEY"} {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), environment[key]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",
@@ -147,7 +168,21 @@ func developmentRepository() (string, error) {
 		content := string(module)
 		line, _, hasNewline := strings.Cut(content, "\n")
 		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
-			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
+			composePath := filepath.Join(directory, "compose.yaml")
+			info, err := os.Lstat(composePath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect %q: %w", composePath, err)
+			}
+			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					info, err = os.Stat(composePath)
+					if err != nil {
+						return "", fmt.Errorf("inspect %q: %w", composePath, err)
+					}
+				}
+				if !info.Mode().IsRegular() {
+					return "", fmt.Errorf("%q must be a regular file", composePath)
+				}
 				if !strings.Contains(content, "\r\n") {
 					return directory, nil
 				}

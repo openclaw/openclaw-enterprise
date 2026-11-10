@@ -12,6 +12,7 @@ import { verifyPlatformStateStoreContract } from "../conformance/platform-state-
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { jsonRequestInit } from "./inject-json.mjs";
+import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createKubernetesInstallationConfiguration,
@@ -37,6 +38,7 @@ const fixtureImage = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authSecret = "openclaw-postgres-development-auth-secret-minimum-32-bytes";
+const browserOrigin = "https://console.oce.localhost";
 const requiresPostgres = {
   skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
 };
@@ -416,20 +418,23 @@ function admitted(values) {
   return admittedConfiguration(values);
 }
 
-async function startController(context, { kubernetesDrivers = false } = {}) {
-  // The port is part of the auth base URL. Hold it until the child binds it.
+async function startController(
+  context,
+  { kubernetesDrivers = false, databaseUrl: occDatabaseUrl = contextDatabaseUrl(context) } = {},
+) {
+  // Hold the private loopback transport port until the child binds it.
   const reservation = await reservePort();
   context.after(reservation.release);
   const { port } = reservation;
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
   const configurationRoot = await temporaryDirectory(context, "openclaw-postgres-configurations-");
-  const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
     databaseUrl: occDatabaseUrl,
     email: adminEmail,
     password: adminPassword,
     authSecret,
-    authBaseURL: `http://127.0.0.1:${port}`,
+    authBaseURL: browserOrigin,
+    agentDomain: "agents.oce.localhost",
     installationName: "PostgreSQL platform state integration",
     // The Job's code in this process; the API below is the real server.mjs process.
     inProcess: true,
@@ -442,7 +447,8 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
       OCC_HOST: "127.0.0.1",
       OCC_PORT: String(port),
       OCC_DATABASE_URL: occDatabaseUrl,
-      OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+      OCC_AUTH_BASE_URL: browserOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_AUTH_SECRET: authSecret,
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
       OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-postgres-platform-state",
@@ -459,14 +465,15 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   child.stderr.on("data", (chunk) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
+  const transport = createConsoleFixtureTransport(browserOrigin, origin);
   const session = await waitFor(
     () => `the durable OCC subprocess to become ready:\n${output}`,
     async () => {
       assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
       try {
         return await signInWithEmailPassword({
-          fetch,
-          origin,
+          fetch: transport.fetchThroughLoopback,
+          origin: browserOrigin,
           email: adminEmail,
           password: adminPassword,
         });
@@ -495,7 +502,8 @@ async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
       OCC_TEST_DATABASE_URL: occDatabaseUrl,
       OCC_WORKER_POLL_INTERVAL_MS: "20",
       OCC_WORKER_LEASE_DURATION_MS: "5000",
-      OCC_AUTH_BASE_URL: "http://127.0.0.1",
+      OCC_AUTH_BASE_URL: browserOrigin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
       OCC_AUTH_SECRET: authSecret,
       ...driverEnvironment,
     },
@@ -554,14 +562,13 @@ async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } 
 }
 
 async function request(controller, method, path, body, options = {}) {
-  const response = await fetch(`${controller.origin}${path}`, {
-    ...jsonRequestInit(
-      method,
-      body,
-      options.authenticated === false
+  const response = await fetchLoopback(`${controller.origin}${path}`, {
+    ...jsonRequestInit(method, body, {
+      host: new URL(browserOrigin).host,
+      ...(options.authenticated === false
         ? {}
-        : authenticatedHeaders(options.session ?? controller.session),
-    ),
+        : authenticatedHeaders(options.session ?? controller.session)),
+    }),
     signal: AbortSignal.timeout(5_000),
   });
   const payload = await response.json();

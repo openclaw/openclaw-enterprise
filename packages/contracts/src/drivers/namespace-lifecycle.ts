@@ -34,5 +34,7 @@ export interface NamespaceLifecycleParticipant {
 export interface NamespaceDeletionEligibility {
   readonly namespaceId: string;
   readonly deletionAllowed: boolean;
+  /** No participant may own this unclaimed backing namespace; retain it during Compute teardown. */
+  readonly skipParticipantCleanup?: true;
   readonly failure?: NamespaceLifecycleFailure;
 }

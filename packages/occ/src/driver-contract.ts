@@ -191,6 +191,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
     typeof candidate.retireRevision === "function" &&
+    (candidate.getGatewayChatEndpoint === undefined ||
+      typeof candidate.getGatewayChatEndpoint === "function") &&
     (candidate.getRuntimeImages === undefined ||
       typeof candidate.getRuntimeImages === "function") &&
     (candidate.resolveSandboxNamespace === undefined ||

@@ -35,7 +35,7 @@ jobs:
   prepare:
     name: Prepare ${{ matrix.image }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.image == 'runtime' && 240 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +52,9 @@ jobs:
             runner: ${{ vars.CONTAINER_AMD64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
           - arch: arm64
             runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-8vcpu-ubuntu-2404-arm' }}
+          - image: runtime
+            arch: arm64
+            runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -83,16 +86,75 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
       - name: Report native runner resources
+        id: resources
         env:
+          IMAGE: ${{ matrix.image }}
           PLATFORM: linux/${{ matrix.arch }}
         run: |
           node <<'NODE'
           const os = require("node:os");
+          const fs = require("node:fs");
+          const path = require("node:path");
           const arch = process.arch === "x64" ? "amd64" : process.arch;
           if (process.env.PLATFORM !== `linux/${arch}`) {
             throw new Error("Select a native Linux runner");
           }
-          console.log({arch, cpus: os.availableParallelism(), memoryBytes: os.totalmem()});
+          const cpus = os.availableParallelism();
+          const memoryBytes = Math.min(os.totalmem(), process.constrainedMemory() || os.totalmem());
+          let availableBytes = Math.min(memoryBytes, os.freemem(), process.availableMemory());
+          let buildCpus = cpus;
+          let limitsKnown = false;
+          // Include ancestor limits: a leaf cgroup can be unlimited inside a capped slice.
+          // Unknown layouts retain the existing four-job compile, without guessing capacity.
+          try {
+            const group = fs.readFileSync("/proc/self/cgroup", "utf8").trim().match(/^0::(\/[^\n]*)$/);
+            if (group) {
+              const root = "/sys/fs/cgroup";
+              const controllers = fs.readFileSync(`${root}/cgroup.controllers`, "utf8").trim().split(/\s+/);
+              if (!["cpu", "memory"].every((name) => controllers.includes(name))) {
+                throw new Error("Unknown cgroup controllers");
+              }
+              let current = path.resolve(root, `.${group[1]}`);
+              if (current !== root && !current.startsWith(`${root}/`)) {
+                throw new Error("Unsupported cgroup path");
+              }
+              while (true) {
+                const names = ["cpu.max", "memory.current", "memory.max", "memory.high"];
+                const values = names.map((name) => {
+                  try { return fs.readFileSync(`${current}/${name}`, "utf8").trim(); }
+                  catch (error) {
+                    if (current === root && error.code === "ENOENT") { return undefined; }
+                    throw error;
+                  }
+                });
+                // The real host root has no limits; a delegated visible root can have them.
+                if (current === root && values.every((value) => value === undefined)) { break; }
+                if (values.some((value) => value === undefined)) { throw new Error("Incomplete cgroup limits"); }
+                const quota = values[0].match(/^(max|[1-9][0-9]*) ([1-9][0-9]*)$/);
+                if (!quota) { throw new Error("Unknown CPU limit"); }
+                if (quota[1] !== "max") { buildCpus = Math.min(buildCpus, Number(quota[1]) / Number(quota[2])); }
+                if (!/^[0-9]+$/.test(values[1])) { throw new Error("Unknown memory usage"); }
+                const used = Number(values[1]);
+                if (!Number.isSafeInteger(used) || used < 0) { throw new Error("Unknown memory usage"); }
+                for (const limit of values.slice(2)) {
+                  if (limit !== "max") {
+                    if (!/^[0-9]+$/.test(limit) || !Number.isSafeInteger(Number(limit))) { throw new Error("Unknown memory limit"); }
+                    availableBytes = Math.min(availableBytes, Math.max(0, Number(limit) - used));
+                  }
+                }
+                if (current === root) { break; }
+                current = path.dirname(current);
+              }
+              limitsKnown = true;
+            }
+          } catch {
+            // A missing controller or unreadable limit is not evidence of spare capacity.
+          }
+          // Leave half the CPU capacity and 8 GiB beyond a 4 GiB-per-job budget.
+          const nodeBuildJobs = process.env.IMAGE === "runtime" && arch === "arm64" &&
+            limitsKnown && buildCpus >= 16 && availableBytes >= (8 * 4 + 8) * 1024 ** 3 ? 8 : 4;
+          console.log({arch, cpus, memoryBytes, buildCpus, availableBytes, limitsKnown, nodeBuildJobs});
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `node_build_jobs=${nodeBuildJobs}\n`);
           if (os.availableParallelism() < 4 || os.totalmem() < 12 * 1024 ** 3) {
             throw new Error("Container builds require at least 4 CPUs and 12 GiB RAM; select a larger runner");
           }
@@ -105,7 +167,7 @@ jobs:
         run: node scripts/ci/repository-platform-headroom.mjs
       - name: Set up persistent Blacksmith Buildx cache
         if: ${{ startsWith(matrix.runner, 'blacksmith-') }}
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        uses: useblacksmith/setup-docker-builder@06dd9c83a5d541274d2e3ac67625560979275267 # v2.3.0
         with:
           cache-key: openclaw-enterprise/${{ matrix.image }}-${{ matrix.arch }}
           max-parallelism: "2"
@@ -129,6 +191,7 @@ jobs:
           build-args: |
             ${{ steps.openclaw-source.outputs.build-args }}
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            ${{ matrix.image == 'runtime' && format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs) || '' }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           labels: |
@@ -141,6 +204,7 @@ jobs:
           push: false
       - name: Build native OCI image without publication
         id: build
+        timeout-minutes: ${{ matrix.image == 'runtime' && 180 || 60 }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -152,6 +216,7 @@ jobs:
           build-args: |
             ${{ steps.openclaw-source.outputs.build-args }}
             NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
+            ${{ matrix.image == 'runtime' && format('NODE_BUILD_JOBS={0}', steps.resources.outputs.node_build_jobs) || '' }}
             OCC_BUILD_REVISION=${{ env.SOURCE_SHA }}
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
           labels: |
@@ -162,6 +227,86 @@ jobs:
           cache-to: ${{ !startsWith(matrix.runner, 'blacksmith-') && format('type=gha,mode=max,scope=enterprise-{0}-{1}', matrix.image, matrix.arch) || '' }}
           provenance: false
           push: false
+      - name: Record untested runtime build identity
+        if: ${{ matrix.image == 'runtime' }}
+        env:
+          IMAGE: runtime
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: node scripts/ci/container-release.mjs record-build "$RUNNER_TEMP/oci"
+      - name: Retain untested runtime for a fresh native runner
+        if: ${{ matrix.image == 'runtime' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Install existing smoke test prerequisites
+        if: ${{ matrix.image == 'controller' }}
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Smoke the exact export on its native architecture
+        if: ${{ matrix.image == 'controller' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
+        run: |
+          node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.image == 'controller' }}
+        with:
+          name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  runtime-smoke:
+    name: Smoke runtime (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ${{ vars.CONTAINER_AMD64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
+          - arch: arm64
+            runner: ${{ vars.CONTAINER_ARM64_RUNNER || 'blacksmith-16vcpu-ubuntu-2404-arm' }}
+    env:
+      IMAGE: runtime
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check the exact source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Select the checked-in Node base for standalone verification
+        if: ${{ !inputs.ci_run_id }}
+        run: |
+          NODE_BASE_IMAGE="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
+          [[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]
+          printf 'NODE_BASE_IMAGE=%s\n' "$NODE_BASE_IMAGE" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+      - name: Verify the runtime build and referenced OCI blobs
+        id: verified
+        run: node scripts/ci/container-release.mjs verify-build "$RUNNER_TEMP/oci"
       - name: Install existing smoke test prerequisites
         run: |
           sudo apt-get -o Acquire::Retries=3 update
@@ -170,23 +315,18 @@ jobs:
           corepack pnpm install --frozen-lockfile --ignore-scripts
       - name: Smoke the exact export on its native architecture
         env:
-          IMAGE: ${{ matrix.image }}
-          PLATFORM: linux/${{ matrix.arch }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          CI_ATTEMPT: ${{ env.CI_ATTEMPT }}
+          IMAGE_DIGEST: ${{ steps.verified.outputs.digest }}
         run: |
-          if [[ "$IMAGE" == runtime ]]; then
-            bash scripts/ci/setup-tools.sh k3d
-            export PATH="$RUNNER_TEMP/bin:$PATH"
-            export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
-          fi
+          bash scripts/ci/setup-tools.sh k3d
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          export OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY=1
           node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
       - name: Clean up runtime smoke resources
-        if: always() && matrix.image == 'runtime'
+        if: always()
         run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: platform-${{ matrix.image }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: platform-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/oci
           compression-level: 0
           retention-days: 1

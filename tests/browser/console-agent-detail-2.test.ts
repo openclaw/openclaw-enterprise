@@ -24,6 +24,7 @@ import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-na
 import {
   apiRequests,
   detailUrl,
+  deploymentStatusResponse,
   holdRequests,
   login,
   nativeValues,
@@ -110,7 +111,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     fixture,
     nativePage,
     browserOptions,
-    consoleHost,
     nativeDomain,
     cookieDomain,
     untrustedBrowserOptions,
@@ -153,25 +153,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   let requests = apiRequests(page, fixture.origin);
   const draftDetail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
 
-  // A fresh shared-cookie login clears legacy host-only cookies from the Console.
-  await page.context().addCookies([
-    {
-      name: "__Secure-openclaw_occ.session_token",
-      value: "old-host-only",
-      domain: consoleHost,
-      path: "/",
-      secure: true,
-      httpOnly: true,
-      sameSite: "Lax",
-    },
-  ]);
   await login(page, fixture, draftDetail);
-  assert.equal(
-    (await page.context().cookies(fixture.origin)).some(
-      (cookie) => cookie.value === "old-host-only",
-    ),
-    false,
-  );
 
   // New Agents are stopped; missing an active revision must not suggest a routing problem.
   const initiallyStopped = await fixture.request(
@@ -180,8 +162,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  await expectNativeAdminUnavailable(page, "Start this Agent before opening its native admin UI.");
+  await page.getByText("Start this Agent before opening its browser UI.").waitFor();
+  await expectNativeAdminUnavailable(page, "Start this Agent before opening its browser UI.");
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -194,12 +176,12 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("button", { name: "Refresh access" }).click();
   await page
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
   await expectNativeAdminUnavailable(
     page,
-    "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+    "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
   );
 
   let active = { revision: pending };
@@ -222,7 +204,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.locator(".native-admin-access").waitFor();
   await page
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
     )
     .waitFor();
   assert.equal(
@@ -234,6 +216,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     namespaceId: namespace.id,
     resourceId: agent.id,
   });
+  restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await expectNativeAdminHidden(page);
@@ -266,7 +249,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.locator(".native-admin-access").waitFor();
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
+  await page.getByText("Start this Agent before opening its browser UI.").waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
@@ -294,6 +277,24 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(new URL(access.url).origin, access.origin);
   assert.match(new URL(access.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
+  // Removing administration leaves an existing operator with chat, including on a fresh page.
+  restrict(fixture.policy, "administer", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Open chat", exact: true }).waitFor();
+  assert.equal(await page.locator("#native-admin-warning").isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Open Agent UI", exact: true }).count(), 0);
+  const operatorAccess = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  assert.equal(operatorAccess.data.mode, "chat");
+  fixture.policy.restrictions.length = 0;
+  await page.reload();
+  await page.getByRole("link", { name: "Open Agent UI", exact: true }).waitFor();
+
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Viewing version").selectOption(historicalRevisionId);
   await page.getByRole("link", { name: "Open Agent UI" }).waitFor();
@@ -314,31 +315,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(sessionCookie.secure, true);
   assert.equal(sessionCookie.sameSite, "Lax");
 
-  await page.context().addCookies([
-    {
-      name: "openclaw_occ.session_token",
-      value: "legacy-host-only",
-      domain: consoleHost,
-      path: "/",
-      httpOnly: true,
-      sameSite: "Lax",
-    },
-  ]);
-  const consoleCookies = await page.context().cookies(fixture.origin);
-  assert.ok(
-    consoleCookies.some(
-      (cookie) =>
-        cookie.name === "openclaw_occ.session_token" && cookie.value === "legacy-host-only",
-    ),
-    "the migration fixture must contain the legacy host-only console cookie",
-  );
-  const agentCookies = await page.context().cookies(access.origin);
-  assert.equal(
-    agentCookies.some((cookie) => cookie.value === "legacy-host-only"),
-    false,
-    "a legacy host-only console cookie must not authenticate the Agent host",
-  );
-
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("link", { name: "Open Agent UI" }).click();
   const popup = await popupPromise;
@@ -354,11 +330,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.ok(
     names.includes(sessionCookie.name),
     "the Agent HTTPS handler receives the shared session cookie",
-  );
-  assert.equal(
-    names.includes("openclaw_occ.session_token"),
-    false,
-    "the host-only cookie stays on the Console",
   );
 
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
@@ -416,7 +387,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   const card = page.locator(".native-admin-access");
   await card
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 1);
@@ -428,7 +399,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await expectDeploymentOutcome(page, "Completed", { folded: false });
   await card
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
@@ -741,14 +712,122 @@ test("Agent sharing grants existing people exact discovery and native access, th
     (await fixture.request("GET", `/namespaces/${namespace.id}/agents`, { session })).data,
     [],
   );
-  assert.equal(
-    (
-      await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, {
-        session,
-      })
-    ).status,
-    403,
+  // Removing the sharing grant does not remove the independent operate grant.
+  // It still authorizes the browser status read. For this operate-only caller,
+  // a stopped Agent has no launch target or access mode.
+  const retainedChat = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+    { session },
   );
+  assert.equal(retainedChat.status, 200);
+  assert.deepEqual(retainedChat.data, { status: "stopped" });
 });
 
 registerSharingCredentialsAndChannelsCases(detailApp);
+
+test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deployment refresh Agent",
+    nativeValues("v1"),
+  );
+  const first = await fixture.deployAgent(namespace.id, agent.id);
+  const firstUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 1000 } },
+  });
+  // This controller fixture admits revisions but has no deployment worker. Supply
+  // its supported queued record only for v1; v2's read and all overview calls use the real API.
+  const queued = deploymentStatusResponse(first, { status: "queued" });
+  await page.route(firstUrl, (route) => route.fulfill(queued));
+  await page.clock.install();
+  const initial = page.waitForResponse((response) => response.url() === firstUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, first.id, "deployment"));
+  const initialResponse = await initial;
+  assert.equal(initialResponse.status(), 200);
+  assert.deepEqual(await initialResponse.json(), queued.json);
+  const activity = await expectDeploymentOutcome(page, "Queued");
+  await activity.getByText("Most recent visible deployment · v1", { exact: true }).waitFor();
+  // A quiet update should leave a reader's folded evidence and control in place.
+  if ((await activity.locator("details[open]").count()) !== 0) {
+    await activity.getByText("Deployment details", { exact: true }).click();
+  }
+  const refresh = activity.getByRole("button", { name: "Refresh deployment", exact: true });
+  await refresh.focus();
+  const original = await refresh.elementHandle();
+  assert.ok(original);
+  const geometry = await refresh.boundingBox();
+  assert.ok(geometry);
+  const retainsOriginalFocus = () =>
+    refresh.evaluate(
+      (node, previous) => node === previous && node === document.activeElement,
+      original,
+    );
+  const hasRefreshFocus = () => refresh.evaluate((node) => node === document.activeElement);
+  const poll = await holdRequests(t, page, firstUrl, {
+    once: true,
+    method: "GET",
+    fulfill: queued,
+  });
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await poll.requested;
+  assert.equal(await refresh.isEnabled(), true);
+  assert.equal(await retainsOriginalFocus(), true);
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  await page.keyboard.press("Enter");
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  assert.equal(await retainsOriginalFocus(), true);
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+
+  // Admit a later revision while the original poll is held. The queued manual refresh
+  // rereads the real version list after the poll settles, then reads that exact new record.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v2"));
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const secondUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, second.id);
+  const next = await holdRequests(t, page, secondUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const pollResponse = page.waitForResponse((response) => response.url() === firstUrl);
+  poll.release();
+  const completedPoll = await pollResponse;
+  assert.equal(completedPoll.status(), 200);
+  assert.deepEqual(await completedPoll.json(), queued.json);
+  const nextResponse = await next.requested;
+  assert.ok(nextResponse);
+  assert.equal(nextResponse.status(), 503);
+  const failure: unknown = await nextResponse.json();
+  assertRecord(failure, "the controller's deployment read response");
+  assertRecord(failure.error, "the controller's deployment read error");
+  assert.equal(failure.error.code, "DEPENDENCY_UNAVAILABLE");
+  await refresh.waitFor({ state: "visible" });
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  const focusDuringReplacement = await hasRefreshFocus();
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  next.release();
+  await activity
+    .getByText("Most recent visible deployment · v2", { exact: true })
+    .waitFor({ state: "attached" });
+  await activity
+    .getByRole("alert")
+    .getByText("Service unavailable. The read could not be completed. Try again.", { exact: true })
+    .waitFor();
+  await waitForEnabled(refresh);
+  await refresh.click({ trial: true });
+  assert.deepEqual(await refresh.boundingBox(), geometry);
+  const focusAfterReplacement = await hasRefreshFocus();
+  assert.equal(
+    focusDuringReplacement,
+    true,
+    "the focused Refresh deployment control survives panel replacement",
+  );
+  assert.equal(
+    focusAfterReplacement,
+    true,
+    "Refresh deployment keeps focus after the newer record appears",
+  );
+});

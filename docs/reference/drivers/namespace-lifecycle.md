@@ -17,7 +17,10 @@ automatic compensation. A lost claim stops further hooks and state commits.
 For deletion, Compute checks eligibility before any participant effects. OCC
 then runs deletion hooks in reverse order before Compute teardown. Incomplete
 cleanup blocks deletion. Compute implementations used with cleanup participants
-must implement `checkNamespaceDeletion`. Hooks cannot grant IAM permissions or
+must implement `checkNamespaceDeletion`. When Compute confirms an external backing
+namespace was never claimed, it can return `skipParticipantCleanup: true`. OCC then
+runs only Compute teardown, which retains that backing namespace and touches only
+Compute-owned resources. An omitted flag requires participant cleanup. Hooks cannot grant IAM permissions or
 change resource state. The worker retains original-actor authorization and
 records sanitized participant outcomes with its lifecycle evidence.
 

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { request } from "node:https";
+import { Agent, request } from "node:https";
+import { once } from "node:events";
+import { connect } from "node:net";
+import { connect as connectTls } from "node:tls";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,19 +12,27 @@ import {
   startSkipperPrivateGitOrigin,
   withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
+import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
-function api(fixture, method, path, authorization, body, afterHeaders) {
+function api(
+  fixture,
+  method,
+  path,
+  authorization,
+  body,
+  { afterHeaders, contentType = "application/json", agent = false } = {},
+) {
   return new Promise((resolve, reject) => {
     const req = request(
       new URL(path, fixture.origin),
       {
         method,
-        agent: false,
+        agent,
         ca: fixture.tls.ca ?? fixture.tls.cert,
-        headers: { authorization, "content-type": "application/json" },
+        headers: { ...(authorization && { authorization }), "content-type": contentType },
         timeout: 10000,
       },
       (response) => {
@@ -30,7 +41,10 @@ function api(fixture, method, path, authorization, body, afterHeaders) {
         response.on("end", () =>
           resolve({
             status: response.statusCode,
-            body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined,
+            body:
+              chunks.length && response.headers["content-type"] === "application/json"
+                ? JSON.parse(Buffer.concat(chunks).toString())
+                : undefined,
           }),
         );
         response.on("error", reject);
@@ -53,6 +67,7 @@ test(
   { timeout: 120000 },
   async (t) => {
     const fixture = await startSkipperPrivateGitOrigin({
+      witnessIssuedGit: true,
       repositoryRef: "qualification-private",
       approvalRef: "refs/heads/qualification/approved",
       teamReview: true,
@@ -123,7 +138,16 @@ test(
       ).code,
       0,
     );
+    // Identify the credential Git actually used; issuance order alone is not evidence.
+    const usedIndex = (priorCount) => {
+      const indices = [...new Set(fixture.gitAttemptIndices().slice(priorCount))];
+      assert.equal(indices.length, 1);
+      return indices[0];
+    };
+    const beforeA = fixture.gitAttemptIndices().length;
     await git(["clone", fixture.cloneUrl, "client"], token);
+    const indexA = usedIndex(beforeA);
+    assert.equal(await fixture.probeIssuedGit(indexA), 200);
     const client = join(directory, "client");
     assert.equal(
       await readFile(join(client, "README.md"), "utf8"),
@@ -154,7 +178,28 @@ test(
       statuses: "read",
     });
     assert.equal(reader.status, 201);
+    const beforeB = fixture.gitAttemptIndices().length;
     await git(["clone", fixture.cloneUrl, "read-only"], reader.body.token);
+    const indexB = usedIndex(beforeB);
+    assert.notEqual(indexA, indexB);
+    const observedProbe = fixture.observeRestartTraffic(indexA, indexB);
+    const beforeProbe = fixture.snapshot();
+    const beforeProbeAttempts = fixture.gitAttemptIndices().length;
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+    assert.equal(usedIndex(beforeProbeAttempts), indexB);
+    assert.deepEqual(observedProbe(), [
+      "git auth B",
+      "upload-advertise HTTP 200",
+      "verifier probe",
+    ]);
+    assert.equal(
+      fixture.snapshot().endpoints["upload-advertise:200"],
+      beforeProbe.endpoints["upload-advertise:200"] + 1,
+    );
+    assert.equal(fixture.snapshot().issued, beforeProbe.issued);
+    const beforeUnknown = fixture.snapshot();
+    await assert.rejects(fixture.probeIssuedGit(0), /unknown issued Git index/);
+    assert.deepEqual(fixture.snapshot(), beforeUnknown);
     assert.notEqual(
       (
         await git(["push", "origin", `HEAD:${fixture.approvalRef}`], reader.body.token, {
@@ -215,7 +260,7 @@ test(
           head: "qualification/approved",
           maintainer_can_modify: false,
         },
-        afterHeaders,
+        { afterHeaders },
       );
     assert.equal((await draft(token)).status, 403, "Git-only token must not create a draft");
     assert.equal(await fixture.observePullRequest(), null);
@@ -256,6 +301,38 @@ test(
     assert.equal((await fixture.readRefs())[fixture.approvalRef], sha);
     await fixture.deleteApprovalRef(sha);
     assert.deepEqual(await fixture.readRefs(), { "refs/heads/main": fixture.initialSha });
+    // An issuer refusal leaves this separate credential valid. Other tokens must still retire
+    // normally below; closing the fixture destroys this synthetic issuer without replaying DELETE.
+    const retained = await issue();
+    assert.equal(retained.status, 201);
+    const beforeRetained = fixture.gitAttemptIndices().length;
+    await git(["ls-remote", fixture.cloneUrl, "refs/heads/main"], retained.body.token);
+    const retainedIndex = usedIndex(beforeRetained);
+    fixture.refuseTokenRetirement(retainedIndex);
+    const observedRetirement = fixture.observeRestartTraffic(indexA, indexB);
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", "Bearer invalid")).status,
+      401,
+    );
+    assert.equal(fixture.snapshot().targetedRetirementRefusals, 0);
+    assert.equal(
+      (await api(fixture, "DELETE", "/installation/token", "Bearer " + retained.body.token)).status,
+      503,
+    );
+    assert.equal(fixture.snapshot().targetedRetirementRefusals, 1);
+    assert.deepEqual(observedRetirement(), [
+      "retirement auth other",
+      "revoke HTTP 401",
+      "revoke HTTP 503",
+    ]);
+    assert.equal(await fixture.probeIssuedGit(retainedIndex), 200);
+    assert.equal(
+      fixture.snapshot().tokens.find(({ index }) => index === retainedIndex).revoked,
+      false,
+    );
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+
+    const observedWithdrawal = fixture.observeRestartTraffic(indexA, indexB);
     // Qualify the exact installed withdrawal oracle on a real Git protocol-v2 connection.
     // Hold authenticated discovery, revoke the synthetic token, release discovery. The native
     // client must see its authenticated POST refused, never infer a denial from a timeout.
@@ -276,6 +353,7 @@ test(
       (error) => ({ error }),
     );
     await waitUntil("a real authenticated discovery", () => fixture.discoveryHeld(), 5000);
+    assert.deepEqual(observedWithdrawal(), ["git auth A", "upload-advertise HTTP 200"]);
     assert.equal(
       (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
       204,
@@ -288,6 +366,13 @@ test(
       1,
       "fixture observed the second authenticated POST",
     );
+    assert.deepEqual(observedWithdrawal(), [
+      "git auth A",
+      "retirement auth A",
+      "revoke HTTP 204",
+      "upload-advertise HTTP 200",
+      "upload-pack HTTP 401",
+    ]);
     const fresh = fetchAfterWithdrawalCommand(".", 401);
     const beforeFresh = fixture.snapshot().requests;
     const refused = await run("sh", ["-c", fresh], {
@@ -317,18 +402,171 @@ test(
       (await api(fixture, "DELETE", "/installation/token", `Bearer ${token}`)).status,
       401,
     );
+    assert.equal(await fixture.probeIssuedGit(indexA), 401);
+    assert.equal(await fixture.probeIssuedGit(indexB), 200);
+
     const snapshot = fixture.snapshot();
-    assert.equal(snapshot.issued, 5);
+    assert.equal(snapshot.issued, 6);
     assert.ok(snapshot.endpoints["upload-pack:200"] >= 2);
     assert.ok(snapshot.endpoints["receive-pack:200"] >= 4);
     assert.ok(snapshot.endpoints["other:404"] >= 1);
     assert.equal(JSON.stringify(snapshot).includes(token), false);
     assert.equal(JSON.stringify(snapshot).includes(jwt), false);
+    // Invalid protocol data reaches the Git backend only with valid credentials.
+    const observedRpc = fixture.observeRestartTraffic(indexA, indexB);
+    const invalidRpc = (credential) =>
+      api(
+        fixture,
+        "POST",
+        `/${fixture.repository}.git/git-upload-pack`,
+        `Bearer ${credential}`,
+        "not a Git packet",
+        { contentType: "application/x-git-upload-pack-request" },
+      );
+    assert.equal((await invalidRpc("invalid")).status, 401);
+    assert.equal((await invalidRpc(reader.body.token)).status, 502);
+    assert.deepEqual(observedRpc(), [
+      "git auth B",
+      "git auth other",
+      "upload-pack HTTP 401",
+      "upload-pack HTTP 502",
+    ]);
     await fixture.close();
+    await assert.rejects(fixture.probeIssuedGit(indexB), /origin closed/);
     await fixture.close();
     await assert.rejects(api(fixture, "POST", issuePath, jwt, {}), { code: "ECONNREFUSED" });
   },
 );
+
+test("replacement permits only the original B credential's first issuer retirement", async (t) => {
+  const origin = await startSkipperPrivateGitOrigin({ witnessIssuedGit: true });
+  t.after(() => origin.close());
+  const issue = async () => {
+    const response = await api(
+      origin,
+      "POST",
+      `/app/installations/${origin.installationId}/access_tokens`,
+      `Bearer ${origin.createAppJwt()}`,
+      { repository_ids: [73], permissions: { metadata: "read", contents: "write" } },
+    );
+    assert.equal(response.status, 201);
+    return { auth: "Bearer " + response.body.token, index: origin.snapshot().tokens.at(-1).index };
+  };
+  const a = await issue();
+  const b = await issue();
+  const observe = () => origin.observeReplacementOrigin(a.index, b.index);
+  const revoke = async (auth, options) =>
+    (await api(origin, "DELETE", "/installation/token", auth, undefined, options)).status;
+  const denied = (check) => assert.throws(check, { code: "ERR_ASSERTION" });
+  const clean = observe();
+  clean();
+  assert.equal(await origin.probeIssuedGit(a.index), 200);
+  denied(clean);
+  clean(1);
+  const git = observe();
+  assert.equal(await origin.probeIssuedGit(b.index), 200);
+  denied(() => git(1));
+  const discovery = `/${origin.repository}.git/info/refs?service=git-upload-pack`;
+  for (const [path, auth, status] of [
+    [discovery, b.auth, 200],
+    [discovery, undefined, 401],
+    ["/unrecognized", a.auth, 404],
+  ]) {
+    const check = observe();
+    assert.equal((await api(origin, "GET", path, auth)).status, status);
+    denied(check);
+  }
+  origin.refuseTokenRetirement(a.index);
+  const wrong = observe();
+  assert.equal(await revoke(a.auth), 503);
+  denied(wrong);
+  const unknown = observe();
+  assert.equal(await revoke("Bearer invalid"), 401);
+  denied(unknown);
+  const issuance = observe();
+  await issue();
+  denied(issuance);
+
+  // B's first HTTP request can use TLS accepted before observation. A bare
+  // connection opened afterward must still fail even though the totals rise by one each.
+  const url = new URL(origin.origin);
+  const options = { host: url.hostname, port: Number(url.port) };
+  // The TLS connection already belongs to the baseline. Only the parsed request
+  // can distinguish this traffic from an idle connection.
+  for (const [name, headers, status] of [
+    [
+      "unsupported expectation",
+      "GET / HTTP/1.1\r\nHost: fixture.invalid\r\nExpect: unsupported",
+      417,
+    ],
+    ["missing Host", "GET / HTTP/1.1", 400],
+    ["CONNECT", "CONNECT fixture.invalid:443 HTTP/1.1\r\nHost: fixture.invalid", undefined],
+    [
+      "upgrade",
+      "GET / HTTP/1.1\r\nHost: fixture.invalid\r\nConnection: upgrade\r\nUpgrade: example",
+      404,
+    ],
+  ]) {
+    await t.test(name, { timeout: 5000 }, async (t) => {
+      const socket = connectTls({ ...options, ca: origin.tls.ca });
+      t.after(() => socket.destroy());
+      await once(socket, "secureConnect");
+      const check = observe();
+      check();
+      socket.setEncoding("ascii");
+      let response = "";
+      socket.on("data", (chunk) => (response += chunk));
+      socket.end(headers + "\r\n\r\n");
+      await once(socket, "end");
+      if (status === undefined) {
+        assert.equal(response, "");
+      } else {
+        assert.ok(response.startsWith(`HTTP/1.1 ${status} `));
+      }
+      denied(check);
+    });
+  }
+  const tls = connectTls({ ...options, ca: origin.tls.ca });
+  t.after(() => tls.destroy());
+  await once(tls, "secureConnect");
+  const withExtra = observe();
+  const prior = origin.snapshot().connections;
+  const raw = connect(options);
+  t.after(() => raw.destroy());
+  await once(raw, "connect");
+  await waitUntil(
+    "extra raw connection accepted",
+    () => origin.snapshot().connections === prior + 1,
+    3000,
+  );
+  const preconnected = observe();
+  const agent = new Agent();
+  agent.createConnection = () => tls;
+  assert.equal(await revoke(b.auth, { agent }), 204);
+  preconnected();
+  denied(withExtra);
+  assert.equal(await revoke(b.auth), 401);
+  denied(preconnected);
+
+  const next = await issue();
+  const fresh = origin.observeReplacementOrigin(a.index, next.index);
+  assert.equal(await revoke(next.auth), 204);
+  fresh();
+
+  const pipelined = await issue();
+  const checkPipeline = origin.observeReplacementOrigin(a.index, pipelined.index);
+  const pipeline = connectTls({ ...options, ca: origin.tls.ca });
+  t.after(() => pipeline.destroy());
+  await once(pipeline, "secureConnect");
+  pipeline.resume();
+  pipeline.write(
+    `DELETE /installation/token HTTP/1.1\r\nHost: fixture.invalid\r\nAuthorization: ${pipelined.auth}\r\n\r\n` +
+      "GET /unrecognized HTTP/1.1\r\nHost: fixture.invalid\r\nConnection: close\r\n\r\n",
+  );
+  await once(pipeline, "end");
+  assert.equal(origin.snapshot().endpoints["other:503"], 1);
+  denied(checkPipeline);
+});
 
 test(
   "private origin accepts caller TLS and an explicit bridge listener",
@@ -409,3 +647,217 @@ test(
     assert.ok(endpoints["upload-pack:200"] >= 1);
   },
 );
+
+// These are the ordinary function-tool envelopes from Codex 0.164.0's
+// ExecCommandToolOutput::response_text (core/src/tools/context.rs), not the
+// separate JSON envelope used by code-mode tools. These adapter checks do not
+// execute native tools.
+function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
+  return [
+    "Chunk ID: abc123",
+    "Wall time: 0.2500 seconds",
+    ...(exit === undefined ? [] : ["Process exited with code " + exit]),
+    ...(session === undefined ? [] : ["Process running with session ID " + session]),
+    ...(tokenCount === null ? [] : ["Original token count: " + tokenCount]),
+    "Output:",
+    output,
+  ].join("\n");
+}
+
+async function controlledModel(t) {
+  const directory = await temporaryDirectory(t, "skipper-model-");
+  const path = join(directory, "command.json");
+  const command = {
+    cmd: "set -eu; printf 'private git task'",
+    id: "skipper-test",
+    expiresAt: Date.now() + 170_000,
+  };
+  await writeFile(path, JSON.stringify(command));
+  let respond = createSkipperPreparedComputeEvents(path);
+  const observations = [];
+  const input = [{ type: "message", role: "user", content: command.id }];
+  const next = () =>
+    respond({
+      model: "test",
+      request: JSON.stringify({ input }),
+      answerEvents: (_model, text) => text,
+      emit: (event) => observations.push(event),
+    });
+  const result = (call, output, delta = false) => {
+    if (delta) {
+      input.length = 0;
+    }
+    input.push(call, { type: "function_call_output", call_id: call.call_id, output });
+    return next();
+  };
+  const restart = () => {
+    respond = createSkipperPreparedComputeEvents(path);
+  };
+  return { path, command, observations, next, result, restart };
+}
+
+function toolCall(events) {
+  return events.find((event) => event.type === "response.output_item.done").item;
+}
+
+test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
+  const model = await controlledModel(t);
+  const initial = toolCall(model.next());
+  assert.equal(initial.name, "exec_command");
+  assert.equal(JSON.parse(initial.arguments).yield_time_ms, 30_000);
+  // Held discovery can outlive exec_command's first yield. Poll the returned
+  // process, even if earlier output already contains part of the success marker.
+  const first = toolCall(
+    model.result(initial, nativeToolOutput({ session: 42, output: "SKIPPER_COMPUTE_" })),
+  );
+  assert.equal(first.name, "write_stdin");
+  assert.equal(first.call_id, model.command.id + "-wait-1");
+  assert.equal(model.observations.at(-1).exitCode, null);
+  assert.equal(model.observations.at(-1).status, "running");
+  assert.equal(model.observations.at(-1).sessionPresent, true);
+  assert.deepEqual(JSON.parse(first.arguments), {
+    session_id: 42,
+    chars: "",
+    yield_time_ms: 30_000,
+  });
+  // Reconstruct from replayed full history after callback state is lost.
+  model.restart();
+  // A process may have exited while its output still drains. The session ID
+  // remains authoritative until Codex reports that collection has finished.
+  const second = toolCall(
+    model.result(first, nativeToolOutput({ session: 42, exit: 0, output: "DONE_" })),
+  );
+  assert.equal(second.name, "write_stdin");
+  assert.equal(second.call_id, model.command.id + "-wait-2");
+  assert.equal(model.observations.at(-1).exitCode, 0);
+  assert.equal(model.observations.at(-1).sessionPresent, true);
+  // The same full history must not append either result again.
+  assert.equal(toolCall(model.next()).call_id, second.call_id);
+  assert.deepEqual(JSON.parse(second.arguments), {
+    session_id: 42,
+    chars: "",
+    yield_time_ms: 30_000,
+  });
+  assert.equal(
+    model.result(
+      second,
+      nativeToolOutput({ exit: 0, output: "skipper-test\n", tokenCount: null }),
+      true,
+    ),
+    "SKIPPER_COMPUTE_DONE_skipper-test",
+  );
+  assert.equal(
+    model.observations.filter((event) => event.event === "skipper-native-request").length,
+    1,
+  );
+  assert.equal(model.observations.at(-1).status, "completed");
+  assert.equal(model.observations.at(-1).exitCode, 0);
+});
+
+test("the installed Skipper model requires terminal success and keeps failure diagnostics content-free", async (t) => {
+  const completed = await controlledModel(t);
+  assert.equal(
+    completed.result(
+      toolCall(completed.next()),
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test\n" }),
+    ),
+    "SKIPPER_COMPUTE_DONE_skipper-test",
+  );
+  for (const output of [
+    nativeToolOutput({
+      exit: 1,
+      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
+    }),
+    nativeToolOutput({
+      exit: 0,
+      output: "Process running with session ID 99\nprivate-error-canary",
+    }),
+    "private-error-canary",
+  ]) {
+    const model = await controlledModel(t);
+    const initial = toolCall(model.next());
+    assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
+    assert.equal(
+      model.observations.some((event) => event.event === "skipper-native-poll"),
+      false,
+    );
+  }
+});
+
+test("the installed Skipper model rejects a changed native session and stops polling at its chat deadline", async (t) => {
+  const model = await controlledModel(t);
+  const initial = toolCall(model.next());
+  const poll = toolCall(model.result(initial, nativeToolOutput({ session: 42 })));
+  assert.equal(
+    model.result(poll, nativeToolOutput({ session: 43 })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.at(-1).status, "unrecognized");
+
+  const expired = await controlledModel(t);
+  const exec = toolCall(expired.next());
+  await writeFile(expired.path, JSON.stringify({ ...expired.command, expiresAt: Date.now() - 1 }));
+  assert.equal(
+    expired.result(exec, nativeToolOutput({ session: 42 })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(expired.observations.at(-1).status, "deadline");
+  assert.equal(
+    expired.observations.some((event) => event.event === "skipper-native-poll"),
+    false,
+  );
+});
+
+test("the installed Skipper model rejects orphan or out-of-order native results", async (t) => {
+  for (const session of [42, undefined]) {
+    const orphan = await controlledModel(t);
+    const exec = toolCall(orphan.next());
+    const poll = toolCall(orphan.result(exec, nativeToolOutput({ session: 42 })));
+    orphan.restart();
+    assert.equal(
+      orphan.result(
+        poll,
+        nativeToolOutput({ session, exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+        true,
+      ),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(orphan.observations.at(-1).status, "unrecognized");
+  }
+  const reordered = await controlledModel(t);
+  const exec = toolCall(reordered.next());
+  const poll = toolCall(reordered.result(exec, nativeToolOutput({ session: 42 })));
+  assert.equal(
+    reordered.result(
+      { ...poll, call_id: reordered.command.id + "-wait-2" },
+      nativeToolOutput({ session: 42 }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+});
+
+test("the installed Skipper model reserves the native poll minimum and rejects late success", async (t) => {
+  for (const remaining of [1_000, -1]) {
+    const model = await controlledModel(t);
+    const exec = toolCall(model.next());
+    await writeFile(
+      model.path,
+      JSON.stringify({ ...model.command, expiresAt: Date.now() + remaining }),
+    );
+    assert.equal(
+      model.result(exec, nativeToolOutput({ session: 42 })),
+      "SKIPPER_INCOMPLETE_skipper-test",
+    );
+    assert.equal(model.observations.at(-1).status, "deadline");
+  }
+  const late = await controlledModel(t);
+  const exec = toolCall(late.next());
+  const poll = toolCall(late.result(exec, nativeToolOutput({ session: 42 })));
+  await writeFile(late.path, JSON.stringify({ ...late.command, expiresAt: Date.now() - 1 }));
+  assert.equal(
+    late.result(poll, nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" })),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(late.observations.at(-1).status, "deadline");
+});

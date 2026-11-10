@@ -790,20 +790,24 @@ test("all changes are inspected beyond API file-list limits", async (t) => {
 });
 
 test("symlinks and executable documentation select full", async (t) => {
-  await expectAll(t, "full", [
-    [
-      ({ repo }) => {
-        mkdirSync(join(repo, "docs"));
-        symlinkSync("../base.txt", join(repo, "docs/link.md"));
-      },
-    ],
-    [
-      ({ put, repo }) => {
-        put("docs/run.md");
-        chmodSync(join(repo, "docs/run.md"), 0o755);
-      },
-    ],
-  ]);
+  await expectAll(
+    t,
+    "full",
+    ["docs/guide.md", "docs/docs.json"].flatMap((path) => [
+      [
+        ({ repo }) => {
+          mkdirSync(join(repo, "docs"));
+          symlinkSync("../base.txt", join(repo, path));
+        },
+      ],
+      [
+        ({ put, repo }) => {
+          put(path);
+          chmodSync(join(repo, path), 0o755);
+        },
+      ],
+    ]),
+  );
 });
 
 test("submodule changes remain visible even when Git configuration ignores them", async (t) => {
@@ -1023,6 +1027,116 @@ function laneTable() {
   assert.ok(match, "workflow has a lane table");
   return JSON.parse(match[1]);
 }
+
+const mainPushEnvironment = {
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_REF: "refs/heads/main",
+};
+
+function mainPushEvent(f, overrides = {}) {
+  f.writeEvent({
+    before: f.base,
+    after: f.tested,
+    ref: "refs/heads/main",
+    repository: { full_name: "openclaw/openclaw-enterprise" },
+    forced: false,
+    deleted: false,
+    created: false,
+    ...overrides,
+  });
+}
+
+test("main push uses the before-tree policy to select and verify documentation", async (t) => {
+  const navigation = await fixture(
+    t,
+    ({ put }) => put("docs/docs.json", '{"navigation":{"tabs":[]}}\n'),
+    { "scripts/ci/impact.mjs": policy, "docs/docs.json": '{"navigation":{}}\n' },
+  );
+  mainPushEvent(navigation);
+  await navigation.expect("docs", mainPushEnvironment, "docs_only");
+  await (await shallowBootstrap(navigation)).expect("docs", mainPushEnvironment, "docs_only");
+
+  const [f, shallow] = await policyFixture(t, docsChange);
+  mainPushEvent(f);
+  await f.expect("docs", mainPushEnvironment, "docs_only");
+  await shallow.expect("docs", mainPushEnvironment, "docs_only");
+  for (const changed of [
+    { forced: true },
+    { created: true },
+    { deleted: true },
+    { forced: null },
+  ]) {
+    mainPushEvent(f, changed);
+    await f.expectReason("invalid_event", mainPushEnvironment);
+    await shallow.expectReason("invalid_event", mainPushEnvironment);
+  }
+  mainPushEvent(f, { after: f.head });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expectReason("bootstrap_checkout_mismatch", mainPushEnvironment);
+  mainPushEvent(f, { before: "0".repeat(40) });
+  await f.expectReason("checkout_mismatch", mainPushEnvironment);
+  await shallow.expect("full", mainPushEnvironment);
+  mainPushEvent(f);
+  for (const changed of [
+    { GITHUB_REPOSITORY: "another/repository" },
+    { GITHUB_REF: "refs/heads/another" },
+    { GITHUB_EVENT_NAME: "workflow_dispatch" },
+  ]) {
+    await f.expectReason("non_pr_event", { ...mainPushEnvironment, ...changed });
+    await shallow.expectReason("bootstrap_non_pr_event", { ...mainPushEnvironment, ...changed });
+  }
+});
+
+test("main push compares every commit since before, not just the last commit", async (t) => {
+  const [f, shallow] = await policyFixture(t, docsChange, {
+    moveMain: ({ put }) => put("src/main.ts", "export const changed = true;\n"),
+  });
+  mainPushEvent(f);
+  await f.expectReason("ineligible_change", mainPushEnvironment);
+  // A shallow checkout lacking the before commit must fail closed.
+  await shallow.expect("full", mainPushEnvironment);
+});
+
+test("main push keeps tests, policy changes, symlinks and executable docs in full mode", async (t) => {
+  for (const change of [
+    ({ put }) => put("tests/integration/ci-impact.test.mjs"),
+    ({ put }) => put(".github/workflows/ci.yml"),
+    ({ put }) => put("scripts/ci/impact.mjs", policy + "\n// changed\n"),
+    ({ put, repo }) => {
+      put("docs/executable.md");
+      chmodSync(join(repo, "docs/executable.md"), 0o755);
+    },
+    ({ repo }) => {
+      mkdirSync(join(repo, "docs"));
+      symlinkSync("../base.txt", join(repo, "docs/link.md"));
+    },
+  ]) {
+    const [f, shallow] = await policyFixture(t, change);
+    mainPushEvent(f);
+    await f.expect("full", mainPushEnvironment);
+    await shallow.expect("full", mainPushEnvironment);
+  }
+});
+
+test("main push cannot execute its new policy or narrow with an old policy", async (t) => {
+  const marker = join(temporaryDirectorySync(t, "ci-push-marker-"), "untrusted-marker");
+  const [f, shallow] = await policyFixture(t, ({ put }) => {
+    put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
+    put("docs/change.md");
+  });
+  mainPushEvent(f);
+  await shallow.expectReason("ineligible_change", mainPushEnvironment);
+  assert.equal(existsSync(marker), false);
+  const old = await fixture(t, docsChange, {
+    "scripts/ci/impact.mjs": `import { appendFileSync } from "node:fs";
+if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
+else if (process.argv[3] !== "full") process.exit(1);
+`,
+  });
+  mainPushEvent(old);
+  await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
+});
 
 test("the checked-in policy can select a documentation-only pull request", async (t) => {
   // Use the actual Git mode so a policy the bootstrap rejects cannot pass by
@@ -1277,19 +1391,28 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   }
 });
 
-test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.yml's runner", () => {
+test("full-integration preserves qualified runners for kernel, sandbox, and image lanes", () => {
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
-  // NetworkPolicy. These lanes must run where ci.yml runs them.
-  const job = loadYaml(".github/workflows/full-integration.yml").jobs["pr-safe-same-sha"];
-  const expression = job["runs-on"].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
-  const runnerFor = (lane) =>
-    runInNewContext(expression, {
-      matrix: { lane },
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+  // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
+  // Full Integration allocation while ordinary CI uses four CPUs. Observability
+  // and Network Isolation retain four CPUs here while ordinary CI qualifies two CPUs.
+  const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
+  const job = jobs["pr-safe-same-sha"];
+  const runnerFor = (target, lane) => {
+    const runner = target["runs-on"];
+    return runner.startsWith("${{")
+      ? runInNewContext(runner.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+          matrix: { lane },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+        })
+      : runner;
+  };
   const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
-  const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
+  assert.equal(job.strategy.matrix.include, "${{ fromJSON(needs.ci-reuse.outputs.matrix) }}");
+  const lanes = JSON.parse(read("scripts/ci/full-integration-lanes.json")).map(
+    (entry) => entry.lane,
+  );
   const pinned = lanes.filter(
     (lane) =>
       lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
@@ -1298,7 +1421,19 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
     assert.ok(pinned.includes(lane), lane);
   }
   for (const lane of pinned) {
-    assert.equal(runnerFor(lane), ciRunners.get(lane), lane);
+    assert.equal(
+      runnerFor(job, lane),
+      lane === "k3d-fixture-state"
+        ? "blacksmith-8vcpu-ubuntu-2404"
+        : lane === "k3d-observability" || lane === "k3d-fixture-network"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : ciRunners.get(lane),
+      lane,
+    );
+  }
+  const images = jobs["image-lanes-same-sha"];
+  for (const { lane } of images.strategy.matrix.include) {
+    assert.equal(runnerFor(images, lane), ciRunners.get(lane), lane);
   }
 });
 
@@ -1574,7 +1709,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   assert.deepEqual(
     [...sameSha].sort(),
     [
-      ...fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include,
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")),
       ...fullIntegration.jobs["image-lanes-same-sha"].strategy.matrix.include,
     ]
       .map((entry) => entry.lane)
@@ -1622,7 +1757,10 @@ test("every lane job stops its test files before its own timeout", (t) => {
         assert.equal(String(step.with["job-timeout-minutes"]), String(timeout), `${name} ${id}`);
         let minutes = [timeout];
         if (timeout === "${{ matrix.timeout }}") {
-          const rows = job.strategy.matrix.include;
+          const rows =
+            name === "full-integration.yml" && id === "pr-safe-same-sha"
+              ? JSON.parse(read("scripts/ci/full-integration-lanes.json"))
+              : job.strategy.matrix.include;
           minutes = (Array.isArray(rows) ? rows : laneTable()).map((row) => row.timeout);
         }
         for (const value of minutes) {
@@ -1741,6 +1879,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
   assert.deepEqual(
     [
       "runtime-image-fixture",
+      ...JSON.parse(read("scripts/ci/full-integration-lanes.json")).map((row) => row.lane),
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
     [...expectedFullLanes, "k3d-observability-demo"].sort(),
@@ -1780,10 +1919,18 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "static-checks", "runtime-artifact", ...expectedFullLanes].sort(),
+      Object.keys(passingGateNeeds("full")).sort(),
     );
-    for (const lane of expectedFullLanes) {
-      assert.equal(selectedNeeds[lane].result, "success", lane);
+    assert.deepEqual(
+      [
+        ...selectedNeeds["pr-safe"].lanes,
+        ...selectedNeeds["image-lanes"].lanes,
+        "runtime-image-fixture",
+      ].sort(),
+      [...expectedFullLanes].sort(),
+    );
+    for (const [name, state] of Object.entries(selectedNeeds)) {
+      assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
     const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
@@ -1819,9 +1966,61 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
       );
       assert.notEqual((await runLane(lane)).status, 0);
+      // A failed matrix job does not make its passing sibling lanes fail.
+      needs["pr-safe"].result = "failure";
+      assert.notEqual((await runGate(root, needs, mode)).status, 0);
       const failed = await aggregate();
       assert.notEqual(failed.status, 0);
       assert.ok(hasIssue(failed, "lane-failed", lane));
+      const summary = JSON.parse(failed.stdout);
+      assert.deepEqual(
+        summary.issues
+          .filter((entry) => entry.code === "need-not-success")
+          .map((entry) => entry.need),
+        ["pr-safe"],
+      );
+      assert.deepEqual(
+        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+        [lane],
+      );
+      assert.ok(
+        summary.lanes
+          .filter((entry) => entry.lane !== lane)
+          .every((entry) => entry.status === "passed"),
+      );
+      if (lane === "postgres") {
+        // Keep the runner-produced failure intact: an old revision's receipt
+        // cannot attribute an outcome to the revision being aggregated.
+        await command(root, "git", ["checkout", "-q", "--detach", f.head]);
+        const stale = await aggregate({ sha: f.head });
+        assert.notEqual(stale.status, 0);
+        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
+        assert.equal(hasIssue(stale, "lane-failed"), false);
+        assert.deepEqual(JSON.parse(stale.stdout).lanes, []);
+        await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
+
+        // A misplaced real receipt likewise cannot fail its passing sibling.
+        const sibling = join(root, "results/checks-baseline-1.json");
+        const siblingOriginal = readFileSync(sibling);
+        cpSync(artifact, sibling);
+        const misfiled = await aggregate();
+        assert.notEqual(misfiled.status, 0);
+        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
+        const misplaced = JSON.parse(misfiled.stdout);
+        assert.deepEqual(
+          misplaced.issues
+            .filter((entry) => entry.code === "lane-failed")
+            .map((entry) => entry.lane),
+          [lane],
+        );
+        assert.deepEqual(
+          misplaced.lanes.map((entry) => entry.lane),
+          ["checks-baseline-2", lane],
+        );
+        writeFileSync(sibling, siblingOriginal);
+      }
+      needs["pr-safe"].result = "success";
+      assert.equal((await runGate(root, needs, mode)).status, 0);
       writeFileSync(artifact, original);
     }
     needs["pr-safe"].result = "failure";
@@ -1872,6 +2071,7 @@ test("impact summary reports real selector categories from shallow merge checkou
   await all(
     [
       ["docs/change.md", "docs", "docs_only"],
+      ["docs/docs.json", "docs", "docs_only"],
       ["src/change.ts", "full", "ineligible_change"],
     ],
     async ([path, mode, reason]) => {
@@ -1950,7 +2150,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
   mkdirSync(objects);
   await all(
     [
-      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" }],
+      ["bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
       ["bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") }],
       ["bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" }],
       ["bootstrap_checkout_mismatch", { GITHUB_SHA: f.head }],
@@ -1979,7 +2179,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
   await all(
     [
       [f, {}, "docs", "docs_only"],
-      [f, { GITHUB_EVENT_NAME: "push" }, "full", "non_pr_event"],
+      [f, { GITHUB_EVENT_NAME: "workflow_dispatch" }, "full", "non_pr_event"],
       [f, { GITHUB_SHA: "invalid" }, "full", "invalid_identity"],
       [f, { GITHUB_SHA: f.head }, "full", "checkout_mismatch"],
       [
@@ -2531,6 +2731,10 @@ async function buildMatrix(t, mode, lanes) {
 
 test("the lane matrix runs every lane in full mode and only selected lanes in tests mode", async (t) => {
   const table = laneTable();
+  assert.equal(
+    table.find((row) => row.lane === "checks-baseline-1").runner,
+    "blacksmith-4vcpu-ubuntu-2404",
+  );
   // A runner label nobody provides leaves the job queued until it times out.
   // Every lane must use a self-hosted label that actionlint knows (the only
   // list in .github/actionlint.yaml).
@@ -2547,7 +2751,13 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-8vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability" || row.lane === "k3d-fixture-network"
+          ? "blacksmith-2vcpu-ubuntu-2404"
+          : "blacksmith-4vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [
@@ -2703,7 +2913,8 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "pr-safe"]);
+  assert.deepEqual(needs["pr-safe"].lanes, ["postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {
@@ -2824,7 +3035,44 @@ test("shared runtime DAG selects only image consumers while other checks stay in
   }
 });
 
-test("full aggregate attributes image coverage to its consumer and producer jobs", (t) => {
+test("shared runtime consumers omit idle builders and preserve source builders", () => {
+  const action = read(".github/actions/run-ci-lane/action.yml");
+  const expression = action
+    .match(/- id: builder[\s\S]*?\n {6}if: >-\n([\s\S]*?)\n {6}with:/)?.[1]
+    ?.trim()
+    .replaceAll("inputs.runtime-artifact-id", 'inputs["runtime-artifact-id"]');
+  assert.ok(expression, "the builder step has an explicit condition");
+  for (const [lane, profile, source, artifact] of [
+    ["images-runtime-startup", "full", true, false],
+    ["images-runtime-startup-2", "images", true, false],
+    ["images-runtime-startup-3", "images", true, false],
+    ["images-packaging", "full", true, true],
+    ["runtime-image-fixture", "full", true, true],
+    ["checks-browser", "baseline", false, false],
+    ["k3d-fixture-state", "k3d", false, false],
+    ["k3d-observability", "k3d", false, false],
+    ["docker-model", "full", false, false],
+    ["logging-collector", "images", false, false],
+  ]) {
+    for (const [id, expected] of [
+      ["", source],
+      ["123", artifact],
+    ]) {
+      assert.equal(
+        runInNewContext(expression, {
+          inputs: { lane, profile, "runtime-artifact-id": id },
+          startsWith: (value, prefix) => value.startsWith(prefix),
+          contains: (values, value) => values.includes(value),
+          fromJSON: JSON.parse,
+        }),
+        expected,
+        `${lane}: ${id ? "shared artifact" : "source build"}`,
+      );
+    }
+  }
+});
+
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration.yml");
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
@@ -2880,15 +3128,33 @@ test("full aggregate attributes image coverage to its consumer and producer jobs
       "image-lanes-same-sha": { result: "skipped" },
     });
     assert.equal(output["runtime-artifact"].result, result);
-    assert.equal(output["images-runtime-startup-2"].result, "skipped");
-    assert.equal(output.postgres.result, "success");
+    assert.equal(output["image-lanes-same-sha"].result, "skipped");
+    assert.ok(output["image-lanes-same-sha"].lanes.includes("images-runtime-startup-2"));
+    assert.equal(output["pr-safe-same-sha"].result, "success");
+    assert.ok(output["pr-safe-same-sha"].lanes.includes("postgres"));
+  }
+  for (const selection of ["all", "openshell"]) {
+    const output = execute(selection, { openshell: { result: "failure" } });
+    const lanes = ["openshell-policy", "openshell-installers"];
+    assert.deepEqual(output.openshell, { result: "failure", lanes });
+    for (const lane of lanes) {
+      assert.equal(output[lane], undefined);
+    }
   }
   const imageFailure = execute("all", { "image-lanes-same-sha": { result: "failure" } });
-  assert.equal(imageFailure["images-packaging"].result, "failure");
-  assert.equal(imageFailure["checks-baseline-1"].result, "success");
+  assert.equal(imageFailure["image-lanes-same-sha"].result, "failure");
+  assert.equal(imageFailure["pr-safe-same-sha"].result, "success");
   const unrelatedFailure = execute("all", { "pr-safe-same-sha": { result: "failure" } });
-  assert.equal(unrelatedFailure["images-packaging"].result, "success");
-  assert.equal(unrelatedFailure.postgres.result, "failure");
+  assert.equal(unrelatedFailure["image-lanes-same-sha"].result, "success");
+  assert.equal(unrelatedFailure["pr-safe-same-sha"].result, "failure");
+  assert.equal(unrelatedFailure.postgres, undefined);
+  assert.equal(unrelatedFailure["logging-collector"], undefined);
+  assert.ok(unrelatedFailure["pr-safe-same-sha"].lanes.includes("logging-collector"));
+  const logging = execute("logging-collector", { "logging-collector": { result: "failure" } });
+  assert.deepEqual(logging, {
+    preflight: { result: "success" },
+    "logging-collector": { result: "failure" },
+  });
   const targeted = execute("docker-model", {
     "runtime-artifact": { result: "skipped" },
     "image-lanes-same-sha": { result: "skipped" },

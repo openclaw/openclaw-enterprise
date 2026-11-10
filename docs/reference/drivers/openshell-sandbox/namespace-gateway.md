@@ -34,8 +34,10 @@ the Driver. Do not include another manifest for that Secret or put Agent/model
 credentials in gateway manifests. Configure the gateway to read its signing key
 from that Secret. Retries keep the existing owned key.
 
-Deletion first removes the owned Workspace, then gateway resources and its signing
-key. It retains operator-owned resources. A failed or incomplete deletion blocks
+Deletion removes the owned Workspace before gateway resources and its signing key
+when the managed gateway is reachable. Without a ready gateway Pod, or after a
+recognized transport outage, cleanup removes the owned gateway resources directly.
+Authorization or provider refusals still block cleanup. It retains operator-owned resources. A failed or incomplete deletion blocks
 Compute teardown. After Compute removes the backing namespace, a cleanup retry
 treats these namespace-owned resources as absent. Readiness failures remain pending; repair the configured images,
 RBAC, or network access and allow reconciliation to retry. Ownership conflicts

@@ -58,10 +58,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -70,18 +77,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
@@ -125,9 +139,11 @@ jobs:
       # part 3's length (it was a job of its own, Image Model Probes).
       # Runner labels now expose their named CPU capacity. Restore the
       # measured pre-November 3 allocations without changing lane concurrency.
-      # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Image lanes
+      # k3d keeps Blacksmith's kernel for NetworkPolicy checks. Runtime image lanes
       # retain 8 CPUs / 30.4 GiB for their measured 15-20 GiB peaks. Browser
       # lanes use 8 CPUs with their existing eight-file concurrency.
+      # Ordinary Conformance 1 uses 4 CPUs; Full Integration keeps 8 for its
+      # additional static checks. The test runner caps files to available CPUs.
       - id: matrix
         name: Build lane matrix
         env:
@@ -135,7 +151,7 @@ jobs:
           SELECT_LANES: ${{ steps.select.outputs.lanes }}
           LANE_TABLE: |
             [
-              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
@@ -143,16 +159,16 @@ jobs:
               {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
+              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-4vcpu-ubuntu-2404"}
             ]
@@ -264,10 +280,12 @@ jobs:
         run: actionlint .github/workflows/*.yml
       - name: Audit suite manifest and workflows
         run: node scripts/ci/run-tests.mjs audit
+      - name: Audit the Full Integration OpenShell view
+        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.mjs audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
-          # This job only restores the store; it has no save step.
+          # The root workspace cache is saved by the test lanes.
           cache-mode: restore
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -283,8 +301,24 @@ jobs:
         run: pnpm format:check
       - name: Run OpenAPI check
         run: pnpm openapi:check
+      - name: Restore documentation dependencies
+        id: docs-store
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-file: scripts/docs-site/package.json
+          lockfile-path: scripts/docs-site/pnpm-lock.yaml
+          cache-mode: read-write
       - name: Check and build documentation
         run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
+      - name: Save documentation dependencies
+        # This job owns the docs cache. The build must run Pagefind successfully
+        # before saving: installation can succeed without its optional binary.
+        if: success() && steps.docs-store.outputs.store-cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.docs-store.outputs.store-path }}
+          key: ${{ steps.docs-store.outputs.store-cache-primary-key }}
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact
@@ -355,6 +389,9 @@ jobs:
     uses: ./.github/workflows/ci-runtime-artifact.yml
 
   image-lanes:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.title }}
     needs: [impact, runtime-artifact]
     if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-images == 'true' }}
@@ -416,6 +453,9 @@ jobs:
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
+    permissions:
+      contents: read
+      actions: read
     name: First Agent Smoke
     needs: [impact, runtime-artifact]
     if: ${{ needs.impact.outputs.mode == 'full' }}
@@ -437,7 +477,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Set up CI tools
-        run: bash scripts/ci/setup-tools.sh k3d
+        uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: k3d
       # Pull Docker Hub images through mirror.gcr.io without the runner's
       # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
       # before Buildx starts its builder container.
@@ -481,6 +523,9 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.runtime-artifact.outputs.run-id }}
           path: ${{ runner.temp }}/runtime-artifact
           merge-multiple: true
       - name: Build checkout images
@@ -494,10 +539,21 @@ jobs:
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs images
       - name: Install, deploy, chat, stop and start
+        id: smoke
         run: node scripts/ci/first-agent-smoke.mjs run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
+      - name: Upload First Agent Smoke timings
+        if: ${{ !cancelled() && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-agent-smoke-timing-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/first-agent-smoke-timing.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   ci-required:
     name: CI Required
@@ -543,10 +599,17 @@ jobs:
           trap 'rm -f "$policy"' EXIT
           trusted_policy() {
             reason=bootstrap_non_pr_event
-            [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
-            reason=bootstrap_event_unavailable
-            base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
-            head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              [ "${GITHUB_REPOSITORY:-}" = openclaw/openclaw-enterprise ] && [ "${GITHUB_REF:-}" = refs/heads/main ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.before | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.after | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            else
+              [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || return 1
+              reason=bootstrap_event_unavailable
+              base=$(jq -er '.pull_request.base.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+              head=$(jq -er '.pull_request.head.sha | select(type == "string")' "$GITHUB_EVENT_PATH") || return 1
+            fi
             reason=bootstrap_invalid_identity
             oid='^([0-9a-f]{40}|[0-9a-f]{64})$'
             [[ $base =~ $oid && $head =~ $oid && ${GITHUB_SHA:-} =~ $oid ]] || return 1
@@ -555,18 +618,25 @@ jobs:
             reason=bootstrap_checkout_mismatch
             [ "$actual" = "$GITHUB_SHA" ] || return 1
             reason=bootstrap_git_inspection_failed
-            parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
-            reason=bootstrap_checkout_mismatch
-            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
-            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
-            merge_base=${BASH_REMATCH[1]}
-            reason=bootstrap_git_inspection_failed
-            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            # GitHub merges onto the base tip at merge time; base.sha lags it
-            # when the base moved after the push and is then not fetched.
-            reason=bootstrap_checkout_mismatch
-            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            if [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+              reason=bootstrap_checkout_mismatch
+              [ "$head" = "$GITHUB_SHA" ] || return 1
+              git cat-file -e "$base^{commit}" && git merge-base --is-ancestor "$base" "$head" || return 1
+              merge_base=$base
+            else
+              parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
+              reason=bootstrap_checkout_mismatch
+              [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+              [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+              merge_base=${BASH_REMATCH[1]}
+              reason=bootstrap_git_inspection_failed
+              git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+              # GitHub merges onto the base tip at merge time; base.sha lags it
+              # when the base moved after the push and is then not fetched.
+              reason=bootstrap_checkout_mismatch
+              if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+                git merge-base --is-ancestor "$base" "$merge_base" || return 1
+              fi
             fi
             reason=bootstrap_git_inspection_failed
             entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
