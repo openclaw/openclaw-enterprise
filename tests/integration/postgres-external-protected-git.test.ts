@@ -15,6 +15,7 @@ import type {
   RepositoryGitSendPermit,
 } from "../../packages/contracts/src/index.ts";
 import {
+  installationDriverConfigurations,
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
   readPublicCaBundle,
@@ -34,10 +35,7 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import {
-  createBackendController,
-  registerCoreDrivers,
-} from "../helpers/postgres-backend-state.mjs";
+import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
@@ -177,7 +175,6 @@ function repositoryConfiguration(input: {
   sandbox: Record<string, unknown>;
   issuerCaPath: string;
   apiOrigin: string;
-  policyMode?: "built-in";
 }) {
   const base = createInstallationDriverConfiguration();
   // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
@@ -196,7 +193,6 @@ function repositoryConfiguration(input: {
       },
     ],
     repository: {
-      ...(input.policyMode && { policyMode: input.policyMode }),
       id: input.backendId,
       configuration: { sessionDurationSeconds: 180 },
       preparedGitHub: {
@@ -269,43 +265,62 @@ test("production composition separates repository policy from protected and expl
       environment: { OCC_CONFIG_PATH: path },
     }))!;
   };
-  const builtInConfiguration = {
+  const unconfigured = await load({ ...configuration, backend: [], repository: undefined });
+  assert.equal(unconfigured.repositoryAdmission, undefined);
+  assert.equal(unconfigured.repositoryPolicy, undefined);
+  assert.equal(unconfigured.repositoryGitDriver, undefined);
+  assert.equal(unconfigured.nativeRepositorySender, undefined);
+  await assert.rejects(
+    load({ ...configuration, backend: [] }),
+    /repository requires an owning backend/,
+  );
+  await assert.rejects(
+    load({ ...configuration, repository: undefined }),
+    /drivers\.repo requires repository/,
+  );
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: { ...configuration.repository, policyMode: "custom-veto" },
+    }),
+    { name: "Error", message: 'repository.policyMode must be "built-in" when supplied.' },
+  );
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: { ...configuration.repository, policy: "custom-veto" },
+    }),
+    { name: "Error", message: /repository.*policy/ },
+  );
+  const legacy = await load({
     ...configuration,
     repository: { ...configuration.repository, policyMode: "built-in" },
-  };
-  const builtIn = await load(builtInConfiguration);
-  assert.equal(Object.hasOwn(builtIn, "repositoryPolicy"), false);
-  assert.equal(builtIn.repositoryAdmission?.policyMode, "built-in");
-  const builtInPolicy = builtIn.repositoryAdmission!.policy;
-  assert.equal((await builtInPolicy.listCatalog({ namespaceId })).options.length, 1);
+  });
+  const protectedGit = await load(configuration);
+  assert.ok(protectedGit.protectedDriver);
+  assert.deepEqual(legacy.protectedDriver?.ref, protectedGit.protectedDriver.ref);
+  assert.deepEqual(legacy.installation.repository, protectedGit.installation.repository);
+  for (const loaded of [protectedGit, legacy]) {
+    assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
+    assert.equal(loaded.repositoryAdmission?.policyMode, "built-in");
+    assert.equal(
+      installationDriverConfigurations(loaded.installation).some(
+        (entry) => entry.capability === "repo",
+      ),
+      false,
+    );
+  }
+  const policy = protectedGit.repositoryAdmission!.policy;
+  assert.equal((await policy.listCatalog({ namespaceId })).options.length, 1);
   assert.throws(
     () =>
-      builtInPolicy.resolveBindings({
+      policy.resolveBindings({
         namespaceId,
         bindings: [{ repositoryRef: "not-authorized", profile: "git-write" }],
       }),
     { name: "ScopeViolationError", message: /not permitted/ },
   );
-  await assert.rejects(
-    load({
-      ...builtInConfiguration,
-      repository: { ...builtInConfiguration.repository, policyMode: "custom" },
-    }),
-    { name: "Error", message: /repository.policyMode/ },
-  );
-  await assert.rejects(
-    load({
-      ...builtInConfiguration,
-      repository: { ...builtInConfiguration.repository, policy: "custom-veto" },
-    }),
-    { name: "Error", message: /repository.*policy/ },
-  );
-  const protectedGit = await load(configuration);
-  assert.ok(builtIn.protectedDriver);
-  assert.deepEqual(builtIn.protectedDriver.ref, protectedGit.protectedDriver?.ref);
-  const policy = protectedGit.repositoryPolicy!;
-  assert.equal((await policy.listOptions({ namespaceId })).options.length, 1);
-  const binding = policy.resolve({
+  const binding = policy.resolveBindings({
     namespaceId,
     bindings: [{ repositoryRef: "source", profile: "git-write" }],
   }).bindings[0]!;
@@ -384,7 +399,7 @@ test("production composition separates repository policy from protected and expl
       const captured = (await loadSnapshot(mutable))!;
       assert.equal(mutable.repository.configuration.sessionDurationSeconds, 90);
       assert.equal(
-        captured.repositoryPolicy!.resolve({
+        captured.repositoryAdmission!.policy.resolveBindings({
           namespaceId,
           bindings: [{ repositoryRef: "source", profile: "git-write" }],
         }).sessionDurationSeconds,
@@ -444,17 +459,19 @@ test("production composition separates repository policy from protected and expl
     },
   });
   assert.ok(native.nativeRepositorySender);
+  assert.equal(native.repositoryPolicy, undefined);
+  assert.equal(native.repositoryAdmission?.policyMode, "built-in");
   assert.equal(native.repositoryGitDriver, undefined);
   assert.equal(Object.hasOwn(native.installation.drivers, "repo"), false);
   assert.deepEqual(
-    native.repositoryPolicy!.resolve({
+    native.repositoryAdmission!.policy.resolveBindings({
       namespaceId,
       bindings: [{ repositoryRef: "source", profile: "git-write" }],
     }).bindings,
     [binding],
   );
   assert.deepEqual(
-    native.repositoryPolicy!.standingApprovalScope!({ namespaceId, binding }),
+    native.repositoryAdmission!.policy.standingApprovalScope!({ namespaceId, binding }),
     scope,
   );
   // Installation-wide authority is never available through a native session, even with a prepared provider.
@@ -616,8 +633,8 @@ function externalGitJourney(
     await f.controller.handleNamespaceLifecycle(f.actor.id, createdNamespace.id, "ready");
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
-    const builtIn = scope === "built-in-installation";
-    const online = scope === "online-installation" || builtIn;
+    const authenticatedJourney = scope === "built-in-installation";
+    const online = scope === "online-installation" || authenticatedJourney;
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
@@ -625,7 +642,7 @@ function externalGitJourney(
         ? await installationOrigin(
             t,
             namespaceId,
-            builtIn ? { tokenLifetimeMs: 300_000, maximumIssues: 2 } : undefined,
+            authenticatedJourney ? { tokenLifetimeMs: 300_000, maximumIssues: 2 } : undefined,
           )
         : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
@@ -696,7 +713,6 @@ function externalGitJourney(
       JSON.stringify(
         repositoryConfiguration({
           backendId,
-          ...(builtIn && { policyMode: "built-in" }),
           registryPath,
           privateKeyPath,
           custodyKeyPath,
@@ -766,11 +782,9 @@ function externalGitJourney(
     assert.equal(Object.hasOwn(drivers.installation.drivers, "repo"), false);
     assert.equal(drivers.nativeRepositorySender, undefined);
     assert.equal("open" in drivers.repositoryAdmission!.policy, false);
-    if (builtIn) {
-      assert.equal(apiDrivers.repositoryPolicy, undefined);
-      assert.equal(drivers.repositoryPolicy, undefined);
-      assert.equal(drivers.repositoryAdmission?.policyMode, "built-in");
-    }
+    assert.equal(apiDrivers.repositoryPolicy, undefined);
+    assert.equal(drivers.repositoryPolicy, undefined);
+    assert.equal(drivers.repositoryAdmission?.policyMode, "built-in");
     assert.equal(drivers.repositoryTransport, undefined);
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
@@ -1033,33 +1047,24 @@ function externalGitJourney(
     };
     const { actor, observerPool: pool } = f;
     const backends = apiDrivers.installation.backend;
-    const controller = builtIn
-      ? OpenClawController.forInstallation(
-          f.installation,
-          { state: f.state, backends },
-          apiDrivers.repositoryAdmission,
-        )
-      : createBackendController(f, { backends });
-    if (builtIn) {
-      registerCoreDrivers(controller, f.state);
-    }
+    const controller = OpenClawController.forInstallation(
+      f.installation,
+      { state: f.state, backends },
+      apiDrivers.repositoryAdmission,
+    );
+    registerCoreDrivers(controller, f.state);
     const { id: who } = actor;
     if (modelGateway) {
       controller.registerDriver(modelGateway);
       controller.selectDriver("credential_gateway", modelGateway.id);
     }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
-    for (const d of [
-      ...(apiDrivers.repositoryPolicy ? [apiDrivers.repositoryPolicy] : []),
-      compute,
-    ]) {
-      controller.registerDriver(d);
-      controller.selectDriver(d.capability, d.id);
-    }
+    controller.registerDriver(compute);
+    controller.selectDriver(compute.capability, compute.id);
     const repositoryRef = broad?.installation.repositoryRef ?? "source";
     let authenticated:
       ((method: string, url: string, body?: unknown) => ReturnType<typeof injectJson>) | undefined;
-    if (builtIn) {
+    if (authenticatedJourney) {
       // Sign in a real persisted account with the fixture's administrator Role. Native IAM
       // authorizes both Namespaces; repository policy alone denies the foreign selection.
       const auth = await createPostgresControllerAuth({
@@ -2263,7 +2268,7 @@ function externalGitJourney(
       // Git is still denied per request and cleanup reduces after it. Every pass that starts
       // after the withdrawal must never prepare.
       await settleRevisionMaintenance(f, revision);
-      if (builtIn) {
+      if (authenticatedJourney) {
         const stored = await f.state.read((view) =>
           view.revisions.findRevision(namespaceId, agentId, revision.id),
         );
@@ -2339,7 +2344,7 @@ function externalGitJourney(
         ).rows[0].n,
         installs: peer.delivery.installs,
       });
-      if (builtIn) {
+      if (authenticatedJourney) {
         const beforeRenewal = providerTraffic();
         await makeRenewalDue();
         await prepared.maintain();
@@ -2624,7 +2629,7 @@ function externalGitJourney(
         return;
       }
       const before = providerTraffic();
-      const materialBeforeWithdrawal = builtIn ? await materialCounts() : undefined;
+      const materialBeforeWithdrawal = authenticatedJourney ? await materialCounts() : undefined;
       const decisions = peer.decisions.length;
       if (reducible) {
         peer.reduction.loseReply = true;
@@ -2744,7 +2749,7 @@ function externalGitJourney(
           releaseTokenRetirement!();
         }
       }
-      if (builtIn) {
+      if (authenticatedJourney) {
         // Let real retirement finish, then require the same due pass to refuse new issuance.
         await prepared.maintain();
         assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
@@ -2890,7 +2895,7 @@ function externalGitJourney(
         before,
         "withdrawal through maintenance reaches no issuer or workload provider endpoint",
       );
-      if (builtIn) {
+      if (authenticatedJourney) {
         assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
         t.diagnostic(
           `due renewal: authorized issuance=1, withdrawn issuance=0; provider ingress ${JSON.stringify(before)} -> ${JSON.stringify(providerTraffic())}; lifecycle traffic ${JSON.stringify(broad!.installation.traffic())}`,

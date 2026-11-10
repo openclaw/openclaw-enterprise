@@ -260,7 +260,7 @@ awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-10 09:54: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 551eec254b132fc490c8a4ceaefafa166541e7ef)
+- 2026-11-10 10:10: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - a4fb4b09a0ac30e58f907b9a2a712fca30d770f3)
 
 - 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
 
