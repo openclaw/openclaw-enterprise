@@ -246,7 +246,12 @@ export async function validateFullIntegrationPreflight({
 async function main() {
   const result = await validateFullIntegrationPreflight();
   if (result.selectedLane === "skip") {
-    console.log(`Full Integration schedule skipped: ${result.reason}.`);
+    const message = `Full Integration schedule skipped: ${result.reason}.`;
+    console.log(
+      process.env.GITHUB_ACTIONS === "true"
+        ? `::notice title=Full Integration schedule::${message}`
+        : message,
+    );
   } else {
     console.log(
       process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
