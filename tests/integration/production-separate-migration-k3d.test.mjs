@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
 import test from "node:test";
-import { createRealKubernetesFixture } from "../helpers/kubernetes-real.mjs";
+import { promisify } from "node:util";
+import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
 import {
@@ -189,19 +190,28 @@ test(
     // key's last_request and updated_at; compare every other byte, including all
     // other keys, and verify the two expected timestamps independently.
     const databaseSnapshot = async (name) => {
-      const dump = await f.kubectl(
-        "-n",
-        f.system,
-        "exec",
-        "postgres",
-        "--",
-        "pg_dump",
-        "-U",
-        "postgres",
-        "--restrict-key=OceMigrationPreflight",
-        `openclaw_k8s_observability_${f.suffix}`,
-      );
-      await writeFile(join(f.directory, `${name}.sql`), dump, { mode: 0o600 });
+      // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
+      // Keep command failures generic because both streams may contain private data.
+      const { stdout: bytes } = await promisify(execFile)(
+        process.env.OCC_KUBECTL_BIN ?? "kubectl",
+        kubectlArguments(f.selection, [
+          "-n",
+          f.system,
+          "exec",
+          "postgres",
+          "--",
+          "pg_dump",
+          "-U",
+          "postgres",
+          "--restrict-key=OceMigrationPreflight",
+          `openclaw_k8s_observability_${f.suffix}`,
+        ]),
+        { encoding: "buffer", timeout: 180_000, maxBuffer: 2 * 1024 * 1024 },
+      ).catch(() => {
+        throw new Error("database snapshot capture failed");
+      });
+      await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
+      const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       let timestamps;
       const normalized = dump.replace(
         /^COPY occ\.apikey \(([^\n]+)\) FROM stdin;\n([\s\S]*?)\n\\\.\n/m,

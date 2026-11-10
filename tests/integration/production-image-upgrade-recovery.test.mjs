@@ -1098,6 +1098,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
           const escaped = Buffer.from(object.log).toString("hex").replace(/../g, "\\x$&");
           return io.script(`printf '%b' ${bashString(escaped)}; exit 0`);
         }
+        if (args.includes("logs") && object.logWarning) {
+          io.stderr(object.logWarning);
+        }
         out(
           args.includes("logs")
             ? object.log
@@ -1106,6 +1109,9 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
                 ...(kind === "pod" ? { status: object.status ?? { phase: object.phase } } : {}),
               },
         );
+        if (args.includes("logs") && object.logExitCode) {
+          return io.exit(object.logExitCode);
+        }
       } else if (
         args.includes("get") &&
         args.includes("pods") &&
@@ -4316,6 +4322,85 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     assert.deepEqual((await f.state()).preflight.jobs, {});
   });
 
+  test("a helper PID signal during resumed migration preserves its acknowledged resources", async (t) => {
+    // Arm the real signal only after a partial stop. Signalling the process group
+    // would hide a resume subshell that continues running after its parent is signalled.
+    const fault = { mode: null };
+    const f = await fixture(t, { preflightFault: fault });
+    await f.failNext("fail-scale-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const before = await f.state();
+    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
+    fault.mode = "interrupt";
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal(failure.code, 143);
+    assert.match(failure.stderr, /upgrade interrupted/);
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    const [retry] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight-resume."),
+    );
+    assert.ok(retry);
+    const state = await f.state();
+    assert.deepEqual(
+      state.preflight.deleted,
+      before.preflight.deleted,
+      "interruption must not delete the resumed migration Job or Pod",
+    );
+    const records = await preflightIdentities({ evidence: join(f.evidence, retry) });
+    assert.equal(records.length, 1, "the migration Job was acknowledged before observation");
+    assert.deepEqual(records, state.preflight.created.slice(before.preflight.created.length));
+    assert.equal(Object.keys(state.preflight.jobs).length, 1);
+    assert.equal(Object.keys(state.preflight.pods).length, 1);
+    assert.equal(state.api, 0);
+    assert.equal(state.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
+    const f = await fixture(t);
+    await f.failNext("fail-scale-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const before = await f.state();
+    const originalParameters = await readFile(join(f.evidence, "parameters.json"));
+    const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
+    const originalFailures = await readFile(join(f.evidence, "native-command-failures.tsv"));
+    before.preflightFault = { target: "migration", mode: "lost" };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(before));
+    const failure = await f.run("--resume").catch((error) => error);
+    assert.equal(failure.code, 1);
+    assert.match(failure.stderr, /ownership unconfirmed/);
+    assert.doesNotMatch(failure.stderr, /fresh evidence directory|This run stopped no OCC writer/);
+    assert.match(failure.stderr, /reconcil[ei].*--resume.*original evidence directory/i);
+    const [retry] = (await readdir(f.evidence)).filter((name) =>
+      name.startsWith("migration-preflight-resume."),
+    );
+    assert.ok(retry);
+    assert.ok(failure.stderr.includes(join(f.evidence, retry)));
+    assert.ok(failure.stderr.includes(f.evidence));
+    assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+    assert.deepEqual(await readFile(join(f.evidence, "parameters.json")), originalParameters);
+    assert.deepEqual(await readFile(join(f.evidence, "preflight-migration.log")), originalCheck);
+    assert.deepEqual(
+      await readFile(join(f.evidence, "native-command-failures.tsv")),
+      originalFailures,
+    );
+    const state = await f.state();
+    assert.equal(
+      Object.keys(state.preflight.jobs).length,
+      1,
+      "unknown Job must not be deleted by name",
+    );
+    assert.equal(Object.keys(state.preflight.pods).length, 1);
+    assert.deepEqual(await preflightIdentities({ evidence: join(f.evidence, retry) }), []);
+    assert.deepEqual(state.preflight.deleted, before.preflight.deleted);
+    assert.equal(state.api, 0);
+    assert.equal(state.worker, 1);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
   test("quiescence refuses a worker changed after observation and preserves partial recovery", async (t) => {
     for (const fault of ["replace-worker-before-scale", "edit-worker-before-scale"]) {
       await t.test(fault, async (t) => {
@@ -6612,7 +6697,11 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
       await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"),
     );
     assert.equal(status.status.containerStatuses[0].state.waiting.reason, "ImagePullBackOff");
-    assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), /waiting to start/);
+    assert.match(
+      await readFile(join(f.evidence, "preflight-api-logs.err"), "utf8"),
+      /waiting to start/,
+    );
+    assert.equal((await readFile(join(f.evidence, "preflight-api.log"), "utf8")).trim(), "");
     assert.equal(
       JSON.parse(await readFile(join(f.evidence, "preflight-worker-status.json"), "utf8")).status
         .phase,
@@ -6658,6 +6747,51 @@ await describe("production image upgrade recovery", { concurrency: 2 }, async ()
     await assert.rejects(f.run("--preflight-only"), /cannot read the api startup preflight logs/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
     await assertStoppedBeforeWriters(f);
+  });
+
+  test("kubectl log warnings do not reject a valid migration check", async (t) => {
+    const log = 'Starting migration check\n{"event":"migration.checked","history":"completed"}\n';
+    const warning = "Warning: API server warning accompanying successful logs\n";
+    const f = await fixture(t, {
+      preflightResults: { migration: { phase: "Succeeded", log, logWarning: warning } },
+    });
+    // Container output and successful kubectl diagnostics are independent streams.
+    // The real helper must find the check record without accepting a wrong marker.
+    await f.run("--preflight-only");
+    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
+    assert.equal(await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"), warning);
+    assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+    assert.equal((await f.state()).api, 1);
+    assert.equal((await f.state()).worker, 1);
+    assert.deepEqual((await f.state()).preflight.jobs, {});
+    assert.deepEqual(await f.events(), []);
+  });
+
+  test("a failed kubectl log read cannot authorize migration from partial stdout", async (t) => {
+    const log = '{"event":"migration.checked","history":"completed"}\n';
+    const f = await fixture(t, {
+      preflightResults: {
+        migration: {
+          phase: "Succeeded",
+          log,
+          logWarning: "log stream interrupted\n",
+          logExitCode: 1,
+        },
+      },
+    });
+    // A check marker received before a failed log request is not a successful observation.
+    await assert.rejects(
+      f.run("--preflight-only"),
+      /cannot read the migration startup preflight logs/,
+    );
+    assert.equal(await readFile(join(f.evidence, "preflight-migration.log"), "utf8"), log);
+    assert.match(
+      await readFile(join(f.evidence, "preflight-migration-logs.err"), "utf8"),
+      /log stream interrupted/,
+    );
+    assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+    await assertStoppedBeforeWriters(f);
+    assert.deepEqual((await f.state()).preflight.jobs, {});
   });
 
   test("a completed migration preflight without a valid check result leaves writers running", async (t) => {

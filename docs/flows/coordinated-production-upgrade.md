@@ -1,20 +1,19 @@
 ---
 created: 2026-09-23
 updated: "2026-11-10"
-last_updated_session: "authoring-run/50fc84bd-0fe3-4009-ba19-6703902571c7"
+last_updated_session: "authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b"
 ---
 
 # Production image upgrade flow
 
 ## Overview
 
-`scripts/upgrade-production-images` upgrades OpenClaw Control Plane (OCC) or
-Agent runtimes.
+Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ## Entry Points
 
 - Run `scripts/upgrade-production-images` with reviewed inputs.
-- Required: healthy production Helm release with a chart-owned initializer, matching OCC/Kubernetes Installation
+- Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
@@ -113,7 +112,7 @@ Agents; allow pending repository cleanup.
 `prepare_upgrade` copies PostgreSQL's `run` result. Before preflight,
 `validate_controller_compatibility` calls `scripts/upgrade-evidence.py:validate_compatibility`
 to check runner/file consistency, data/IAM success, cleanup and both image digests.
-Hashes bind resume, not execution authenticity or image source.
+Hashes bind resume, not authenticity or image source.
 This permits neither online migration nor rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
 
 `verify_agent_continuity` requires Agent read/operate, active AgentRevision read
@@ -136,9 +135,9 @@ self-review of named-Secret update access: denial stops preparation; inconclusiv
 review warns and continues. Replacement still requires update permission.
 Rendered Certificates require server-side dry-run admission.
 `scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
-mounts and service accounts into single-Pod Jobs with the candidate Secret,
-no retries and the selected deadline. `preflight_startup` waits for owned children,
-refusing changed UIDs or multiple children. Job failure overrides child success.
+mounts and service accounts into single-Pod Jobs: candidate Secret, no retries,
+deadline. `preflight_startup` refuses changed UIDs or multiple children.
+Job failure overrides child success.
 
 `scripts/migrate-production.mjs --check` uses the initializer's migration container,
 environment, mounts and Pod identity before preflight success or shutdown.
@@ -146,11 +145,11 @@ environment, mounts and Pod identity before preflight success or shutdown.
 lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
 
 API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
-bundles; workers skip themes. Both load Drivers/Presets with
-`loadStartupConfigurationSnapshot` and `loadInstallationConfiguration` without database access.
+bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration` without database access.
 `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` filters
-typed refusals to up to 32 field diagnostics. Preflight checks Job/Pod identity around
-log retrieval, rejects NUL bytes before parsing markers and discards unbound output.
+typed refusals to up to 32 field diagnostics. Preflight checks Job/Pod identity around log retrieval, rejects NUL bytes and
+discards unbound output. kubectl diagnostics stay separate from container logs.
 
 Kubernetes Compute `preflight` uses startup's Pod credentials (`inCluster` service account). It refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
@@ -177,30 +176,33 @@ Startup Jobs retain default-deny labels and a copy of
 `openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
 Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
-Failed startup/migration checks, timeouts and unconfirmed creates leave writers serving.
+Initial preflight failures leave writers serving.
 Create errors: `preflight-<resource>-create.err`. `cleanup_preflight` requests
-UID-guarded foreground deletion, waiting up to 30 seconds per Job for it, its UID-selected
-children and recorded child to disappear before deleting original Secret/policy UIDs.
+UID-guarded foreground deletion, waiting up to 30 seconds per Job for it and all
+UID-selected/recorded children to disappear before deleting original Secret/policy UIDs.
 Ambiguous creates or unconfirmed consumer cleanup retain dependencies and refuse progress;
 replacements remain untouched. Reconcile `preflight-cleanup.err` before retrying.
 
-Reference switches recheck both Secrets after cleanup.
+Reference switches recheck Secrets after cleanup.
 `--preflight-only` leaves writers serving with non-resumable evidence.
-Preparation saves candidates, inventory and target/parameter hashes under lock. `scripts/upgrade-production-images:interrupted_upgrade`
-retains it and skips preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
-Before unlocking, confirm helper termination and reconcile accepted operations/resources. Freeze writers, autoscalers, Helm changes and drafts per the [production guide](../guides/deploy/production-upgrade.md).
+Preparation locks candidates, inventory and target/parameter hashes. `scripts/upgrade-production-images:interrupted_upgrade`
+retains the lock and skips cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
+Before unlocking, confirm termination and reconcile accepted operations/resources.
+Freeze writers, autoscalers, Helm changes and drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-`scripts/upgrade-production-images` binds resume to the prepared inputs, directory,
-source and cluster, requalifies images, and rejects changed eligible nodes.
+Resume binds prepared inputs, directory, source and cluster, requalifies images,
+and rejects changed eligible nodes.
 Values must match baseline, candidate or the recorded predecessor and revision.
 Resume checks immutable intent, Secret identity and unrelated data. `verify_installation_switch`
-rechecks both immutable Secrets' UIDs/data. Pending Installation
-writes require a mutable Secret before scaling. Retries require migration-history review and terminal
-initializer Jobs/Pods. `new_attempt` fsyncs attempt-directory ancestors before
-publishing pointers.
-Resume rechecks migration history in `migration-preflight-resume.*` before further quiescence.
+rechecks both immutable Secrets' UIDs/data. Pending Installation writes require a mutable Secret before scaling. Retries require
+migration-history review and terminal initializer Jobs/Pods. `new_attempt` fsyncs
+attempt-directory ancestors before publishing pointers.
+Before further quiescence, resume rechecks migrations in `migration-preflight-resume.*`;
+failure leaves stopped writers stopped. Reconcile unknown creates before same-directory
+`--resume`, retaining lock/evidence/journal. The original process handles signals;
+ordinary failures attempt cleanup.
 Ordinary resume skips Helm only at the exact submitted deployed revision.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
@@ -334,15 +336,16 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 - Read `helm-attempts/<UUID>/{render-error.log,server-dry-run-error.log}` for native
   preparation failures; `server-dry-run.txt` retains successful output. Inspect
-  `preflight-<api|worker|migration>.log` and `-status.json` for rejected candidates.
+  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json` for rejected candidates;
+  use the current `migration-preflight-resume.*` directory on resume.
 - Inspect `native-command-failures.tsv` for scale, Helm upgrade or rollout failures; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - For runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
   version history, and `status/*.json`. Doctor failures: `status/*.doctor.json` and `status/*.doctor.error`.
-- Compare `before-workloads.json` and `after-workloads.json`. After a controller-only release, expect one same-image Pod template
-  rollout per affected Agent. Separately check
-  repository-bound versions affected by broker restart.
-- End-to-end proof requires credentialed production Kubernetes integration with
-  distinct images; command fixtures prove script control flow.
+- Compare `before-workloads.json` and `after-workloads.json`: controller-only releases
+  roll affected Agents' same-image Pod templates once. Separately check broker-affected
+  repository versions.
+- End-to-end proof requires credentialed production Kubernetes with distinct images;
+  command fixtures prove control flow.
 
 ## Related docs
 
@@ -359,6 +362,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:09: Clarify resume refusal and retained diagnostics. (authoring-run/fa6778fc-83cb-4f82-8f90-4085873cf49b - d2d12783a23e1c06c27f3f932faa09ffb2f59110)
 
 - 2026-11-10 11:26: Check candidate migration history before writer shutdown. (authoring-run/50fc84bd-0fe3-4009-ba19-6703902571c7 - 5f649b35692c1508678ce6e2bc4db1603df1654b)
 

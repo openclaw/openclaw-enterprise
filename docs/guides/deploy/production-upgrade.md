@@ -1,6 +1,6 @@
 # Upgrade production images
 
-Upgrade [Kubernetes Compute releases](production-installation.md) with the release checkout's
+Upgrade [Kubernetes Compute releases](production-installation.md) using
 `scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
 [Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
 lack the required chart-owned initializer.
@@ -20,7 +20,7 @@ runtime image and redeploys every running Agent concurrently. Upgrades stop the
 API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
+Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
 
 Configure endpoint and TLS settings in the selected kubeconfig.
@@ -35,7 +35,7 @@ For the experimental two-cluster profile, first
 ## Prepare the release
 
 For retained conversations, send a unique nonsecret marker through the approved
-interface; privately record its Agent and location.
+interface; record its Agent and location privately.
 
 Prepare:
 
@@ -46,7 +46,7 @@ Prepare:
   root to check the chart and live Collector configuration;
 - the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
   [release binary](../cli.md#connect-to-your-installation) or build it with
-  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The CLI reads deployment inventory and deploys Agents;
+  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. It reads inventory and deploys Agents;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
@@ -279,10 +279,10 @@ This samples readiness, not routing, model or channel availability. A final-chec
 the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
-Failed startup or migration preflight leaves the old release serving. Inspect
-`preflight-<api|worker|migration>.log`. After a cleanup warning or interruption,
-preserve the evidence and lock; follow
-[preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
+Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
+Failed resume prevents further shutdown; writers may already be stopped. Inspect
+current `migration-preflight-resume.*` evidence. Preserve evidence and lock;
+follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
 Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.

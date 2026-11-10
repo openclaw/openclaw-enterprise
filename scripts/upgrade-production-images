@@ -673,8 +673,9 @@ umask 077
 if ((resume == 0)); then
   mkdir -m 700 "$evidence_dir"
 fi
-mkdir "$evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
-trap 'rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+upgrade_evidence_dir=$evidence_dir
+mkdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
+trap 'rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # An interrupted caller does not establish that its child or remote operation stopped.
 # Keep the lock and preflight resources until the operator reconciles that work.
@@ -765,6 +766,11 @@ unconfirmed_preflight() {
     reason="The create returned no usable UID; kubectl's error output, if any, is in $errors in the evidence directory."
   else
     reason="kubectl reported an error for the create; see $errors in the evidence directory."
+  fi
+  if ((resume)); then
+    # The remote create may still be running; keep the original recovery lock.
+    trap - EXIT
+    die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Resume evidence is in $evidence_dir. Preserve $upgrade_evidence_dir and any dispatch journal; the original .upgrade-lock is retained. Reconcile the unknown create and any running helper before removing that lock and retrying --resume with the original evidence directory. No additional OCC writer was stopped."
   fi
   die "ownership unconfirmed for ${resource:0:300}; no cleanup was attempted for this name. $reason Check whether this object remains in the selected namespace. Correct the failure and use a fresh evidence directory. This run stopped no OCC writer."
 }
@@ -936,7 +942,7 @@ cleanup_preflight() {
   preflight_resources=()
   return "$cleanup_failed"
 }
-trap 'cleanup_preflight || true; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+trap 'cleanup_preflight || true; rmdir "$upgrade_evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
 # Read the current Job and validate the child against its original controller and UID.
 read_preflight_child() {
@@ -1032,7 +1038,8 @@ run_preflight_jobs() {
       else
         logs_status=0
         # Bash drops NUL bytes; reject them before they can change a result marker.
-        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" 2>&1 |
+        logs=$("${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+          2>"$evidence_dir/preflight-$component-logs.err" |
           python3 -c 'import sys
 data = sys.stdin.buffer.read()
 if b"\0" in data:
@@ -1060,7 +1067,8 @@ sys.stdout.buffer.write(data)') || logs_status=$?
           ;;
         Succeeded)
           if [[ "$component" == migration ]]; then
-            jq -es 'any(.[]; .event == "migration.checked" and (.history | type == "string"))' \
+            jq -Rse 'split("\n") | any(.[]; try (fromjson |
+              .event == "migration.checked" and (.history | type == "string")) catch false)' \
               "$evidence_dir/preflight-$component.log" >/dev/null 2>&1 ||
               message="the migration preflight succeeded without migration.checked; no additional OCC writer was stopped."
           else
@@ -1193,21 +1201,20 @@ preflight_startup() {
 }
 
 # A resume can happen long after preparation or after a separate database
-# deployment. Recheck live history without overwriting the original evidence.
-preflight_migration() (
-  evidence_dir=$(mktemp -d "$evidence_dir/migration-preflight-resume.XXXXXXXX")
-  local suffix secret='' drafts='' drafts_flag=none
+# deployment. Keep the signal-owning shell; scope only the evidence path locally.
+preflight_migration() {
+  local evidence_dir suffix secret='' drafts='' drafts_flag=none
+  evidence_dir=$(mktemp -d "$upgrade_evidence_dir/migration-preflight-resume.XXXXXXXX")
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   preflight_resources=()
   preflight_children=()
   preflight_consumer_unknown=0
-  trap 'cleanup_preflight || true' EXIT
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for migration preflight; no additional OCC writer was stopped."
   run_preflight_jobs migration
   cleanup_preflight || die "migration preflight cleanup is incomplete; no additional OCC writer was stopped."
   touch "$evidence_dir/migration-preflight-passed"
-)
+}
 
 validate_controller_compatibility() {
   [[ -n "$controller_compatibility_results" ]] || return 0
