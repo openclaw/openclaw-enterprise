@@ -59,8 +59,8 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
-    "tests/conformance/update-contributors.test.mjs",
-    "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/update-contributors.test.ts",
+    "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
@@ -99,7 +99,7 @@
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
-    "tests/conformance/utils.test.mjs",
+    "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.ts",
@@ -109,10 +109,10 @@
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/console-gateway-safety.test.ts",
-    "tests/conformance/grafana-overview-dashboard.test.mjs",
+    "tests/conformance/grafana-overview-dashboard.test.ts",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
-    "tests/conformance/url-authority.test.mjs",
+    "tests/conformance/url-authority.test.ts",
     "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
@@ -154,7 +154,7 @@
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
-      "path": "tests/conformance/filesystem-configuration.test.mjs"
+      "path": "tests/conformance/filesystem-configuration.test.ts"
     },
     {
       "path": "tests/conformance/console-agent-name-runs.test.ts"
@@ -178,7 +178,7 @@
       "path": "tests/conformance/contracts.test.mjs"
     },
     {
-      "path": "tests/conformance/update-contributors.test.mjs"
+      "path": "tests/conformance/update-contributors.test.ts"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"
@@ -202,7 +202,7 @@
       "path": "tests/conformance/docker-compute.test.mjs"
     },
     {
-      "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
+      "path": "tests/conformance/grafana-overview-dashboard.test.ts"
     },
     {
       "path": "tests/conformance/iam.test.mjs"
@@ -315,13 +315,13 @@
       "path": "tests/conformance/test-files.test.mjs"
     },
     {
-      "path": "tests/conformance/socket-directory.test.mjs"
+      "path": "tests/conformance/socket-directory.test.ts"
     },
     {
       "path": "tests/conformance/temporary-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/utils.test.mjs"
+      "path": "tests/conformance/utils.test.ts"
     },
     {
       "path": "tests/conformance/workspace-node-setup.test.ts"
@@ -520,7 +520,7 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/native-rollout-provenance.test.mjs",
+      "path": "tests/conformance/native-rollout-provenance.test.ts",
       "expectedTests": [
         "native rollout diagnostics keep only the exact thread and turn policy",
         "native rollout diagnostics preserve uncertainty about opaque code-mode escalation",
@@ -536,7 +536,7 @@
       "path": "tests/conformance/split-layout-adopt.test.mjs"
     },
     {
-      "path": "tests/conformance/url-authority.test.mjs"
+      "path": "tests/conformance/url-authority.test.ts"
     },
     {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",

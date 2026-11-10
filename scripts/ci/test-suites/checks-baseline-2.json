@@ -10,7 +10,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
-    "tests/conformance/startup-environment-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
@@ -43,7 +43,7 @@
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
     "tests/conformance/slack-channel-directory.test.mjs",
-    "tests/conformance/bounded-response-reads.test.mjs",
+    "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
@@ -103,7 +103,7 @@
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
-    "tests/conformance/node-test-summary.test.mjs",
+    "tests/conformance/node-test-summary.test.ts",
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.mjs",
@@ -322,7 +322,7 @@
       "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
     },
     {
-      "path": "tests/conformance/node-test-summary.test.mjs"
+      "path": "tests/conformance/node-test-summary.test.ts"
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
@@ -337,7 +337,7 @@
       "path": "tests/conformance/slack-channel-directory.test.mjs"
     },
     {
-      "path": "tests/conformance/bounded-response-reads.test.mjs"
+      "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
       "path": "tests/conformance/slack-proxy-reset.test.mjs"
@@ -404,7 +404,7 @@
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
     {
-      "path": "tests/conformance/startup-environment-boundary.test.mjs"
+      "path": "tests/conformance/startup-environment-boundary.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"
