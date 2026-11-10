@@ -48,7 +48,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "31dc052f466b580f57533d5aec5549f2ecfcce87055d4f5d44e3cd6a63630e25",
+    sha256: "ed9903cd14355c401e3f92d6e65c63e19f23353cc95f6b02af511de45f134ccd",
   },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);

@@ -7620,6 +7620,16 @@
            ...(context.nodeRegistry.getActiveNode(connectedNodes)?.nodeId === id
              ? { active: true }
              : {}),
+--- a/src/gateway/server.auth.openclaw-id-node-host.test.ts
++++ b/src/gateway/server.auth.openclaw-id-node-host.test.ts
+@@ -329,7 +329,6 @@
+       onConnectError: rejectConnect,
+       onReconnectPaused: paused,
+       onClose: () => {},
+-      onWinningCandidate: () => {},
+     });
+     client.start();
+     try {
 --- a/src/gateway/server.node-bootstrap-reconnect.test.ts
 +++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
 @@ -1,70 +1,430 @@
