@@ -86,17 +86,22 @@ test(
     const created = await inject("POST", "/model-providers", provider);
     assert.equal(created.statusCode, 201, created.body);
     const saved = created.json().data;
+    assert.match(saved.settingsFingerprint, /^[0-9a-f]{64}$/);
     const ns = await inject("POST", "/namespaces", { name: "models-" + randomUUID() });
     assert.equal(ns.statusCode, 201, ns.body);
     const list = await inject("GET", `/namespaces/${ns.json().data.id}/model-providers`);
     assert.equal(list.statusCode, 200, list.body);
     assert.deepEqual(
       list.json().data.find((p: { id: string }) => p.id === saved.id),
-      { id: saved.id, ...provider },
+      { ...provider, id: saved.id, settingsFingerprint: saved.settingsFingerprint },
     );
 
     // Updating the route needs a matching template; the old credential approval survives the edit.
-    const conflicting = { ...provider, protocol: "openai-completions" };
+    const conflicting = {
+      ...provider,
+      expectedSettingsFingerprint: saved.settingsFingerprint,
+      protocol: "openai-completions",
+    };
     const rejected = await inject("PUT", `/model-providers/${saved.id}`, conflicting);
     assert.equal(rejected.statusCode, 409, rejected.body);
     const changed = await inject("PATCH", `/connection-templates/${approved.id}`, {
@@ -116,6 +121,24 @@ test(
     const updated = await inject("PUT", `/model-providers/${saved.id}`, conflicting);
     assert.equal(updated.statusCode, 200, updated.body);
     assert.equal(updated.json().data.id, saved.id);
+    const reviewed = updated.json().data;
+    // Both administrators edited the same saved provider. Only the first write can replace it.
+    const concurrent = await Promise.all(
+      ["Research A", "Research B"].map((displayName) =>
+        inject("PUT", `/model-providers/${saved.id}`, {
+          ...conflicting,
+          displayName,
+          expectedSettingsFingerprint: reviewed.settingsFingerprint,
+        }),
+      ),
+    );
+    assert.deepEqual(concurrent.map((result) => result.statusCode).sort(), [200, 409]);
+    const winner = concurrent.find((result) => result.statusCode === 200)!.json().data;
+    const conflict = concurrent.find((result) => result.statusCode === 409)!.json().error;
+    assert.equal(conflict.details[0].path, "/expectedSettingsFingerprint");
+    assert.notEqual(winner.settingsFingerprint, reviewed.settingsFingerprint);
+    const current = await inject("GET", `/model-providers/${saved.id}`);
+    assert.deepEqual(current.json().data, winner);
     const removed = await inject("DELETE", `/connection-templates/${approved.id}`);
     assert.equal(removed.statusCode, 409, removed.body);
   },

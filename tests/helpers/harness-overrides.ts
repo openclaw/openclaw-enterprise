@@ -298,7 +298,11 @@ export async function exerciseNamedProvider(f: Awaited<ReturnType<typeof staticE
   await request(
     "PUT",
     "/model-providers/" + provider.id,
-    { ...values, models: [{ id: "another-model" }] },
+    {
+      ...values,
+      expectedSettingsFingerprint: provider.settingsFingerprint,
+      models: [{ id: "another-model" }],
+    },
     200,
   );
   await request("POST", first + "/deploy", {}, 400);

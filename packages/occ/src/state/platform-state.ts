@@ -378,7 +378,8 @@ export interface ModelProviderReadRepository {
 }
 export interface ModelProviderRepository extends ModelProviderReadRepository {
   createModelProvider(provider: ModelProvider): Promise<void>;
-  updateModelProvider(provider: ModelProvider): Promise<boolean>;
+  lockModelProvider(id: string): Promise<Readonly<ModelProvider> | undefined>;
+  updateModelProvider(provider: ModelProvider): Promise<void>;
 }
 export interface ConnectionTemplateReadRepository {
   listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
@@ -2030,12 +2031,9 @@ function repositories(
       }
       snapshot.modelProviders.set(provider.id, immutableCopy(provider));
     },
+    lockModelProvider: async (id) => snapshot.modelProviders.get(id),
     updateModelProvider: async (provider) => {
-      if (!snapshot.modelProviders.has(provider.id)) {
-        return false;
-      }
       snapshot.modelProviders.set(provider.id, immutableCopy(provider));
-      return true;
     },
   };
   const versionKey = (templateId: string, version: number) => `${templateId}\u0000${version}`;

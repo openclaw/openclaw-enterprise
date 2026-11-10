@@ -51,6 +51,10 @@ a default is not revocation.
 
 ## Deploy with a named provider
 
+When editing a provider through the API, send its last `settingsFingerprint` as
+`expectedSettingsFingerprint`. If another administrator changed the settings,
+read the provider again and review the changes before retrying.
+
 Set `modelProviderId` on the Agent and select the model in Agent Configuration.
 Use the ID of a Namespace credential created from the provider's static-key
 Connection Template in `harnessAuth` and `credentialSources`. Deploy without

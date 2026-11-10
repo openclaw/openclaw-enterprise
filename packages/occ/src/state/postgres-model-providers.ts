@@ -27,13 +27,18 @@ function parameters(p: ModelProvider) {
 }
 
 export function postgresModelProviders(client: PostgresQueryClient): ModelProviderRepository {
+  async function readProvider(id: string, lock: boolean) {
+    const {
+      rows: [row],
+    } = await client.query(
+      `SELECT ${columns} FROM occ.model_providers WHERE id=$1${lock ? " FOR UPDATE" : ""}`,
+      [id],
+    );
+    return row === undefined ? undefined : providerFromRow(row as Record<string, unknown>);
+  }
   return {
-    findModelProvider: async (id) => {
-      const {
-        rows: [row],
-      } = await client.query(`SELECT ${columns} FROM occ.model_providers WHERE id=$1`, [id]);
-      return row === undefined ? undefined : providerFromRow(row as Record<string, unknown>);
-    },
+    findModelProvider: (id) => readProvider(id, false),
+    lockModelProvider: (id) => readProvider(id, true),
     listModelProviders: async () => {
       const { rows } = await client.query(
         `SELECT ${columns} FROM occ.model_providers ORDER BY id`,
@@ -49,12 +54,11 @@ export function postgresModelProviders(client: PostgresQueryClient): ModelProvid
       );
     },
     updateModelProvider: async (provider) => {
-      const { rowCount } = await client.query(
+      await client.query(
         `UPDATE occ.model_providers SET display_name=$2,base_url=$3,protocol=$4,models=$5::jsonb,
         default_model_id=$6,connection_template_id=$7 WHERE id=$1`,
         parameters(provider),
       );
-      return rowCount === 1;
     },
   };
 }

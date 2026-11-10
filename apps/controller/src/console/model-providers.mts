@@ -2,10 +2,11 @@ import type {
   ConnectionTemplate,
   CredentialSourceMetadata,
   ModelProvider,
+  ModelProviderView,
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import { button, element, field } from "./dom.mjs";
-import { requestFailure } from "./api-client.mjs";
+import { requestFailure, responseFields } from "./api-client.mjs";
 import { oauthCatalog } from "./oauth-catalog.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
@@ -106,7 +107,7 @@ export function renderModelProviders(context: Context) {
     notice.textContent = "Loading model providers…";
     try {
       const [providers, available] = await Promise.all([
-        context.request("/model-providers", administration) as Promise<ModelProvider[]>,
+        context.request("/model-providers", administration) as Promise<ModelProviderView[]>,
         context.request("/connection-templates", administration) as Promise<ConnectionTemplate[]>,
       ]);
       if (!context.isCurrent()) {
@@ -136,7 +137,7 @@ export function renderModelProviders(context: Context) {
     }
   }
 
-  function edit(provider?: ModelProvider) {
+  function edit(provider?: ModelProviderView) {
     const dialog = element("dialog", {
       className: "dialog dialog--framed connection-template-dialog",
       "aria-labelledby": "provider-editor-title",
@@ -220,6 +221,11 @@ export function renderModelProviders(context: Context) {
     syncTemplates(provider?.connectionTemplateId);
     const status = element("p", { role: "status", className: "hint" });
     const cancel = button("Cancel", () => dialog.close());
+    const reload = button("Reload provider list", () => {
+      dialog.close();
+      void load();
+    });
+    reload.hidden = true;
     const save = element(
       "button",
       { type: "submit", className: "button button--primary" },
@@ -243,7 +249,7 @@ export function renderModelProviders(context: Context) {
       "form",
       {},
       element("div", { className: "dialog-body" }, fields, status),
-      element("div", { className: "dialog-actions" }, cancel, save),
+      element("div", { className: "dialog-actions" }, cancel, reload, save),
     );
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -289,7 +295,9 @@ export function renderModelProviders(context: Context) {
           {
             ...administration,
             method: provider ? "PUT" : "POST",
-            body,
+            body: provider
+              ? { ...body, expectedSettingsFingerprint: provider.settingsFingerprint }
+              : body,
           },
         );
         if (!context.isCurrent()) {
@@ -299,12 +307,21 @@ export function renderModelProviders(context: Context) {
         await load("Saved " + body.displayName + ".");
       } catch (error) {
         status.textContent = failure(error, "Could not confirm that the provider was saved.");
+        const paths = responseFields(error).detailPaths;
+        if (
+          requestFailure(error).status === 409 &&
+          Array.isArray(paths) &&
+          paths.includes("/expectedSettingsFingerprint")
+        ) {
+          reload.hidden = false;
+        }
       } finally {
-        fields.disabled = save.disabled = cancel.disabled = false;
+        fields.disabled = cancel.disabled = false;
+        save.disabled = !reload.hidden;
       }
     });
     dialog.addEventListener("cancel", (event) => {
-      if (save.disabled) {
+      if (fields.disabled) {
         event.preventDefault();
       }
     });

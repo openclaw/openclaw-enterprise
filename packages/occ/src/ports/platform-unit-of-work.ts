@@ -59,6 +59,7 @@ export function bindPlatformUnitOfWork(
       "findModelProvider",
       "listModelProviders",
       "createModelProvider",
+      "lockModelProvider",
       "updateModelProvider",
     ]),
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [

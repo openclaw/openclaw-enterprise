@@ -181,6 +181,7 @@ import type {
   ConnectionTemplateSettings,
   ModelProvider,
   ModelProviderSettings,
+  ModelProviderView,
   InferenceProtocol,
   StaticKeyGrant,
   CredentialRefreshDriver,
@@ -1868,6 +1869,13 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
     (entry) => asRecord(entry)?.model !== undefined,
   );
+}
+
+function modelProviderView(provider: Readonly<ModelProvider>): ModelProviderView {
+  const settingsFingerprint = createHash("sha256")
+    .update(canonicalProvisioningJson(provider))
+    .digest("hex");
+  return { ...provider, settingsFingerprint };
 }
 
 function requireModelProviderGrant(
@@ -5590,7 +5598,7 @@ export class OpenClawController {
       if (namespaceId !== undefined) {
         await this.exactNamespace(state, namespaceId);
       }
-      return state.modelProviders.listModelProviders();
+      return (await state.modelProviders.listModelProviders()).map(modelProviderView);
     });
   }
 
@@ -5600,19 +5608,33 @@ export class OpenClawController {
     if (!provider) {
       throw new ScopeViolationError("The Model Provider does not exist.");
     }
-    return provider;
+    return modelProviderView(provider);
   }
 
   async saveModelProvider(
     principalId: string,
-    id: string | undefined,
+    previous: { id: string; expectedSettingsFingerprint: string } | undefined,
     input: ModelProviderSettings,
     audit: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
-  ): Promise<ModelProvider> {
+  ): Promise<ModelProviderView> {
     return this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
       await holdSession?.(state);
+      if (previous) {
+        const current = await state.modelProviders.lockModelProvider(previous.id);
+        if (!current) {
+          throw new ScopeViolationError("The Model Provider does not exist.");
+        }
+        if (
+          modelProviderView(current).settingsFingerprint !== previous.expectedSettingsFingerprint
+        ) {
+          throw new ResourceStateConflictError(
+            "Another administrator changed this model provider. Reload the current settings before saving.",
+            [{ path: "/expectedSettingsFingerprint", code: "INVALID_VALUE" }],
+          );
+        }
+      }
       const template = await state.connectionTemplates.lockConnectionTemplate(
         input.connectionTemplateId,
       );
@@ -5637,14 +5659,14 @@ export class OpenClawController {
           "List each model once and choose a default from that list.",
         );
       }
-      const provider = { ...input, baseUrl, id: id ?? `mpr_${crypto.randomUUID()}` };
-      if (id === undefined) {
+      const provider = { ...input, baseUrl, id: previous?.id ?? `mpr_${crypto.randomUUID()}` };
+      if (previous) {
+        await state.modelProviders.updateModelProvider(provider);
+      } else {
         await state.modelProviders.createModelProvider(provider);
-      } else if (!(await state.modelProviders.updateModelProvider(provider))) {
-        throw new ScopeViolationError("The Model Provider does not exist.");
       }
       await state.audit.append(audit(provider.id));
-      return provider;
+      return modelProviderView(provider);
     });
   }
 
