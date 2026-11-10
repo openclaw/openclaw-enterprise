@@ -225,7 +225,7 @@ permissions and repository rules.
 Remove the repository entitlement to refuse future Git and API requests.
 The original issuer owner retires each token family. Qualify the running model
 separately on a mixed online execution. See the
-[repository credential flow](../../flows/repository-credentials.md#selected-repository-pull-request-preview)
+[repository credential flow](../../flows/credential-source-egress/model-requests.md#selected-repository-pull-request-preview)
 for the order of checks.
 
 ## Verify the installed path
