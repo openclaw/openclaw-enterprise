@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: "2026-11-10"
-last_updated_session: "authoring-run/c16642a2-889c-409e-833b-d6afc7957d68"
+last_updated_session: "authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -181,8 +181,14 @@ a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
-process umask. It closes the temporary file before renaming and removes a
-failed temporary output without replacing the previous record.
+process umask. An existing lock stops the command before record access or
+provisioning; the helper neither reads nor removes another invocation's lock.
+Only successful exclusive creation registers cleanup, including initialization
+failures. A release failure reports the lock path and sets a failing exit status
+without replacing the original action error. A crash can leave a lock that needs
+[inspected recovery](../guides/operate/local-setup-troubleshooting.md#first-agent-reports-an-existing-lock).
+The helper closes the temporary record before renaming and removes a failed
+temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
 OCC. A rerun follows a newer revision from a later deploy, after the same
@@ -308,8 +314,8 @@ credential at its issuer.
 - A stored Secret with no ready gateway is valid. Update success does not imply
   delivery. Compare Agent revision/Pod identities and use noncredential sentinel values
   for restart assertions.
-- On local failure, rerun the tool with the same Agent name. It prints the Agent
-  and Agent revision IDs only after the model responds.
+- On local failure, resolve any reported lock before rerunning with the same
+  Agent name. Agent and Agent revision IDs print only after the model responds.
 - Source selection, exact Namespace ownership, consumption authorization, missing
   material, and concurrent backend mutations fail closed. Do not retry a denial
   against another driver or model-key source.
@@ -336,6 +342,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:23: Require inspected recovery for existing first-Agent locks; preserve creator-only cleanup. (authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b - 6e4cf8ff54412aa15773039ffc471e029a8dbfa8)
 
 - 2026-11-10 12:13: Distinguish first-Agent deployment policy refusal, authentication failure, and other failure advice. (authoring-run/c16642a2-889c-409e-833b-d6afc7957d68 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 - 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)

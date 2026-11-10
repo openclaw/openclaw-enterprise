@@ -875,78 +875,24 @@ async function withRecord<T>(
   const digest = createHash("sha256").update(name).digest("hex").slice(0, 32);
   const path = join(directory, `first-agent-${digest}.json`);
   const lockPath = `${path}.lock`;
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      handle = await open(lockPath, "wx", 0o600);
-      await handle.chmod(0o600);
-      await handle.writeFile(String(process.pid));
-      break;
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") {
-        if (handle) {
-          await handle.close();
-          await unlink(lockPath).catch(() => {});
-        }
-        throw error;
-      }
-      if (attempt) {
-        throw new Error("Another first-agent command is already using this Agent name.", {
-          cause: error,
-        });
-      }
-      const priorLock = await open(
-        lockPath,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      ).catch((openError: unknown) => {
-        if (errorCode(openError) === "ELOOP") {
-          throw new Error(`${lockPath} must be private and owned by the current user.`, {
-            cause: openError,
-          });
-        }
-        throw openError;
-      });
-      let pid: number;
-      try {
-        const info = await priorLock.stat();
-        if (!info.isFile() || info.uid !== process.geteuid?.() || (info.mode & 0o077) !== 0) {
-          throw new Error(`${lockPath} must be private and owned by the current user.`, {
-            cause: error,
-          });
-        }
-        pid = Number(await priorLock.readFile("utf8"));
-      } finally {
-        await priorLock.close();
-      }
-      if (!Number.isSafeInteger(pid) || pid <= 0) {
-        throw new Error(`An interrupted first-agent lock requires inspection: ${lockPath}`, {
-          cause: error,
-        });
-      }
-      let running = true;
-      try {
-        process.kill(pid, 0);
-      } catch (lockError) {
-        if (errorCode(lockError) !== "ESRCH") {
-          throw lockError;
-        }
-        running = false;
-      }
-      if (running) {
-        throw new Error("Another first-agent command is already using this Agent name.", {
-          cause: error,
-        });
-      }
-      await unlink(lockPath);
+  const handle = await open(lockPath, "wx", 0o600).catch((error: unknown) => {
+    if (errorCode(error) === "EEXIST") {
+      throw new Error(
+        `A first-agent lock exists at ${lockPath}. Wait for any command using this Agent name to finish and retry. If the lock persists, inspect it before removal.`,
+        { cause: error },
+      );
     }
-  }
+    throw error;
+  });
   try {
+    await handle.chmod(0o600);
+    await handle.writeFile(String(process.pid));
     const save = async (value: unknown) => {
       const temporary = `${path}.${randomUUID()}`;
       try {
         const file = await open(temporary, "wx", 0o600);
         try {
-          // Creation mode is filtered by umask; retries and stale-lock recovery need reads.
+          // Creation mode is filtered by umask; subsequent commands need to read the record.
           await file.chmod(0o600);
           await file.writeFile(`${JSON.stringify(value)}\n`);
         } finally {
@@ -962,8 +908,16 @@ async function withRecord<T>(
       : undefined;
     return await action(record, save);
   } finally {
-    await handle?.close();
-    await unlink(lockPath).catch(() => {});
+    await handle.close().catch(() => {
+      process.stderr.write(`first-agent: Could not close the owned lock at ${lockPath}.\n`);
+      process.exitCode = 1;
+    });
+    await unlink(lockPath).catch(() => {
+      process.stderr.write(
+        `first-agent: Could not release the owned lock at ${lockPath}. Inspect it before retrying.\n`,
+      );
+      process.exitCode = 1;
+    });
   }
 }
 
