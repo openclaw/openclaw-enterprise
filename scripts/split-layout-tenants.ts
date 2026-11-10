@@ -62,6 +62,19 @@ const retainInputs = "Keep the original bundle and map, if present.";
 const resumeOperation = "reconcile any earlier writes before resuming the original operation.";
 const recoverOcc = `${retainInputs} Correct the OCC endpoint and ${resumeOperation}`;
 const recoverInput = `${retainInputs} Correct the indicated input and ${resumeOperation}`;
+const definitiveRefusals = new Set([
+  "INVALID_REQUEST",
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  "NOT_FOUND",
+  "METHOD_NOT_ALLOWED",
+  "RESOURCE_CONFLICT",
+  "AGENT_DELETING",
+  "NAMESPACE_NOT_READY",
+  "NAMESPACE_NOT_EMPTY",
+  "PAYLOAD_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -85,6 +98,51 @@ function* bundleRecords(namespace: Resource, field: string) {
   const location = `bundle namespaces[].${field}`;
   for (const [index, item] of requireArray(namespace[field], location).entries()) {
     yield requireRecord(item, `${location}[${index}]`);
+  }
+}
+
+function validateTenant(namespace: Resource) {
+  const requireString = (value: unknown, location: string) => {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new InvalidMigrationDataError(
+        `${location}: expected a nonempty string. ${recoverInput}`,
+      );
+    }
+  };
+  requireString(namespace.id, "bundle Namespace id");
+  requireString(namespace.name, "bundle Namespace name");
+  for (const field of [
+    "agents",
+    "configurations",
+    "presets",
+    "secrets",
+    "credentialSources",
+    "serviceAccounts",
+    "roles",
+    "accessBindings",
+  ]) {
+    for (const resource of bundleRecords(namespace, field)) {
+      const location = `bundle namespaces[].${field}[]`;
+      requireString(resource.id, `${location}.id`);
+      if ("configurationReadError" in resource) {
+        throw new InvalidMigrationDataError(
+          `${location}: saved configuration is unreadable. ${recoverInput}`,
+        );
+      }
+      if (
+        ["agents", "presets", "secrets", "credentialSources", "serviceAccounts"].includes(field)
+      ) {
+        requireString(resource.name, `${location}.name`);
+      }
+      if (field === "agents") {
+        requireString(resource.configurationId, `${location}.configurationId`);
+      } else if (field === "configurations") {
+        requireString(resource.kind, `${location}.kind`);
+        requireRecord(resource.values, `${location}.values`);
+      } else if (field === "presets") {
+        requireRecord(resource.template, `${location}.template`);
+      }
+    }
   }
 }
 
@@ -188,6 +246,20 @@ export function createOccApi({
     const result = await call(method, path, body);
     if (!accepted.includes(result.status)) {
       const error = isRecord(result.error) ? result.error : undefined;
+      if (
+        method !== "GET" &&
+        !(
+          result.status >= 400 &&
+          result.status < 500 &&
+          typeof error?.code === "string" &&
+          definitiveRefusals.has(error.code) &&
+          typeof error.message === "string"
+        )
+      ) {
+        throw new InvalidMigrationDataError(
+          `${method} ${path.slice(0, 240)}: ambiguous HTTP ${result.status} response. ${recoverOcc}`,
+        );
+      }
       const code = error?.code ?? "UNKNOWN";
       const message = error?.message ?? "";
       throw new SplitLayoutError(
@@ -230,11 +302,17 @@ const list = async (api: Api, path: string): Promise<Resource[]> => {
 
 async function readOccResource(api: Api, method: "GET" | "POST", path: string, body?: unknown) {
   const { data } = await api.expect(method, path, body);
-  return requireRecord(
+  const resource = requireRecord(
     data,
     `${method} ${path.slice(0, 240)}: invalid OCC response data`,
     recoverOcc,
   );
+  if ("configurationReadError" in resource) {
+    throw new InvalidMigrationDataError(
+      `${method} ${path.slice(0, 240)}: saved configuration is unreadable. ${recoverOcc}`,
+    );
+  }
+  return resource;
 }
 
 function responseId(resource: Resource, location: string, field = "id"): string {
@@ -306,6 +384,7 @@ export async function exportTenants(
       ),
       agents,
     };
+    validateTenant(tenant);
     namespaces.push(tenant);
     log(
       `exported ${namespace.name} (${namespace.id}): ${agents.length} Agents, ` +
@@ -315,8 +394,20 @@ export async function exportTenants(
   return { format: BUNDLE_FORMAT, exportedAt: new Date().toISOString(), namespaces };
 }
 
+function readPrivateJson(path: string, label: string): unknown {
+  const text = readFileSync(path, "utf8");
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new SplitLayoutError(`Invalid JSON in ${label}.`);
+    }
+    throw error;
+  }
+}
+
 function readBundle(path: string): Bundle {
-  const bundle: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const bundle = readPrivateJson(path, "bundle");
   if (!isBundle(bundle)) {
     throw new SplitLayoutError(`${path} is not a ${BUNDLE_FORMAT} bundle`);
   }
@@ -359,6 +450,9 @@ export async function discardTenants(
   const namespaces = bundle.namespaces.map((value, index) =>
     requireRecord(value, `bundle namespaces[${index}]`),
   );
+  for (const namespace of namespaces) {
+    validateTenant(namespace);
+  }
   const unread = namespaces.flatMap((namespace) =>
     Array.from(bundleRecords(namespace, "agents"))
       .filter(
@@ -501,6 +595,7 @@ export function checkImport(bundle: Bundle, secretValues: unknown) {
   for (const [index, namespaceValue] of bundle.namespaces.entries()) {
     const location = `bundle namespaces[${index}]`;
     const namespace = requireRecord(namespaceValue, location);
+    validateTenant(namespace);
     for (const secretValueEntry of requireArray(namespace.secrets, `${location}.secrets`)) {
       const secret = requireRecord(secretValueEntry, `${location}.secrets[]`);
       if (typeof secretValue(secretValues, namespace.name, secret.name) !== "string") {
@@ -542,9 +637,13 @@ export async function importTenants(
     throw new SplitLayoutError(problems.join("\n"));
   }
   const importState = requireRecord(state, "ID map (--map)");
-  const ids = new Map<unknown, unknown>(
-    Object.entries(requireRecord(importState.ids, "ID map (--map).ids")),
-  );
+  const savedIds = requireRecord(importState.ids, "ID map (--map).ids");
+  if (Object.values(savedIds).some((value) => typeof value !== "string" || value.trim() === "")) {
+    throw new InvalidMigrationDataError(
+      `ID map (--map).ids: expected nonempty string values. ${recoverInput}`,
+    );
+  }
+  const ids = new Map<unknown, unknown>(Object.entries(savedIds));
   // Each source tenant must keep a separate destination, including on a resumed import.
   // Otherwise adopting an empty Namespace can silently merge tenants before any API conflict.
   const targets = new Map<unknown, unknown>();
@@ -647,8 +746,18 @@ export async function importTenants(
     for (const namespace of namespaces) {
       const id = ids.get(namespace.id);
       const { data } = await api.expect("GET", ns(id));
-      if (!isRecord(data) || data.status !== "ready") {
+      const status = isRecord(data) ? data.status : undefined;
+      if (status === "failed" || status === "deleting") {
+        throw new SplitLayoutError(
+          `Namespace ${id} is ${status}. ${retainInputs} Resolve its lifecycle state before resuming the import.`,
+        );
+      }
+      if (status === "provisioning") {
         waiting.push(`${targetName(namespace)} (${id})`);
+      } else if (status !== "ready") {
+        throw new InvalidMigrationDataError(
+          `GET ${ns(id)}: invalid Namespace status. ${recoverOcc}`,
+        );
       }
     }
     return waiting;
@@ -942,7 +1051,7 @@ function cliApi() {
   if (base.protocol !== "https:" && !(base.protocol === "http:" && loopback)) {
     throw new SplitLayoutError("OCC_URL must use https (http only on loopback)");
   }
-  const keyFileData: unknown = JSON.parse(readFileSync(keyFile, "utf8"));
+  const keyFileData = readPrivateJson(keyFile, "service-key file");
   const key =
     isRecord(keyFileData) && isRecord(keyFileData.data) ? keyFileData.data.key : undefined;
   if (typeof key !== "string" || key.trim() === "" || /[\r\n]/u.test(key)) {
@@ -979,9 +1088,9 @@ export async function main(argv: string[]) {
   ) {
     const mapPath = options.map;
     const bundle = readBundle(options.bundle);
-    const secretValues: unknown = JSON.parse(readFileSync(options["secret-values"], "utf8"));
+    const secretValues = readPrivateJson(options["secret-values"], "Secret-values file");
     const state: unknown = existsSync(options.map)
-      ? JSON.parse(readFileSync(options.map, "utf8"))
+      ? readPrivateJson(options.map, "ID map")
       : { ids: {}, deployed: [] };
     const result = await importTenants(cliApi(), bundle, secretValues, {
       state,

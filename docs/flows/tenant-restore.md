@@ -1,7 +1,7 @@
 ---
 created: "2026-10-28"
-updated: "2026-10-29"
-last_updated_session: "authoring-run/afb2c16f-3c1e-4c3e-997c-7980211797c2"
+updated: "2026-11-10"
+last_updated_session: "authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2"
 ---
 
 # Tenant restore flow
@@ -28,13 +28,16 @@ cover storage adoption, external credential issuance, or workspace recovery.
 graph TD
     A["Read bundle, Secret values and saved IDs"] --> B["Check selected destination identities"]
     B --> C["Create or reuse Namespaces and save IDs"]
-    C --> D{"Namespaces ready?"}
-    D -->|No| E["Exit 3; grant RoleBindings and rerun"]
-    D -->|Yes| F["Restore Secrets and Configurations"]
+    C --> D{"Namespace state?"}
+    D -->|Provisioning| E["Exit 3; grant RoleBindings and rerun"]
+    D -->|Failed, deleting or invalid| N["Stop; preserve map and resolve state"]
+    D -->|Ready| F["Restore Secrets and Configurations"]
     F --> G["Create or reuse service accounts; save IDs"]
     G --> H["Remap and create Preset templates"]
     H --> I["Restore Roles, Agents and access bindings"]
     I --> J["Attempt selected deployments"]
+    I -->|Ambiguous write response| O["Stop; preserve map and reconcile write"]
+    J -->|Ambiguous write response| O
     J --> K{"Manual recovery needed?"}
     K -->|Yes| L["Report failed deployments or unrecovered bindings; exit 4"]
     K -->|No| M["Exit 0; old Agent revision bindings may be omitted"]
@@ -52,13 +55,19 @@ Namespace inventory. The error reports a bounded request path, not response cont
 Keep the original bundle and map, if present. Correct the OCC endpoint and
 reconcile any earlier writes before resuming the original operation. This check
 also applies to export and discard; do not blindly retry a partially completed
-operation.
+operation. Exact resource reads with unreadable saved settings and bundles missing
+required restoration fields are refused. Discard validates every collection and
+deletion ID before its first DELETE. Invalid private JSON is reported by input
+name without quoting its contents.
 
 The importer checks required Secret values and refuses selected sources that
 share a destination name or saved destination ID. Saved destinations remain
-reserved even when their sources are skipped. It creates missing Namespaces or
+reserved even when their sources are skipped. Every saved ID must be a nonempty
+string before any API request. It creates missing Namespaces or
 reuses eligible empty ones, records each ID, and waits for readiness. Pending
-Namespaces return an incomplete result; `main` exits 3 without importing children.
+provisioning Namespaces return an incomplete result; `main` exits 3 without
+importing children. Failed, deleting, or invalid Namespace states stop the import
+with the saved map preserved.
 
 ### 2. Restore dependencies before Preset templates
 
@@ -88,6 +97,8 @@ bindings, for manual recovery without creating grants.
 
 Running source Agents are deployed unless `--no-deploy` was selected. Failed
 deployments or bindings that require manual recovery cause `main` to exit 4.
+Only recognized OCC refusals can be reported this way. An ambiguous write response
+stops the import before later work; reconcile the write before resuming.
 The map does not record reported bindings, so each rerun reports them again and
 exits 4, also after the operator re-creates them by hand. Exit 0 does not mean
 old Agent revision bindings were restored. Workspace recovery
@@ -115,6 +126,8 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:03: Document input validation, terminal Namespace states and ambiguous-write recovery. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 6c18c81d754f7c4acead23e5ab41f5a973fe5068)
 
 - 2026-10-29 18:49: State that reported access bindings are reported again on every rerun. (authoring-run/afb2c16f-3c1e-4c3e-997c-7980211797c2 - 2de02b7f99)
 - 2026-10-29 18:02: Report access bindings that require manual recovery and distinguish omitted Agent revision bindings. (authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4 - ce529eed9989d495816d222fa6b383d18e0a5281)

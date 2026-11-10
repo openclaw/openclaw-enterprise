@@ -209,6 +209,88 @@ test("export reads every tenant resource the import needs, without Secret values
     );
   }
 
+  // OCC can return Agent metadata while its saved settings are unreadable. That
+  // documented response must not become a bundle that silently drops bindings.
+  const unreadableApi = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      const response = await asAdministrator(fixture)(url, init);
+      if (
+        new URL(url).pathname !== `/namespaces/${seeded.namespace.id}/agents/${seeded.agent.id}`
+      ) {
+        return response;
+      }
+      assert.equal(response.status, 200);
+      const payload = object((await response.json()) as unknown);
+      const metadata = object(payload.data);
+      for (const field of [
+        "pluginDriver",
+        "plugins",
+        "pluginApprovers",
+        "repositoryBindings",
+        "repositoryAccess",
+        "harnessAuth",
+        "credentialSources",
+      ]) {
+        delete metadata[field];
+      }
+      metadata.configurationReadError = {
+        code: "SAVED_CONFIGURATION_UNREADABLE",
+        field: "plugins",
+      };
+      return Response.json({ ...payload, data: metadata }, { status: 200 });
+    },
+  });
+  await assert.rejects(
+    exportTenants(unreadableApi),
+    /saved configuration is unreadable.*Keep the original bundle and map/u,
+  );
+  const incompleteConfigurationApi = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      const response = await asAdministrator(fixture)(url, init);
+      if (
+        new URL(url).pathname !==
+        `/namespaces/${seeded.namespace.id}/configurations/${seeded.configuration.id}`
+      ) {
+        return response;
+      }
+      const payload = object((await response.json()) as unknown);
+      delete object(payload.data).values;
+      return Response.json(payload, { status: response.status });
+    },
+  });
+  await assert.rejects(exportTenants(incompleteConfigurationApi), /configurations\[\]\.values/u);
+
+  // An old incomplete bundle must also stop before either destructive operation
+  // or destination import makes its first request.
+  for (const field of ["agents", "configurations"] as const) {
+    const incomplete = structuredClone(bundle);
+    const selected = incomplete.namespaces.find(({ id }) => id === seeded.namespace.id)!;
+    if (field === "agents") {
+      selected.agents[0]!.configurationReadError = {
+        code: "SAVED_CONFIGURATION_UNREADABLE",
+        field: "plugins",
+      };
+    } else {
+      delete selected.configurations[0]!.values;
+    }
+    let calls = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      fetchImpl(url, init) {
+        calls += 1;
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    await assert.rejects(discardTenants(api, incomplete), /unreadable|configurations\[\]\.values/u);
+    await assert.rejects(
+      importTenants(api, incomplete, { "team-a": { "model-key": "synthetic-value" } }),
+      /unreadable|configurations\[\]\.values/u,
+    );
+    assert.equal(calls, 0);
+  }
+
   // Empty successful deletes and accepted missing resources are valid on the
   // same API; they must not acquire the collection response requirement.
   const base = `/namespaces/${seeded.namespace.id}`;
@@ -539,6 +621,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   writeFileSync(join(directory, "key.json"), JSON.stringify({ data: { key } }));
   writeFileSync(join(directory, "values.json"), JSON.stringify({ "team-a": { "model-key": "v" } }));
   let malformedBindingBody: string | undefined;
+  let malformedBindingStatus = 201;
   let bindingCreated: boolean;
 
   // A thin loopback adapter, not the production listener: it checks that the command sends
@@ -562,7 +645,6 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
     });
     const body = await answer.text();
-    response.writeHead(answer.status, { "content-type": "application/json" });
     if (
       malformedBindingBody !== undefined &&
       request.method === "POST" &&
@@ -570,9 +652,11 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
       answer.status === 201
     ) {
       bindingCreated = true;
+      response.writeHead(malformedBindingStatus, { "content-type": "application/json" });
       response.end(malformedBindingBody);
       return;
     }
+    response.writeHead(answer.status, { "content-type": "application/json" });
     response.end(body);
   });
   await listen(t, server);
@@ -653,13 +737,22 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   // OCC created the binding. A lost response envelope leaves its saved ID unknown, so
   // the operator must reconcile it before resuming instead of treating it as rejected.
   const malformedCases = [
-    ["missing-data", "{}", "HTTP 201 returned no data envelope."],
-    ["missing-id", '{"data":{}}', "invalid OCC response data; expected a nonempty string in id."],
+    ["missing-data", 201, "{}", "HTTP 201 returned no data envelope."],
+    [
+      "missing-id",
+      201,
+      '{"data":{}}',
+      "invalid OCC response data; expected a nonempty string in id.",
+    ],
+    ["gateway-error", 502, "null", "ambiguous HTTP 502 response."],
+    ["unexpected-success", 204, "", "ambiguous HTTP 204 response."],
+    ["malformed-refusal", 403, "null", "ambiguous HTTP 403 response."],
   ] as const;
-  for (const [name, body, error] of malformedCases) {
+  for (const [name, status, body, error] of malformedCases) {
     const destination = await created(fixture, "/namespaces", { name });
     await markReady(fixture, destination.id);
     malformedBindingBody = body;
+    malformedBindingStatus = status;
     bindingCreated = false;
     await assert.rejects(run(name, []), {
       message:
@@ -748,6 +841,34 @@ test("import refuses overlapping tenant destinations before changing the map or 
     (await fixture.api.expect("GET", `/namespaces/${target.id}/iam/roles`)).data,
     [],
   );
+
+  // Persisted IDs must be checked before any request: an array containing an ID
+  // has a different Map identity but becomes the same destination in a URL.
+  for (const invalidId of [[target.id], {}, null, 42, "", " "]) {
+    const invalidState = {
+      ids: Object.fromEntries([
+        [sources[0]!.id, target.id],
+        [sources[1]!.id, invalidId],
+      ]),
+      deployed: [],
+    };
+    const unchanged = structuredClone(invalidState);
+    let requests = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      fetchImpl(url, init) {
+        requests += 1;
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    await assert.rejects(
+      importTenants(api, bundle, {}, { ...options, state: invalidState, names: {} }),
+      /ID map \(--map\)\.ids: expected nonempty string values/u,
+    );
+    assert.equal(requests, 0);
+    assert.equal(saves, 0);
+    assert.deepEqual(invalidState, unchanged);
+  }
 
   // A skipped source without a saved destination does not prevent a normal one-tenant import.
   const imported = await importTenants(fixture.api, bundle, {}, { ...options, skip: ["source-b"] });
@@ -1038,4 +1159,220 @@ test("import refuses non-array destination inventories before adopting a populat
   assert.equal(state.ids[seeded.namespace.id], empty.id);
   assert.notEqual(state.ids[seeded.agent.id], existingAgent.id);
   assert.deepEqual((await fixture.api.expect("GET", `${base}/agents`)).data, before);
+});
+
+test("discard validates every tenant's late collections before deleting any Agent", async () => {
+  const fixture = await createFixture();
+  const seeded = await seedTenant(fixture);
+  const exported = await exportTenants(fixture.api);
+  const populated = exported.namespaces.find(({ id }) => id === seeded.namespace.id);
+  const later = exported.namespaces.find(({ id }) => id !== seeded.namespace.id);
+  assert.ok(populated);
+  assert.ok(later);
+
+  // A later tenant's malformed input must not partially destroy the valid first
+  // tenant, even when the operator explicitly accepts unavailable workspace files.
+  const cases = [
+    { field: "presets", value: {}, diagnostic: /presets; expected an array/u },
+    { field: "roles", value: [null], diagnostic: /roles\[0\].*expected an object/u },
+    { field: "roles", value: [{ ...seeded.role, id: 42 }], diagnostic: /roles\[\]\.id/u },
+  ];
+  for (const { field, value, diagnostic } of cases) {
+    const bundle = structuredClone({ ...exported, namespaces: [populated, later] });
+    object(bundle.namespaces[1])[field] = value;
+    let deletes = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      fetchImpl(url, init) {
+        if (init.method === "DELETE") {
+          deletes += 1;
+        }
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    await assert.rejects(
+      discardTenants(api, bundle, {
+        allowUnreadWorkspaceFiles: true,
+        sleep: noSleep,
+        timeoutMs: 0,
+        intervalMs: 0,
+      }),
+      (error: unknown) => {
+        assert.equal(deletes, 0);
+        assert.ok(error instanceof Error);
+        assert.match(error.message, diagnostic);
+        return true;
+      },
+    );
+    const agents = resources(
+      (await fixture.api.expect("GET", `/namespaces/${seeded.namespace.id}/agents`)).data,
+    );
+    assert.ok(agents.some(({ id }) => id === seeded.agent.id));
+  }
+});
+
+test("command redacts malformed private JSON before issuing requests", async (t) => {
+  const directory = temporaryDirectorySync(t, "split-layout-private-json-");
+  const fixture = await createFixture();
+  const bundle = await exportTenants(fixture.api);
+  const files = {
+    bundle: join(directory, "bundle.json"),
+    "service-key file": join(directory, "key.json"),
+    "Secret-values file": join(directory, "values.json"),
+    "ID map": join(directory, "map.json"),
+  };
+  const contents = {
+    bundle,
+    "service-key file": { data: { key: "synthetic-service-key" } },
+    "Secret-values file": {},
+    "ID map": { ids: {}, deployed: [] },
+  };
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(500).end();
+  });
+  await listen(t, server);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const command = fileURLToPath(new URL("../../scripts/split-layout-tenants.ts", import.meta.url));
+  const marker = "SYNTHETIC_PRIVATE_VALUE";
+  for (const [label, path] of Object.entries(files)) {
+    for (const [name, value] of Object.entries(contents)) {
+      const file = files[name as keyof typeof files];
+      writeFileSync(file, JSON.stringify(value));
+    }
+    // Native JSON syntax errors can quote this text. Exercise the shipped
+    // executable's stderr handler, rather than only rejecting inside main().
+    writeFileSync(path, marker);
+    const before = readFileSync(files["ID map"], "utf8");
+    await assert.rejects(
+      promisify(execFile)(
+        process.execPath,
+        [
+          command,
+          "import",
+          "--bundle",
+          files.bundle,
+          "--secret-values",
+          files["Secret-values file"],
+          "--map",
+          files["ID map"],
+          "--no-deploy",
+        ],
+        {
+          env: {
+            ...process.env,
+            OCC_URL: `http://127.0.0.1:${address.port}`,
+            OCC_SERVICE_KEY_FILE: files["service-key file"],
+          },
+        },
+      ),
+      (error: unknown) => {
+        const failure = object(error);
+        assert.equal(failure.code, 1);
+        const stderr = string(failure.stderr);
+        assert.equal(stderr, `Invalid JSON in ${label}.\n`);
+        assert.equal(stderr.includes(marker), false);
+        return true;
+      },
+    );
+    assert.equal(requests, 0);
+    assert.equal(readFileSync(files["ID map"], "utf8"), before);
+    assert.equal(existsSync(`${files["ID map"]}.partial`), false);
+  }
+});
+
+test("import waits only for provisioning and preserves mappings on invalid readiness", async () => {
+  const fixture = await createFixture();
+  const seeded = await seedTenant(fixture);
+  const exported = await exportTenants(fixture.api);
+  const bundle = {
+    ...exported,
+    namespaces: exported.namespaces.filter(({ id }) => id === seeded.namespace.id),
+  };
+  const cases: {
+    name: string;
+    storedStatus: "provisioning" | "failed" | "deleting";
+    damaged?: { status: unknown };
+  }[] = [
+    { name: "pending", storedStatus: "provisioning" },
+    { name: "failed", storedStatus: "failed" },
+    { name: "deleting", storedStatus: "deleting" },
+    { name: "missing", storedStatus: "provisioning", damaged: { status: undefined } },
+    { name: "null", storedStatus: "provisioning", damaged: { status: null } },
+    { name: "number", storedStatus: "provisioning", damaged: { status: 7 } },
+    { name: "unknown", storedStatus: "provisioning", damaged: { status: "unknown" } },
+  ];
+  for (const { name, storedStatus, damaged } of cases) {
+    const destination = await created(fixture, "/namespaces", { name: `readiness-${name}` });
+    if (storedStatus !== "provisioning") {
+      // These are real supported states, persisted through the same repository
+      // transition contract used by Namespace reconciliation and deletion.
+      await fixture.controller.transact((unit: PlatformUnitOfWork) =>
+        unit.namespaces.transitionNamespaceStatus(destination.id, "provisioning", storedStatus),
+      );
+    }
+    const state: SavedState = { ids: { [seeded.namespace.id]: destination.id }, deployed: [] };
+    const before = structuredClone(state);
+    let writes = 0;
+    let saves = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      async fetchImpl(url, init) {
+        if (init.method !== "GET") {
+          writes += 1;
+        }
+        const response = await asAdministrator(fixture)(url, init);
+        if (new URL(url).pathname !== `/namespaces/${destination.id}`) {
+          return response;
+        }
+        assert.equal(response.status, 200);
+        const payload = object((await response.json()) as unknown);
+        assert.equal(object(payload.data).status, storedStatus);
+        if (damaged) {
+          // Damage only the HTTP response; no unsupported lifecycle state is
+          // inserted into storage and no importer decision is mocked.
+          object(payload.data).status = damaged.status;
+        }
+        return Response.json(payload, { status: 200 });
+      },
+    });
+    const run = () =>
+      importTenants(
+        api,
+        bundle,
+        { "team-a": { "model-key": "restored" } },
+        {
+          state,
+          save: () => {
+            saves += 1;
+          },
+          names: { "team-a": string(destination.name) },
+          deploy: false,
+          sleep: noSleep,
+          readyTimeoutMs: 0,
+          intervalMs: 0,
+        },
+      );
+    if (storedStatus === "provisioning" && !damaged) {
+      const result = await run();
+      assert.equal(result.complete, false);
+      assert.deepEqual(result.pendingNamespaces, [`${destination.name} (${destination.id})`]);
+    } else {
+      await assert.rejects(run(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        if (damaged) {
+          assert.match(error.message, /invalid Namespace status/u);
+        } else {
+          assert.ok(error.message.startsWith(`Namespace ${destination.id} is ${storedStatus}.`));
+        }
+        assert.doesNotMatch(error.message, /Grant.*RoleBindings|waiting for tenant RoleBindings/u);
+        return true;
+      });
+    }
+    assert.equal(writes, 0);
+    assert.equal(saves, 0);
+    assert.deepEqual(state, before);
+  }
 });
