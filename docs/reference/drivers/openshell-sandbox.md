@@ -211,21 +211,21 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 
 <a id="codex-permission-profile"></a>
 
-Codex requires policy allowing `:danger-full-access` and `user` review.
-Readiness refusal produces `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`.
-Oversized replies produce `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`;
-[read limits](../../flows/openshell-sandbox-provisioning.md) distinguish incomplete evidence.
+Codex requires `danger-full-access` mode, the `:danger-full-access` profile,
+and `user` review. Readiness refusal produces
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` with fixed
+[worker diagnostic categories](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
+The [read limits](../../flows/openshell-sandbox-provisioning.md) distinguish
+`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` from incomplete evidence.
 OpenShell isolates all login modes and blocks restricted profiles' nested bubblewrap
-namespaces. The Gateway rejects constrained threads;
-see [troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
-Native OpenClaw disables inner isolation. Its hook sets
-`agents.defaults.workspace` and any
-`agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
-which the Gateway, file transfer, and node address; admission refuses a roster
-that makes another Agent the default. Native workers have separate
-workspaces but share the Sandbox's user, filesystem, process, and network
-boundary. OpenShell isolates each Agent revision from other workloads, not mutually
-untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
+namespaces. The Gateway rejects constrained threads.
+
+Native OpenClaw disables inner isolation. Its hook sets `agents.defaults.workspace`
+and any `agents.entries.main.workspace` to `sandboxDataMount.mountPath` for the Gateway,
+file transfer, and node. Admission requires `main` as the default Agent. Native workers
+use separate workspaces and share the Sandbox user, filesystem, process, and network.
+OpenShell isolates Agent revisions from other workloads. Sessions within one Agent
+share that boundary. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 session releases its slot; idle workers are not retired automatically.
 
