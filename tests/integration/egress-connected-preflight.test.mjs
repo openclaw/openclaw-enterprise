@@ -1042,7 +1042,67 @@ test("custody failures retain bounded last observations without supplier payload
     );
     assert.equal(failure.operation, "before-custody-supervisor-get");
     assert.equal(failure.custody.readAttempts, 0);
+    assert.equal(failure.custody.lastRead, "unobserved");
   });
+  await t.test(
+    "continuation retains the acknowledged prefix when its first read fails",
+    async () => {
+      let reads = 0;
+      const custody = createCustodyTransitions({
+        workspace: "workspace",
+        sandbox: "sandbox",
+        sandboxId,
+        supervisor,
+        readSupervisor: async () => supervisor,
+        gatewayClient: {
+          async getSandboxLogs() {
+            reads++;
+            if (reads === 1) {
+              return { lines: [], bufferTotal: 0 };
+            }
+            if (reads === 2) {
+              return {
+                lines: [
+                  line,
+                  {
+                    ...line,
+                    fields: { ...line.fields, response_custody_event: "permit_accepted" },
+                  },
+                ],
+                bufferTotal: 2,
+              };
+            }
+            throw new Error(marker);
+          },
+        },
+      });
+      const before = await custody.snapshot();
+      await custody.expectAfter(before, ["resolve_accepted", "permit_accepted"]);
+      let recorded;
+      await assert.rejects(
+        async () => {
+          try {
+            await custody.expectAfter(before, [
+              "resolve_accepted",
+              "permit_accepted",
+              "response_released",
+            ]);
+          } catch (error) {
+            throw await safeConnectedFailure(error, "turn-result", async (value) => {
+              recorded = value;
+            });
+          }
+        },
+        { message: /Connected egress operation failed at turn-result \/ after-custody-log-read/ },
+      );
+      assert.equal(recorded.custody.lastRead, "error");
+      assert.equal(recorded.custody.ring, "valid");
+      assert.equal(recorded.custody.freshCount, 2);
+      assert.deepEqual(recorded.custody.labels, ["resolve_accepted", "permit_accepted"]);
+      assert.equal(recorded.custody.sequence, "partial");
+      assert.equal(JSON.stringify(recorded).includes(marker), false);
+    },
+  );
   for (const kind of ["empty", "partial", "ring", "malformed"]) {
     await t.test(kind, async () => {
       let reads = 0;
