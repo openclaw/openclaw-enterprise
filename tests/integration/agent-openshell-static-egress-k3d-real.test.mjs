@@ -747,10 +747,16 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
   // Agent API; neither an accepted stop nor a pending withdrawal proves fencing.
   const stopWork = () =>
     pool.query(
-      "SELECT idempotency_key, state, reason_code FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND agent_target = 'stopped'",
+      "SELECT idempotency_key, state, actor_id FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND agent_target = 'stopped'",
+      [namespace.id, agent.id],
+    );
+  const stopAudit = () =>
+    pool.query(
+      "SELECT id, actor_id, outcome, details->>'reasonCode' AS reason_code, details->>'revisionId' AS revision_id FROM occ.audit_events WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2 AND action = 'openclaw.agents.lifecycle.stop'",
       [namespace.id, agent.id],
     );
   assert.equal((await stopWork()).rowCount, 0, "this owned Agent has not been stopped before");
+  assert.equal((await stopAudit()).rowCount, 0);
   await checkpoint("stop-request", { agentId: agent.id, revisionId: revision.id });
   await api("POST", `${agentPath}/stop`, undefined, 202);
   const stopped = await waitFor(
@@ -766,6 +772,14 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
     },
     180_000,
   );
+  // Successful queue completion also covers an already-stopped Agent. The
+  // lifecycle audit attributes actual retirement to this stop and revision.
+  const audit = await stopAudit();
+  assert.equal(audit.rowCount, 1);
+  assert.equal(audit.rows[0].reason_code, "AGENT_STOPPED");
+  assert.equal(audit.rows[0].outcome, "success");
+  assert.equal(audit.rows[0].revision_id, revision.id);
+  assert.equal(audit.rows[0].actor_id, stopped.actor_id);
   const current = await api("GET", agentPath);
   assert.equal(current.desiredRuntimeState, "stopped");
   assert.equal(current.activeRevisionId, undefined);
@@ -809,6 +823,8 @@ async function withdrawAndObserveSandboxAbsence(setup, stack, evidence, deployme
     sandboxAbsent: true,
     runtimePodsAbsent: true,
     stopOperation: stopped.idempotency_key,
+    stopAuditId: audit.rows[0].id,
+    stopReason: audit.rows[0].reason_code,
     withdrawalState: retained.rows[0].state,
     withdrawalReason: retained.rows[0].last_reason,
   });
