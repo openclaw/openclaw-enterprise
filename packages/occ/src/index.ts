@@ -13635,7 +13635,7 @@ export class OpenClawController {
         lockedAgent,
         this.bindings(metadata.secretBindings),
       );
-      const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
+      const [harnessAuth, credentialSourceType, sourceGrant] = await this.admitHarnessAuth(
         state,
         principalId,
         lockedAgent,
@@ -13647,20 +13647,11 @@ export class OpenClawController {
         configuration.values,
       );
       const runtimeValues = named?.values ?? configuration.values;
-      // admitHarnessAuth has authorized this exact source. Recheck the template's immutable
-      // Service identity before recording the sender's network grant for this revision.
-      const sourceGrant =
-        provider && harnessAuth.method === "credential_source"
-          ? (
-              await state.credentialSources.findCredentialSource(
-                lockedAgent.namespaceId,
-                harnessAuth.sourceId,
-              )
-            )?.staticKeyGrant
-          : undefined;
+      // Recheck the receiver from the same locked source that authorized this Harness.
       const privateInferencePeer = sourceGrant?.privatePeer;
-      if (privateInferencePeer && sourceGrant) {
+      if (sourceGrant && privateInferencePeer) {
         if (
+          !provider ||
           !compute.resolveInferencePrivatePeer ||
           !isDeepStrictEqual(
             privateInferencePeer,
@@ -13668,7 +13659,7 @@ export class OpenClawController {
           )
         ) {
           throw new ResourceStateConflictError(
-            "The approved private inference peer changed. Register a credential for the current template version before deploying.",
+            "The private inference credential must match the current Model Provider and template receiver.",
           );
         }
       }
@@ -17042,7 +17033,13 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]> {
+  ): Promise<
+    readonly [
+      auth: HarnessAuthSnapshot,
+      sourceType?: CredentialSourceType,
+      grant?: StaticKeyGrant | undefined,
+    ]
+  > {
     const binding = this.harnessAuthBinding(agent.harnessAuth);
     if (binding === null) {
       throw new ResourceStateConflictError(
@@ -17111,7 +17108,13 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
+  ): Promise<
+    readonly [
+      auth: HarnessAuthSnapshot,
+      sourceType: CredentialSourceType,
+      grant: StaticKeyGrant | undefined,
+    ]
+  > {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -17135,6 +17138,7 @@ export class OpenClawController {
         loginMode: type.harnessAuth.loginMode,
       },
       type,
+      source.staticKeyGrant,
     ] as const);
   }
 

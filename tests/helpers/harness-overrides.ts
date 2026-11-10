@@ -371,7 +371,7 @@ export async function exerciseNamedProvider(
         ...f.modelProvider,
         privatePeer: { kind: "private_ipv4", address: "169.254.99.4" },
       },
-      409,
+      400,
     );
     // The same Service FQDN and IP now route to a different workload.
     service.spec.selector.app = "replaced";
