@@ -7,6 +7,7 @@ import {
   SecretDetailResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
+import type { CredentialSourceMetadata } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
   CreateIAMAccessBindingBody,
@@ -38,6 +39,7 @@ import { restrict } from "../helpers/iam-grants.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessibleDescription,
@@ -63,6 +65,99 @@ const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${names
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
+
+test("An Agent reuses a provider saved in Settings and a credential approved in Secrets", async (t) => {
+  const fixture = await staticEgressFixture(t, { admitRevision: false });
+  assert.ok(
+    "origin" in fixture && "credentials" in fixture && "registerCleanupBeforeAppClose" in fixture,
+  );
+  const { namespace, modelProvider } = fixture;
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/settings");
+  await page.getByRole("button", { name: "Add model provider" }).click();
+  const editor = dialog(page, "Add model provider");
+  await editor.getByLabel("Provider name").fill("Research inference");
+  await editor.getByLabel("Inference base URL").fill(modelProvider.baseUrl);
+  await editor.getByLabel("Model ID", { exact: true }).fill("research-model");
+  await editor.getByLabel("Default model").selectOption("research-model");
+  await editor.getByLabel("New static-key template name").fill("Research key");
+  await editor.getByLabel("Network destination").selectOption("private_ipv4");
+  await editor.getByLabel("Private IPv4 address").fill("10.20.30.40");
+  const saved = responseTo(page, "POST", fixture.origin + "/model-providers");
+  await editor.getByRole("button", { name: "Save provider" }).click();
+  const created = await saved;
+  assert.equal(created.status(), 201);
+  const { data: provider } = await created.json();
+  const persisted = await fixture.request("GET", "/model-providers/" + provider.id);
+  assert.deepEqual(persisted.data.models, [{ id: "research-model" }]);
+  assert.equal(persisted.data.defaultModelId, "research-model");
+
+  // The key owner sees the exact operation and template version before approving the saved Secret.
+  await page.goto(fixture.origin + secretsUrl(namespace));
+  await page.getByText("Register an inference credential", { exact: true }).click();
+  await page.getByLabel("Credential name").fill("research-key");
+  await page
+    .getByLabel("Connection template", { exact: true })
+    .selectOption(provider.connectionTemplateId);
+  await page.getByLabel("API key Secret", { exact: true }).selectOption({ label: "provider-key" });
+  await page
+    .getByText(
+      "Approve POST " +
+        modelProvider.baseUrl +
+        "/responses (template version 1). Private server at 10.20.30.40.",
+      {
+        exact: true,
+      },
+    )
+    .waitFor();
+  await page.getByRole("button", { name: "Approve and register key" }).click();
+  await page
+    .getByText("Registered research-key. Select it in Create Agent.", { exact: true })
+    .waitFor();
+
+  const sources = await fixture.request(
+    "GET",
+    "/namespaces/" + namespace.id + "/credential-sources",
+  );
+  const key = sources.data.find(
+    (source: CredentialSourceMetadata) => source.name === "research-key",
+  );
+  assert.equal(key?.state, "ready");
+  assert.deepEqual(key.staticKeyGrant, {
+    privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
+    baseUrl: modelProvider.baseUrl,
+    protocol: "openai-responses",
+    connectionTemplateId: provider.connectionTemplateId,
+    connectionTemplateVersion: 1,
+  });
+
+  // This Installation saves drafts. An existing approved key can be reused without registering another source.
+  await page.goto(fixture.origin + "/console/agents/new?namespace=" + namespace.id);
+  const start = page.getByRole("button", { name: "Start without Preset" });
+  const providerPicker = page.locator("#model-provider");
+  await start.or(providerPicker).first().waitFor();
+  if (await start.isVisible()) {
+    await start.click();
+  }
+  await page.getByLabel("Agent name").fill("Research assistant");
+  await providerPicker.selectOption({ label: "Research inference" });
+  await page.getByLabel("Inference credential", { exact: true }).selectOption({ label: key.name });
+  assert.equal(
+    await page.getByLabel("Models offered by this provider").inputValue(),
+    "research-model",
+  );
+  const savedAgent = responseTo(
+    page,
+    "POST",
+    fixture.origin + "/namespaces/" + namespace.id + "/agents",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const agentResponse = await savedAgent;
+  assert.equal(agentResponse.status(), 201, await agentResponse.text());
+  const { data: agent } = await agentResponse.json();
+  assert.equal(agent.modelProviderId, provider.id);
+  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: key.id });
+});
 
 async function createFromConsole(page: Page, name: string, value: string) {
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();

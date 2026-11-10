@@ -56,6 +56,95 @@ async function createManualDraft(
 }
 
 test(
+  "an Agent creator can reuse an Installation provider while its template retains each approved key destination",
+  requiresPostgres,
+  async (t) => {
+    const { inject, pool } = await createPostgresAgentApp(t, options);
+    const settings = {
+      mode: "static_bearer",
+      baseUrl: "https://inference.example.test/v1",
+      protocol: "openai-responses",
+    };
+    const template = await inject("POST", "/connection-templates", {
+      displayName: "Research inference key",
+      ...settings,
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const approved = template.json().data;
+    assert.deepEqual(approved.current.destinations, [
+      { method: "POST", host: "inference.example.test", port: 443, path: "/v1/responses" },
+    ]);
+
+    const provider = {
+      displayName: "Research inference",
+      baseUrl: settings.baseUrl,
+      protocol: settings.protocol,
+      models: [{ id: "small" }, { id: "large", contextWindow: 32768, maxTokens: 4096 }],
+      defaultModelId: "small",
+      connectionTemplateId: approved.id,
+    };
+    const created = await inject("POST", "/model-providers", provider);
+    assert.equal(created.statusCode, 201, created.body);
+    const saved = created.json().data;
+    assert.match(saved.settingsFingerprint, /^[0-9a-f]{64}$/);
+    const ns = await inject("POST", "/namespaces", { name: "models-" + randomUUID() });
+    assert.equal(ns.statusCode, 201, ns.body);
+    const list = await inject("GET", `/namespaces/${ns.json().data.id}/model-providers`);
+    assert.equal(list.statusCode, 200, list.body);
+    assert.deepEqual(
+      list.json().data.find((p: { id: string }) => p.id === saved.id),
+      { ...provider, id: saved.id, settingsFingerprint: saved.settingsFingerprint },
+    );
+
+    // Updating the route needs a matching template; the old credential approval survives the edit.
+    const conflicting = {
+      ...provider,
+      expectedSettingsFingerprint: saved.settingsFingerprint,
+      protocol: "openai-completions",
+    };
+    const rejected = await inject("PUT", `/model-providers/${saved.id}`, conflicting);
+    assert.equal(rejected.statusCode, 409, rejected.body);
+    const changed = await inject("PATCH", `/connection-templates/${approved.id}`, {
+      ...settings,
+      protocol: conflicting.protocol,
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.equal(changed.json().data.current.version, 2);
+    assert.deepEqual(changed.json().data.current.destinations, [
+      { method: "POST", host: "inference.example.test", port: 443, path: "/v1/chat/completions" },
+    ]);
+    const granted = await pool.query(
+      "SELECT protocol FROM occ.static_key_template_versions WHERE template_id=$1 AND version=1",
+      [approved.id],
+    );
+    assert.equal(granted.rows[0].protocol, "openai-responses");
+    const updated = await inject("PUT", `/model-providers/${saved.id}`, conflicting);
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.equal(updated.json().data.id, saved.id);
+    const reviewed = updated.json().data;
+    // Both administrators edited the same saved provider. Only the first write can replace it.
+    const concurrent = await Promise.all(
+      ["Research A", "Research B"].map((displayName) =>
+        inject("PUT", `/model-providers/${saved.id}`, {
+          ...conflicting,
+          displayName,
+          expectedSettingsFingerprint: reviewed.settingsFingerprint,
+        }),
+      ),
+    );
+    assert.deepEqual(concurrent.map((result) => result.statusCode).sort(), [200, 409]);
+    const winner = concurrent.find((result) => result.statusCode === 200)!.json().data;
+    const conflict = concurrent.find((result) => result.statusCode === 409)!.json().error;
+    assert.equal(conflict.details[0].path, "/expectedSettingsFingerprint");
+    assert.notEqual(winner.settingsFingerprint, reviewed.settingsFingerprint);
+    const current = await inject("GET", `/model-providers/${saved.id}`);
+    assert.deepEqual(current.json().data, winner);
+    const removed = await inject("DELETE", `/connection-templates/${approved.id}`);
+    assert.equal(removed.statusCode, 409, removed.body);
+  },
+);
+
+test(
   "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
   requiresPostgres,
   async (t) => {

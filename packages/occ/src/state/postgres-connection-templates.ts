@@ -1,7 +1,10 @@
+import { inferenceKeyDestination } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
   ConnectionTemplate,
+  InferencePrivatePeer,
+  ConnectionTemplateVersion,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
@@ -78,9 +81,31 @@ function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
     id: text(row, "id"),
     ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     displayName: text(row, "display_name"),
-    current: versionFromRow(row),
+    current: row.static_key ? staticVersionFromRow(row) : versionFromRow(row),
     createdAt: timestamp(row, "created_at"),
   });
+}
+
+function staticVersionFromRow(
+  row: Row,
+): Extract<ConnectionTemplateVersion, { mode: "static_bearer" }> {
+  const protocol = row.static_protocol;
+  if (protocol !== "openai-responses" && protocol !== "openai-completions") {
+    invalid();
+  }
+  const baseUrl = text(row, "static_base_url");
+  return {
+    mode: "static_bearer",
+    templateId: text(row, "id"),
+    version: integer(row, "current_version"),
+    createdAt: timestamp(row, "static_created_at"),
+    ...(row.static_private_peer != null && {
+      privatePeer: row.static_private_peer as InferencePrivatePeer,
+    }),
+    baseUrl,
+    protocol,
+    destinations: [inferenceKeyDestination(baseUrl, protocol)],
+  };
 }
 
 function registrationFromRow(row: Row): Readonly<StoredOAuthClient> {
@@ -101,8 +126,22 @@ function registrationFromRow(row: Row): Readonly<StoredOAuthClient> {
 
 async function insertVersion(
   client: PostgresQueryClient,
-  version: OAuthConnectionTemplateVersion,
+  version: ConnectionTemplateVersion,
 ): Promise<void> {
+  if (version.mode === "static_bearer") {
+    await client.query(
+      "INSERT INTO occ.static_key_template_versions(template_id,version,base_url,protocol,created_at,private_peer) VALUES($1,$2,$3,$4,$5,$6)",
+      [
+        version.templateId,
+        version.version,
+        version.baseUrl,
+        version.protocol,
+        version.createdAt,
+        version.privatePeer ?? null,
+      ],
+    );
+    return;
+  }
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
@@ -134,10 +173,11 @@ export function postgresConnectionTemplates(
   const selectTemplates = async (where: string, values: unknown[]) =>
     (
       await client.query(
-        `SELECT t.id, t.namespace_id, t.display_name, t.created_at, ${versionColumns}
+        `SELECT t.id, t.namespace_id, t.display_name,t.created_at,t.static_key,t.current_version,
+          k.base_url AS static_base_url,k.protocol AS static_protocol,k.private_peer AS static_private_peer,k.created_at AS static_created_at, ${versionColumns}
          FROM occ.connection_templates t
-         JOIN occ.oauth_connection_template_versions v
-           ON v.template_id = t.id AND v.version = t.current_version
+         LEFT JOIN occ.oauth_connection_template_versions v ON v.template_id = t.id AND v.version = t.current_oauth_version
+         LEFT JOIN occ.static_key_template_versions k ON k.template_id=t.id AND k.version=t.current_static_version
          ${where} ORDER BY t.id`,
         values,
       )
@@ -274,14 +314,15 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       // The current-version foreign key is deferred, so the template row goes in first.
       await client.query(
-        `INSERT INTO occ.connection_templates (id, namespace_id, display_name, current_version, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO occ.connection_templates (id, namespace_id, display_name, current_version, created_at,static_key)
+         VALUES ($1, $2, $3, $4, $5,$6)`,
         [
           template.id,
           template.namespaceId ?? null,
           template.displayName,
           template.current.version,
           template.createdAt,
+          template.current.mode === "static_bearer",
         ],
       );
       await insertVersion(client, template.current);
@@ -316,7 +357,9 @@ export function postgresConnectionTemplates(
           "code" in error &&
           (error.code === "23001" || error.code === "23503") &&
           "constraint" in error &&
-          (error.constraint === "connection_sessions_template_version" ||
+          (error.constraint === "model_providers_connection_template_id_fkey" ||
+            error.constraint === "credential_source_static_key_grant" ||
+            error.constraint === "connection_sessions_template_version" ||
             error.constraint === "saved_connections_template_version")
         ) {
           throw new ResourceStateConflictError("The connection template is in use.");

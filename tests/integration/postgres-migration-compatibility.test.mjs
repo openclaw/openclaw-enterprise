@@ -1837,6 +1837,7 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 function upgradedCanonicalData(data) {
   return {
     ...data,
+    agents: data.agents.map(({ value }) => ({ value: { model_provider_id: null, ...value } })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
@@ -2192,6 +2193,8 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2685,6 +2688,8 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2880,6 +2885,8 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2969,6 +2976,8 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preModelProviders"],
+      [77, "prePrivateInferencePeers"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2992,6 +3001,8 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          // The first ALTER TABLE in 0078 follows the validator and its application-role grant.
+          [77, "ALTER TABLE"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

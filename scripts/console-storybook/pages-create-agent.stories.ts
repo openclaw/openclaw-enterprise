@@ -402,3 +402,9 @@ export const SharedModelDestinationRefusal = {
   ...story("createSharedModelProviderRefusal"),
   name: "Destination authorization refusal",
 };
+
+export const SavedProvider = { ...story("createSavedModelProvider"), name: "Saved model provider" };
+export const SavedProviderMissingKey = {
+  ...story("createSavedModelProviderMissingKey"),
+  name: "Saved model provider without a credential",
+};

@@ -7,6 +7,12 @@ replace a value; ask an administrator for the exact operation permissions.
 Without Secret `create` in the Namespace, **Create Secret** is disabled and a
 note under it says so.
 
+## Reuse an inference provider
+
+To reuse an inference endpoint, an Installation administrator selects **Settings → Model providers → Add model provider**, enters the HTTPS base URL, chooses an API format, and adds the offered model IDs. The administrator can set a default model and select or create a matching static-key Connection Template. In **Credentials → Register an inference credential**, the key owner selects a Namespace Secret and approves the displayed POST destination and template version.
+
+In **Create Agent**, select the saved provider and a compatible Dedicated Harness. Select the registered inference credential, then choose from **Models offered by this provider**. Another Agent in the same Namespace can reuse these choices. Each Namespace needs its own authorized credential. To use a different endpoint, select a different provider. For a private endpoint, choose **Private server** or **Kubernetes Service** under **Network destination** when creating the template. Enter the private server’s IPv4 address, or use the Service DNS name in the inference URL. Check the private destination shown beside the POST route when registering the key. [Private endpoint prerequisites](../../reference/drivers/kubernetes-compute/model-provider.md#private-endpoints)
+
 ## Register a Google OAuth client
 
 As an Installation administrator, open **Credentials → OAuth clients → Register OAuth client** and select the Installation-wide **Google OAuth** template. Register the displayed redirect URI with Google, then enter the client ID and secret that Google issued.

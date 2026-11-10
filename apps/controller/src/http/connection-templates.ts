@@ -1,4 +1,8 @@
-import type { AuditEvent, OccApiOperationId } from "@openclaw-enterprise/contracts";
+import type {
+  AuditEvent,
+  OccApiOperationId,
+  ModelProviderSettings,
+} from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
@@ -18,10 +22,60 @@ type TemplateHandler = (input: {
   actorId: string;
   request: FastifyRequest;
   reply: FastifyReply;
-  mutationEvent: (templateId: string) => AuditEvent;
+  mutationEvent: (
+    details:
+      { connectionTemplateId: string } | { oauthClientId: string } | { modelProviderId: string },
+  ) => AuditEvent;
 }) => Promise<void>;
 
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
+  async listModelProviders({ controller, actorId, meta, reply }) {
+    reply.send({ data: await controller.listModelProviders(actorId), meta });
+  },
+  async getModelProvider({ controller, actorId, request, meta, reply }) {
+    const { modelProviderId } = request.params as { modelProviderId: string };
+    reply.send({ data: await controller.getModelProvider(actorId, modelProviderId), meta });
+  },
+  async createModelProvider({
+    controller,
+    actorId,
+    request,
+    mutationEvent,
+    holdSession,
+    meta,
+    reply,
+  }) {
+    const data = await controller.saveModelProvider(
+      actorId,
+      undefined,
+      request.body as ModelProviderSettings,
+      (modelProviderId) => mutationEvent({ modelProviderId }),
+      holdSession,
+    );
+    reply.status(201).send({ data, meta });
+  },
+  async updateModelProvider({
+    controller,
+    actorId,
+    request,
+    mutationEvent,
+    holdSession,
+    meta,
+    reply,
+  }) {
+    const { modelProviderId } = request.params as { modelProviderId: string };
+    const { expectedSettingsFingerprint, ...settings } = request.body as ModelProviderSettings & {
+      expectedSettingsFingerprint: string;
+    };
+    const data = await controller.saveModelProvider(
+      actorId,
+      { id: modelProviderId, expectedSettingsFingerprint },
+      settings,
+      (modelProviderId) => mutationEvent({ modelProviderId }),
+      holdSession,
+    );
+    reply.send({ data, meta });
+  },
   async listConnectionTemplates({ meta, controller, actorId, reply }) {
     const data = await controller.listConnectionTemplates(actorId);
     reply.send({ data, meta });
@@ -40,7 +94,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       actorId,
       request.body as CreateConnectionTemplateInput,
       discover,
-      mutationEvent,
+      (connectionTemplateId) => mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.status(201).send({ data: created, meta });
@@ -66,7 +120,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       connectionTemplateId,
       request.body as UpdateConnectionTemplateInput,
       discover,
-      mutationEvent(connectionTemplateId),
+      mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.send({ data: updated, meta });
@@ -83,7 +137,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     await controller.deleteConnectionTemplate(
       actorId,
       connectionTemplateId,
-      mutationEvent(connectionTemplateId),
+      mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.status(204).send();
@@ -112,7 +166,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     const client = await controller.createOAuthClient(
       actorId,
       request.body as CreateOAuthClientInput,
-      mutationEvent,
+      (oauthClientId) => mutationEvent({ oauthClientId }),
       holdSession,
     );
     reply.status(201).send({ data: client, meta });
@@ -132,7 +186,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       actorId,
       oauthClientId,
       clientSecret,
-      mutationEvent(oauthClientId),
+      mutationEvent({ oauthClientId }),
       holdSession,
     );
     reply.send({ data: client, meta });
@@ -142,7 +196,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     await controller.deleteOAuthClient(
       actorId,
       oauthClientId,
-      mutationEvent(oauthClientId),
+      mutationEvent({ oauthClientId }),
       holdSession,
     );
     reply.status(204).send();

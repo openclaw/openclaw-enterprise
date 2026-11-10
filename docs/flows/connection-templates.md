@@ -59,6 +59,14 @@ A template can exist before its OAuth client. OCC takes the registration's avail
 
 Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
 
+### Save a static-key template and select it for inference
+
+`packages/occ/src/index.ts:saveModelProvider` and `packages/occ/src/index.ts:createCredentialSource`
+
+OCC checks Installation administration permission and locks the selected template before it saves a provider. To replace a provider, OCC also locks its row and compares the saved settings with the fingerprint the administrator reviewed. A stale edit returns `409` and preserves the other administrator’s changes. The template must be Installation-wide and approve the provider’s URL and protocol. A Namespace user with Agent creation permission can list the saved providers.
+
+When the credential owner approves a static template version, OCC locks the template and checks the Namespace and current version before reading the Secret. The stored static-key grant references the approved version. PostgreSQL checks that its base URL and protocol match the immutable version. For a private destination, the grant reads its peer from the same immutable template version. Compute checks that peer against the current Service at deployment and installs a NetworkPolicy on the physical OpenShell supervisor. The Credential Gateway puts the peer address on the approved POST route. For an ordinary credential, OpenShell starts with that route denied. Compute observes the dedicated supervisor Pod and verifies that upstream connections use the validated address. The Sandbox Driver checks the full held policy, removes the denial, and verifies that OpenShell loaded the expected policy for this Agent revision before it starts the Harness. OpenShell checks the route again before injecting the key on each request. [Kubernetes private endpoints](../reference/drivers/kubernetes-compute/model-provider.md#private-endpoints)
+
 ### 3. Authorize the account in the browser
 
 `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`

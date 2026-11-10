@@ -545,7 +545,8 @@ function operationTarget(
       : { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
-    (operation.operationId === "createAgent" ||
+    (operation.operationId === "listUsableModelProviders" ||
+      operation.operationId === "createAgent" ||
       operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
@@ -2219,35 +2220,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
-    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
-    // Older handlers would otherwise ignore a requested provider or credential destination.
-    if (
-      (body &&
-        "modelProviderId" in body &&
-        ["createAgent", "provisionAgent", "validateAgentCreate", "updateAgent"].includes(
-          operation.operationId,
-        )) ||
-      (body?.mode === "static_bearer" &&
-        (operation.operationId === "createConnectionTemplate" ||
-          operation.operationId === "updateConnectionTemplate")) ||
-      (operation.operationId === "createCredentialSource" &&
-        body &&
-        ("connectionTemplateId" in body || "connectionTemplateVersion" in body)) ||
-      [
-        "listModelProviders",
-        "getModelProvider",
-        "createModelProvider",
-        "updateModelProvider",
-        "listUsableModelProviders",
-      ].includes(operation.operationId)
-    ) {
-      throw failure(
-        501,
-        "NOT_IMPLEMENTED",
-        "Named model providers are unavailable on this controller.",
-      );
-    }
-
     if (operation.operationId === "bootstrapInstallation") {
       if (controller || bootstrapping) {
         throw failure(409, "INSTALLATION_EXISTS", "The deployment already owns an Installation.");
@@ -2350,7 +2322,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           actorId: context.actorId,
           request,
           reply,
-          mutationEvent: (resourceId) =>
+          mutationEvent: (details) =>
             event(
               operation,
               request,
@@ -2360,9 +2332,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               {
                 outcome: "success",
-                details: resourceId.startsWith("ccr_")
-                  ? { oauthClientId: resourceId }
-                  : { connectionTemplateId: resourceId },
+                details,
               },
             ),
         });

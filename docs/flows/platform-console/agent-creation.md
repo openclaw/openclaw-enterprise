@@ -14,6 +14,8 @@ The [parent flow](../platform-console.md) authorizes the page first; the
 [creation reference](../../reference/console/create-and-deploy.md) owns
 user-visible behavior.
 
+For a saved provider, the form loads the Installation catalog through the Namespace and matches ready credentials against the provider's template, URL, and format. It submits the provider ID and selected source to admission. Compute resolves the selected model against the catalog and the revision pins its metadata and destination. A retry uses that revision. The [model provider reference](../../reference/drivers/kubernetes-compute/model-provider.md) describes runtime and network requirements.
+
 ## Entry Points
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the

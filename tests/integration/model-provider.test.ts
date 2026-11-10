@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
+import { exerciseHarnessOverrides, exerciseNamedProvider } from "../helpers/harness-overrides.ts";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -91,4 +92,11 @@ for (const harness of ["codex", "openclaw"] as const) {
 
 test("ordinary deployment admits concurrent source-authorized destinations and isolates first-deployment intent", async (t) => {
   await exerciseHarnessOverrides(t);
+});
+
+test("Agents share a named provider while their revisions pin the route, model metadata, and allowed operation", async (t) => {
+  await exerciseNamedProvider(
+    await staticEgressFixture(t, { admitRevision: false }),
+    "kubernetes_service",
+  );
 });

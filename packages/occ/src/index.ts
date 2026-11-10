@@ -34,6 +34,8 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   CONFIGURED_IAM_ID_PREFIXES,
   connectionValuesChanged,
+  inferenceKeyDestination,
+  normalizeInferenceBaseUrl,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
@@ -176,6 +178,14 @@ import type {
   McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  ConnectionTemplateSettings,
+  ModelProvider,
+  ModelProviderSettings,
+  ModelProviderView,
+  InferencePrivatePeer,
+  InferencePrivatePeerInput,
+  InferenceProtocol,
+  StaticKeyGrant,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -934,6 +944,7 @@ export interface CreateNamespaceInput {
 }
 
 export interface CreateAgentInput {
+  readonly modelProviderId?: string;
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly workspaceDefaultsId?: string;
   readonly namespaceId: string;
@@ -969,6 +980,7 @@ export interface AgentRevisionListPage {
 
 /** Create Agent's preflight input: an Agent create body with its Configuration inline, unsaved. */
 export interface ValidateAgentCreateInput {
+  readonly modelProviderId?: string;
   readonly namespaceId: string;
   /** The name Agent create will use; absent skips the duplicate-name check. */
   readonly name?: string;
@@ -1007,6 +1019,7 @@ interface RemoveStandingApprovalInput {
 }
 
 export interface UpdateAgentInput {
+  readonly modelProviderId?: string | null;
   readonly repositoryStandingApproval?: {
     readonly repositoryRef: string;
     readonly approvalId: string;
@@ -1077,22 +1090,29 @@ interface ApprovedTemplateSettings {
   readonly authorizationParameters?: Readonly<Record<string, string>>;
   readonly oauthClientId?: string;
 }
-type TemplateInput = ApprovedTemplateSettings &
-  (
-    | {
-        readonly mode: "manual";
-        readonly issuer: string;
-        readonly authorizationUrl: string;
-        readonly tokenUrl: string;
-        readonly revocationUrl?: string;
-        readonly destinations: readonly {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        }[];
-      }
-    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
-  );
+type TemplateInput =
+  | {
+      readonly mode: "static_bearer";
+      readonly baseUrl: string;
+      readonly protocol: InferenceProtocol;
+      readonly privatePeer?: InferencePrivatePeerInput;
+    }
+  | (ApprovedTemplateSettings &
+      (
+        | {
+            readonly mode: "manual";
+            readonly issuer: string;
+            readonly authorizationUrl: string;
+            readonly tokenUrl: string;
+            readonly revocationUrl?: string;
+            readonly destinations: readonly {
+              readonly host: string;
+              readonly port?: number;
+              readonly path?: string;
+            }[];
+          }
+        | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+      ));
 function templateAcceptsAuthMethod(
   observed: McpAuthorizationMetadata | undefined,
   method: OAuthClient["tokenEndpointAuthMethod"],
@@ -1118,6 +1138,8 @@ export type CreateOAuthClientInput = Pick<
 };
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
+  readonly connectionTemplateId?: string;
+  readonly connectionTemplateVersion?: number;
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
@@ -1850,6 +1872,54 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
     (entry) => asRecord(entry)?.model !== undefined,
   );
+}
+
+function modelProviderView(provider: Readonly<ModelProvider>): ModelProviderView {
+  const settingsFingerprint = createHash("sha256")
+    .update(canonicalProvisioningJson(provider))
+    .digest("hex");
+  return { ...provider, settingsFingerprint };
+}
+
+async function requireModelProviderGrant(
+  state: PlatformReadView,
+  provider: Readonly<ModelProvider>,
+  grant: CredentialSource["staticKeyGrant"],
+) {
+  const template = await state.connectionTemplates.findConnectionTemplate(
+    provider.connectionTemplateId,
+  );
+  if (
+    template?.current.mode !== "static_bearer" ||
+    template.current.baseUrl !== provider.baseUrl ||
+    template.current.protocol !== provider.protocol ||
+    !grant ||
+    !isDeepStrictEqual(template.current.privatePeer, grant.privatePeer) ||
+    grant.connectionTemplateId !== provider.connectionTemplateId ||
+    grant.protocol !== provider.protocol ||
+    grant.baseUrl !== provider.baseUrl
+  ) {
+    throw new ResourceStateConflictError(
+      "The selected credential does not approve this Model Provider's Connection Template, destination, and API format.",
+    );
+  }
+}
+
+function resolveNamedModelProvider(
+  compute: ComputeDriver,
+  provider: Readonly<ModelProvider> | undefined,
+  harness: RevisionHarnessDescriptor,
+  values: OpenClawConfigurationDocument,
+) {
+  if (!provider) {
+    return undefined;
+  }
+  if (!compute.resolveModelProvider) {
+    throw new ConfigurationHarnessError(
+      "The selected Compute Driver does not support named Model Providers.",
+    );
+  }
+  return compute.resolveModelProvider(provider, harness, values);
 }
 
 // A Driver names unsupported Configuration content the caller owns; keep that message. Other
@@ -3695,6 +3765,7 @@ export class OpenClawController {
         ? {}
         : { workspaceDefaultsId: workspace.workspaceDefaultsId }),
       ...(backendId === undefined ? {} : { backendId }),
+      ...(input.modelProviderId === undefined ? {} : { modelProviderId: input.modelProviderId }),
       harnessAuth,
       executionMode,
       gatewayManagedMode,
@@ -3900,6 +3971,9 @@ export class OpenClawController {
           harnessAuth,
           executionMode,
           gatewayManagedMode,
+          ...(input.modelProviderId === undefined
+            ? {}
+            : { modelProviderId: input.modelProviderId }),
           ...(backendId === undefined ? {} : { backendId }),
           ...(plugins === undefined ? {} : { plugins }),
           ...(driver && plugins && Object.keys(plugins).length
@@ -4901,7 +4975,8 @@ export class OpenClawController {
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
         (template) =>
-          template.current.oauthClientId !== undefined &&
+          (template.current.mode === "static_bearer" ||
+            template.current.oauthClientId !== undefined) &&
           (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
@@ -4978,6 +5053,11 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
+      if (version.mode === "static_bearer") {
+        throw new ResourceStateConflictError(
+          "Create a static credential with this template and a Secret.",
+        );
+      }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await this.connectionClientForVersion(state, namespaceId, version);
       const createdAt = this.timestamp();
@@ -5252,7 +5332,11 @@ export class OpenClawController {
     const template = await state.connectionTemplates.findConnectionTemplate(
       account.connectionTemplateId,
     );
-    if (!template || template.current.issuer !== account.issuer) {
+    if (
+      !template ||
+      template.current.mode === "static_bearer" ||
+      template.current.issuer !== account.issuer
+    ) {
       return [];
     }
     if (template.current.mode === "manual") {
@@ -5515,6 +5599,88 @@ export class OpenClawController {
     });
   }
 
+  async listModelProviders(principalId: string, namespaceId?: string) {
+    if (namespaceId === undefined) {
+      await this.authorizeTemplateAdministration(principalId);
+    } else {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    }
+    return this.read(async (state) => {
+      if (namespaceId !== undefined) {
+        await this.exactNamespace(state, namespaceId);
+      }
+      return (await state.modelProviders.listModelProviders()).map(modelProviderView);
+    });
+  }
+
+  async getModelProvider(principalId: string, id: string) {
+    await this.authorizeTemplateAdministration(principalId);
+    const provider = await this.read((state) => state.modelProviders.findModelProvider(id));
+    if (!provider) {
+      throw new ScopeViolationError("The Model Provider does not exist.");
+    }
+    return modelProviderView(provider);
+  }
+
+  async saveModelProvider(
+    principalId: string,
+    previous: { id: string; expectedSettingsFingerprint: string } | undefined,
+    input: ModelProviderSettings,
+    audit: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ): Promise<ModelProviderView> {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await holdSession?.(state);
+      if (previous) {
+        const current = await state.modelProviders.lockModelProvider(previous.id);
+        if (!current) {
+          throw new ScopeViolationError("The Model Provider does not exist.");
+        }
+        if (
+          modelProviderView(current).settingsFingerprint !== previous.expectedSettingsFingerprint
+        ) {
+          throw new ResourceStateConflictError(
+            "Another administrator changed this model provider. Reload the current settings before saving.",
+            [{ path: "/expectedSettingsFingerprint", code: "INVALID_VALUE" }],
+          );
+        }
+      }
+      const template = await state.connectionTemplates.lockConnectionTemplate(
+        input.connectionTemplateId,
+      );
+      const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
+      if (
+        !template ||
+        template.namespaceId !== undefined ||
+        template.current.mode !== "static_bearer" ||
+        template.current.baseUrl !== baseUrl ||
+        template.current.protocol !== input.protocol
+      ) {
+        throw new ResourceStateConflictError(
+          "Choose an Installation static-key template that approves this inference request.",
+        );
+      }
+      const modelIds = new Set(input.models.map((model) => model.id));
+      if (
+        modelIds.size !== input.models.length ||
+        (input.defaultModelId !== undefined && !modelIds.has(input.defaultModelId))
+      ) {
+        throw new ResourceStateConflictError(
+          "List each model once and choose a default from that list.",
+        );
+      }
+      const provider = { ...input, baseUrl, id: previous?.id ?? `mpr_${crypto.randomUUID()}` };
+      if (previous) {
+        await state.modelProviders.updateModelProvider(provider);
+      } else {
+        await state.modelProviders.createModelProvider(provider);
+      }
+      await state.audit.append(audit(provider.id));
+      return modelProviderView(provider);
+    });
+  }
+
   async listConnectionTemplates(
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
@@ -5548,7 +5714,31 @@ export class OpenClawController {
   private async effectiveConnectionTemplate(
     input: TemplateInput,
     discover: DiscoverMcp,
-  ): Promise<ConnectionTemplateValues> {
+  ): Promise<ConnectionTemplateSettings> {
+    if (input.mode === "static_bearer") {
+      const baseUrl = normalizeInferenceBaseUrl(input.baseUrl);
+      let privatePeer: InferencePrivatePeer | undefined;
+      if (input.privatePeer) {
+        const compute = this.selectedDriver("compute");
+        if (!compute.resolveInferencePrivatePeer) {
+          throw new ResourceStateConflictError(
+            "The selected Compute Driver does not support private inference destinations.",
+          );
+        }
+        privatePeer = await compute.resolveInferencePrivatePeer(input.privatePeer, baseUrl);
+      } else if (new URL(baseUrl).hostname.endsWith(".svc.cluster.local")) {
+        throw new ResourceStateConflictError(
+          "Select the Kubernetes Service for this inference endpoint.",
+        );
+      }
+      return {
+        ...(privatePeer && { privatePeer }),
+        mode: input.mode,
+        baseUrl,
+        protocol: input.protocol,
+        destinations: [inferenceKeyDestination(baseUrl, input.protocol)],
+      };
+    }
     const settings = {
       scopes: [...input.scopes],
       authorizationParameters: input.authorizationParameters ?? {},
@@ -5616,10 +5806,10 @@ export class OpenClawController {
 
   private async assertTemplateClient(
     state: PlatformUnitOfWork,
-    values: ConnectionTemplateValues,
+    values: ConnectionTemplateSettings,
     namespaceId?: string,
   ) {
-    if (!values.oauthClientId) {
+    if (values.mode === "static_bearer" || !values.oauthClientId) {
       return;
     }
     const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
@@ -5695,6 +5885,11 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       if (values) {
+        if ((current.current.mode === "static_bearer") !== (values.mode === "static_bearer")) {
+          throw new ResourceStateConflictError(
+            "Create a new connection template to change its authentication method.",
+          );
+        }
         await this.assertTemplateClient(state, values, current.namespaceId);
       }
       const version =
@@ -5760,6 +5955,11 @@ export class OpenClawController {
   ) {
     this.requireIndependentMutation("OAuth client registration");
     const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    if (template.current.mode === "static_bearer") {
+      throw new ResourceStateConflictError(
+        "A static-key template cannot register an OAuth client.",
+      );
+    }
     const assertSelectedVersion = (version: number | undefined) => {
       if (version !== input.connectionTemplateVersion) {
         throw new ResourceStateConflictError(
@@ -5805,6 +6005,11 @@ export class OpenClawController {
       assertSelectedVersion(current?.current.version);
     };
     const publish = async (state: PlatformUnitOfWork) => {
+      if (template.current.mode === "static_bearer") {
+        throw new ResourceStateConflictError(
+          "A static-key template cannot register an OAuth client.",
+        );
+      }
       const selected = !template.current.oauthClientId;
       if (selected) {
         // Select the first registration. Another registration never replaces a chosen client.
@@ -8587,7 +8792,6 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
-    const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
@@ -8610,6 +8814,45 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
+      let staticKeyGrant: StaticKeyGrant | undefined;
+      let written = Object.freeze({ ...(input.config ?? {}) });
+      if (
+        input.connectionTemplateId !== undefined ||
+        input.connectionTemplateVersion !== undefined
+      ) {
+        if (
+          !input.connectionTemplateId ||
+          input.connectionTemplateVersion === undefined ||
+          !type.staticKeyBaseUrlConfig ||
+          Object.keys(written).length
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose a static-key source type and approve one template version. Its endpoint comes from that version.",
+          );
+        }
+        const template = await state.connectionTemplates.lockConnectionTemplate(
+          input.connectionTemplateId,
+        );
+        if (
+          !template ||
+          (template.namespaceId !== undefined && template.namespaceId !== locked.id) ||
+          template.current.mode !== "static_bearer" ||
+          template.current.version !== input.connectionTemplateVersion
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose the current static-key template version available to this Namespace.",
+          );
+        }
+        const { baseUrl, protocol, version, privatePeer } = template.current;
+        staticKeyGrant = {
+          ...(privatePeer && { privatePeer }),
+          connectionTemplateId: template.id,
+          connectionTemplateVersion: version,
+          baseUrl,
+          protocol,
+        };
+        written = Object.freeze({ [type.staticKeyBaseUrlConfig]: baseUrl });
+      }
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
@@ -8675,6 +8918,7 @@ export class OpenClawController {
         Object.freeze({
           id: sourceId,
           ...(egress === undefined ? {} : { egress }),
+          ...(staticKeyGrant && { staticKeyGrant }),
           namespaceId: locked.id,
           name: input.name,
           type: type.type,
@@ -12148,6 +12392,7 @@ export class OpenClawController {
         resolveHarness,
         {
           executionMode,
+          modelProvider: await this.selectedModelProvider(state, input.modelProviderId),
           harnessAuth: () => this.savedHarnessAuthSnapshot(state, namespace.id, harnessAuth),
           repositoryBindings,
           workspaceSetup: initialWorkspaceFiles !== undefined,
@@ -12162,6 +12407,7 @@ export class OpenClawController {
         namespaceId: namespace.id,
         name: input.name,
         configurationId: input.configurationId,
+        ...(input.modelProviderId === undefined ? {} : { modelProviderId: input.modelProviderId }),
         backendId,
         harnessAuth,
         ...(credentialSources === undefined || credentialSources.length === 0
@@ -12291,6 +12537,7 @@ export class OpenClawController {
         resolveHarness,
         {
           executionMode,
+          modelProvider: await this.selectedModelProvider(state, input.modelProviderId),
           harnessAuth: async () => this.plannedHarnessAuthSnapshot(namespace.id, harnessAuth),
           repositoryBindings: undefined,
           workspaceSetup: initialWorkspaceFiles !== undefined,
@@ -12455,9 +12702,13 @@ export class OpenClawController {
     if (input.configurationId !== undefined && !isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    if (input.configurationId === undefined && input.gatewayManagedMode === undefined) {
+    if (
+      input.configurationId === undefined &&
+      input.gatewayManagedMode === undefined &&
+      input.modelProviderId === undefined
+    ) {
       throw new ScopeViolationError(
-        "An Agent update must name a Configuration or Gateway managed mode.",
+        "An Agent update must name a Configuration, Model Provider, or Gateway managed mode.",
       );
     }
     const requestedAuth =
@@ -12603,6 +12854,12 @@ export class OpenClawController {
         resolveHarness,
         {
           executionMode: input.executionMode ?? agent.executionMode,
+          modelProvider: await this.selectedModelProvider(
+            state,
+            input.modelProviderId === undefined
+              ? agent.modelProviderId
+              : (input.modelProviderId ?? undefined),
+          ),
           harnessAuth: () =>
             this.savedHarnessAuthSnapshot(
               state,
@@ -12643,6 +12900,7 @@ export class OpenClawController {
           : driver && Object.keys(plugins).length
             ? this.pluginOwner(driver, agent)
             : null,
+        input.modelProviderId,
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
@@ -13347,8 +13605,20 @@ export class OpenClawController {
       if (approvedHarness.id !== configuredHarnessId) {
         throw new ScopeViolationError("The approved Harness does not match the native runtime.");
       }
+      const provider = await this.selectedModelProvider(state, lockedAgent.modelProviderId);
+      if (provider && Object.keys(input.harnessOverrides).length) {
+        throw new ConfigurationHarnessError(
+          "A named Model Provider cannot be combined with an inline Harness override.",
+        );
+      }
+      if (provider && lockedAgent.harnessAuth?.method !== "credential_source") {
+        throw new ConfigurationHarnessError(
+          "A named Model Provider requires a credential created from its Connection Template.",
+        );
+      }
       const requestedHarness = Object.freeze({
         ...approvedHarness,
+        ...(provider ? { modelProviderId: provider.id } : {}),
         mode: lockedAgent.executionMode,
         overrides: input.harnessOverrides,
       });
@@ -13365,19 +13635,45 @@ export class OpenClawController {
         lockedAgent,
         this.bindings(metadata.secretBindings),
       );
-      const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
+      const [harnessAuth, credentialSourceType, sourceGrant] = await this.admitHarnessAuth(
         state,
         principalId,
         lockedAgent,
       );
+      const named = resolveNamedModelProvider(
+        compute,
+        provider,
+        requestedHarness,
+        configuration.values,
+      );
+      const runtimeValues = named?.values ?? configuration.values;
+      // Recheck the receiver from the same locked source that authorized this Harness.
+      const privateInferencePeer = sourceGrant?.privatePeer;
+      if (sourceGrant && privateInferencePeer) {
+        if (
+          !provider ||
+          !compute.resolveInferencePrivatePeer ||
+          !isDeepStrictEqual(
+            privateInferencePeer,
+            await compute.resolveInferencePrivatePeer(privateInferencePeer, sourceGrant.baseUrl),
+          )
+        ) {
+          throw new ResourceStateConflictError(
+            "The private inference credential must match the current Model Provider and template receiver.",
+          );
+        }
+      }
       const revisionHarness = immutableCopy({
         ...requestedHarness,
+        ...(privateInferencePeer && { privateInferencePeer }),
         configuration:
+          named?.settings ??
           compute.resolveHarnessConfiguration?.(
             requestedHarness,
             harnessAuth,
             configuration.values,
-          ) ?? {},
+          ) ??
+          {},
       });
       this.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const driver =
@@ -13399,6 +13695,7 @@ export class OpenClawController {
         driver,
         revisionHarness,
         compute,
+        provider,
       );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
@@ -13427,7 +13724,7 @@ export class OpenClawController {
         }
       }
       const admittedConfiguration = this.agentRuntimeConfiguration(
-        configuration.values,
+        runtimeValues,
         revisionHarness,
         compute,
         sandbox,
@@ -13565,6 +13862,24 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
+      if (
+        privateInferencePeer &&
+        egressPlan &&
+        (harnessAuth.method !== "credential_source" ||
+          egressPlan.harnessCredentialSource ||
+          egressPlan.routes.filter((route) => route.binding.grant.kind === "inference").length !==
+            1 ||
+          !egressPlan.routes.some(
+            (route) =>
+              route.binding.grant.kind === "inference" &&
+              route.binding.source.source.id === harnessAuth.sourceId &&
+              route.privateInferenceAddress === privateInferencePeer.address,
+          ))
+      ) {
+        throw new ResourceStateConflictError(
+          "A private inference credential requires its own verified sender. A separate protected Git plan cannot release an ordinary model credential.",
+        );
+      }
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
@@ -15187,8 +15502,20 @@ export class OpenClawController {
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
+    modelProvider?: Readonly<ModelProvider>,
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
+    if (modelProvider) {
+      const auth = agent.harnessAuth;
+      if (
+        auth?.method !== "credential_source" ||
+        !bindings.some(({ sourceId }) => sourceId === auth.sourceId)
+      ) {
+        throw new ConfigurationHarnessError(
+          "Bind the provider's credential source as Harness authentication.",
+        );
+      }
+    }
     if (bindings.length === 0) {
       this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
       return [];
@@ -15220,6 +15547,13 @@ export class OpenClawController {
       );
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The credential source is unavailable.");
+      }
+      if (
+        modelProvider &&
+        agent.harnessAuth?.method === "credential_source" &&
+        sourceId === agent.harnessAuth.sourceId
+      ) {
+        await requireModelProviderGrant(state, modelProvider, source.staticKeyGrant);
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
       const owner = this.credentialSourceOwner(source);
@@ -15397,10 +15731,27 @@ export class OpenClawController {
         requireSandboxOpenClawMode(sandbox, harness.mode);
       }
     }
+    const provider = statusRead
+      ? undefined
+      : await this.selectedModelProvider(state, plan.modelProviderId);
+    if (provider) {
+      if (binding.method !== "credential_source") {
+        throw new ConfigurationHarnessError(
+          "A named Model Provider requires a credential created from its Connection Template.",
+        );
+      }
+      // authorizeProvisioningSources already locked and authorized this exact source.
+      const source = await state.credentialSources.findCredentialSource(
+        namespaceId,
+        binding.sourceId,
+      );
+      await requireModelProviderGrant(state, provider, source?.staticKeyGrant);
+    }
+    const named = resolveNamedModelProvider(compute, provider, harness, plan.configuration.values);
+    const values = named?.values ?? plan.configuration.values;
     const configuration = statusRead
-      ? plan.configuration.values
-      : (sandbox?.configureAgent?.(plan.configuration.values, harness) ??
-        plan.configuration.values);
+      ? values
+      : (sandbox?.configureAgent?.(values, harness) ?? values);
     if (resolveConfiguredHarnessId(configuration) !== harness.id) {
       throw new ScopeViolationError("A Sandbox Driver cannot change the selected Harness runtime.");
     }
@@ -15418,7 +15769,7 @@ export class OpenClawController {
       }
       try {
         compute.validateHarnessAuth(
-          harness,
+          named ? { ...harness, configuration: named.settings } : harness,
           auth,
           configuration,
           plan.configuration.secretBindings,
@@ -16262,6 +16613,7 @@ export class OpenClawController {
           id: agentId,
           namespaceId: namespace.id,
           name,
+          ...(plan.modelProviderId === undefined ? {} : { modelProviderId: plan.modelProviderId }),
           configurationId: metadata.id,
           backendId,
           harnessAuth: plan.harnessAuth,
@@ -16357,6 +16709,7 @@ export class OpenClawController {
   }
 
   private provisioningPlan(record: Readonly<AgentProvisioningRecord>): {
+    readonly modelProviderId?: string;
     readonly configuration: AgentProvisioningConfigurationInput;
     readonly harnessAuth: HarnessAuthBinding | null;
     readonly executionMode: HarnessExecutionMode;
@@ -16377,8 +16730,12 @@ export class OpenClawController {
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The provisioning execution mode is invalid.");
     }
+    if (plan?.modelProviderId !== undefined && !isNonEmptyString(plan.modelProviderId)) {
+      throw new ScopeViolationError("The provisioning Model Provider reference is invalid.");
+    }
     return {
       configuration,
+      ...(plan?.modelProviderId === undefined ? {} : { modelProviderId: plan.modelProviderId }),
       harnessAuth: normalizeProvisioningHarnessAuth(plan?.harnessAuth ?? null),
       executionMode,
       gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
@@ -16694,7 +17051,13 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]> {
+  ): Promise<
+    readonly [
+      auth: HarnessAuthSnapshot,
+      sourceType?: CredentialSourceType,
+      grant?: StaticKeyGrant | undefined,
+    ]
+  > {
     const binding = this.harnessAuthBinding(agent.harnessAuth);
     if (binding === null) {
       throw new ResourceStateConflictError(
@@ -16763,7 +17126,13 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
+  ): Promise<
+    readonly [
+      auth: HarnessAuthSnapshot,
+      sourceType: CredentialSourceType,
+      grant: StaticKeyGrant | undefined,
+    ]
+  > {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -16787,6 +17156,7 @@ export class OpenClawController {
         loginMode: type.harnessAuth.loginMode,
       },
       type,
+      source.staticKeyGrant,
     ] as const);
   }
 
@@ -17129,6 +17499,7 @@ export class OpenClawController {
       name: source.name,
       type: source.type,
       ownerCapability: source.ownerCapability,
+      ...(source.staticKeyGrant && { staticKeyGrant: source.staticKeyGrant }),
       config: source.config,
       secrets: source.secrets,
       ...(source.egress === undefined
@@ -17747,6 +18118,22 @@ export class OpenClawController {
     };
   }
 
+  // Callers have authorized the exact Agent operation. Any Installation provider may be selected
+  // in this Namespace; deployment checks the caller's and Agent's grants on the bound source.
+  private async selectedModelProvider(
+    state: PlatformReadView,
+    id: string | undefined,
+  ): Promise<Readonly<ModelProvider> | undefined> {
+    if (id === undefined) {
+      return undefined;
+    }
+    const provider = await state.modelProviders.findModelProvider(id);
+    if (!provider) {
+      throw new ResourceStateConflictError("The selected Model Provider is unavailable.");
+    }
+    return provider;
+  }
+
   // Agent save runs deploy admission's checks of the Agent against its Configuration and the
   // Installation's Drivers, with the same messages, so a pair every deployment would refuse is
   // refused where it is written. A stored Agent that newly fails still reads, and deployment
@@ -17757,6 +18144,7 @@ export class OpenClawController {
     state: PlatformReadView,
     resolveHarness: HarnessResolver | undefined,
     agent: {
+      readonly modelProvider: Readonly<ModelProvider> | undefined;
       readonly executionMode: HarnessExecutionMode;
       /** The admission snapshot of the Agent's binding, if save can build one. */
       readonly harnessAuth: () => Promise<HarnessAuthSnapshot | undefined>;
@@ -17799,12 +18187,29 @@ export class OpenClawController {
     if (agent.pluginDriver) {
       this.validatePluginPlacement(agent.pluginDriver, agent.plugins, harness);
     }
-    const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
+    const named = resolveNamedModelProvider(
+      compute,
+      agent.modelProvider,
+      harness,
+      configuration.values,
+    );
+    const values = this.agentRuntimeConfiguration(
+      named?.values ?? configuration.values,
+      harness,
+      compute,
+      sandbox,
+    );
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
     const auth = selectsModel(configuration.values) ? await agent.harnessAuth() : undefined;
     if (auth !== undefined && compute.validateHarnessAuth !== undefined) {
-      validateAgentHarnessAuth(compute, harness, auth, values, null);
+      validateAgentHarnessAuth(
+        compute,
+        named ? { ...harness, configuration: named.settings } : harness,
+        auth,
+        values,
+        null,
+      );
     }
     if (
       agent.repositoryBindings !== undefined &&

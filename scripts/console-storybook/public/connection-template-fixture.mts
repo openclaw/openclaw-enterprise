@@ -97,8 +97,111 @@ export function createConnectionTemplateFixture(
           },
         ]
       : [];
+  const providerId = "mpr_00000000-0000-4000-8000-000000000001";
+  const staticId = "ctp_00000000-0000-4000-8000-000000000009";
+  const baseUrl = "https://inference.example.com/v1";
+  const protocol = "openai-responses";
+  const models = [{ id: "qwen3-8b" }, { id: "qwen3-32b" }];
+  let providerVersion = 0;
+  const nextFingerprint = () => (++providerVersion).toString(16).padStart(64, "0");
+  const providers: Record<string, unknown>[] =
+    mode === "inference" || mode === "inference-empty-keys"
+      ? [
+          {
+            id: providerId,
+            settingsFingerprint: nextFingerprint(),
+            displayName: "Internal vLLM",
+            baseUrl,
+            protocol,
+            models,
+            defaultModelId: models[0]!.id,
+            connectionTemplateId: staticId,
+          },
+        ]
+      : [];
+  if (providers.length) {
+    oauthTemplates.push({
+      id: staticId,
+      displayName: "Internal inference key",
+      createdAt,
+      current: {
+        templateId: staticId,
+        mode: "static_bearer",
+        version: 1,
+        createdAt,
+        baseUrl,
+        protocol,
+        privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
+        destinations: [
+          { method: "POST", host: "inference.example.com", port: 443, path: "/v1/responses" },
+        ],
+      },
+    });
+  }
   const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
+    if (
+      method === "GET" &&
+      (path === "/model-providers" || path === "/namespaces/" + namespaceId + "/model-providers")
+    ) {
+      return response(providers);
+    }
+    if (method === "GET" && path === "/namespaces/" + namespaceId + "/connection-templates") {
+      return response(oauthTemplates);
+    }
+    if (
+      providers.length &&
+      method === "GET" &&
+      path === "/namespaces/" + namespaceId + "/credential-sources"
+    ) {
+      const id = "crs_00000000-0000-4000-8000-000000000009";
+      return response(
+        mode === "inference-empty-keys"
+          ? []
+          : [
+              {
+                id,
+                name: "Research inference key",
+                state: "ready",
+                namespaceId,
+                type: "openai",
+                ref: { kind: "credential_source", id, namespaceId },
+                staticKeyGrant: {
+                  connectionTemplateId: staticId,
+                  connectionTemplateVersion: 1,
+                  baseUrl,
+                  protocol,
+                  privatePeer: { kind: "private_ipv4", address: "10.20.30.40" },
+                },
+              },
+            ],
+      );
+    }
+    if (isRecord(body) && path === "/model-providers" && method === "POST") {
+      const saved = { ...body, id: nextId("mpr"), settingsFingerprint: nextFingerprint() };
+      providers.push(saved);
+      return response(saved, 201);
+    }
+    if (isRecord(body) && path.startsWith("/model-providers/") && method === "PUT") {
+      const existing = providers.find((p) => path === "/model-providers/" + String(p.id));
+      if (!existing) {
+        return error(404, "NOT_FOUND", "Provider missing.");
+      }
+      const { expectedSettingsFingerprint, ...settings } = body;
+      if (expectedSettingsFingerprint !== existing.settingsFingerprint) {
+        return response(
+          null,
+          409,
+          "RESOURCE_CONFLICT",
+          {},
+          "Another administrator changed this model provider. Reload the current settings before saving.",
+          [{ path: "/expectedSettingsFingerprint", code: "INVALID_VALUE" }],
+        );
+      }
+      const replacement = { ...settings, id: existing.id, settingsFingerprint: nextFingerprint() };
+      providers[providers.indexOf(existing)] = replacement;
+      return response(replacement);
+    }
     if (path === "/connection-templates" && method === "GET") {
       return response(oauthTemplates);
     }
@@ -212,6 +315,17 @@ export function createConnectionTemplateFixture(
           templateId: id,
           version: 1,
           createdAt,
+          ...(config.mode === "static_bearer" &&
+            isRecord(config.privatePeer) &&
+            config.privatePeer.kind === "kubernetes_service" && {
+              privatePeer: {
+                ...config.privatePeer,
+                uid: "storybook-model-service",
+                address: "10.43.12.34",
+                podSelector: { app: "inference" },
+                targetPort: 8443,
+              },
+            }),
           ...(config.mode === "mcp_discovery"
             ? {
                 issuer: observed.issuer,

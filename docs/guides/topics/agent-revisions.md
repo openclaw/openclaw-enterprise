@@ -52,6 +52,11 @@ The commands below also use `jq`.
    accepted request creates another version. An empty history can mean you
    lack `read` on the new Agent revision; ask an administrator before retrying.
 
+   If the Agent selects a saved Model Provider, deploy without supplying an
+   endpoint. Check `harness.modelProviderId` and
+   `harness.configuration.modelProvider` on the returned revision. See
+   [named provider admission](../../reference/drivers/kubernetes-compute/model-provider.md#deploy-with-a-named-provider).
+
 4. Check the deployment until it reports `succeeded` or `failed`:
 
    ```bash

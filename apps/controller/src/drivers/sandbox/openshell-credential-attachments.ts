@@ -1,9 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   Backend,
   CredentialAttachmentStatus,
   CredentialGatewayContext,
   CredentialRevisionContext,
   CredentialSourceAttachment,
+  CredentialSource,
   CredentialSourceType,
   CredentialWithdrawalContext,
 } from "@openclaw-enterprise/contracts";
@@ -58,8 +60,7 @@ interface OpenShellAttachmentSources {
     readonly catalog: Pick<CredentialSourceType, "type">;
     credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
     profile(
-      sourceId: string,
-      config: Readonly<Record<string, string>>,
+      source: Readonly<CredentialSource>,
       gateway: () => OpenShellGatewayPlacement | undefined,
     ): Omit<OpenShellProviderProfile, "annotations">;
   };
@@ -151,7 +152,17 @@ export class OpenShellCredentialAttachments {
       }
       const type = this.sources.sourceType(source.type);
       if (type.catalog.type === "openai") {
-        requireModelSourceDestination(source.config, modelProvider);
+        if (
+          !isDeepStrictEqual(
+            source.staticKeyGrant?.privatePeer,
+            context.revision.harness.privateInferencePeer,
+          )
+        ) {
+          throw new ScopeViolationError(
+            "The credential does not authorize the revision's private inference peer.",
+          );
+        }
+        requireModelSourceDestination(source.config, modelProvider, source.staticKeyGrant);
         if (
           (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||
           context.revision.harness.mode !== "dedicated"
@@ -190,7 +201,7 @@ export class OpenShellCredentialAttachments {
       }
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      const profile = type.profile(source.id, source.config, () =>
+      const profile = type.profile(source, () =>
         this.backend.client.placement(context.namespace.name),
       );
       await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);

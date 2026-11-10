@@ -11,6 +11,7 @@ type SettingsRule =
   | { path: "/api/auth/sign-out"; method: "POST"; status: number };
 
 type SettingsScenario = {
+  oauthCatalog?: string;
   actions?: StoryAction[];
   group: "Pages/Settings";
   name: string;
@@ -28,6 +29,14 @@ type SettingsScenario = {
 };
 
 export const settingsScenarios = {
+  settingsProviderCatalog: {
+    group: "Pages/Settings",
+    name: "Manage model providers",
+    path: "/console/settings",
+    oauthCatalog: "inference",
+    description:
+      "Edit Internal vLLM to inspect its two models and pinned private server. Add a provider to choose a public endpoint, pinned private IPv4 address, or Kubernetes Service.",
+  },
   settings: {
     group: "Pages/Settings",
     name: "Account",

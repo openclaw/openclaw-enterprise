@@ -6,7 +6,8 @@ import type {
   EgressRoute,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { staticEgressFixture } from "./static-egress.mjs";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { staticEgressFixture, loadGatewayDefinition } from "./static-egress.mjs";
 
 // Exercise HTTP, IAM, Compute resolution and Proxy admission with the supplied State implementation.
 // External runtime observations remain the existing wire fixture, not live-cluster evidence.
@@ -201,4 +202,195 @@ export async function exerciseHarnessOverrides(
   assert.equal(recovery.status, 200, JSON.stringify(recovery.body));
   assert.equal(recovery.data.revisionId, receipt.revisionId);
   return { fixture: f, revisions };
+}
+
+export async function exerciseNamedProvider(
+  f: Awaited<ReturnType<typeof staticEgressFixture>>,
+  kind: "private_ipv4" | "kubernetes_service",
+) {
+  assert.ok("grant" in f);
+  const root = `/namespaces/${f.namespace.id}`;
+  const request = async (method: string, path: string, body: unknown, status: number) => {
+    const result = await f.request(method, path, { body });
+    assert.equal(result.status, status, JSON.stringify(result.body));
+    return result.data;
+  };
+  const service = f.modelService;
+  const privatePeer =
+    kind === "private_ipv4"
+      ? { kind, address: "10.77.43.42" }
+      : { kind, namespace: service.metadata.namespace, name: service.metadata.name };
+  const endpoint = {
+    ...f.modelProvider,
+    ...(kind === "kubernetes_service"
+      ? { baseUrl: "https://model.inference.svc.cluster.local/v1" }
+      : {}),
+  };
+  const templateSettings = {
+    displayName: "Inference key",
+    mode: "static_bearer",
+    ...endpoint,
+    privatePeer,
+  };
+  const template = await request("POST", "/connection-templates", templateSettings, 201);
+  const values = {
+    displayName: "Research models",
+    ...endpoint,
+    connectionTemplateId: template.id,
+    models: [{ id: "fixture-model", contextWindow: 8192, maxTokens: 512 }, { id: "another-model" }],
+  };
+  const provider = await request("POST", "/model-providers", values, 201);
+  const key = await request(
+    "POST",
+    root + "/credential-sources",
+    {
+      name: "research-key",
+      type: "openai",
+      secrets: f.source.secrets,
+      connectionTemplateId: template.id,
+      connectionTemplateVersion: template.current.version,
+    },
+    201,
+  );
+  const create = async (name: string, sourceId: string) => {
+    const agent = await request(
+      "POST",
+      root + "/agents",
+      {
+        name,
+        configurationId: f.agent.configurationId,
+        modelProviderId: provider.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId },
+        credentialSources: [{ sourceId }],
+      },
+      201,
+    );
+    assert.equal(agent.modelProviderId, provider.id);
+    await request(
+      "POST",
+      root + "/iam/access-bindings",
+      {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: sourceId,
+      },
+      201,
+    );
+    return root + "/agents/" + agent.id;
+  };
+  const first = await create("first-research-agent", key.id);
+  const second = await create("second-research-agent", key.id);
+  const revision = await request("POST", first + "/deploy", {}, 202);
+  assert.equal(revision.harness.modelProviderId, provider.id);
+  assert.equal(revision.harness.configuration.modelProvider.baseUrl, values.baseUrl);
+  assert.deepEqual(revision.configuration.models.providers.codex.models, [
+    { id: "fixture-model", name: "fixture-model", contextWindow: 8192, maxTokens: 512 },
+  ]);
+  const saved = await f.controller.transact((state: PlatformUnitOfWork) =>
+    state.revisions.findRevision(f.namespace.id, revision.agentId, revision.id),
+  );
+  const approved = template.current.privatePeer;
+  assert.deepEqual(revision.harness.privateInferencePeer, approved);
+  assert.deepEqual(saved?.harness.privateInferencePeer, approved);
+  assert.ok(saved?.egressPlan);
+  // Round-trip the admitted route through the stock protobuf to catch SDK fields lost on the wire.
+  const egressConfiguration = openShellEgressConfiguration(
+    saved.egressPlan,
+    { middlewareName: "oce-authority", authorityScope: "execution" },
+    saved,
+  );
+  const wire = loadGatewayDefinition()["openshell.v1.SandboxPolicy"];
+  const received = wire.deserialize(wire.serialize(egressConfiguration)).network_policies[
+    "oce-egress-0"
+  ].endpoints;
+  const dest = new URL(values.baseUrl);
+  assert.deepEqual(received, [
+    {
+      host: dest.hostname,
+      ports: [Number(dest.port || 443)],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      path: "/v1/responses",
+      allowed_ips: [approved.address],
+      rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+    },
+  ]);
+  // The request sender receives only the admitted protocol's operation, even though the legacy source permits both.
+  assert.deepEqual(
+    saved?.egressPlan?.routes.map((route: EgressRoute) => [
+      route.method,
+      route.origin + route.path,
+    ]),
+    [["POST", values.baseUrl + "/responses"]],
+  );
+  const next = await request("POST", second + "/deploy", {}, 202);
+  assert.deepEqual(next.harness, revision.harness);
+  await request(
+    "POST",
+    first + "/deploy",
+    { harnessOverrides: { modelProvider: f.modelProvider } },
+    400,
+  );
+  // A legacy credential approves the same URL but has no consent for this template.
+  const unapproved = await create("legacy-key-agent", f.source.id);
+  await request("POST", unapproved + "/deploy", {}, 409);
+  const modified = await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    {
+      ...values,
+      expectedSettingsFingerprint: provider.settingsFingerprint,
+      models: [{ id: "another-model" }],
+    },
+    200,
+  );
+  await request("POST", first + "/deploy", {}, 400);
+  const original = await request("GET", first + "/revisions/" + revision.id, undefined, 200);
+  assert.deepEqual(original.configuration, revision.configuration);
+  await request(
+    "PUT",
+    "/model-providers/" + provider.id,
+    {
+      ...values,
+      expectedSettingsFingerprint: modified.settingsFingerprint,
+    },
+    200,
+  );
+  if (kind === "kubernetes_service") {
+    const servicePort = service.spec.ports[0]!;
+    Object.assign(servicePort, { targetPort: "model" });
+    await request("PATCH", "/connection-templates/" + template.id, templateSettings, 409);
+    Object.assign(servicePort, { targetPort: 9443 });
+    await request(
+      "POST",
+      "/connection-templates",
+      {
+        ...templateSettings,
+        ...f.modelProvider,
+        privatePeer: { kind: "private_ipv4", address: "169.254.99.4" },
+      },
+      400,
+    );
+    // The same Service FQDN and IP now route to a different workload.
+    service.spec.selector.app = "replaced";
+    await request("POST", first + "/deploy", {}, 409);
+  }
+  const changedPeer = kind === "private_ipv4" ? { kind, address: "10.77.43.43" } : privatePeer;
+  const edited = await request(
+    "PATCH",
+    "/connection-templates/" + template.id,
+    { ...templateSettings, privatePeer: changedPeer },
+    200,
+  );
+  assert.equal(edited.current.version, 2);
+  // The URL and protocol still match, but the credential owner has not approved the new peer.
+  await request("POST", first + "/deploy", {}, 409);
+  assert.deepEqual(
+    (await request("GET", first + "/revisions/" + revision.id, undefined, 200)).harness
+      .privateInferencePeer,
+    approved,
+  );
 }

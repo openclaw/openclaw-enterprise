@@ -37,6 +37,8 @@ import {
 import type {
   ConnectionTemplate,
   OAuthConnectionTemplateVersion,
+  ConnectionTemplateVersion,
+  ModelProvider,
   ConnectionSession,
   SavedConnection,
   AccessBinding,
@@ -249,6 +251,7 @@ export interface AgentRepository extends AgentReadRepository {
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
     pluginDriver?: PluginDriverIdentity | null,
+    modelProviderId?: string | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -369,6 +372,15 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
+export interface ModelProviderReadRepository {
+  findModelProvider(id: string): Promise<Readonly<ModelProvider> | undefined>;
+  listModelProviders(): Promise<readonly Readonly<ModelProvider>[]>;
+}
+export interface ModelProviderRepository extends ModelProviderReadRepository {
+  createModelProvider(provider: ModelProvider): Promise<void>;
+  lockModelProvider(id: string): Promise<Readonly<ModelProvider> | undefined>;
+  updateModelProvider(provider: ModelProvider): Promise<void>;
+}
 export interface ConnectionTemplateReadRepository {
   listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
@@ -403,7 +415,7 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
   /** Renames, or appends `version` as the next version and makes it current. */
   updateConnectionTemplate(
     templateId: string,
-    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
+    changes: { readonly displayName?: string; readonly version?: ConnectionTemplateVersion },
   ): Promise<Readonly<ConnectionTemplate> | undefined>;
   deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }
@@ -1046,7 +1058,15 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     typeof revision.harness !== "object" ||
     revision.harness === null ||
     Array.isArray(revision.harness) ||
-    Object.keys(revision.harness).length !== 5 ||
+    Object.keys(revision.harness).length !==
+      (revision.harness.modelProviderId === undefined ? 5 : 6) +
+        Number(revision.harness.privateInferencePeer !== undefined) ||
+    (revision.harness.privateInferencePeer !== undefined &&
+      revision.harness.modelProviderId === undefined) ||
+    (revision.harness.modelProviderId !== undefined &&
+      !/^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        revision.harness.modelProviderId,
+      )) ||
     !Object.hasOwn(revision.harness, "id") ||
     !Object.hasOwn(revision.harness, "version") ||
     !Object.hasOwn(revision.harness, "mode") ||
@@ -1176,6 +1196,7 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly connectionTemplates: ConnectionTemplateReadRepository;
+  readonly modelProviders: ModelProviderReadRepository;
   readonly savedConnections: SavedConnectionReadRepository;
   readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
@@ -1198,6 +1219,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly connectionTemplates: ConnectionTemplateRepository;
+  readonly modelProviders: ModelProviderRepository;
   readonly savedConnections: SavedConnectionRepository;
   readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
@@ -1254,6 +1276,11 @@ interface PlatformSnapshot {
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
+  readonly modelProviders: Map<string, Readonly<ModelProvider>>;
+  readonly staticKeyTemplateVersions: Map<
+    string,
+    Readonly<Extract<ConnectionTemplateVersion, { mode: "static_bearer" }>>
+  >;
   readonly clientRegistrations: Map<
     string,
     Readonly<StoredOAuthClient> & { cleanupAfter?: string }
@@ -1385,6 +1412,8 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       ]),
     ),
     connectionTemplates: new Map(snapshot.connectionTemplates),
+    modelProviders: new Map(snapshot.modelProviders),
+    staticKeyTemplateVersions: new Map(snapshot.staticKeyTemplateVersions),
     clientRegistrations: new Map(snapshot.clientRegistrations),
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
@@ -1995,6 +2024,21 @@ function repositories(
     const preset = snapshot.presets.get(agentKey(namespaceId, presetId));
     return preset === undefined ? undefined : immutableCopy(preset);
   };
+  const modelProviders: ModelProviderRepository = {
+    findModelProvider: async (id) => snapshot.modelProviders.get(id),
+    listModelProviders: async () =>
+      Object.freeze([...snapshot.modelProviders.values()].sort((a, b) => a.id.localeCompare(b.id))),
+    createModelProvider: async (provider) => {
+      if (snapshot.modelProviders.has(provider.id)) {
+        throw new ResourceConflictError("The Model Provider already exists.");
+      }
+      snapshot.modelProviders.set(provider.id, immutableCopy(provider));
+    },
+    lockModelProvider: async (id) => snapshot.modelProviders.get(id),
+    updateModelProvider: async (provider) => {
+      snapshot.modelProviders.set(provider.id, immutableCopy(provider));
+    },
+  };
   const versionKey = (templateId: string, version: number) => `${templateId}\u0000${version}`;
   const findConnectionTemplate: ConnectionTemplateReadRepository["findConnectionTemplate"] = async (
     templateId,
@@ -2004,8 +2048,11 @@ function repositories(
   };
   const assertTemplateVersion = (
     template: ConnectionTemplate,
-    version: OAuthConnectionTemplateVersion,
+    version: ConnectionTemplateVersion,
   ) => {
+    if (version.mode === "static_bearer") {
+      return;
+    }
     validateConnectionTemplateDestinations(version);
     if (!version.oauthClientId) {
       return;
@@ -2146,10 +2193,17 @@ function repositories(
       assertTemplateVersion(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
-      snapshot.oauthConnectionTemplateVersions.set(
-        versionKey(saved.id, saved.current.version),
-        saved.current,
-      );
+      if (saved.current.mode === "static_bearer") {
+        snapshot.staticKeyTemplateVersions.set(
+          versionKey(saved.current.templateId, saved.current.version),
+          immutableCopy(saved.current),
+        );
+      } else {
+        snapshot.oauthConnectionTemplateVersions.set(
+          versionKey(saved.id, saved.current.version),
+          saved.current,
+        );
+      }
       return immutableCopy(saved);
     },
     updateConnectionTemplate: async (templateId, changes) => {
@@ -2163,10 +2217,17 @@ function repositories(
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
         }
-        snapshot.oauthConnectionTemplateVersions.set(
-          versionKey(templateId, changes.version.version),
-          immutableCopy(changes.version),
-        );
+        if (changes.version.mode === "static_bearer") {
+          snapshot.staticKeyTemplateVersions.set(
+            versionKey(changes.version.templateId, changes.version.version),
+            immutableCopy(changes.version),
+          );
+        } else {
+          snapshot.oauthConnectionTemplateVersions.set(
+            versionKey(templateId, changes.version.version),
+            immutableCopy(changes.version),
+          );
+        }
       }
       const saved = immutableCopy({
         ...current,
@@ -2181,11 +2242,22 @@ function repositories(
         return false;
       }
       if (
+        [...snapshot.modelProviders.values()].some(
+          (provider) => provider.connectionTemplateId === templateId,
+        ) ||
+        [...snapshot.credentialSources.values()].some(
+          (source) => source.staticKeyGrant?.connectionTemplateId === templateId,
+        ) ||
         [...snapshot.savedConnections.values(), ...snapshot.connectionSessions.values()].some(
           (connection) => connection.connectionTemplateId === templateId,
         )
       ) {
         throw new ResourceStateConflictError("The connection template is in use.");
+      }
+      for (const [key, version] of snapshot.staticKeyTemplateVersions) {
+        if (version.templateId === templateId) {
+          snapshot.staticKeyTemplateVersions.delete(key);
+        }
       }
       snapshot.connectionTemplates.delete(templateId);
       for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
@@ -2990,6 +3062,21 @@ function repositories(
       ) {
         throw new ResourceStateConflictError(CREDENTIAL_SOURCE_NAME_CONFLICT);
       }
+      if (source.staticKeyGrant) {
+        const grant = source.staticKeyGrant;
+        const approved = snapshot.staticKeyTemplateVersions.get(
+          versionKey(grant.connectionTemplateId, grant.connectionTemplateVersion),
+        );
+        if (
+          !approved ||
+          approved.baseUrl !== grant.baseUrl ||
+          approved.protocol !== grant.protocol
+        ) {
+          throw new ResourceStateConflictError(
+            "The credential must match an approved static-key template version.",
+          );
+        }
+      }
       const saved = immutableCopy(source);
       snapshot.credentialSources.set(key, saved);
       return saved;
@@ -3574,6 +3661,7 @@ function repositories(
       nextCredentialSources,
       gatewayManagedMode,
       nextPluginDriver,
+      modelProviderId,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3639,11 +3727,14 @@ function repositories(
         pluginDriver: _currentPluginDriver,
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
+        modelProviderId: currentModelProviderId,
         credentialSources: _currentCredentialSources,
         ...withoutPlugins
       } = current;
+      const nextProvider = modelProviderId === undefined ? currentModelProviderId : modelProviderId;
       const updated = immutableCopy({
         ...withoutPlugins,
+        ...(nextProvider == null ? {} : { modelProviderId: nextProvider }),
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
@@ -4232,6 +4323,7 @@ function repositories(
     namespaces,
     configurations,
     connectionTemplates,
+    modelProviders,
     savedConnections,
     presets,
     secrets,
@@ -4529,6 +4621,8 @@ export class InMemoryPlatformState implements PlatformStateStore {
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),
+    modelProviders: new Map(),
+    staticKeyTemplateVersions: new Map(),
     clientRegistrations: new Map(),
     oauthConnectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
