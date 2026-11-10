@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -432,10 +435,12 @@ export async function installObservabilityControlPlane(
       { name: "Fixture credential", value: sentinel },
       201,
     );
-    const native = createHarnessConfiguration(
+    const configuration = createHarnessConfiguration(
       executionMode === "dedicated" ? "codex" : "openclaw",
       modelTurns ? process.env.OCC_TEST_OPENAI_MODEL.replace(/^(?:openai|codex)\//, "") : "gpt-4.1",
     );
+    // The fixture answers model probes locally; its synthetic key must never target OpenAI.
+    const native = modelTurns ? configuration : withStubbedProviderEndpoint(configuration);
     native.agents.defaults.skipBootstrap = true;
     const config = await api(
       "POST",
