@@ -5,7 +5,6 @@ import type {
   CredentialRef,
   DriverCustody,
   RepositoryBackend,
-  RepositoryBackendFactory,
   RequestHead,
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
@@ -15,7 +14,12 @@ import type {
 import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
+import {
+  type AlternateFixtureFactory,
+  createAlternateFixtureFactory,
+  isBackendFactory,
+  requireFixtureDriver,
+} from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
   fixtureRepository,
   startGitHubFixture,
@@ -33,44 +37,6 @@ const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 type FixtureEvent = { kind: string; sessionId: string };
-type AlternateFactory = RepositoryBackendFactory & { events: unknown[]; drivers: unknown[] };
-function isBackendFactory(value: unknown): value is RepositoryBackendFactory {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "create" in value &&
-    typeof value.create === "function" &&
-    "resolve" in value &&
-    typeof value.resolve === "function" &&
-    "parseAuthentication" in value &&
-    typeof value.parseAuthentication === "function" &&
-    "unauthenticated" in value &&
-    typeof value.unauthenticated === "function"
-  );
-}
-type FixtureOptions = {
-  origin: string;
-  gatewayOrigin: string;
-  clock: Clock;
-  operationMs?: number;
-  controls?: {
-    beforeSend?: () => Promise<void>;
-  };
-};
-function isAlternateFactory(value: unknown): value is AlternateFactory {
-  return (
-    isBackendFactory(value) &&
-    "events" in value &&
-    Array.isArray(value.events) &&
-    "drivers" in value &&
-    Array.isArray(value.drivers)
-  );
-}
-function alternateFactory(options: FixtureOptions): AlternateFactory {
-  const value: unknown = createAlternateDriverFactory(options);
-  assert.ok(isAlternateFactory(value));
-  return value;
-}
 function isFixtureEvent(value: unknown): value is FixtureEvent {
   return (
     typeof value === "object" &&
@@ -81,23 +47,11 @@ function isFixtureEvent(value: unknown): value is FixtureEvent {
     typeof value.sessionId === "string"
   );
 }
-function fixtureEvents(factory: AlternateFactory): FixtureEvent[] {
+function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
   return factory.events.map((value) => {
     assert.ok(isFixtureEvent(value));
     return value;
   });
-}
-function hasSettlement(value: unknown): value is Pick<RepositoryBackend, "settle"> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "settle" in value &&
-    typeof value.settle === "function"
-  );
-}
-function fixtureDriver(value: unknown) {
-  assert.ok(hasSettlement(value));
-  return value;
 }
 function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
   const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
@@ -335,7 +289,7 @@ test(
       expectedSenderCalls: 0,
       expectedDispatches: 0,
     };
-    const factory = alternateFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -395,7 +349,7 @@ test(
   async (t) => {
     const clock = createControlledClock();
     const config = validateServiceConfig(await createServiceConfiguration(t, { providerQueue: 1 }));
-    const factory = alternateFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -405,7 +359,7 @@ test(
     const queued = service.open({ durationSeconds: 3600, profile: "git-write" });
     const settlementEntered = Promise.withResolvers<void>();
     const settlementRelease = Promise.withResolvers<void>();
-    const firstDriver = fixtureDriver(factory.drivers[0]);
+    const firstDriver = requireFixtureDriver(factory.drivers[0]);
     const settle = firstDriver.settle.bind(firstDriver);
     let acquisitionSettlements = 0;
     // Hold the real captured outcome at the provider boundary. Queue occupancy,

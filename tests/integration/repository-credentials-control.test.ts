@@ -16,10 +16,8 @@ import {
 import { createServer as createTlsServer, request as tlsRequest } from "node:https";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  createAlternateDriverFactory,
-  startAlternateUpstream,
-} from "../fixtures/repository-credentials/alternate.mjs";
+import { startAlternateUpstream } from "../fixtures/repository-credentials/alternate.mjs";
+import { createAlternateFixtureFactory } from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
   fixtureRepository,
   type startGitHubFixture,
@@ -96,11 +94,6 @@ type RepositoryDefinition = Readonly<{
   repository: string;
   repositoryId: string;
 }>;
-type AlternateFactory = RepositoryBackendFactory & {
-  events: { kind: string }[];
-  drivers: object[];
-};
-
 type SessionResult = {
   session: Record<string, unknown> & {
     sessionId: string;
@@ -154,15 +147,6 @@ function sessionStatus(value: unknown) {
   assert.ok(isSessionStatus(value));
   return value;
 }
-
-const fixtureFactory = createAlternateDriverFactory as (options: {
-  origin: string;
-  gatewayOrigin: string;
-  clock: Clock;
-  accepted?: Map<string, number>;
-  lifetimeMs?: number;
-  controls?: { beforeSend?: () => Promise<void> };
-}) => AlternateFactory;
 
 // Session opens need an admission id; a fresh one per call unless the test names it.
 const control = async (
@@ -234,7 +218,7 @@ async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) =
     await appModule("drivers/repo/github/access/client/operator");
   const upstreamOptions = { clock, tls };
   const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
-  const driverFactory = fixtureFactory({
+  const driverFactory = createAlternateFixtureFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
@@ -635,7 +619,7 @@ test(
       ...base,
       gateway: { ...base.gateway, listen: "127.0.0.1:0", controlSocket: target },
     };
-    const factory = fixtureFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -675,7 +659,7 @@ test(
     const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
     const config: ServiceConfig = await createLoopbackServiceConfiguration(resources);
     const { promise: barrier, resolve: resume } = Promise.withResolvers<void>();
-    const factory = fixtureFactory({
+    const factory = createAlternateFixtureFactory({
       origin: upstream.origin,
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -713,7 +697,7 @@ test(
     });
     await waitUntil(
       "the authentication event",
-      () => factory.events.some((event) => event.kind === "authentication"),
+      () => factory.events.some((event) => record(event).kind === "authentication"),
       { timeoutMs: 2000, intervalMs: 5 },
     );
     service.close(opened.session.sessionId);

@@ -4,8 +4,6 @@ import type {
   Clock,
   DriverCustody,
   RenewalRef,
-  RepositoryBackend,
-  RepositoryBackendFactory,
   RequestHead,
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
@@ -15,7 +13,11 @@ import type {
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
+import {
+  type AlternateFixtureFactory,
+  createAlternateFixtureFactory,
+  requireFixtureDriver,
+} from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
   requestHead,
   serviceConfigurationData,
@@ -68,48 +70,6 @@ const send: ExchangeSender = async (_request, context) =>
   );
 
 type FixtureEvent = { kind: string; sessionId: string; attemptId?: string };
-type AlternateFactory = RepositoryBackendFactory & { events: unknown[]; drivers: unknown[] };
-function isBackendFactory(value: unknown): value is RepositoryBackendFactory {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "create" in value &&
-    typeof value.create === "function" &&
-    "resolve" in value &&
-    typeof value.resolve === "function" &&
-    "parseAuthentication" in value &&
-    typeof value.parseAuthentication === "function" &&
-    "unauthenticated" in value &&
-    typeof value.unauthenticated === "function"
-  );
-}
-type FixtureOptions = {
-  origin: string;
-  gatewayOrigin: string;
-  clock: Clock;
-  operationMs?: number;
-  lifetimeMs?: number;
-  controls?: {
-    lateCapture?: Promise<void>;
-    waitForAcquisitionAbort?: boolean;
-    rejectScope?: boolean;
-    observe?: (event: unknown) => void;
-  };
-};
-function isAlternateFactory(value: unknown): value is AlternateFactory {
-  return (
-    isBackendFactory(value) &&
-    "events" in value &&
-    Array.isArray(value.events) &&
-    "drivers" in value &&
-    Array.isArray(value.drivers)
-  );
-}
-function alternateFactory(options: FixtureOptions): AlternateFactory {
-  const value: unknown = createAlternateDriverFactory(options);
-  assert.ok(isAlternateFactory(value));
-  return value;
-}
 function isFixtureEvent(value: unknown): value is FixtureEvent {
   return (
     typeof value === "object" &&
@@ -130,23 +90,11 @@ function isObservation(value: unknown): value is { kind: string; attemptId?: str
     (!("attemptId" in value) || typeof value.attemptId === "string")
   );
 }
-function fixtureEvents(factory: AlternateFactory): FixtureEvent[] {
+function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
   return factory.events.map((value) => {
     assert.ok(isFixtureEvent(value));
     return value;
   });
-}
-function hasSettlement(value: unknown): value is Pick<RepositoryBackend, "settle"> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "settle" in value &&
-    typeof value.settle === "function"
-  );
-}
-function fixtureDriver(value: unknown) {
-  assert.ok(hasSettlement(value));
-  return value;
 }
 function requireStatus(service: CredentialServiceOwner, sessionId: string) {
   const result = service.status(sessionId);
@@ -179,7 +127,7 @@ function setup(
   options: Partial<Pick<FixtureOptions, "operationMs" | "lifetimeMs" | "controls">> = {},
 ) {
   const clock = createControlledClock(1700000000000);
-  const factory = alternateFactory({
+  const factory = createAlternateFixtureFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
@@ -201,7 +149,7 @@ function setup(
 
 function constructionFailure(kind: "factory throw" | "invalid binding" | "binding mismatch") {
   const clock = createControlledClock(1700000000000);
-  const factory = alternateFactory({
+  const factory = createAlternateFixtureFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
@@ -433,7 +381,7 @@ test("last-waiter cancellation refuses later requests until original acquisition
   const { service, factory, opened, configuration, exchange } = setup();
   const settlement = Promise.withResolvers<void>();
   const acquired = Promise.withResolvers<void>();
-  const driver = fixtureDriver(factory.drivers[0]);
+  const driver = requireFixtureDriver(factory.drivers[0]);
   const settle = driver.settle.bind(driver);
   // Delay only settlement of the fixture's real captured outcome. The service
   // still owns the original attempt, custody reservation and cleanup.
@@ -735,7 +683,7 @@ for (const scenario of [
 ]) {
   test(`saturated cleanup queue drains every session and renewal after ${scenario.name}`, async (t) => {
     const clock = createControlledClock(1700000000000);
-    const factory = alternateFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: "https://gateway.example.test",
       clock,
@@ -761,7 +709,7 @@ for (const scenario of [
       settlement.resolve();
       await tick();
     });
-    const firstDriver = fixtureDriver(factory.drivers[0]);
+    const firstDriver = requireFixtureDriver(factory.drivers[0]);
     const settle = firstDriver.settle.bind(firstDriver);
     firstDriver.settle = async (original) => {
       await settle(original);
