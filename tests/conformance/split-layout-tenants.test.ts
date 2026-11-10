@@ -291,6 +291,129 @@ test("export reads every tenant resource the import needs, without Secret values
     assert.equal(calls, 0);
   }
 
+  const invalidPermissions: unknown[] = [
+    undefined,
+    null,
+    [],
+    [null],
+    [{ action: "read" }],
+    [{ resourceKind: "configuration" }],
+    [{ action: 42, resourceKind: "configuration" }],
+    [{ action: "read", resourceKind: 42 }],
+    [{ action: "", resourceKind: "configuration" }],
+    [{ action: "read", resourceKind: " " }],
+    Array.from({ length: 65 }, () => ({ action: "read", resourceKind: "configuration" })),
+  ];
+  const sourceId = "cs_00000000-0000-4000-8000-000000000001";
+  // This fixture selects no Credential Gateway. The source is a local bundle
+  // record shaped by CredentialSourceSchema, not proof of source registration.
+  const offlineSource = {
+    id: sourceId,
+    namespaceId: seeded.namespace.id,
+    name: "model-account",
+    type: "openai",
+    ownerCapability: "credential_gateway",
+    config: {},
+    secrets: {
+      api_key: { kind: "secret", namespaceId: seeded.namespace.id, id: seeded.secret.id },
+    },
+    state: "ready",
+    ref: { kind: "credential_source", namespaceId: seeded.namespace.id, id: sourceId },
+  };
+  const incompleteFields = [
+    ...invalidPermissions.map((value) => ({
+      field: "roles" as const,
+      property: "permissions",
+      value,
+      diagnostic: /roles\[\]\.permissions/u,
+    })),
+    ...[undefined, null, 42, "", " "].map((value) => ({
+      field: "credentialSources" as const,
+      property: "type",
+      value,
+      diagnostic: /credentialSources\[\]\.type/u,
+    })),
+    ...[
+      { property: "subjectKind", value: undefined },
+      { property: "subjectId", value: null },
+      { property: "roleId", value: 42 },
+      { property: "resourceId", value: "" },
+    ].map(({ property, value }) => ({
+      field: "accessBindings" as const,
+      property,
+      value,
+      diagnostic: /accessBindings\[\]\.(subjectKind|subjectId|roleId|resourceId)/u,
+    })),
+  ];
+  for (const { field, property, value, diagnostic } of incompleteFields) {
+    const incomplete = structuredClone(bundle);
+    const selected = incomplete.namespaces.find(({ id }) => id === seeded.namespace.id)!;
+    if (field === "credentialSources") {
+      selected.credentialSources = [structuredClone(offlineSource)];
+    }
+    const record = selected[field][0]!;
+    if (value === undefined) {
+      delete record[property];
+    } else {
+      record[property] = value;
+    }
+
+    if (field === "roles" || field === "accessBindings") {
+      // Preserve the real policy resource ID while damaging only required fields
+      // in the successful HTTP response. Export must not publish this bundle.
+      const resourcePath = field === "roles" ? "roles" : "access-bindings";
+      const api = createOccApi({
+        baseUrl: "https://console.oce.localhost",
+        async fetchImpl(url, init) {
+          assert.equal(init.method, "GET");
+          const response = await asAdministrator(fixture)(url, init);
+          if (new URL(url).pathname !== `/namespaces/${seeded.namespace.id}/iam/${resourcePath}`) {
+            return response;
+          }
+          assert.equal(response.status, 200);
+          const payload = object((await response.json()) as unknown);
+          const roles = resources(payload.data);
+          assert.ok(roles.some(({ id }) => id === record.id));
+          return Response.json(
+            {
+              ...payload,
+              data: roles.map((role) => (role.id === record.id ? record : role)),
+            },
+            { status: 200 },
+          );
+        },
+      });
+      await assert.rejects(exportTenants(api), diagnostic);
+    }
+
+    // A saved bundle must fail before touching the old tenant or attempting
+    // any destination writes, even when unread workspace files are accepted.
+    let calls = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      fetchImpl(url, init) {
+        calls += 1;
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    await assert.rejects(
+      discardTenants(api, incomplete, {
+        allowUnreadWorkspaceFiles: true,
+        timeoutMs: 0,
+        intervalMs: 0,
+        sleep: noSleep,
+      }),
+      diagnostic,
+    );
+    await assert.rejects(
+      importTenants(api, incomplete, {
+        "team-a": { "model-key": "synthetic-value" },
+      }),
+      diagnostic,
+    );
+    assert.equal(calls, 0);
+  }
+
   // Empty successful deletes and accepted missing resources are valid on the
   // same API; they must not acquire the collection response requirement.
   const base = `/namespaces/${seeded.namespace.id}`;
@@ -552,26 +675,53 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.ok(rolloutAgent);
   rolloutAgent.desiredRuntimeState = "running";
   const deployPath = `${base}/agents/${saved.ids[seeded.agent.id]}/deploy`;
-  let deployRequests = 0;
-  const api = createOccApi({
-    baseUrl: "https://console.oce.localhost",
-    async fetchImpl(url, init) {
-      if (init.method === "POST" && new URL(url).pathname === deployPath) {
-        deployRequests += 1;
-        return Response.json({}, { status: 202 });
-      }
-      return asAdministrator(fixture)(url, init);
+  const damagedDeploys = [
+    { status: 202, body: {}, diagnostic: "HTTP 202 returned no data envelope." },
+    {
+      status: 200,
+      body: { data: { id: seeded.agent.id } },
+      diagnostic: "ambiguous HTTP 200 response.",
     },
-  });
-  const deployState = structuredClone(saved);
-  await assert.rejects(importTenants(api, rollout, values, { ...options, state: deployState }), {
-    message:
-      `POST ${deployPath}: HTTP 202 returned no data envelope. ` +
-      "Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile " +
-      "any earlier writes before resuming the original operation.",
-  });
-  assert.equal(deployRequests, 1);
-  assert.deepEqual(deployState, saved);
+    {
+      status: 202,
+      body: { data: { id: seeded.agent.id, namespaceId: saved.ids[seeded.namespace.id] } },
+      diagnostic: "invalid OCC response id: invalid resource ID.",
+    },
+    {
+      status: 202,
+      body: {
+        data: {
+          id: "rev_00000000-0000-4000-8000-000000000001",
+          namespaceId: saved.ids[seeded.namespace.id],
+          agentId: seeded.agent.id,
+          revision: 1,
+        },
+      },
+      diagnostic: "returned resource identity does not match the request.",
+    },
+  ];
+  for (const damaged of damagedDeploys) {
+    let deployRequests = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      async fetchImpl(url, init) {
+        if (init.method === "POST" && new URL(url).pathname === deployPath) {
+          deployRequests += 1;
+          return Response.json(damaged.body, { status: damaged.status });
+        }
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    const deployState = structuredClone(saved);
+    await assert.rejects(importTenants(api, rollout, values, { ...options, state: deployState }), {
+      message:
+        `POST ${deployPath}: ${damaged.diagnostic} ` +
+        "Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile " +
+        "any earlier writes before resuming the original operation.",
+    });
+    assert.equal(deployRequests, 1);
+    assert.deepEqual(deployState, saved);
+  }
 });
 
 test("export command reports an invalid Namespace response without writing a bundle", async (t) => {
@@ -620,7 +770,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   const key = "service-key-from-file";
   writeFileSync(join(directory, "key.json"), JSON.stringify({ data: { key } }));
   writeFileSync(join(directory, "values.json"), JSON.stringify({ "team-a": { "model-key": "v" } }));
-  let malformedBindingBody: string | undefined;
+  let malformedBindingBody: string | ((body: string) => string) | undefined;
   let malformedBindingStatus = 201;
   let bindingCreated: boolean;
 
@@ -653,7 +803,11 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
     ) {
       bindingCreated = true;
       response.writeHead(malformedBindingStatus, { "content-type": "application/json" });
-      response.end(malformedBindingBody);
+      response.end(
+        typeof malformedBindingBody === "function"
+          ? malformedBindingBody(body)
+          : malformedBindingBody,
+      );
       return;
     }
     response.writeHead(answer.status, { "content-type": "application/json" });
@@ -747,6 +901,45 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
     ["gateway-error", 502, "null", "ambiguous HTTP 502 response."],
     ["unexpected-success", 204, "", "ambiguous HTTP 204 response."],
     ["malformed-refusal", 403, "null", "ambiguous HTTP 403 response."],
+    ["wrong-success-status", 202, (body: string) => body, "ambiguous HTTP 202 response."],
+    [
+      "wrong-resource-owner",
+      201,
+      (body: string) => {
+        const envelope = object(JSON.parse(body) as unknown);
+        return JSON.stringify({
+          ...envelope,
+          data: { ...object(envelope.data), namespaceId: seeded.namespace.id },
+        });
+      },
+      "returned resource identity does not match the request.",
+    ],
+    [
+      "missing-request-id",
+      403,
+      JSON.stringify({ error: { code: "FORBIDDEN", message: "Access denied." } }),
+      "ambiguous HTTP 403 response.",
+    ],
+    [
+      "empty-error-message",
+      403,
+      (body: string) =>
+        JSON.stringify({
+          meta: object(JSON.parse(body) as unknown).meta,
+          error: { code: "FORBIDDEN", message: "" },
+        }),
+      "ambiguous HTTP 403 response.",
+    ],
+    [
+      "wrong-refusal-status",
+      409,
+      (body: string) =>
+        JSON.stringify({
+          meta: object(JSON.parse(body) as unknown).meta,
+          error: { code: "FORBIDDEN", message: "Access denied." },
+        }),
+      "ambiguous HTTP 409 response.",
+    ],
   ] as const;
   for (const [name, status, body, error] of malformedCases) {
     const destination = await created(fixture, "/namespaces", { name });
@@ -784,6 +977,61 @@ test("import refuses overlapping tenant destinations before changing the map or 
   bundle.namespaces = bundle.namespaces.filter(({ id }) =>
     sources.some((source) => source.id === id),
   );
+  // Distinct destination names do not isolate tenants if the bundle repeats a
+  // source ID: the map would otherwise send both tenants to the first target.
+  const isolatedTargets = [];
+  for (const name of ["isolated-a", "isolated-b"]) {
+    const namespace = await created(fixture, "/namespaces", { name });
+    await markReady(fixture, namespace.id);
+    isolatedTargets.push(namespace);
+  }
+  const duplicate = structuredClone(bundle);
+  assert.equal(duplicate.namespaces.length, 2);
+  duplicate.namespaces[1]!.id = duplicate.namespaces[0]!.id;
+  for (const skip of [[], ["source-b"]]) {
+    const map: SavedState = { ids: {}, deployed: [] };
+    const before = structuredClone(map);
+    let calls = 0;
+    let saves = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      fetchImpl(url, init) {
+        calls += 1;
+        return asAdministrator(fixture)(url, init);
+      },
+    });
+    await assert.rejects(
+      importTenants(
+        api,
+        duplicate,
+        {},
+        {
+          state: map,
+          save: () => {
+            saves += 1;
+          },
+          names: { "source-a": "isolated-a", "source-b": "isolated-b" },
+          skip,
+          deploy: false,
+        },
+      ),
+      (error: unknown) => {
+        assert.equal(calls, 0);
+        assert.equal(saves, 0);
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /duplicate|repeated/iu);
+        return true;
+      },
+    );
+    assert.deepEqual(map, before);
+    for (const namespace of isolatedTargets) {
+      assert.deepEqual(
+        (await fixture.api.expect("GET", `/namespaces/${namespace.id}/iam/roles`)).data,
+        [],
+      );
+    }
+  }
+
   const state: SavedState = { ids: {}, deployed: [] };
   let saves = 0;
   const options = {
@@ -1164,9 +1412,24 @@ test("import refuses non-array destination inventories before adopting a populat
 test("discard validates every tenant's late collections before deleting any Agent", async () => {
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);
+  // A second real tenant has a Configuration that comes after Agent deletion.
+  const laterNamespace = await created(fixture, "/namespaces", { name: "late-config-tenant" });
+  await markReady(fixture, laterNamespace.id);
+  const laterConfiguration = await created(
+    fixture,
+    `/namespaces/${laterNamespace.id}/configurations`,
+    {
+      kind: "agent",
+      values: { model: "later-model" },
+    },
+  );
+  await created(fixture, `/namespaces/${laterNamespace.id}/agents`, {
+    name: "later-agent",
+    configurationId: laterConfiguration.id,
+  });
   const exported = await exportTenants(fixture.api);
   const populated = exported.namespaces.find(({ id }) => id === seeded.namespace.id);
-  const later = exported.namespaces.find(({ id }) => id !== seeded.namespace.id);
+  const later = exported.namespaces.find(({ id }) => id === laterNamespace.id);
   assert.ok(populated);
   assert.ok(later);
 
@@ -1176,6 +1439,16 @@ test("discard validates every tenant's late collections before deleting any Agen
     { field: "presets", value: {}, diagnostic: /presets; expected an array/u },
     { field: "roles", value: [null], diagnostic: /roles\[0\].*expected an object/u },
     { field: "roles", value: [{ ...seeded.role, id: 42 }], diagnostic: /roles\[\]\.id/u },
+    // Nonblank IDs must still satisfy the Configuration DELETE route's format.
+    ...[
+      "not-a-configuration-id",
+      "cfg_00000000-0000-1000-8000-000000000001",
+      "sec_00000000-0000-4000-8000-000000000001",
+    ].map((id) => ({
+      field: "configurations",
+      value: [{ ...laterConfiguration, id }],
+      diagnostic: /configurations\[\]\.id/u,
+    })),
   ];
   for (const { field, value, diagnostic } of cases) {
     const bundle = structuredClone({ ...exported, namespaces: [populated, later] });
@@ -1375,4 +1648,62 @@ test("import waits only for provisioning and preserves mappings on invalid readi
     assert.equal(saves, 0);
     assert.deepEqual(state, before);
   }
+});
+
+test("Namespace write refusals require the OCC error envelope before offering recovery", async () => {
+  const fixture = await createFixture();
+  const namespace = await created(fixture, "/namespaces", { name: "reserved-source" });
+  await markReady(fixture, namespace.id);
+  // An unreferenced Configuration is intentionally absent from the export and makes
+  // the real Namespace DELETE refuse. Damage only that refusal's response envelope.
+  await created(fixture, `/namespaces/${namespace.id}/configurations`, {
+    kind: "agent",
+    values: {},
+  });
+  const bundle = await exportTenants(fixture.api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === namespace.id);
+  const state: SavedState = { ids: {}, deployed: [] };
+  let saves = 0;
+  const refused: string[] = [];
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      const path = new URL(url).pathname;
+      const response = await asAdministrator(fixture)(url, init);
+      if (init.method === "GET" && path === "/namespaces") {
+        // Model the inventory becoming stale before POST, without inventing its refusal.
+        const envelope = object((await response.json()) as unknown);
+        return Response.json({ ...envelope, data: [] }, { status: response.status });
+      }
+      if (
+        (init.method === "POST" && path === "/namespaces") ||
+        (init.method === "DELETE" && path === `/namespaces/${namespace.id}`)
+      ) {
+        assert.equal(response.status, 409);
+        const envelope = object((await response.json()) as unknown);
+        assert.equal(
+          object(envelope.error).code,
+          init.method === "POST" ? "RESOURCE_CONFLICT" : "NAMESPACE_NOT_EMPTY",
+        );
+        refused.push(init.method);
+        return Response.json({ error: envelope.error }, { status: 409 });
+      }
+      return response;
+    },
+  });
+  await assert.rejects(
+    importTenants(api, bundle, {}, { state, save: () => saves++, deploy: false }),
+    /ambiguous HTTP 409 response/u,
+  );
+  assert.deepEqual(state, { ids: {}, deployed: [] });
+  assert.equal(saves, 0);
+  await assert.rejects(
+    discardTenants(api, bundle, { sleep: noSleep, intervalMs: 0, timeoutMs: 0 }),
+    /ambiguous HTTP 409 response/u,
+  );
+  assert.deepEqual(refused, ["POST", "DELETE"]);
+  assert.equal(
+    object((await fixture.api.expect("GET", `/namespaces/${namespace.id}`)).data).status,
+    "ready",
+  );
 });

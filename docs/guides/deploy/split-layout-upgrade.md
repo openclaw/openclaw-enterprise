@@ -182,14 +182,14 @@ Configurations, workspace files, transcripts and Secret values.
    or saves the map. A skipped source without a saved destination reserves
    nothing; a saved destination stays reserved even while its source is skipped.
    Choose separate targets or skip a source; review an old conflicting map and
-   any already imported resources before retrying. Malformed saved IDs are refused
-   before any API request.
+   any already imported resources before retrying. Malformed saved IDs and duplicate
+   source Namespace IDs, including skipped sources, are refused before any API request.
 
    It creates the Namespaces and exits `3` while they are `provisioning`.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
-   and new ID. If a write's response is ambiguous, reconcile that write before
-   resuming; it may already have committed. Failed or deleting Namespaces require
+   and new ID. If a write's response has an unexpected status, resource identity,
+   or error envelope, reconcile that write before resuming; it may already have committed. Failed or deleting Namespaces require
    lifecycle recovery, not another RoleBinding wait. Exit `4` lists what needs a
    hand: Agents whose deploy failed, such as a service-account Agent without an
    issued credential, and access bindings it could not re-create. The ID map does

@@ -56,12 +56,16 @@ Keep the original bundle and map, if present. Correct the OCC endpoint and
 reconcile any earlier writes before resuming the original operation. This check
 also applies to export and discard; do not blindly retry a partially completed
 operation. Exact resource reads with unreadable saved settings and bundles missing
-required restoration fields are refused. Discard validates every collection and
-deletion ID before its first DELETE. Invalid private JSON is reported by input
+required restoration fields are refused. Credential sources need a type; Roles
+need permissions. OCC still validates the submitted configuration and grants.
+Discard validates every collection and deletion ID against its route format
+before its first DELETE, preserving opaque IAM identifiers. Invalid private JSON is reported by input
 name without quoting its contents.
 
-The importer checks required Secret values and refuses selected sources that
-share a destination name or saved destination ID. Saved destinations remain
+The importer rejects duplicate source Namespace IDs across the whole bundle,
+including skipped tenants, before any request or map save. It checks required
+Secret values and refuses selected sources that share a destination name or
+saved destination ID. Saved destinations remain
 reserved even when their sources are skipped. Every saved ID must be a nonempty
 string before any API request. It creates missing Namespaces or
 reuses eligible empty ones, records each ID, and waits for readiness. Pending
@@ -97,8 +101,13 @@ bindings, for manual recovery without creating grants.
 
 Running source Agents are deployed unless `--no-deploy` was selected. Failed
 deployments or bindings that require manual recovery cause `main` to exit 4.
-Only recognized OCC refusals can be reported this way. An ambiguous write response
-stops the import before later work; reconcile the write before resuming.
+Only a valid OCC error envelope with the operation's known refusal status and
+code can be reported this way, including unsupported repository Git profiles.
+Creates require HTTP 201; deploy requires HTTP 202 with the requested Agent's
+revision identity. Returned resource IDs and Namespace ownership must match the
+operation before a mapping is saved. An ambiguous write response, including a
+malformed Namespace refusal, stops the import before later work; reconcile the
+write before resuming.
 The map does not record reported bindings, so each rerun reports them again and
 exits 4, also after the operator re-creates them by hand. Exit 0 does not mean
 old Agent revision bindings were restored. Workspace recovery
@@ -126,6 +135,8 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:45: Clarify route ID validation, source isolation and confirmed write responses. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - fe8766253c5c614d856bebe64c59f903687ce949)
 
 - 2026-11-10 17:03: Document input validation, terminal Namespace states and ambiguous-write recovery. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 6c18c81d754f7c4acead23e5ab41f5a973fe5068)
 

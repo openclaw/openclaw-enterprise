@@ -54,6 +54,7 @@ type ApiResult = {
   status: number;
   data: unknown;
   error: unknown;
+  envelope: unknown;
 };
 type Api = ReturnType<typeof createOccApi>;
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -62,19 +63,147 @@ const retainInputs = "Keep the original bundle and map, if present.";
 const resumeOperation = "reconcile any earlier writes before resuming the original operation.";
 const recoverOcc = `${retainInputs} Correct the OCC endpoint and ${resumeOperation}`;
 const recoverInput = `${retainInputs} Correct the indicated input and ${resumeOperation}`;
-const definitiveRefusals = new Set([
-  "INVALID_REQUEST",
-  "UNAUTHENTICATED",
-  "FORBIDDEN",
-  "NOT_FOUND",
-  "METHOD_NOT_ALLOWED",
-  "RESOURCE_CONFLICT",
-  "AGENT_DELETING",
-  "NAMESPACE_NOT_READY",
-  "NAMESPACE_NOT_EMPTY",
-  "PAYLOAD_TOO_LARGE",
-  "UNSUPPORTED_MEDIA_TYPE",
-]);
+const refusalStatuses: Record<string, number> = {
+  INVALID_REQUEST: 400,
+  UNAUTHENTICATED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  METHOD_NOT_ALLOWED: 405,
+  RESOURCE_CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
+  UNSUPPORTED_MEDIA_TYPE: 415,
+};
+
+function boundedString(value: unknown, minimum: number, maximum: number): value is string {
+  return (
+    typeof value === "string" &&
+    Array.from(value).length >= minimum &&
+    Array.from(value).length <= maximum
+  );
+}
+
+function hasOnlyKeys(value: unknown, keys: readonly string[]): value is Resource {
+  return (
+    isRecord(value) &&
+    !Array.isArray(value) &&
+    Object.keys(value).every((key) => keys.includes(key))
+  );
+}
+
+function validErrorEnvelope(
+  result: ApiResult,
+): result is ApiResult & { error: { code: string; message: string } } {
+  const { error, envelope } = result;
+  const meta = isRecord(envelope) ? envelope.meta : undefined;
+  if (
+    !hasOnlyKeys(envelope, ["error", "meta"]) ||
+    !hasOnlyKeys(meta, ["requestId"]) ||
+    typeof meta.requestId !== "string" ||
+    !new RegExp(`^req_${uuidV4}$`, "u").test(meta.requestId) ||
+    !hasOnlyKeys(error, ["code", "message", "details", "remainingResources"]) ||
+    typeof error.code !== "string" ||
+    !boundedString(error.message, 1, 256)
+  ) {
+    return false;
+  }
+  if (
+    error.details !== undefined &&
+    (!Array.isArray(error.details) ||
+      error.details.length > 32 ||
+      !error.details.every(
+        (detail: unknown) =>
+          hasOnlyKeys(detail, ["code", "path", "message"]) &&
+          boundedString(detail.path, 0, 512) &&
+          /^(?:\/(?:[^~/]|~0|~1)*)*$/u.test(detail.path) &&
+          typeof detail.code === "string" &&
+          [
+            "REQUIRED",
+            "UNKNOWN_FIELD",
+            "INVALID_TYPE",
+            "INVALID_FORMAT",
+            "INVALID_VALUE",
+            "TOO_LONG",
+            "TOO_DEEP",
+            "INVALID_RANGE",
+            "OUTSIDE_CEILING",
+          ].includes(detail.code) &&
+          (detail.message === undefined || boundedString(detail.message, 0, 512)),
+      ))
+  ) {
+    return false;
+  }
+  return (
+    error.remainingResources === undefined ||
+    (error.code === "NAMESPACE_NOT_EMPTY" &&
+      Array.isArray(error.remainingResources) &&
+      error.remainingResources.length <= 7 &&
+      error.remainingResources.every(
+        (item: unknown) =>
+          hasOnlyKeys(item, ["kind", "count", "ids"]) &&
+          boundedString(item.kind, 1, 64) &&
+          Number.isInteger(item.count) &&
+          Number(item.count) >= 0 &&
+          Array.isArray(item.ids) &&
+          item.ids.length <= 20 &&
+          item.ids.every((id: unknown) => boundedString(id, 1, 200)),
+      ))
+  );
+}
+
+function definitiveRefusal(
+  result: ApiResult,
+  method: string,
+  path: string,
+): result is ApiResult & { error: { code: string; message: string } } {
+  if (!validErrorEnvelope(result)) {
+    return false;
+  }
+  const code = result.error.code;
+  if (refusalStatuses[code] === result.status) {
+    return true;
+  }
+  const deploy = method === "POST" && /^\/namespaces\/[^/]+\/agents\/[^/]+\/deploy$/u.test(path);
+  if (
+    [
+      "CHANNEL_CREDENTIAL_ROLE_MISMATCH",
+      "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED",
+      "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
+    ].includes(code)
+  ) {
+    return (
+      result.status === 400 &&
+      (deploy || (method === "POST" && /^\/namespaces\/[^/]+\/configurations$/u.test(path)))
+    );
+  }
+  if (result.status !== 409) {
+    return false;
+  }
+  if (["REPOSITORY_GIT_PROFILE_UNSUPPORTED", "REPOSITORY_GIT_SENDER_UNQUALIFIED"].includes(code)) {
+    return deploy;
+  }
+  if (code === "SANDBOX_POLICY_PROTECTED_EXECUTION") {
+    return deploy || (method === "POST" && /^\/namespaces\/[^/]+\/agents$/u.test(path));
+  }
+  if (code === "NAMESPACE_NOT_EMPTY") {
+    return method === "DELETE" && /^\/namespaces\/[^/]+$/u.test(path);
+  }
+  if (code === "NAMESPACE_NOT_READY") {
+    return /^\/namespaces\/[^/]+\//u.test(path);
+  }
+  if (code === "AGENT_DELETING") {
+    return /^\/namespaces\/[^/]+\/agents\//u.test(path);
+  }
+  if (code === "CREDENTIAL_GATEWAY_NOT_CONFIGURED") {
+    return method === "POST" && path.endsWith("/credential-sources");
+  }
+  if (["CREDENTIAL_WITHDRAWAL_IN_PROGRESS", "CREDENTIAL_TOKEN_UNSETTLED"].includes(code)) {
+    return method === "DELETE" && /^\/namespaces\/[^/]+\/credential-sources\/[^/]+$/u.test(path);
+  }
+  return (
+    code === "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" &&
+    (deploy || /^\/namespaces\/[^/]+\/service-accounts(?:\/[^/]+)?$/u.test(path))
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -101,6 +230,53 @@ function* bundleRecords(namespace: Resource, field: string) {
   }
 }
 
+// These are the owning route parameter formats, including opaque IAM IDs.
+const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const resourcePrefixes: Record<string, string> = {
+  namespaces: "ns_",
+  agents: "agt_",
+  configurations: "cfg_",
+  presets: "pre_",
+  secrets: "sec_",
+  credentialSources: "cs_",
+  serviceAccounts: "sa_",
+  revisions: "rev_",
+};
+
+function requireResourceId(
+  value: unknown,
+  kind: string,
+  location: string,
+  recovery = recoverInput,
+): string {
+  const prefix = resourcePrefixes[kind];
+  const valid =
+    typeof value === "string" &&
+    (prefix === undefined
+      ? Array.from(value).length > 0 && Array.from(value).length <= 200
+      : new RegExp(`^${prefix}${uuidV4}$`, "u").test(value));
+  if (!valid) {
+    throw new InvalidMigrationDataError(`${location}: invalid resource ID. ${recovery}`);
+  }
+  return value;
+}
+
+function readNamespaces(bundle: Bundle): Resource[] {
+  const ids = new Set<string>();
+  return bundle.namespaces.map((value, index) => {
+    const location = `bundle namespaces[${index}]`;
+    const namespace = requireRecord(value, location);
+    const id = requireResourceId(namespace.id, "namespaces", `${location}.id`);
+    if (ids.has(id)) {
+      throw new InvalidMigrationDataError(
+        `bundle contains a duplicate Namespace ID. ${recoverInput}`,
+      );
+    }
+    ids.add(id);
+    return namespace;
+  });
+}
+
 function validateTenant(namespace: Resource) {
   const requireString = (value: unknown, location: string) => {
     if (typeof value !== "string" || value.trim() === "") {
@@ -109,7 +285,7 @@ function validateTenant(namespace: Resource) {
       );
     }
   };
-  requireString(namespace.id, "bundle Namespace id");
+  requireResourceId(namespace.id, "namespaces", "bundle Namespace id");
   requireString(namespace.name, "bundle Namespace name");
   for (const field of [
     "agents",
@@ -123,7 +299,7 @@ function validateTenant(namespace: Resource) {
   ]) {
     for (const resource of bundleRecords(namespace, field)) {
       const location = `bundle namespaces[].${field}[]`;
-      requireString(resource.id, `${location}.id`);
+      requireResourceId(resource.id, field, `${location}.id`);
       if ("configurationReadError" in resource) {
         throw new InvalidMigrationDataError(
           `${location}: saved configuration is unreadable. ${recoverInput}`,
@@ -135,12 +311,38 @@ function validateTenant(namespace: Resource) {
         requireString(resource.name, `${location}.name`);
       }
       if (field === "agents") {
-        requireString(resource.configurationId, `${location}.configurationId`);
+        requireResourceId(
+          resource.configurationId,
+          "configurations",
+          `${location}.configurationId`,
+        );
       } else if (field === "configurations") {
         requireString(resource.kind, `${location}.kind`);
         requireRecord(resource.values, `${location}.values`);
       } else if (field === "presets") {
         requireRecord(resource.template, `${location}.template`);
+      } else if (field === "credentialSources") {
+        requireString(resource.type, `${location}.type`);
+      } else if (field === "roles") {
+        const permissions = requireArray(resource.permissions, `${location}.permissions`);
+        if (permissions.length === 0 || permissions.length > 64) {
+          throw new InvalidMigrationDataError(
+            `${location}.permissions: expected 1 to 64 permissions. ${recoverInput}`,
+          );
+        }
+        for (const [index, value] of permissions.entries()) {
+          const permissionLocation = `${location}.permissions[${index}]`;
+          const permission = requireRecord(value, permissionLocation);
+          requireString(permission.action, `${permissionLocation}.action`);
+          requireString(permission.resourceKind, `${permissionLocation}.resourceKind`);
+        }
+      } else if (field === "accessBindings") {
+        for (const key of ["subjectKind", "subjectId", "roleId"]) {
+          requireString(resource[key], `${location}.${key}`);
+        }
+        if (BINDING_RESOURCE_KINDS.includes(resource.resourceKind)) {
+          requireString(resource.resourceId, `${location}.resourceId`);
+        }
       }
     }
   }
@@ -211,6 +413,14 @@ Environment: OCC_URL, OCC_SERVICE_KEY_FILE, optional OCC_CA_BUNDLE.`;
 
 export class SplitLayoutError extends Error {}
 class InvalidMigrationDataError extends SplitLayoutError {}
+class OccRefusalError extends SplitLayoutError {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
 
 /** An OCC API client over a fetch function. `fetchImpl(url, init)` returns a Response. */
 export function createOccApi({
@@ -240,30 +450,31 @@ export function createOccApi({
       payload = {};
     }
     const envelope = isRecord(payload) ? payload : undefined;
-    return { status: response.status, data: envelope?.data, error: envelope?.error };
+    return {
+      status: response.status,
+      data: envelope?.data,
+      error: envelope?.error,
+      envelope: payload,
+    };
   }
-  async function expect(method: string, path: string, body?: unknown, accepted = [200, 201, 202]) {
+  async function expect(
+    method: string,
+    path: string,
+    body?: unknown,
+    accepted = [method === "POST" ? 201 : 200],
+  ) {
     const result = await call(method, path, body);
-    if (!accepted.includes(result.status)) {
-      const error = isRecord(result.error) ? result.error : undefined;
-      if (
-        method !== "GET" &&
-        !(
-          result.status >= 400 &&
-          result.status < 500 &&
-          typeof error?.code === "string" &&
-          definitiveRefusals.has(error.code) &&
-          typeof error.message === "string"
-        )
-      ) {
+    const refusal = definitiveRefusal(result, method, path);
+    if (!accepted.includes(result.status) || (result.status >= 400 && !refusal)) {
+      if (!refusal) {
         throw new InvalidMigrationDataError(
           `${method} ${path.slice(0, 240)}: ambiguous HTTP ${result.status} response. ${recoverOcc}`,
         );
       }
-      const code = error?.code ?? "UNKNOWN";
-      const message = error?.message ?? "";
-      throw new SplitLayoutError(
-        `${method} ${path}: HTTP ${result.status} ${code} ${message}`.trim(),
+      const error = result.error;
+      throw new OccRefusalError(
+        error.code,
+        `${method} ${path}: HTTP ${result.status} ${error.code} ${error.message}`,
       );
     }
     if (
@@ -274,6 +485,12 @@ export function createOccApi({
     ) {
       throw new InvalidMigrationDataError(
         `${method} ${path.slice(0, 240)}: HTTP ${result.status} returned no data envelope. ${recoverOcc}`,
+      );
+    }
+    if (method === "DELETE" && result.status === 202) {
+      responseId(
+        requireRecord(result.data, `${method} ${path}: invalid OCC response data`, recoverOcc),
+        `${method} ${path}`,
       );
     }
     return result;
@@ -301,7 +518,12 @@ const list = async (api: Api, path: string): Promise<Resource[]> => {
 };
 
 async function readOccResource(api: Api, method: "GET" | "POST", path: string, body?: unknown) {
-  const { data } = await api.expect(method, path, body);
+  const { data } = await api.expect(
+    method,
+    path,
+    body,
+    method === "POST" && path.endsWith("/deploy") ? [202] : undefined,
+  );
   const resource = requireRecord(
     data,
     `${method} ${path.slice(0, 240)}: invalid OCC response data`,
@@ -310,6 +532,29 @@ async function readOccResource(api: Api, method: "GET" | "POST", path: string, b
   if ("configurationReadError" in resource) {
     throw new InvalidMigrationDataError(
       `${method} ${path.slice(0, 240)}: saved configuration is unreadable. ${recoverOcc}`,
+    );
+  }
+  responseId(resource, `${method} ${path}`);
+  if (
+    method === "POST" &&
+    isRecord(body) &&
+    body.name !== undefined &&
+    resource.name !== body.name
+  ) {
+    throw new InvalidMigrationDataError(
+      `${method} ${path}: returned resource name does not match the request. ${recoverOcc}`,
+    );
+  }
+  if (
+    method === "POST" &&
+    path.endsWith("/iam/access-bindings") &&
+    isRecord(body) &&
+    ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"].some(
+      (key) => resource[key] !== body[key],
+    )
+  ) {
+    throw new InvalidMigrationDataError(
+      `${method} ${path}: returned binding does not match the request. ${recoverOcc}`,
     );
   }
   return resource;
@@ -321,6 +566,50 @@ function responseId(resource: Resource, location: string, field = "id"): string 
     throw new InvalidMigrationDataError(
       `${location.slice(0, 240)}: invalid OCC response data; expected a nonempty string in ${field}. ${recoverOcc}`,
     );
+  }
+  const path = location.slice(location.indexOf(" ") + 1);
+  const parts = path.split("/").slice(1).map(decodeURIComponent);
+  const kinds: Record<string, string> = {
+    "credential-sources": "credentialSources",
+    "service-accounts": "serviceAccounts",
+    "access-bindings": "accessBindings",
+  };
+  const routeKind = parts[2] === "iam" ? parts[3] : parts[2];
+  const deploy = parts[4] === "deploy";
+  let kind = "namespaces";
+  if (routeKind !== undefined) {
+    kind = kinds[routeKind] ?? routeKind;
+  }
+  if (deploy) {
+    kind = "revisions";
+  }
+  if (field !== "id") {
+    kind = field;
+  }
+  requireResourceId(value, kind, `${location}: invalid OCC response ${field}`, recoverOcc);
+  if (field === "id") {
+    let exactId: string | undefined;
+    if (location.startsWith("GET ") || location.startsWith("DELETE ")) {
+      if (parts[2] === "iam") {
+        exactId = parts[4];
+      } else if (parts[2] === undefined) {
+        exactId = parts[1];
+      } else {
+        exactId = parts[3];
+      }
+    }
+    if (
+      (exactId !== undefined && value !== exactId) ||
+      (routeKind !== undefined && resource.namespaceId !== parts[1]) ||
+      (deploy &&
+        (resource.agentId !== parts[3] ||
+          !Number.isInteger(resource.revision) ||
+          Number(resource.revision) < 1))
+    ) {
+      throw new InvalidMigrationDataError(
+        `${location}: returned resource identity does not match the request. ${recoverOcc}`,
+      );
+    }
   }
   return value;
 }
@@ -391,7 +680,9 @@ export async function exportTenants(
         `${configurations.length} Configurations, ${tenant.secrets.length} Secrets`,
     );
   }
-  return { format: BUNDLE_FORMAT, exportedAt: new Date().toISOString(), namespaces };
+  const bundle = { format: BUNDLE_FORMAT, exportedAt: new Date().toISOString(), namespaces };
+  readNamespaces(bundle);
+  return bundle;
 }
 
 function readPrivateJson(path: string, label: string): unknown {
@@ -447,9 +738,7 @@ export async function discardTenants(
     sleep = defaultSleep,
   }: DiscardOptions = {},
 ) {
-  const namespaces = bundle.namespaces.map((value, index) =>
-    requireRecord(value, `bundle namespaces[${index}]`),
-  );
+  const namespaces = readNamespaces(bundle);
   for (const namespace of namespaces) {
     validateTenant(namespace);
   }
@@ -488,7 +777,12 @@ export async function discardTenants(
   for (const namespace of namespaces) {
     const base = ns(namespace.id);
     for (const agent of bundleRecords(namespace, "agents")) {
-      await api.expect("DELETE", `${base}/agents/${agent.id}`, undefined, [200, 202, 204, 404]);
+      await api.expect(
+        "DELETE",
+        `${base}/agents/${encodeURIComponent(String(agent.id))}`,
+        undefined,
+        [202, 404],
+      );
       log(`deleting Agent ${agent.name} (${agent.id})`);
     }
     const gone = await waitUntil(async () => (await list(api, `${base}/agents`)).length === 0, {
@@ -510,23 +804,26 @@ export async function discardTenants(
     ] as const;
     for (const [kind, field] of children) {
       for (const { id } of bundleRecords(namespace, field)) {
-        await api.expect("DELETE", `${base}/${kind}/${id}`, undefined, [200, 202, 204, 404]);
+        await api.expect(
+          "DELETE",
+          `${base}/${kind}/${encodeURIComponent(String(id))}`,
+          undefined,
+          [204, 404],
+        );
       }
     }
-    const deleted = await api.call("DELETE", base);
-    const error = isRecord(deleted.error) ? deleted.error : undefined;
-    if (deleted.status === 409) {
+    try {
+      await api.expect("DELETE", base, undefined, [202, 404]);
+    } catch (error) {
+      if (!(error instanceof OccRefusalError) || error.code !== "NAMESPACE_NOT_EMPTY") {
+        throw error;
+      }
       throw new SplitLayoutError(
-        `${namespace.name} (${namespace.id}) is not empty: ${error?.message ?? ""} ` +
+        `${namespace.name} (${namespace.id}) is not empty: ${error.message} ` +
           "A Configuration no Agent references is not exported and blocks the delete. Unless " +
           "the message names them, find them with `select id from occ.configurations where " +
           "namespace_id = '<id>'`, delete each with `occ configuration delete`, then run " +
           "discard again.",
-      );
-    }
-    if (![200, 202, 204, 404].includes(deleted.status)) {
-      throw new SplitLayoutError(
-        `DELETE ${base}: HTTP ${deleted.status} ${error?.code ?? "UNKNOWN"}`,
       );
     }
     log(`deleting Namespace ${namespace.name} (${namespace.id})`);
@@ -592,9 +889,8 @@ function secretValue(secretValues: unknown, namespaceName: unknown, secretName: 
 /** Checks a bundle and its Secret values before anything is created. Returns the problems. */
 export function checkImport(bundle: Bundle, secretValues: unknown) {
   const problems = [];
-  for (const [index, namespaceValue] of bundle.namespaces.entries()) {
+  for (const [index, namespace] of readNamespaces(bundle).entries()) {
     const location = `bundle namespaces[${index}]`;
-    const namespace = requireRecord(namespaceValue, location);
     validateTenant(namespace);
     for (const secretValueEntry of requireArray(namespace.secrets, `${location}.secrets`)) {
       const secret = requireRecord(secretValueEntry, `${location}.secrets[]`);
@@ -627,9 +923,7 @@ export async function importTenants(
   }: ImportOptions = {},
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
-  const allNamespaces = bundle.namespaces.map((value, index) =>
-    requireRecord(value, `bundle namespaces[${index}]`),
-  );
+  const allNamespaces = readNamespaces(bundle);
   const namespaces = allNamespaces.filter(({ name }) => !skip.includes(name));
   const targetName = (namespace: Resource) => ownValue(names, namespace.name) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
@@ -717,24 +1011,17 @@ export async function importTenants(
     }
     let created = same;
     if (created === undefined) {
-      const result = await api.call("POST", "/namespaces", { name });
-      const error = isRecord(result.error) ? result.error : undefined;
-      if (result.status === 409) {
+      try {
+        created = await readOccResource(api, "POST", "/namespaces", { name });
+      } catch (error) {
+        if (!(error instanceof OccRefusalError) || error.code !== "RESOURCE_CONFLICT") {
+          throw error;
+        }
         throw new SplitLayoutError(
-          `Namespace name ${name} is taken (${error?.message ?? ""}); ` +
+          `Namespace name ${name} is taken (${error.message}); ` +
             `add --rename '${namespace.name}=<new name>' or --skip '${namespace.name}'`,
         );
       }
-      if (result.status !== 201) {
-        throw new SplitLayoutError(
-          `POST /namespaces: HTTP ${result.status} ${error?.code ?? "UNKNOWN"}`,
-        );
-      }
-      created = requireRecord(
-        result.data,
-        "POST /namespaces: invalid OCC response data",
-        recoverOcc,
-      );
     }
     const id = responseId(created, same ? "GET /namespaces" : "POST /namespaces");
     record(namespace.id, id);
@@ -745,7 +1032,7 @@ export async function importTenants(
     const waiting = [];
     for (const namespace of namespaces) {
       const id = ids.get(namespace.id);
-      const { data } = await api.expect("GET", ns(id));
+      const data = await readOccResource(api, "GET", ns(id));
       const status = isRecord(data) ? data.status : undefined;
       if (status === "failed" || status === "deleting") {
         throw new SplitLayoutError(
