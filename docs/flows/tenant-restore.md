@@ -15,10 +15,10 @@ cover storage adoption, external credential issuance, or workspace recovery.
 
 ## Entry Points
 
-- Trigger: an administrator runs `node scripts/split-layout-tenants.mjs import`
+- Trigger: an administrator runs `node scripts/split-layout-tenants.ts import`
   with an exported bundle, Secret values, and a saved-map path.
-- Source: `scripts/split-layout-tenants.mjs:main` and
-  `scripts/split-layout-tenants.mjs:importTenants`.
+- Source: `scripts/split-layout-tenants.ts:main` and
+  `scripts/split-layout-tenants.ts:importTenants`.
 - Assumptions: the operator has completed the export and upgrade procedure,
   selected separate destination Namespaces, and can create their tenant resources.
 
@@ -44,7 +44,7 @@ graph TD
 
 ### 1. Select destinations and wait for readiness
 
-`scripts/split-layout-tenants.mjs:importTenants`
+`scripts/split-layout-tenants.ts:importTenants`
 
 Collection reads must return an array in `data`. A successful HTTP status with
 a non-array collection stops the import at that read; it is not an empty
@@ -62,7 +62,7 @@ Namespaces return an incomplete result; `main` exits 3 without importing childre
 
 ### 2. Restore dependencies before Preset templates
 
-`scripts/split-layout-tenants.mjs:importTenants`
+`scripts/split-layout-tenants.ts:importTenants`
 
 The importer creates or reuses named resources and saves mappings after each
 accepted create. Configurations follow Secrets and credential sources. Service
@@ -78,7 +78,7 @@ by an earlier import. Inspect such a template before retrying a historical impor
 
 ### 3. Restore Agents and report remaining work
 
-`scripts/split-layout-tenants.mjs:importTenants`
+`scripts/split-layout-tenants.ts:importTenants`
 
 Roles and service accounts exist before Agent creation. Agent IDs and service
 principal IDs enter the map before access bindings are restored. The helper logs

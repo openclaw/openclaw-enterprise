@@ -116,7 +116,7 @@ Configurations, workspace files, transcripts and Secret values.
 1. Export every Namespace from the old release:
 
    ```bash
-   node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
+   node scripts/split-layout-tenants.ts export --out /secure/occ/tenants.json
    ```
 
    If a successful API response is malformed or lacks its data envelope, export
@@ -155,7 +155,7 @@ Configurations, workspace files, transcripts and Secret values.
    `--allow-unread-workspace-files`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json \
      --yes --allow-unread-workspace-files
    kubectl get namespaces -l openclaw.dev/gateway-namespace
    ```
@@ -170,7 +170,7 @@ Configurations, workspace files, transcripts and Secret values.
    Namespace you no longer need, such as an unused `default`:
 
    ```bash
-   node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
+   node scripts/split-layout-tenants.ts import --bundle /secure/occ/tenants.json \
      --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
      --rename team-a=team-a-2 --skip default
    ```
