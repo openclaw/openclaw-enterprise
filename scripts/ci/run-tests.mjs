@@ -31,6 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -1449,6 +1450,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let details;
   let nodeElapsedMs;
   let agentActivity;
+  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationPhases = collectInstallationPhases();
   let measurements = [];
   let timeout;
   let case2Directory;
@@ -1478,13 +1481,23 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           env[case2PhaseEnv] = JSON.stringify({ path: case2Directory.path, dev, ino });
         }
       }
+      if (installationProgress) {
+        env.OCC_TEST_OPENSHELL_INSTALLATION_PROGRESS = "1";
+      }
       const nodeStarted = performance.now();
       timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
         timeout: timeout.timeoutMs,
-        onProgress: ({ kind, stage, outcome }) => {
+        onProgress: (progress) => {
+          const { kind, stage, outcome } = progress;
+          if (kind === "openshell-installation") {
+            if (installationProgress) {
+              installationPhases.accept(progress);
+            }
+            return;
+          }
           process.stderr.write(`[run:${lane.name}] ${relativePath}: ${kind} ${stage} ${outcome}\n`);
         },
       });
@@ -1674,6 +1687,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     tests,
     ...(measurements.length > 0 ? { measurements } : {}),
     ...(case2Phase ? { case2Phase } : {}),
+    ...(installationProgress ? { installationPhases: installationPhases.result() } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),

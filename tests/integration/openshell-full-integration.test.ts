@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -252,4 +252,132 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     present(cleanup.files[0]).cleanup.status = "failed";
     reject(cleanup, "cleanup-failed");
   }
+});
+
+test("gateway installation preserves settled phases, operation outcomes and the receipt cap", async () => {
+  const { observeGatewayInstallation } = await import("../helpers/openshell-installation.ts");
+  const { collectInstallationPhases, installationPhase, maxInstallationInvocations } =
+    await import("../../scripts/ci/openshell-installation-phase.ts");
+  const raw = {
+    kind: "openshell-installation",
+    stage: "workspace-helm",
+    outcome: "entered",
+    invocation: 1,
+    offsetMs: 0,
+  };
+  for (const invalid of [
+    { ...raw, detail: "untrusted" },
+    { ...raw, stage: "untrusted" },
+    { ...raw, offsetMs: -1 },
+    { ...raw, invocation: 10 },
+  ]) {
+    assert.equal(installationPhase(invalid), undefined);
+  }
+  const receipt = collectInstallationPhases();
+  let clock = 0;
+  const observe = observeGatewayInstallation(
+    (row) => {
+      const valid = installationPhase(row);
+      assert.ok(valid);
+      receipt.accept(valid);
+    },
+    () => clock++,
+  );
+  const failure = new Error("installation failed");
+  const ok = async () => 7;
+  const fail = async () => {
+    throw failure;
+  };
+  await assert.rejects(observe(ok, ok, fail, ok), (error) => error === failure);
+  assert.equal(await observe(ok, ok, ok, ok), 7);
+  assert.deepEqual(receipt.result(), {
+    phases: [
+      { invocation: 1, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+      { invocation: 1, stage: "gateway-helm", enteredMs: 3, outcome: "failed", elapsedMs: 1 },
+      { invocation: 2, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+      { invocation: 2, stage: "gateway-helm", enteredMs: 3, outcome: "passed", elapsedMs: 1 },
+      { invocation: 2, stage: "gateway-pod-ready", enteredMs: 5, outcome: "passed", elapsedMs: 1 },
+    ],
+    truncated: false,
+  });
+  for (let n = 0; n < maxInstallationInvocations; n++) {
+    await observe(ok, ok, ok, ok);
+  }
+  assert.equal(receipt.result().truncated, true);
+  assert.equal(receipt.result().phases.length, 3 * maxInstallationInvocations - 1);
+  const readOnly = openSync(import.meta.filename, "r");
+  try {
+    for (const sink of [undefined, () => writeSync(readOnly, "diagnostic")]) {
+      const install = observeGatewayInstallation(sink);
+      assert.equal(await install(ok, ok, ok, ok), 7);
+      await assert.rejects(install(ok, ok, ok, fail), (error) => error === failure);
+    }
+  } finally {
+    closeSync(readOnly);
+  }
+});
+
+test("the runner retains an unknown gateway readiness outcome after the test child terminates", (t) => {
+  const directory = temporaryDirectorySync(t, "installation-progress-");
+  const file = "tests/integration/installation.test.ts";
+  mkdirSync(join(directory, dirname(file)), { recursive: true });
+  mkdirSync(join(directory, "scripts/ci"), { recursive: true });
+  writeFileSync(
+    join(directory, "scripts/ci/prepare.mjs"),
+    `import { writeFileSync } from "node:fs";
+export function prepareFile({ statePath }) {
+  return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };
+}`,
+  );
+  const helper = new URL("../helpers/openshell-installation.ts", import.meta.url).href;
+  writeFileSync(
+    join(directory, file),
+    `import test from "node:test";
+import { runGatewayInstallation } from ${JSON.stringify(helper)};
+test("terminated readiness", () => runGatewayInstallation(
+  async () => {}, async () => {}, async () => {},
+  async () => { process.kill(process.pid, "SIGTERM"); await new Promise(() => {}); },
+));
+`,
+  );
+  const suite = join(directory, "suite.json");
+  const state = join(directory, "state.json");
+  const results = join(directory, "results.json");
+  writeJson(suite, { version: 1, lanes: { openshell: { files: [{ path: file }] } }, groups: {} });
+  const result = command(runner, [
+    "run",
+    "openshell",
+    "--root",
+    directory,
+    "--manifest",
+    suite,
+    "--state",
+    state,
+    "--results",
+    results,
+  ]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const [entry] = JSON.parse(readFileSync(results, "utf8")).files;
+  assert.equal(entry.status, "failed");
+  assert.equal(entry.nodeExitCode, 1);
+  assert.equal(entry.fileFailure.error.signal, "SIGTERM");
+  assert.deepEqual(entry.cleanup, { status: "passed" });
+  assert.equal(readFileSync(state + ".cleaned", "utf8"), "completed");
+  assert.equal(entry.installationPhases.truncated, false);
+  const phases: {
+    invocation: number;
+    stage: string;
+    enteredMs: number;
+    outcome: string;
+    elapsedMs?: number;
+  }[] = entry.installationPhases.phases;
+  assert.deepEqual(
+    phases.map(({ invocation, stage, outcome }) => [invocation, stage, outcome]),
+    [
+      [1, "workspace-helm", "passed"],
+      [1, "gateway-helm", "passed"],
+      [1, "gateway-pod-ready", "unknown"],
+    ],
+  );
+  assert.equal(present(phases[2]).elapsedMs, undefined);
 });
