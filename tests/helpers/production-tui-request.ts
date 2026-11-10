@@ -1,4 +1,5 @@
-import type { IncomingHttpHeaders } from "node:http";
+import { RequestId } from "../../packages/contracts/src/index.ts";
+import { Check } from "typebox/value";
 import https from "node:https";
 
 type RequestConfiguration = {
@@ -10,7 +11,7 @@ type RequestConfiguration = {
 
 type ApiResponse = {
   status: number | undefined;
-  headers: IncomingHttpHeaders;
+  requestId?: string;
   body: unknown;
 };
 
@@ -75,7 +76,17 @@ export function createProductionTuiRequest(configuration: RequestConfiguration) 
             reject(new ProductionTuiRequestError("API response was not valid JSON", status));
             return;
           }
-          resolve({ status: response.statusCode, headers: response.headers, body: parsed });
+          const header = response.headers["x-request-id"];
+          const envelope = parsed as { meta?: { requestId?: unknown } } | null;
+          const result: ApiResponse = { status, body: parsed };
+          if (
+            header === envelope?.meta?.requestId &&
+            Check(RequestId, header) &&
+            !configuration.secrets.some((value) => header.includes(value))
+          ) {
+            result.requestId = header;
+          }
+          resolve(result);
         },
       );
       req.on("error", () => reject(new ProductionTuiRequestError("API request failed", status)));

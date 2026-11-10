@@ -364,6 +364,14 @@ export class ScopeViolationError extends Error {
   }
 }
 
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
+  }
+}
+
 /**
  * Admitted Configuration content cannot select a supported Harness runtime, or a
  * provisioning request names an execution mode the Compute Driver does not provision

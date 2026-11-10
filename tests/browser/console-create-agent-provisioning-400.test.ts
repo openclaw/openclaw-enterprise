@@ -1677,8 +1677,9 @@ async function submitBoundCodexPreset(t: TestContext, options: ConsoleOptions, n
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture, { browser });
-  const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  // Observe every form write after authentication, including applying the Preset.
+  const requests = apiRequests(page, fixture.origin);
   await page.getByLabel("Preset template").selectOption({ label: "Bound Codex token" });
   await page.getByLabel("Name", { exact: true }).fill("bound-codex");
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");

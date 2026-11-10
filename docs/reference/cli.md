@@ -88,7 +88,7 @@ input is not supported. The server validates document fields against the
 | `occ agent deploy ID [--harness-overrides FILE] [--retain-harness-overrides REVISION_ID]` | Requests deployment once and creates an immutable version. With neither override flag, uses current Installation defaults. See [Harness destinations](../guides/topics/agent-revisions.md#choose-a-harness-destination).                                                                                                                                                                          |
 | `occ agent deploy-first ID --configuration ID --generation N --key KEY`                   | Admits the reviewed first deployment and returns its receipt. On an uncertain reply, prints a read-only recovery command without resending. See [first deployment](../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).                                                                                                                                            |
 | `occ agent recover-first-deployment ID --configuration ID --generation N --key KEY`       | Reads the original receipt without deploying. A missing receipt does not authorize a retry.                                                                                                                                                                                                                                                                                                       |
-| `occ agent revisions ID`                                                                  | Lists the Agent's immutable versions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. The table shows `superseded` or `stopped` for work a newer version or a Stop ended. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                  |
+| `occ agent revisions ID`                                                                  | Lists version summaries newest first, with generation, deployment status, and `*` on the active version. Ended work shows `superseded` or `stopped`. `--limit` accepts 1–100 (default 50); `--cursor` reads older versions. A failed continuation notice makes the command unsuccessful.                                                                                                          |
 | `occ agent deployment-status ID [DEPLOYMENT_ID]`                                          | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest version you can read, and says on stderr how it relates to the selected version. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
 | `occ agent runtime-credentials get ID`                                                    | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`                                              | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
@@ -134,7 +134,11 @@ All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
 - `occ installation install` requires Helm, `kubectl`, a local `--chart`
   (directory or archive, up to 64 MiB, no symlinks), `--values` (up to 4 MiB)
   and a new `--receipt` directory. It snapshots inputs and syncs the intent
-  before one Helm install. Use Secret release storage and unset `HELM_KUBE*`
+  before one Helm install. If writing the receipt notice to stdout returns an
+  error, it exits unsuccessfully with the receipt path, preserves `intent.json`,
+  and neither creates `dispatch.json` nor starts Helm install. See
+  [receipt handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+  Use Secret release storage and unset `HELM_KUBE*`
   overrides. Credentials must work without interactive input. Helm applies
   `--wait-timeout` per operation (default `5m`, positive, at most `24h`).
   A successful install exit records Helm success. Check the Job separately.
@@ -155,7 +159,7 @@ A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
 both read the selected version, else the latest version you can `read`. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
-notice names both versions, the failed read, and `--revision ID` to retry that version. Notices call any other version newer or
+notice names both versions, the failed read and the `--revision ID` retry. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the Agent revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
@@ -180,9 +184,11 @@ skipped the newer-version check; with none selected, its error names the grant a
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode
-they are also records on stdout. Text lines and notices show an invisible or
+they are also records on stdout. In text mode, the CLI exits with a nonzero
+status if it cannot write a no-running-Pod, gap, or withheld notice to stderr.
+Text lines and notices show an invisible or
 control character, such as a bidirectional override, as an escape like
-`\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
+`\u202e`; values containing one are quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view
 when the cursor is rejected, and exits cleanly on Ctrl-C. `501`, `503` and
 permission errors end the command with a nonzero exit. `--follow` cannot be
@@ -196,7 +202,7 @@ occ agent logs agt_... --source gateway --follow -o json | jq -r .message
 
 ## Output and errors
 
-Table output is meant for people; it prints `-` for unset fields and `No
+Table output prints `-` for unset fields and `No
 resources found.` for an empty list. A cell holding an invisible or control
 character, such as a bidirectional override in a name, is printed quoted with
 that character escaped; so is a value that starts with `"`. JSON and YAML print the exact resource or array
@@ -206,8 +212,7 @@ without the HTTP envelope. Deleting a Configuration prints
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
 the status and, when present, the API error code and message, and the
-`Retry-After` delay. Runtime-log rate limits name the delay once, or say to try
-again shortly when no usable delay is available. Delay-seconds and HTTP-date values
+`Retry-After` delay. Runtime-log rate limits name the delay once, or suggest retrying shortly if unavailable. Delay-seconds and HTTP-date values
 ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
 up to one hour are accepted and rounded up to whole seconds for notices and
 waits; an expired or invalid date keeps the normal follow interval. It does not print

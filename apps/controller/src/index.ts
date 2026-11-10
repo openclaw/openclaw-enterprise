@@ -63,6 +63,7 @@ import {
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
   ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   UserAlreadyExistsError,
@@ -110,6 +111,7 @@ import {
   type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
+import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
@@ -135,6 +137,9 @@ import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/jso
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
+  nativeAdminLaunchOperation,
+  nativeAdminConfirmOperation,
+  nativeAdminLaunchSchema,
   nativeAdminStatusSchema,
   nativeAdminReturnOperation,
   nativeAdminReturnSchema,
@@ -171,6 +176,17 @@ import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
+
+class AccountPrincipalAccessDeniedError extends AuthorizationDeniedError {
+  readonly userId: string;
+  readonly principalId: string;
+
+  constructor(userId: string, principalId: string, evidence: AuthorizationEvidence) {
+    super("The caller does not hold every grant of the target account's Principal.", evidence);
+    this.userId = userId;
+    this.principalId = principalId;
+  }
+}
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -2425,10 +2441,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "getNamespaceAgentCapabilities") {
       reply.send({
         data: {
-          capabilities: await controller.getNamespaceAgentCapabilities(
-            context.actorId,
-            namespaceId,
-          ),
+          capabilities: {
+            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
+          },
         },
         meta: { requestId: request.id },
       });
@@ -3786,6 +3802,80 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         userId: admitted.session.userId,
         sessionId: admitted.session.id,
         principalId: context.actorId,
+        authorize: async (scope: {
+          readonly targetPrincipalId?: string;
+          readonly successorPrincipalId?: string;
+        }) => {
+          // State invokes this after its locks, on the same transaction as the write.
+          // Throw evidence back to the HTTP error handler; auditing here opens another unit.
+          const resource: ResourceRef = { kind: "installation", id: installationId };
+          let current;
+          let covered = true;
+          let successor;
+          try {
+            current = await selected.authorize({
+              principalId: context.actorId,
+              action: "administer",
+              resource,
+            });
+            if (targetUserId !== undefined) {
+              covered =
+                scope.targetPrincipalId !== undefined &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: scope.targetPrincipalId,
+                })) === true;
+            }
+            if (scope.successorPrincipalId !== undefined) {
+              successor = await selected.authorize({
+                principalId: scope.successorPrincipalId,
+                action: "administer",
+                resource,
+              });
+            }
+          } catch {
+            throw dependencyUnavailable();
+          }
+          if (
+            typeof current.allowed !== "boolean" ||
+            typeof current.reason !== "string" ||
+            current.driverId !== selected.id ||
+            !validAuthorizationEvidence(current.evidence)
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (!current.allowed) {
+            throw new AuthorizationDeniedError(
+              current.reason,
+              current.evidence,
+              { action: "administer", resource },
+              context.actorId,
+            );
+          }
+          if (!covered) {
+            throw new AccountPrincipalAccessDeniedError(
+              targetUserId!,
+              scope.targetPrincipalId!,
+              current.evidence,
+            );
+          }
+          if (scope.successorPrincipalId !== undefined) {
+            if (
+              successor === undefined ||
+              typeof successor.allowed !== "boolean" ||
+              typeof successor.reason !== "string" ||
+              successor.driverId !== selected.id ||
+              !validAuthorizationEvidence(successor.evidence)
+            ) {
+              throw dependencyUnavailable();
+            }
+            if (!successor.allowed) {
+              throw new ResourceStateConflictError(
+                "The recovery account must administer the Installation.",
+              );
+            }
+          }
+        },
       };
     }
     routes.get(
@@ -4153,9 +4243,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw accountControlsUnsupported();
         }
         // The new holder must administer the Installation, as startup requires of the seed. This
-        // check runs before the State transaction. That is sound because Installation-scoped access
-        // bindings have no online revocation path (deleteAccessBinding is Namespace-scoped), and
-        // every controller start re-checks the current holder's authority.
+        // preflight gives an early refusal. State rechecks the exact locked successor's authority
+        // under its policy fence before committing the replacement.
         let principal;
         let decision;
         const selected = selectedIAMDriver();
@@ -4594,6 +4683,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
+    for (const [operation, handler, confirm] of [
+      [nativeAdminLaunchOperation, nativeAdmin.launch, false],
+      [nativeAdminConfirmOperation, nativeAdmin.confirm, true],
+    ] as const) {
+      routes.route({
+        method: "POST",
+        url: operation.path,
+        schema: nativeAdminLaunchSchema(confirm),
+        onRequest: async (request, reply) => {
+          reply.header("cache-control", "no-store");
+          reply.header("referrer-policy", "no-referrer");
+          await admit(request, operation);
+        },
+        preHandler: async (request) => resolveIdentity(request, operation),
+        handler,
+      });
+    }
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
@@ -4681,7 +4787,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
       reply.header("cache-control", "no-store");
     }
-    reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
+    const nativeFormOrigin =
+      options.nativeAdmin?.enabled &&
+      options.nativeAdmin.sessionMode === "host-only-exchange" &&
+      publicOrigin
+        ? ` https://*.${normalizeNativeAdminDomain(options.nativeAdmin.domain)}${new URL(publicOrigin).port ? `:${new URL(publicOrigin).port}` : ""}`
+        : "";
+    reply.header(
+      "content-security-policy",
+      CONSOLE_CONTENT_SECURITY_POLICY.replace(
+        "form-action 'self'",
+        `form-action 'self'${nativeFormOrigin}`,
+      ),
+    );
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);
     if (asset.variesByEncoding) {
@@ -4853,6 +4971,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               },
             );
           } else {
+            let explanation: Parameters<typeof denial>[6];
+            if (error instanceof DeletionRetryOwnedError) {
+              explanation = {
+                decisionReason:
+                  "A deletion can be retried only by its initiating actor while it holds delete.",
+                details: { initiatingActorId: error.initiatingActorId },
+              };
+            }
+            if (error instanceof AccountPrincipalAccessDeniedError) {
+              explanation = {
+                decisionReason: error.message,
+                reasonCode: "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED",
+                details: { userId: error.userId, principalId: error.principalId },
+              };
+            }
             await denial(
               context.operation,
               request,
@@ -4860,13 +4993,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               context,
               error.evidence,
               error.authorization,
-              error instanceof DeletionRetryOwnedError
-                ? {
-                    decisionReason:
-                      "A deletion can be retried only by its initiating actor while it holds delete.",
-                    details: { initiatingActorId: error.initiatingActorId },
-                  }
-                : undefined,
+              explanation,
             );
           }
         } catch (auditError) {

@@ -1,8 +1,9 @@
 # External sign-in and account controls
 
-This page covers GitHub, Google and generic OIDC sign-in for existing OpenClaw
-Control Plane (OCC) accounts, including session, recovery and account controls. The [authentication reference](../authentication.md)
-covers bootstrap, password sessions, request origin, provisioning, and failures.
+Existing OpenClaw Control Plane (OCC) accounts share session and recovery controls
+across GitHub, Google and generic OIDC. The
+[authentication reference](../authentication.md) covers bootstrap, password sessions,
+request origin, provisioning and failures.
 
 ## Console sign-in destinations
 
@@ -15,19 +16,16 @@ recovery ends at its console page; opening native UI remains a separate action.
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
 its restricted application role, native IAM, one GitHub App on github.com, and one
-canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
+canonical HTTPS Console origin and an Agent DNS suffix. Native access requires
+[host-only exchange](../agent-native-admin.md#host-only-session-exchange).
+Shared-cookie native access with GitHub (startup fails with
+`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
 other session readers, rolling or mixed-version serving, and mutable Installation
-policy are unsupported. Keep bootstrap, seeding, external
-policy writers, and recovery-affecting changes stopped.
-Native IAM's policy read remains separate from State's actor guard. Loopback
-development does not qualify deployed HTTPS.
-[Google sign-in](../../guides/deploy/google-sign-in.md) and
-[OIDC sign-in](../../guides/deploy/oidc-sign-in.md) use this profile and its
-controls.
+policy are unsupported. Stop bootstrap, seeding, external policy writers, and recovery-affecting changes.
+Loopback development does not qualify deployed HTTPS.
+[Google sign-in](../../guides/deploy/google-sign-in.md) requires native access disabled.
 
-HTTPS sessions use `__Host-openclaw_occ.session_token`, `Secure`, `HttpOnly`,
-`Path=/`, and no `Domain`, preventing sibling hosts from planting that cookie.
+OIDC supports native access with the [shared session cookie](../authentication.md#native-admin-shared-sessions).
 Session reads, protected requests, and logout reject duplicate session cookies.
 
 Activation enrolls qualifying existing accounts and reports the rest, which cannot
@@ -232,8 +230,7 @@ accounts after the switch to `recovery-only`, and the former holder's after
 sessions, or run `purge-sessions` with
 [stopped maintenance](../../guides/deploy/auth-maintenance.md).
 
-New accounts need an identity too: create them with `github.subject`, or attach
-one straight after creation.
+Create new accounts with `github.subject`, or immediately attach an identity.
 
 ## Session and recovery controls
 
@@ -263,10 +260,12 @@ Installation `administer`; service keys are refused. Account mutations also
 require every IAM grant of the target account's Principal (else `403`, audited as
 `ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED` with the target `userId` and `principalId`, the current
 holder's for a recovery move); Agent `administer`
-counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance). State locks actor and target
-accounts (retryable `503` after five-second lock waits) and rechecks the actor
-session. A stale
-`expectedVersion` or disabled target returns `409 RESOURCE_CONFLICT`.
+counts for a delegated Agent `read_logs` grant, as for [service keys](service-api-keys.md#issuance).
+After locking, State rechecks caller authority, target coverage and the
+recovery successor, then the session. Policy stays stable through commit.
+Lock contention returns retryable `503`; lost caller authority or target coverage
+returns `403` without mutation. Stale `expectedVersion`, disabled targets or
+successors lacking Installation `administer` return `409 RESOURCE_CONFLICT`.
 
 Send the version just read, such as `{"expectedVersion":1}`:
 

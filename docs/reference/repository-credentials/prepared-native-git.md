@@ -41,9 +41,9 @@ fetches in groups no larger than the configured
 [service limits](../repository-credentials.md#client-routing-and-limits).
 
 A separately selected protected Credential Proxy can authorize a
-`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/access/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
-[transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
+[transport](../../../apps/controller/src/drivers/repo/access/transport/upstream.ts)
 rejects actual trailers (a declaration alone is not one), enforces byte limits before and
 after rewriting, then releases the configured `{ id, full_name }` as fixed JSON with
 no-store headers. Streamed responses cannot make that guarantee.
@@ -118,8 +118,11 @@ independently known commit, and push a new commit to the allowed review ref. Rea
 the exact commit back independently. In a disposable test repository, also show
 that the broker refuses another writable ref, rather than relying on a client hook.
 
-To withdraw access, remove the repository binding on the running Agent. Confirm a
-new authenticated fetch is denied and chat still works. Withdrawal cannot erase
+To withdraw access, remove the repository binding on the Agent. Finite removal
+remains effective while Stop is pending; re-adding the binding cannot restore the
+original revision’s grant, even if a later deployment supersedes Stop. A denied Stop
+does not prevent Git detachment or authorize shutting down the Agent, including through a due maintenance pass. An earlier unacknowledged policy reduction is observed before Git detachment; it is never reapplied. For an Agent
+that remains running, confirm a new authenticated fetch is denied and chat still works. Withdrawal cannot erase
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 

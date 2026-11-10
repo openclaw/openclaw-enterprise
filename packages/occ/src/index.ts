@@ -1,3 +1,4 @@
+export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -543,6 +544,7 @@ export {
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
   SavedRepositorySelectionError,
+  RepositorySessionWithdrawnError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
@@ -697,6 +699,7 @@ export type {
   HumanAuthenticationDenial,
   PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";
+export type { NativeBrowserAccess } from "./state/native-browser-access.ts";
 export {
   HumanAuthenticationMaintenanceRefusedError,
   PostgresHumanAuthenticationMaintenance,
@@ -2519,20 +2522,16 @@ export class OpenClawController {
 
   /**
    * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
-   * there but cannot read the Installation, such as a Default user (RFC-0026). Guided provisioning
-   * and its native admin option need Installation administration, so neither is reported.
+   * there but cannot read the Installation, such as a Default user (RFC-0026). Browser access
+   * is available to resource owners; guided provisioning still requires Installation administration.
    */
   async getNamespaceAgentCapabilities(
     principalId: string,
     namespaceId: string,
-  ): Promise<Readonly<Omit<InstallationCapabilities, "nativeAdmin" | "agentProvisioning">>> {
+  ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
     this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
-    const {
-      nativeAdmin: _provisioningOnly,
-      agentProvisioning: _administratorOnly,
-      ...capabilities
-    } = await this.capabilities();
+    const { agentProvisioning: _administratorOnly, ...capabilities } = await this.capabilities();
     return immutableCopy(capabilities);
   }
 
@@ -3190,23 +3189,65 @@ export class OpenClawController {
     return this.getAuthorizedAgent(principalId, namespaceId, agentId, "administer");
   }
 
-  private async getAuthorizedAgent(
+  /** Select the native browser authority for this exact Agent through the selected IAM Driver. */
+  async getAgentBrowserAccess(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<{ readonly agent: Readonly<Agent>; readonly mode: "admin" | "chat" }> {
+    return this.getAuthorizedAgent(principalId, namespaceId, agentId, "browser");
+  }
+
+  async getBrowserAccessibleActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<ActiveAgentRevisionSelection & { readonly mode: "admin" | "chat" }> {
+    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "browser");
+  }
+
+  private async authorizeAgentAccess(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: PermissionAction | "browser",
+  ): Promise<PermissionAction> {
+    this.namespaceIdentity(namespaceId);
+    if (!isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+    if (action === "browser") {
+      if (
+        (await this.authorizationDecision(principalId, "administer", resource)).decision.allowed
+      ) {
+        return "administer";
+      }
+      action = "operate";
+    }
+    await this.authorize(principalId, action, resource);
+    return action;
+  }
+
+  private getAuthorizedAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: "browser",
+  ): Promise<{ readonly agent: Readonly<Agent>; readonly mode: "admin" | "chat" }>;
+  private getAuthorizedAgent(
     principalId: string,
     namespaceId: string,
     agentId: string,
     action: PermissionAction,
-  ): Promise<Readonly<Agent>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    await this.authorize(principalId, action, {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+  ): Promise<Readonly<Agent>>;
+  private async getAuthorizedAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    access: PermissionAction | "browser",
+  ) {
+    const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespace.id, agentId);
@@ -3215,7 +3256,8 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      return agent;
+      const mode = action === "administer" ? "admin" : "chat";
+      return access === "browser" ? { agent, mode } : agent;
     });
   }
 
@@ -4249,7 +4291,13 @@ export class OpenClawController {
       const options = {
         codec: requested.codec,
         ...(requested.signal === undefined ? {} : { signal: requested.signal }),
-        admitView: (admission: RuntimeLogViewAdmission) => requested.admitView(admission, grant!),
+        admitView: async (admission: RuntimeLogViewAdmission) => {
+          try {
+            await requested.admitView(admission, grant!);
+          } catch {
+            throw new RuntimeLogsError("RUNTIME_LOGS_AUDIT_UNAVAILABLE");
+          }
+        },
       };
       const source = query.source;
       if (source === "sandbox") {
@@ -4283,13 +4331,7 @@ export class OpenClawController {
               source: query.source,
             },
             signal: deadline,
-            admitView: async (admission) => {
-              try {
-                await options.admitView(admission);
-              } catch {
-                throw new RuntimeLogsError("RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-              }
-            },
+            admitView: options.admitView,
             readLogs: async (request) => {
               try {
                 return await driver.readAgentRuntimeLogs!(binding, request);
@@ -4301,17 +4343,7 @@ export class OpenClawController {
           return runtimeLogPageAtLevel(page, query.minLevel);
         } catch (error) {
           if (error instanceof RuntimeLogReadError) {
-            throw new RuntimeLogsError(
-              error.reason === "cursor_invalid"
-                ? "RUNTIME_LOGS_CURSOR_INVALID"
-                : error.reason === "pod_invalid"
-                  ? "RUNTIME_LOGS_POD_INVALID"
-                  : error.reason === "source_unavailable"
-                    ? "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
-                    : "RUNTIME_LOGS_UNAVAILABLE",
-              undefined,
-              query.source,
-            );
+            throw this.runtimeLogPageFailure(error, query.source);
           }
           throw error;
         }
@@ -4356,13 +4388,7 @@ export class OpenClawController {
           query,
           codec: options.codec,
           binding: { principalId, agentId, revisionId: binding.revision.id, source: "sandbox" },
-          admitView: async (admission) => {
-            try {
-              await options.admitView(admission);
-            } catch {
-              throw new RuntimeLogsError("RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-            }
-          },
+          admitView: options.admitView,
           readLogs: async (request) => {
             try {
               // The Sandbox lives in Compute's placement of the Namespace, as at provisioning.
@@ -4381,17 +4407,7 @@ export class OpenClawController {
         });
       } catch (error) {
         if (error instanceof RuntimeLogReadError) {
-          throw new RuntimeLogsError(
-            error.reason === "cursor_invalid"
-              ? "RUNTIME_LOGS_CURSOR_INVALID"
-              : error.reason === "pod_invalid"
-                ? "RUNTIME_LOGS_POD_INVALID"
-                : error.reason === "source_unavailable"
-                  ? "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
-                  : "RUNTIME_LOGS_UNAVAILABLE",
-            undefined,
-            "sandbox",
-          );
+          throw this.runtimeLogPageFailure(error, "sandbox");
         }
         throw error;
       }
@@ -4653,6 +4669,22 @@ export class OpenClawController {
       return validRuntimeDescription(described, binding.revision.id);
     } catch {
       throw new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
+    }
+  }
+
+  private runtimeLogPageFailure(
+    error: RuntimeLogReadError,
+    source: RuntimeLogQuery["source"],
+  ): RuntimeLogsError {
+    switch (error.reason) {
+      case "cursor_invalid":
+        return new RuntimeLogsError("RUNTIME_LOGS_CURSOR_INVALID", undefined, source);
+      case "pod_invalid":
+        return new RuntimeLogsError("RUNTIME_LOGS_POD_INVALID", undefined, source);
+      case "source_unavailable":
+        return new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, source);
+      default:
+        return new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE", undefined, source);
     }
   }
 
@@ -6176,23 +6208,26 @@ export class OpenClawController {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "administer");
   }
 
-  private async getAuthorizedActiveAgentRevision(
+  private getAuthorizedActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    action: "browser",
+  ): Promise<ActiveAgentRevisionSelection & { readonly mode: "admin" | "chat" }>;
+  private getAuthorizedActiveAgentRevision(
     principalId: string,
     namespaceId: string,
     agentId: string,
     action: PermissionAction,
-  ): Promise<ActiveAgentRevisionSelection> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    await this.authorize(principalId, action, {
-      kind: "agent",
-      id: agentId,
-      namespaceId,
-    });
+  ): Promise<ActiveAgentRevisionSelection>;
+  private async getAuthorizedActiveAgentRevision(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    access: PermissionAction | "browser",
+  ) {
+    const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
+    const browserAccess = access === "browser";
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespace.id, agentId);
@@ -6205,7 +6240,7 @@ export class OpenClawController {
         throw new AgentDeletingError();
       }
       if (!isNonEmptyString(agent.activeRevisionId)) {
-        if (action === "administer" && agent.desiredRuntimeState === "stopped") {
+        if ((action === "administer" || browserAccess) && agent.desiredRuntimeState === "stopped") {
           throw new ResourceStateConflictError("A stopped Agent has no active gateway revision.");
         }
         // A stopped or never-deployed Agent has nothing to read or write until it is deployed;
@@ -6225,7 +6260,7 @@ export class OpenClawController {
       if (!revision) {
         throw new DependencyUnavailableError("The active Agent revision is unavailable.");
       }
-      if (action !== "administer") {
+      if (action !== "administer" && !browserAccess) {
         return Object.freeze({ agent, revision });
       }
       // Native admin status must know whether a newer deployment is replacing this revision.
@@ -6238,7 +6273,13 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
-      return Object.freeze({ agent, revision, ...(successor === undefined ? {} : { successor }) });
+      const selection = Object.freeze({
+        agent,
+        revision,
+        ...(successor === undefined ? {} : { successor }),
+      });
+      const mode = action === "administer" ? "admin" : "chat";
+      return browserAccess ? { ...selection, mode } : selection;
     });
   }
 
@@ -8422,6 +8463,13 @@ export class OpenClawController {
           : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
       });
       credentialSourceFieldsMatch(type, "config", config);
+      // TODO: Admit prepared refresh sources once their owner supports on-demand rotation.
+      if (protectedType?.issuer && type.rotation === "refresh") {
+        throw new NotImplementedError(
+          "credential_source_refresh",
+          "This prepared issuer does not support on-demand rotation. Use a Credential Gateway-owned refresh source instead.",
+        );
+      }
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       if (
@@ -11816,6 +11864,13 @@ export class OpenClawController {
     principalId: string,
     input: CreateAgentInput,
     resolveHarness?: HarnessResolver,
+    configurationPreparation?: {
+      readonly expectedGeneration: number;
+      readonly prepare: (
+        agent: Pick<Agent, "id" | "namespaceId">,
+        values: Readonly<OpenClawConfigurationDocument>,
+      ) => Readonly<OpenClawConfigurationDocument>;
+    },
   ): Promise<Readonly<Agent>> {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");
@@ -11868,7 +11923,7 @@ export class OpenClawController {
         id: input.configurationId,
         namespaceId: namespace.id,
       });
-      const configuration = await state.configurations.findConfiguration(
+      let configuration = await state.configurations.findConfiguration(
         namespace.id,
         input.configurationId,
       );
@@ -11894,6 +11949,35 @@ export class OpenClawController {
         namespace.id,
         this.bindings(configuration.secretBindings),
       );
+      if (configurationPreparation !== undefined) {
+        await this.authorize(principalId, "update", {
+          kind: "configuration",
+          id: configuration.id,
+          namespaceId: namespace.id,
+        });
+        if (configuration.generation !== configurationPreparation.expectedGeneration) {
+          throw new ConfigurationGenerationConflictError();
+        }
+        // The Namespace lock serializes Agent creation and Configuration replacement. A
+        // caller must not change another Agent's shared Configuration as a create side effect.
+        const existingAgents = await state.agents.listAgents(namespace.id);
+        if (existingAgents.some((agent) => agent.configurationId === input.configurationId)) {
+          throw new ResourceStateConflictError(
+            "Browser access setup requires a Configuration that no Agent references.",
+          );
+        }
+        const previous = await this.savedConfigurationReader(configuration)();
+        const prepared = await this.updateConfiguration(principalId, {
+          namespaceId: namespace.id,
+          configurationId: configuration.id,
+          expectedGeneration: configurationPreparation.expectedGeneration,
+          values: configurationPreparation.prepare(
+            { id: agentId, namespaceId: namespace.id },
+            previous.values,
+          ),
+        });
+        configuration = { ...configuration, generation: prepared.generation };
+      }
       const savedConfiguration = this.savedConfigurationReader(configuration);
       const driver = await this.validateAgentPlugins(
         plugins,
@@ -12405,6 +12489,38 @@ export class OpenClawController {
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
+      }
+      // Stop intent can be superseded before the active runtime is retired.
+      // Removing a finite grant must remain irreversible throughout that interval.
+      if (repositoryBindings !== undefined && agent.activeRevisionId) {
+        const revision = await state.revisions.findRevision(
+          namespace.id,
+          agent.id,
+          agent.activeRevisionId,
+        );
+        const admitted = revision?.repositoryCredentials;
+        const selected = (
+          bindings: readonly { repositoryRef: string; profile: string }[] | undefined,
+          member: { repositoryRef: string; profile: string },
+        ) =>
+          bindings?.some(
+            (binding) =>
+              binding.repositoryRef === member.repositoryRef && binding.profile === member.profile,
+          ) === true;
+        if (
+          admitted &&
+          !admitted.standingApprovalId &&
+          admitted.bindings.some(
+            (member) =>
+              selected(agent.repositoryBindings, member) &&
+              !selected(updated.repositoryBindings, member),
+          )
+        ) {
+          await state.repositorySessions.withdrawFinite(
+            { namespaceId: namespace.id, agentId: agent.id, revisionId: revision!.id },
+            this.timestamp(),
+          );
+        }
       }
       const activeApprovals = (
         await state.repositorySessions.listStandingApprovals(namespace.id, agent.id)

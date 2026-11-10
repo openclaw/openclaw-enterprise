@@ -265,8 +265,9 @@ it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
 
 Compute selects a named HTTPS Responses provider for API-key Codex. For a
 source-backed PAT, startup writes the placeholder to the native auth file and
-runs `codex login status`. Native OpenClaw reads its API-key placeholder through
-node-local model configuration. Selected models use the shared provider endpoint and API selector.
+runs `codex login status`; [serving-process authentication](openshell-sandbox/harness-providers.md#harness-observation)
+is checked separately. Native OpenClaw reads its API-key placeholder through
+node-local model configuration. Models use the shared provider endpoint and API selector.
 
 ## Trust requirements
 

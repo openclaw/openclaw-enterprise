@@ -1616,7 +1616,16 @@ export async function renderAgentDetail(
   const nativeAdmin = renderNativeAdminAccess(
     context,
     path,
-    () => latestPermissionsRead.then((permissions) => permissions?.administer),
+    () =>
+      latestPermissionsRead.then((permissions) => {
+        if (permissions?.administer === true || permissions?.operate === true) {
+          return true;
+        }
+        if (permissions?.administer === false && permissions?.operate === false) {
+          return false;
+        }
+        return undefined;
+      }),
     {
       // One the caller cannot read is not named by its ID (finding D791).
       versionLabel: () =>
@@ -2857,8 +2866,17 @@ export async function renderAgentDetail(
       // 1478), so the overview waits for it too rather than move when the banner lands.
       const showPanel = (panel: HTMLElement, failed = false) => {
         if (activityPanel !== panel) {
+          const focused = document.activeElement;
+          const refreshFocused =
+            focused instanceof HTMLButtonElement && focused.parentElement === activityPanel;
           activityPanel.replaceWith(panel);
           activityPanel = panel;
+          // The panel's direct button refreshes whichever deployment is now shown.
+          if (refreshFocused) {
+            panel
+              .querySelector<HTMLButtonElement>(":scope > button")
+              ?.focus({ preventScroll: true });
+          }
         }
         void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
           revealDetail,

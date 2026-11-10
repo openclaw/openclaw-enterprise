@@ -9,6 +9,7 @@ import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { startupFailureObservation } from "./local-first-agent-stack.mjs";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -205,7 +206,13 @@ process.exit(result.status ?? 1);
           ];
           const stage =
             stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
-          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.`;
+          const startup = startupFailureObservation();
+          startup.write(typeof error.stdout === "string" ? error.stdout : "");
+          const observation = startup.finish(error.code, error.signal, error.killed);
+          const attribution = observation
+            ? ` primary-stage ${observation.primaryStage}, cleanup-failed ${observation.cleanupFailed}, parent-context-done ${observation.parentContextDone}.`
+            : "";
+          const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.${attribution}`;
           assert.ok(
             /Verifying Kubernetes network isolation before configuring gateway trust/.test(
               error.stdout,

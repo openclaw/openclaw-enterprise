@@ -6,7 +6,7 @@ import {
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
-import type { GitHubRepositoryRegistry } from "../drivers/repo/github/credentials/registry.ts";
+import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/registry.ts";
 import { createOpenShellCapabilities } from "../drivers/egress-proxy/openshell-registration.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
@@ -113,7 +113,7 @@ import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.t
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
-import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
+import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/access/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
@@ -604,7 +604,7 @@ function selectGitHubRepositoryDelivery(
   if (!repository) {
     return undefined;
   }
-  const { nativeSender, prepared, transport, selection } = repository;
+  const { nativeSender, prepared, transport } = repository;
   const external = input.externalProxy && !!prepared && !transport;
   if (
     nativeSender &&
@@ -618,10 +618,6 @@ function selectGitHubRepositoryDelivery(
     throw new Error(
       "repository requires explicitly selected protected Git delivery and prepared GitHub custody.",
     );
-  }
-  const policy = object(selection.configuration, "repository.configuration");
-  if (external && (policy.controlSocket !== undefined || policy.publicCaPath !== undefined)) {
-    throw new Error("Protected repository Git does not accept native broker configuration.");
   }
   if (!input.kubernetes || (input.sandbox && !transport && !external)) {
     if (input.openShellBackend && input.bundledSandbox) {
@@ -933,7 +929,7 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository,
     options.mode,
   );
-  const repoSelection =
+  let repoSelection =
     repositoryConfiguration &&
     (selected(
       repositoryConfiguration.selection,
@@ -942,6 +938,18 @@ export async function loadInstallationConfiguration(options: {
       GitHubRepositoryPolicy,
       "repository",
     ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
+  if (repositoryConfiguration && repoSelection) {
+    // Validate the original first, then retain the accepted flat policy across loader awaits.
+    // Both authority projections must describe the policy used to construct the Driver.
+    const policy = Object.freeze({ ...repoSelection.configuration });
+    const selection = { ...repositoryConfiguration.selection };
+    // A non-enumerable configuration never contributed to the raw selection's digest.
+    if (Object.hasOwn(selection, "configuration")) {
+      selection.configuration = policy;
+    }
+    repositoryConfiguration.selection = selection;
+    repoSelection = Object.freeze({ ...repoSelection, configuration: policy });
+  }
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
@@ -1420,7 +1428,7 @@ export async function loadInstallationConfiguration(options: {
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
     const { PostgresPreparedGitHubLifecycle } =
-      await import("../drivers/repo/github/credentials/prepared-lifecycle.ts");
+      await import("../drivers/repo/github/access/prepared-lifecycle.ts");
     preparedGitHub = new PostgresPreparedGitHubLifecycle(
       preparedGitHubKeyPath,
       secretDriver,

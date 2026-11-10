@@ -8,7 +8,7 @@ ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:
 # security updates. Keep the full toolchain out of the final runtime.
 FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
@@ -20,7 +20,7 @@ RUN --network=none sh /tmp/curl/verify.sh
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # The credential builds need only Node and pnpm. The slim runtime base is
 # already in the final image, so a CI build whose controller sources changed
@@ -59,8 +59,8 @@ FROM repository-credentials-deps AS repository-client-build
 COPY tsconfig.base.json ./
 COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
 COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
-COPY apps/controller/src/drivers/repo/credentials/client-contracts.ts apps/controller/src/drivers/repo/credentials/client-contracts.ts
-COPY apps/controller/src/drivers/repo/github/credentials/client apps/controller/src/drivers/repo/github/credentials/client
+COPY apps/controller/src/drivers/repo/access/client-contracts.ts apps/controller/src/drivers/repo/access/client-contracts.ts
+COPY apps/controller/src/drivers/repo/github/access/client apps/controller/src/drivers/repo/github/access/client
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
@@ -79,9 +79,9 @@ RUN set -eu; \
     chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
     chmod -R a+rX "$client"; \
     chmod 0555 "$client/bin/gh" "$client/bin/oce-github"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
-    test -f "$client/dist/drivers/repo/github/credentials/client/native-git.js"; \
-    test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
+    test -f "$client/dist/drivers/repo/github/access/client/router.js"; \
+    test -f "$client/dist/drivers/repo/github/access/client/native-git.js"; \
+    test -x "$client/dist/drivers/repo/github/access/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
 # Build the service from the full, type-checked workspace of the same checkout.
@@ -135,7 +135,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
@@ -331,16 +331,33 @@ RUN rm -rf node_modules ui/node_modules \
 
 FROM openclaw-production-deps AS openclaw-runtime-assets
 COPY --from=openclaw-build-output /source/ ./
+# The materialized AI package sits one level deeper. Keep its pnpm targets
+# relative to the final destination so Node resolves the same dependencies.
 RUN node scripts/postinstall-bundled-plugins.mjs \
     && OPENCLAW_EXTENSIONS=codex,slack node scripts/prune-docker-plugin-dist.mjs \
     && find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete \
     && if [ -L node_modules/@openclaw/ai ]; then \
-      target="$(readlink -f node_modules/@openclaw/ai)"; \
-      temporary="$(mktemp -d)"; \
-      cp -a "$target" "$temporary/ai"; \
-      rm node_modules/@openclaw/ai; \
-      mv "$temporary/ai" node_modules/@openclaw/ai; \
-      rmdir "$temporary"; \
+      target="$(realpath -e node_modules/@openclaw/ai)" || exit 1; \
+      temporary="$(mktemp -d)" || exit 1; \
+      cp -a "$target" "$temporary/ai" || exit 1; \
+      if [ -e "$target/node_modules" ] || [ -L "$target/node_modules" ]; then \
+        store="$(realpath -e node_modules/.pnpm)" || exit 1; \
+        find "$target/node_modules" -type l -exec sh -ec ' \
+          source=$1; copied=$2; destination=$3; store=$4; shift 4; \
+          for link do \
+            dependency="$(realpath -e "$link")"; \
+            case "$dependency" in \
+              "$store"/*) ;; \
+              *) printf "AI dependency link leaves the runtime package store: %s\n" "$link" >&2; exit 1 ;; \
+            esac; \
+            entry="${link#"$source"/}"; \
+            relative="$(realpath -ms --relative-to="$destination/$(dirname "$entry")" "$dependency")"; \
+            ln -sfn "$relative" "$copied/$entry"; \
+          done' sh "$target" "$temporary/ai" "$(pwd -P)/node_modules/@openclaw/ai" "$store" {} + || exit 1; \
+      fi; \
+      rm node_modules/@openclaw/ai \
+        && mv "$temporary/ai" node_modules/@openclaw/ai \
+        && rmdir "$temporary"; \
     fi \
     && rm -rf node_modules/openclaw node_modules/.bin/openclaw node_modules/.pnpm/openclaw@*/node_modules/openclaw \
     # The sealed recovery entries inline fs-safe's relative helper lookup.
@@ -401,16 +418,16 @@ RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
     && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
-# --retry rides out GitHub's transient release-download errors (HTTP 408, 429,
-# 500, 502, 503, 504); --no-progress-meter keeps curl's retry notices in the log.
+# Retry partial transfers too. -O lets curl reset partial files before retrying;
+# the pinned checksums below must pass before extraction or execution.
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     architecture="${TARGETARCH:-amd64}"; \
     case "$architecture" in amd64|arm64) ;; *) exit 1 ;; esac; \
     cd /tmp; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \
-    curl --fail --location --no-progress-meter --retry 6 -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \
+    curl --fail --location --no-progress-meter --retry 6 --retry-all-errors -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \
+    curl --fail --location --no-progress-meter --retry 6 --retry-all-errors -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \
     echo '414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d  gh_2.103.2_checksums.txt' | sha256sum --check --strict; \
     grep " gh_2.103.2_linux_${architecture}.tar.gz$" gh_2.103.2_checksums.txt | sha256sum --check --strict; \
     tar -xzf "gh_2.103.2_linux_${architecture}.tar.gz"; \

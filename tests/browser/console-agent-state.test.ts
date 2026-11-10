@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Locator, Route } from "playwright";
-import type {
-  AuditEvent,
-  Permission,
-  ResourceKind,
-  SecretBinding,
+import {
+  serializeStartupConfiguration,
+  type AuditEvent,
+  type Permission,
+  type ResourceKind,
+  type SecretBinding,
 } from "../../packages/contracts/src/index.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -1250,8 +1251,8 @@ test("A Backends refusal after administration is revoked is read and audited onc
 });
 
 test("Settings inspects nested Driver fields and the same JSON without changing configuration", async (t) => {
-  // Startup integration tests establish projection ownership. This public controller fixture
-  // exercises generic values through the real API and browser without adding a product seam.
+  // Exercise the production startup projection before registering the selected Driver.
+  const writeOnlySentinel = "synthetic-operator-resource-that-must-stay-hidden";
   const accepted = {
     authentication: {
       mode: "kubeconfig",
@@ -1278,6 +1279,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
       description: index === 0 ? "<img src=x onerror=alert(1)>" : "Configured worker group",
     })),
   };
+  const startupConfiguration = serializeStartupConfiguration(
+    { type: "object", properties: { operatorResources: { writeOnly: true } } },
+    { ...accepted, operatorResources: writeOnlySentinel },
+  );
+  assert.ok(startupConfiguration);
   const fixture = await createConsoleAppFixture(t, {
     driverConfigurations: [
       {
@@ -1285,7 +1291,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
         driverId: "console-configuration",
         implementation: "kubernetes",
         definition: KubernetesConfigurationDriver,
-        startupConfiguration: accepted,
+        startupConfiguration,
       },
       {
         capability: "iam",
@@ -1306,10 +1312,19 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   const namespace = await fixture.createNamespace("Driver inspection", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const discovery = responseTo(page, "GET", `${fixture.origin}/installation/driver-configurations`);
   await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+  const response = await discovery;
+  assert.equal(response.status(), 200, "Driver configuration discovery succeeds");
+  assert.equal((await response.text()).includes(writeOnlySentinel), false);
   const configuration = page
     .locator("details.driver-configuration")
     .filter({ has: page.locator("summary", { hasText: "console-configuration" }) });
+  const summary = configuration.locator("summary");
+  await summary.getByText("console-configuration · startup", { exact: true }).waitFor();
+  assert.equal(await configuration.getAttribute("open"), null);
+  const implementation = summary.getByText("Implementation: kubernetes", { exact: true });
+  assert.equal(await implementation.isVisible(), true, "collapsed card shows the implementation");
   const fieldsButton = page.getByRole("button", { name: "Fields", exact: true });
   const jsonButton = page.getByRole("button", { name: "JSON", exact: true });
   assert.equal(await fieldsButton.getAttribute("aria-pressed"), "true");
@@ -1345,8 +1360,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     accepted,
   );
   assert.equal(await fields.isVisible(), false);
+  assert.equal(await implementation.isVisible(), true);
   await fieldsButton.click();
   assert.equal(await fields.isVisible(), true);
+  assert.equal(await implementation.isVisible(), true);
+  assert.equal((await configuration.textContent())?.includes(writeOnlySentinel), false);
   assert.equal(
     await configuration.getAttribute("open"),
     "",

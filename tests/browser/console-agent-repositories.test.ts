@@ -17,7 +17,7 @@ import type {
   RepositoryOptionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import type { GitHubProfile } from "../../apps/controller/src/drivers/repo/github/credentials/types.ts";
+import type { GitHubProfile } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,

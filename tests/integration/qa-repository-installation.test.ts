@@ -6,7 +6,7 @@ import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,

@@ -212,11 +212,13 @@ jq -n --argjson version "$VERSION" '{expectedVersion: $version}' |
     "$OCC_URL/api/auth/accounts/$USER_ID/disable"
 ```
 
-The response shows `disabled: true`. Every session of the account ends at once, and
-password and GitHub, Google or OIDC sign-in are refused; an external sign-in tells the
-person the account is disabled. IAM grants stay, unused. The recovery account cannot be
-disabled, and account controls need external sign-in (on a password-only Installation
-they return `409`). `POST .../enable` with the same body reverses it.
+The response acknowledges `data.userId`. Repeat the GET above to verify
+`data.disabled: true` and read the new `data.version`. Every session of the account
+ends at once, and password and GitHub, Google or OIDC sign-in are refused; an external
+sign-in tells the person the account is disabled. IAM grants stay, unused. The recovery
+account cannot be disabled, and account controls need external sign-in (on a
+password-only Installation they return `409`). `POST .../enable` reverses disablement;
+use the freshly read version as `expectedVersion` in its body.
 
 Disabling does not end service keys. Keys belong to ServicePrincipals, and OCE does not
 record whom a key was issued for, so find a person's keys by the name given at issuance
@@ -282,11 +284,10 @@ login on the Agent needs Agent `update` and `read`, plus Secret and
 credential-source `create` in the Namespace, which exact-resource grants
 cannot give; see
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
-To message
-the Agent, the person needs a channel its Configuration sets up or
-[native admin](../../reference/agent-native-admin.md) with Agent `administer`,
-which is unavailable on Installations with GitHub, Google or OIDC sign-in
-enabled.
+To message the Agent, the person can use a configured channel or
+[native chat](../../reference/agent-native-admin.md) with exact Agent `operate`.
+Native administration requires `administer`. Password and OIDC sessions support
+native access; GitHub and Google sessions do not.
 
 ## Let an Agent use a Secret
 
