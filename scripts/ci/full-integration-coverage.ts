@@ -5,38 +5,115 @@ type TestCounts = {
   cancelled: number;
   skipped: number;
   todo: number;
+  suites: number;
 };
 
-type CaseEvent = {
+type TerminalEvent = {
   type: "test:pass" | "test:fail";
-  data: { skip?: unknown; todo?: unknown; caseAssertionFailure?: true };
+  data: {
+    testType?: unknown;
+    skip?: unknown;
+    todo?: unknown;
+    testId?: unknown;
+    parentId?: unknown;
+    nesting?: unknown;
+    caseAssertionFailure?: true;
+    caseSubtestsFailed?: true;
+  };
 };
 
 export function recordsCoverage(workflow: string | undefined): boolean {
   return workflow === "CI" || workflow === "Full Integration";
 }
 
-export function fileExercised(
+function isTestId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function exercisedAssertionFailures(
   summaries: readonly TestCounts[],
-  cases: readonly CaseEvent[],
+  terminal: readonly TerminalEvent[],
   exitCode: number | null,
-): boolean {
+): ReadonlySet<TerminalEvent> | undefined {
   const [counts] = summaries;
-  if (!counts || summaries.length !== 1 || cases.length === 0) {
-    return false;
+  const cases = terminal.filter(({ data }) => data.testType === "test");
+  const failedCases = cases.filter(({ type }) => type === "test:fail").length;
+  if (
+    !counts ||
+    summaries.length !== 1 ||
+    cases.length === 0 ||
+    counts.tests !== cases.length ||
+    counts.suites !== terminal.length - cases.length ||
+    counts.passed !== cases.length - failedCases ||
+    counts.failed !== failedCases ||
+    counts.cancelled !== 0 ||
+    counts.skipped !== 0 ||
+    counts.todo !== 0 ||
+    terminal.some(({ data }) => data.skip !== undefined || data.todo !== undefined) ||
+    exitCode !== (failedCases === 0 ? 0 : 1)
+  ) {
+    return undefined;
   }
-  const failures = cases.filter((entry) => entry.type === "test:fail");
-  return (
-    counts.tests === cases.length &&
-    counts.passed === cases.length - failures.length &&
-    counts.failed === failures.length &&
-    counts.cancelled === 0 &&
-    counts.skipped === 0 &&
-    counts.todo === 0 &&
-    cases.every(({ data }) => data.skip === undefined && data.todo === undefined) &&
-    failures.every(({ data }) => data.caseAssertionFailure === true) &&
-    exitCode === (failures.length === 0 ? 0 : 1)
-  );
+
+  const failures = terminal.filter(({ type }) => type === "test:fail");
+  const assertions = new Set(failures.filter(({ data }) => data.caseAssertionFailure === true));
+  if (assertions.size === failures.length) {
+    return assertions;
+  }
+
+  const nodes = new Map<
+    number,
+    { entry: TerminalEvent; index: number; parentId: number; nesting: number }
+  >();
+  for (const [index, entry] of terminal.entries()) {
+    const { testId, parentId, nesting } = entry.data;
+    if (
+      !isTestId(testId) ||
+      testId === 0 ||
+      !isTestId(parentId) ||
+      !isTestId(nesting) ||
+      nodes.has(testId)
+    ) {
+      return undefined;
+    }
+    nodes.set(testId, { entry, index, parentId, nesting });
+  }
+  const children = new Map<number, TerminalEvent[]>();
+  for (const { entry, index, parentId, nesting } of nodes.values()) {
+    const parent = nodes.get(parentId);
+    if (nesting === 0) {
+      if (parent) {
+        return undefined;
+      }
+      continue;
+    }
+    if (!parent || parent.index <= index || parent.nesting !== nesting - 1) {
+      return undefined;
+    }
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(entry);
+    children.set(parentId, siblings);
+  }
+  // Node reports terminal children before their parent. Suites do not count
+  // as cases, but a failed suite also needs a corroborated assertion.
+  for (const entry of failures) {
+    if (assertions.has(entry)) {
+      continue;
+    }
+    const { testId, caseSubtestsFailed } = entry.data;
+    const failedChildren = isTestId(testId)
+      ? children.get(testId)?.filter((child) => child.type === "test:fail")
+      : undefined;
+    if (
+      caseSubtestsFailed !== true ||
+      !failedChildren?.length ||
+      !failedChildren.every((child) => assertions.has(child))
+    ) {
+      return undefined;
+    }
+    assertions.add(entry);
+  }
+  return assertions;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

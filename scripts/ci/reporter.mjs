@@ -1768,6 +1768,13 @@ function location(data = {}, recordCoverage = false) {
       cause?.name === "AssertionError"
         ? true
         : undefined,
+    caseSubtestsFailed:
+      recordCoverage &&
+      !fileFailure &&
+      (data.details?.type === "test" || data.details?.type === "suite") &&
+      error?.failureType === "subtestsFailed"
+        ? true
+        : undefined,
     error: error
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
@@ -1881,10 +1888,10 @@ export default async function* jsonLinesReporter(source) {
       typeof event.data?.file === "string" &&
       event.data.counts
     ) {
-      const { tests, passed, failed, cancelled, skipped, todo } = event.data.counts;
+      const { tests, passed, failed, cancelled, skipped, todo, suites } = event.data.counts;
       yield `${JSON.stringify({
         type: "test:summary",
-        data: { tests, passed, failed, cancelled, skipped, todo },
+        data: { tests, passed, failed, cancelled, skipped, todo, suites },
       })}\n`;
       continue;
     }

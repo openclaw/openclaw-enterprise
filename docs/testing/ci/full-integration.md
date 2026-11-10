@@ -98,6 +98,18 @@ Check `Full Integration Aggregate`, the selected job conclusions, and their
 `full-results` artifacts for the dispatch commit. Apply the shared
 [result and cleanup requirements](run-lanes.md#results-and-cleanup) to each selected lane.
 
+The first attempt of a full run can publish two receipts. The admission receipt,
+`full-integration-admitted-v1`, expires after one day. The preflight uploads it
+when it selects all lanes. It records admission before the lanes run.
+
+The execution receipt, `full-integration-exercised-v1-<sha>`, expires after
+seven days. The aggregate uploads it after complete same-SHA case evidence,
+including qualified CI reuse. It can accompany a red aggregate when all cases
+complete and failures come from assertions. Setup errors, missing or skipped
+cases, cancellation, focused runs, and retries cannot qualify. Use the run,
+attempt and tested SHA to bind either receipt. An absent receipt gives no
+execution proof. Use the aggregate for the pass or fail result.
+
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Each runs
 its assigned files serially, and the aggregate requires both results. QA Advisory uses
 [parallel per-file runners](qa-advisory.md#openshell-file-coverage).

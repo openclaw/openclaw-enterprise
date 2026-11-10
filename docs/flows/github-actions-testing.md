@@ -234,9 +234,15 @@ Windows bounds streams and terminates only the direct child.
 Root hooks allow two seconds for reports, immediately on cleanup failure; skipped hooks have a
 60-second backstop. The runner reports failures; failed resources stay recorded.
 
-`scripts/ci/impact-gate.mjs:main` and Full Integration report matrix failures by job.
-`scripts/ci/run-tests.mjs:aggregateGroup` attributes lane outcomes only to matching lane/SHA
-receipts, even when the parent fails. Reused lanes have independent successful job entries; fresh lanes retain their matrix parent. Passing requires successful jobs, one owner per lane, test evidence and cleanup. Docs mode skips aggregation. Full Integration checks its lane or `full` group; `ssh-host` requires a [disposable host](../testing/ssh.md#ssh-raw-hosts).
+`scripts/ci/impact-gate.mjs:main` and Full Integration report failed matrix jobs.
+`scripts/ci/run-tests.mjs:aggregateGroup` matches lane and SHA receipts.
+Passing requires successful jobs, one owner per lane, case evidence and cleanup.
+Reused lanes keep independent jobs. Fresh lanes keep their matrix parent.
+Docs mode skips aggregation. Full Integration checks its lane or `full`.
+On the first full attempt, preflight admission lasts one day. The aggregate can
+publish [exact-SHA execution evidence](../testing/ci/full-integration.md#results-and-limits)
+for seven days, including assertion red. Missing receipts prove neither step.
+`ssh-host` needs a [disposable host](../testing/ssh.md#ssh-raw-hosts).
 Runner loss can prevent teardown and erase private `RUNNER_TEMP` state; external reconciliation
 awaits an approved resource ledger.
 
@@ -244,8 +250,8 @@ awaits an approved resource ledger.
 
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
-- Reproduce the sanitized result's failing file, name and location with approved prerequisites. The named aggregate bounds coverage.
-- On local Docker Desktop or equivalent VM-backed Docker hosts, run one Kubernetes lane at a time when disk or network pressure has caused measured instability. GitHub Actions still runs the configured matrix; this local guidance is for reproducible operator runs.
+- Reproduce the reported case with approved prerequisites. The named aggregate bounds coverage.
+- On Docker Desktop or another VM-backed Docker host, run Kubernetes lanes serially when measured disk or network pressure causes instability. GitHub Actions keeps its matrix.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
 

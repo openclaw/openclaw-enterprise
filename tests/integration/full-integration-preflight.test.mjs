@@ -125,7 +125,7 @@ test("full coverage receipts require real case evidence and retain approved same
   const policyPath = "tests/integration/coverage-policy.test.mjs";
   const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
   const json = (path, value) => writeFile(path, JSON.stringify(value));
-  const generate = async (path, names, body) => {
+  const generate = async (path, names, body, suite = "") => {
     const target = join(fixtureRoot, path);
     await mkdir(dirname(target), { recursive: true });
     const tests = names.length ? [...new Set(names)] : ["sentinel"];
@@ -133,7 +133,8 @@ test("full coverage receipts require real case evidence and retain approved same
       target,
       [
         'import assert from "node:assert/strict"; import test from "node:test";',
-        ...tests.map((name) => `test(${JSON.stringify(name)}, async () => { ${body} });`),
+        ...tests.map((name) => `test(${JSON.stringify(name)}, async (t) => { ${body} });`),
+        suite,
       ].join("\n"),
     );
   };
@@ -254,6 +255,46 @@ test("full coverage receipts require real case evidence and retain approved same
   await verify(1, true);
   await verify(1, false, { GITHUB_RUN_ATTEMPT: "2" });
   const genuine = await readFile(policyReceipt, "utf8");
+
+  await generate(
+    policyPath,
+    ["sentinel"],
+    'await t.test("nested", async (t) => { await t.test("leaf", () => assert.fail("synthetic assertion")); }); await t.test("sibling", () => {});',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, true);
+
+  await generate(
+    policyPath,
+    ["sentinel"],
+    "assert.equal(1, 1);",
+    'test.describe("assertion suite", () => { test("suite case", async (t) => { await t.test("leaf", () => assert.fail("synthetic assertion")); }); });',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, true);
+  await generate(
+    policyPath,
+    ["sentinel"],
+    'await t.test("nested", () => assert.fail("synthetic assertion"));',
+    'test.describe("unrelated suite", () => { test.after(() => { throw new Error("synthetic teardown"); }); test("suite case", () => {}); });',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, false);
+
+  await generate(
+    policyPath,
+    ["sentinel"],
+    'await t.test("assertion", () => assert.fail("synthetic assertion")); await t.test("setup", () => { throw new Error("synthetic setup"); });',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, false);
+  await generate(
+    policyPath,
+    ["sentinel"],
+    'await t.test("assertion", () => assert.fail("synthetic assertion")); await t.test("skipped", { skip: true }, () => {});',
+  );
+  assert.equal(produce("openshell-policy").status, 1);
+  await verify(1, false);
   const zero = { total: 0, passed: 0, failed: 0, skipped: 0, todo: 0 };
   for (const damage of [
     (value) => {

@@ -31,7 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import {
   exercisedLaneStatus,
-  fileExercised,
+  exercisedAssertionFailures,
   recordsCoverage,
 } from "./full-integration-coverage.ts";
 import { qualifySkipperRelease } from "./skipper-release.ts";
@@ -1522,7 +1522,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       measurements = events
         .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
         .map((event) => event.data.measurement);
-      const caseEvents = events.filter((event) => isRealTestEvent(event, absolutePath));
+      const terminalEvents = events.filter(
+        (event) =>
+          isRealTestEvent(event, absolutePath) ||
+          ((event.type === "test:pass" || event.type === "test:fail") &&
+            event.data?.testType === "suite"),
+      );
+      const caseEvents = terminalEvents.filter((event) => event.data.testType !== "suite");
+      let coverageAssertions;
       if (
         recordsCoverage(process.env.GITHUB_WORKFLOW) &&
         !nodeResult.error &&
@@ -1530,16 +1537,17 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         !rootFailure &&
         !events.some((event) => event.type === "test:interrupted")
       ) {
-        testRunExercised = fileExercised(
+        coverageAssertions = exercisedAssertionFailures(
           events.filter((event) => event.type === "test:summary").map((event) => event.data),
-          caseEvents,
+          terminalEvents,
           nodeResult.status,
         );
+        testRunExercised = coverageAssertions !== undefined;
       }
       tests = caseEvents.map((event) => ({
         name: event.data.name,
         status: testStatus(event),
-        ...(event.data.caseAssertionFailure === true ? { assertionFailure: true } : {}),
+        ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
         file: event.data.file ? repoRelativePath(root, event.data.file) : relativePath,
         line: event.data.line,
         column: event.data.column,
