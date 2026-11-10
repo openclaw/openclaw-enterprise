@@ -13801,7 +13801,8 @@
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                           "models": [{ "id": "research-model" }],
-                          "protocol": "openai-responses"
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         }
                       ],
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -14071,7 +14072,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -14298,7 +14300,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -14490,6 +14493,7 @@
                     "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                     "defaultModelId": "research-model",
                     "displayName": "Research inference",
+                    "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "models": [{ "id": "research-model" }],
                     "protocol": "openai-responses"
                   }
@@ -14579,7 +14583,8 @@
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                         "models": [{ "id": "research-model" }],
-                        "protocol": "openai-responses"
+                        "protocol": "openai-responses",
+                        "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -39952,7 +39957,8 @@
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
                           "models": [{ "id": "research-model" }],
-                          "protocol": "openai-responses"
+                          "protocol": "openai-responses",
+                          "settingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         }
                       ],
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }

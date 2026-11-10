@@ -200,7 +200,11 @@ const modelProviderSettings = {
   defaultModelId: "research-model",
   connectionTemplateId,
 };
-const modelProvider = { ...modelProviderSettings, id: id("mpr") };
+const modelProvider = {
+  ...modelProviderSettings,
+  id: id("mpr"),
+  settingsFingerprint: "a".repeat(64),
+};
 const oauthClientId = id("ccr");
 const oauthClientInput = {
   displayName: "Example provider client",
@@ -318,7 +322,10 @@ export const requestExamples = {
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
   createModelProvider: modelProviderSettings,
-  updateModelProvider: modelProviderSettings,
+  updateModelProvider: {
+    ...modelProviderSettings,
+    expectedSettingsFingerprint: modelProvider.settingsFingerprint,
+  },
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,
