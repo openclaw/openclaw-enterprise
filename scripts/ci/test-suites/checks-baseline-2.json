@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
@@ -77,6 +78,7 @@
     "tests/integration/oidc-login-transport.test.mjs",
     "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
     "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-prepare-postgres.test.ts",
     "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
@@ -123,13 +125,22 @@
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs"
+    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/shared-session-cookie.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/prepared-refresh-enrollment.test.ts",
+      "expectedTests": [
+        "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
+        "prepared refresh enrollment refuses before effects (legacy Refresh missing)",
+        "non-refresh prepared enrollment uses only its issuer with legacy Refresh installed"
+      ]
+    },
     {
       "path": "tests/integration/staging-upgrade-return.test.ts",
       "expectedTests": [
@@ -174,8 +185,8 @@
         "first-Agent starts without installed workspace dependencies",
         "first-Agent accepts current Compose-backed Kubernetes development state",
         "first-Agent requires dedicated Codex for OpenShell before external calls",
-        "first-Agent admits dedicated Codex with OpenShell development state",
-        "first-Agent control UI requires the launcher-owned native admin endpoint",
+        "first-Agent admits dedicated Codex Control UI with OpenShell development state",
+        "first-Agent validates launcher-owned HTTPS endpoints before external calls",
         "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
       ]
     },
@@ -196,7 +207,8 @@
         "invalid bounds fail before any observation",
         "an observation that returns after its explicit deadline cannot report success",
         "failed diagnostic reads return a fixed marker without exposing or throwing the error",
-        "diagnostics project only fixed lifecycle fields"
+        "diagnostics project only fixed lifecycle fields",
+        "the PostgreSQL copy retains stdout progress from its signalled pull command"
       ]
     },
     {
@@ -236,6 +248,9 @@
     },
     {
       "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
       "path": "tests/integration/runtime-image-failure-output.test.mjs"
@@ -361,8 +376,8 @@
     {
       "path": "tests/integration/native-admin-access.test.mjs",
       "expectedTests": [
-        "native admin status requires exact Agent administer and reports lifecycle availability",
-        "native admin disabled status still requires exact Agent administer",
+        "native browser status selects exact Agent authority and reports lifecycle availability",
+        "native browser disabled status still requires exact Agent authority",
         "native admin shared session configuration validates cookie scope and rejects keys",
         "native admin proxy strips browser credentials and preserves the Agent gateway base path"
       ]
@@ -638,6 +653,12 @@
     },
     {
       "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+    },
+    {
+      "path": "tests/integration/openshell-full-integration.test.ts"
+    },
+    {
+      "path": "tests/integration/shared-session-cookie.test.ts"
     }
   ]
 }

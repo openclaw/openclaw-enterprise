@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+updated: "2026-11-09"
+last_updated_session: "authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -152,7 +152,10 @@ execution topology.
 The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up` installation.
 Before Kubernetes or OCC API calls, it requires the current v3 development marker
 and state from the same checkout.
-The state must select Kubernetes Compute. The default `sandboxDriver: "none"`
+The state must select Kubernetes Compute and record the canonical HTTPS Console
+origin, browser port, and Agent domain for its cluster. These browser settings
+are required with either Sandbox Driver; `--control-ui` still requires OpenShell.
+API requests use the recorded loopback HTTP endpoint. The default `sandboxDriver: "none"`
 path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
 `scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket and
 removes inherited Docker TLS settings for container-engine calls. Compose setup
@@ -198,6 +201,18 @@ Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends
 prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
+After a model failure, the CLI prints the original error before a bounded
+[diagnostic snapshot](../../scripts/first-agent-diagnostics.mjs) from the existing
+revision-scoped runtime status and log API. The API resolves both Kubernetes and
+OpenShell Harness ownership. The snapshot checks the selected Gateway Pod UID
+and restart count; changed identities suppress log attribution. It prints container
+state, admitted startup event fields, and fixed classifications of known Codex
+connection failures, fallback and retry messages. It never forwards free-form log
+text or provider bodies. Collection is limited to ten seconds, 64 KiB per response,
+and two container streams per role. Same-stream history gaps retain valid
+observations and mark the sample incomplete. Unavailable or incomplete evidence
+does not change the original failure; startup observations do not establish the
+failed request's cause.
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -319,6 +334,9 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-09 22:31: Document bounded first-Agent failure evidence, fixed diagnostic classifications, and exact Gateway stream ownership. (authoring-run/9e4bd520-55c8-4edd-bde2-4c149544135a - 3eae65fcdfe89b0ee7c1d6eaf757c8dddcdfefb9)
+- 2026-11-09 13:02: Require current Local Setup browser settings independently of the Sandbox Driver in the accompanying first-Agent fix. (authoring-run/4c855680-1f37-4507-8ded-fa8be08d1be2 - 8adaa729fa03df318246a2ba3318aae51c603f8d)
 
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 

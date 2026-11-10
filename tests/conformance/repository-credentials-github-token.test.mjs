@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
-import { admitSession } from "../../apps/controller/src/drivers/repo/credentials/sessions.ts";
-import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/config.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
+import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
+import { admitSession } from "../../apps/controller/src/drivers/repo/access/sessions.ts";
+import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/config.ts";
 import {
   classifyGitHubToken,
   createGitHubStaticTokenOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/static-token.ts";
-import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/factory.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
+import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/access/factory.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,

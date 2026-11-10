@@ -16,9 +16,10 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-For browser access, select **Enable Native admin UI** (initially unchecked).
-It requires [installation setup](../../guides/deploy/native-admin.md) and supported
-Dedicated provisioning; opening the UI requires Agent `administer`.
+Select **Enable browser chat** (initially unchecked) after
+[installation setup](../../guides/deploy/native-admin.md), for ordinary creation
+or supported guided provisioning. After deployment, `operate` permits **Open chat**;
+`administer` permits **Open Agent UI**.
 See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
 for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 

@@ -7,15 +7,25 @@ const warning =
   "Gateway managed mode restricts administrative changes by default. OCE deployments can overwrite changes made while managed mode is off.";
 
 type Availability =
-  | { status: "available"; url: string }
+  | {
+      status: "available";
+      url: string;
+      mode: "admin" | "chat";
+      sessionMode?: "host-only-exchange";
+    }
   | { status: "disabled" | "denied" | "stopped" | "unsupported" | "unavailable" };
 
 function readAvailability(value: unknown): Availability {
-  const { status, url } = responseFields(value);
+  const { status, url, mode, sessionMode } = responseFields(value);
   switch (status) {
     case "available":
-      if (typeof url === "string" && url) {
-        return { status, url };
+      if (typeof url === "string" && url && (mode === "admin" || mode === "chat")) {
+        return {
+          status,
+          url,
+          mode,
+          ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
+        };
       }
       break;
     case "disabled":
@@ -31,13 +41,13 @@ function readAvailability(value: unknown): Availability {
 function unavailableText(status: Availability["status"]) {
   switch (status) {
     case "stopped":
-      return "Start this Agent before opening its native admin UI.";
+      return "Start this Agent before opening its browser UI.";
     case "unsupported":
-      return "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.";
+      return "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.";
     case "unavailable":
-      return "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
+      return "Browser access is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
     default:
-      return "Native admin UI access is unavailable.";
+      return "Browser access is unavailable.";
   }
 }
 
@@ -46,8 +56,8 @@ export function renderNativeAdminAccess(
     deniedReads?: { has(path: string): boolean; remember(path: string): void };
   },
   path: string,
-  // The caller's latest advisory Agent administer answer; undefined when it is unknown.
-  administerAllowed?: () => Promise<boolean | undefined>,
+  // The caller's latest advisory Agent operate/administer answer; undefined when unknown.
+  browserAccessAllowed?: () => Promise<boolean | undefined>,
   options?: {
     versionLabel(): string;
     recovery(status: Availability["status"]): HTMLElement | null;
@@ -77,7 +87,7 @@ export function renderNativeAdminAccess(
       className: "button button--primary agent-ui-launch",
       target: "_blank",
       rel: "noopener noreferrer",
-      "aria-describedby": "native-admin-target native-admin-scope native-admin-warning",
+      "aria-describedby": "native-admin-target native-admin-scope",
       hidden: true,
     },
     "Open Agent UI",
@@ -92,7 +102,7 @@ export function renderNativeAdminAccess(
   const caution = element("p", { id: "native-admin-warning" }, warning);
   const section = element(
     "section",
-    { className: "native-admin-access", "aria-label": "Native admin UI" },
+    { className: "native-admin-access", "aria-label": "Agent browser access" },
     target,
     scope,
     caution,
@@ -103,6 +113,131 @@ export function renderNativeAdminAccess(
   );
 
   let current: Availability | undefined;
+  let launching = false;
+  launch.addEventListener("click", (event) => {
+    if (current?.status !== "available" || current.sessionMode !== "host-only-exchange") {
+      return;
+    }
+    event.preventDefault();
+    if (!launching) {
+      void openBoundSession();
+    }
+  });
+
+  async function openBoundSession() {
+    const target = `occ-native-${crypto.randomUUID()}`;
+    const popup = window.open("about:blank", target);
+    if (!popup) {
+      error.textContent = "Allow popups for this console, then open the Agent again.";
+      return;
+    }
+    launching = true;
+    error.textContent = "";
+    status.hidden = false;
+    status.textContent = "Opening a secure Agent session…";
+    let receive: ((event: MessageEvent) => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const intent = responseFields(
+        await context.request(`${statusPath}/launch`, { method: "POST", body: {} }),
+      );
+      const { origin, intentId, landingUrl } = intent;
+      if (
+        typeof origin !== "string" ||
+        typeof intentId !== "string" ||
+        typeof landingUrl !== "string" ||
+        new URL(landingUrl).origin !== origin
+      ) {
+        throw new Error("Invalid native administration launch response");
+      }
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const challenge = await new Promise<string>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Launch expired. Open the Agent again.")), 60000);
+        receive = (event) => {
+          if (
+            event.origin !== origin ||
+            event.source !== popup ||
+            event.data?.intentId !== intentId
+          ) {
+            return;
+          }
+          if (event.data.type === "occ-native-ready") {
+            popup.postMessage({ type: "occ-native-challenge", intentId }, origin);
+          } else if (
+            event.data.type === "occ-native-bound" &&
+            typeof event.data.challenge === "string" &&
+            /^[A-Za-z0-9_-]{43}$/.test(event.data.challenge)
+          ) {
+            resolve(event.data.challenge);
+          }
+        };
+        window.addEventListener("message", receive);
+        popup.location.replace(landingUrl);
+      });
+      if (receive) {
+        window.removeEventListener("message", receive);
+      }
+      clearTimeout(timer);
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const exchange = responseFields(
+        await context.request(`${statusPath}/confirm`, {
+          method: "POST",
+          body: { intentId, challenge },
+        }),
+      );
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const redemption = new URL(String(exchange.redeemUrl));
+      if (
+        exchange.intentId !== intentId ||
+        typeof exchange.exchange !== "string" ||
+        redemption.origin !== origin ||
+        redemption.pathname !== "/__occ/native-admin/redeem" ||
+        redemption.search ||
+        redemption.hash
+      ) {
+        throw new Error("Launch could not be confirmed. Open the Agent again.");
+      }
+      const form = element("form", {
+        method: "POST",
+        action: redemption.href,
+        target,
+        hidden: true,
+      });
+      for (const [name, value] of Object.entries({
+        intentId,
+        exchange: exchange.exchange,
+      })) {
+        form.append(element("input", { type: "hidden", name, value }));
+      }
+      document.body.append(form);
+      form.submit();
+      form.remove();
+      status.textContent =
+        "Agent session opened. If access expires, open it again from this console.";
+    } catch (cause) {
+      popup.close();
+      if (context.isCurrent()) {
+        error.textContent = message(requestFailure(cause));
+        status.textContent = "Open the Agent again to start a fresh launch.";
+      }
+    } finally {
+      clearTimeout(timer);
+      if (receive) {
+        window.removeEventListener("message", receive);
+      }
+      launching = false;
+    }
+  }
+
   // A failed read other than a denial keeps the card, its error and Refresh visible.
   let failed = false;
   let pending = false;
@@ -121,10 +256,28 @@ export function renderNativeAdminAccess(
     if (url === undefined) {
       launch.removeAttribute("href");
     } else {
-      launch.href = url;
+      launch.href =
+        current?.status === "available" && current.sessionMode === "host-only-exchange" ? "#" : url;
     }
     scope.hidden = launch.hidden;
-    caution.hidden = launch.hidden;
+    const chat = current?.status === "available" && current.mode === "chat";
+    launch.replaceChildren(
+      document.createTextNode(chat ? "Open chat" : "Open Agent UI"),
+      element("span", { "aria-hidden": "true" }, "↗"),
+    );
+    setText(
+      scope,
+      chat
+        ? "Chat with this Agent and manage its conversations. Conversations use the Agent’s shared workspace."
+        : "Full Agent administration, including conversations and accessible credentials.",
+    );
+    caution.hidden = launch.hidden || chat;
+    launch.setAttribute(
+      "aria-describedby",
+      chat
+        ? "native-admin-target native-admin-scope"
+        : "native-admin-target native-admin-scope native-admin-warning",
+    );
     status.hidden = !launch.hidden;
     section.hidden =
       !failed &&
@@ -155,7 +308,7 @@ export function renderNativeAdminAccess(
     if (!context.isCurrent() || pending) {
       return;
     }
-    // Native admin needs Agent administer; a 403 is audited, so this tab asks once per Agent.
+    // Browser access needs Agent operate or administer; a 403 is audited, so ask once per Agent.
     if (context.deniedReads?.has(statusPath)) {
       current = undefined;
       failed = false;
@@ -170,7 +323,7 @@ export function renderNativeAdminAccess(
     try {
       // A caller whose permission answer says no is not asked: the probe's 403 would be a
       // console error and an audited denial for each Agent page. An unknown answer still asks.
-      if ((await administerAllowed?.()) === false) {
+      if ((await browserAccessAllowed?.()) === false) {
         if (!context.isCurrent()) {
           return;
         }
@@ -189,7 +342,7 @@ export function renderNativeAdminAccess(
       current = readAvailability(result);
       failed = false;
       if (current.status === "available") {
-        status.textContent = "Native admin UI is available for this Agent’s current version.";
+        status.textContent = "Browser access is available for this Agent’s current version.";
       } else if (current.status === "disabled" || current.status === "denied") {
         status.textContent = "";
       } else {

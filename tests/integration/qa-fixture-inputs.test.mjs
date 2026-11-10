@@ -358,6 +358,25 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     OCC_TEST_QA_INSTALLATION: "kubernetes",
   });
   assert.equal(sandbox.sandboxPolicy, true);
+  const oidcSelection = {
+    OCC_TEST_QA_SCENARIOS: "oidc-agent-chat",
+    OCC_TEST_QA_PRESET: "OpenClaw",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const oidc = selectQaMatrix(oidcSelection);
+  assert.equal(oidc.oidcAgentChat, true);
+  assert.ok(oidc.cells.every((cell) => cell.scenarios.length === 0));
+  assert.ok(oidc.requiredEnv.includes("OCC_TEST_KEYCLOAK_ISSUER"));
+  assert.ok(oidc.requiredEnv.includes("OPENAI_API_KEY"));
+  assert.throws(() => validateQaInputs(oidc, {}), /KUBERNETES_KUBECONFIG is required/);
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_INSTALLATION: "compose" }),
+    /requires Kubernetes/,
+  );
+  assert.throws(
+    () => selectQaMatrix({ ...oidcSelection, OCC_TEST_QA_SCENARIOS: "oidc-agent-chat,model-ui" }),
+    /exclusive QA selection/,
+  );
   assert.deepEqual(sandbox.requiredEnv, [
     "OCC_TEST_QA_CODEX_TOKEN_FILE",
     "OCC_TEST_QA_SANDBOX_ENV",

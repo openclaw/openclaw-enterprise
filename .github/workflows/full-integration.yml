@@ -379,12 +379,16 @@ jobs:
           job-timeout-minutes: 50
 
   openshell:
-    name: OpenShell
+    name: OpenShell (${{ matrix.lane }})
     runs-on: ubuntu-24.04
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') }}
     timeout-minutes: 150
     environment: integration-main
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [openshell-policy, openshell-installers]
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.
       OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
@@ -405,7 +409,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/run-ci-lane
         with:
-          lane: openshell
+          lane: ${{ matrix.lane }}
+          suite-view: full-integration
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
@@ -515,7 +520,9 @@ jobs:
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
     # Only synthetic, job-local model and private Git credentials enter this installation.
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    # Cold runtime assembly has 180 min, followed by repository images and
+    # the installed proof. Ordinary artifact-backed smoke keeps its short job.
+    timeout-minutes: 240
     permissions:
       contents: read
     steps:
@@ -601,6 +608,8 @@ jobs:
 
   full-aggregate:
     name: Full Integration Aggregate
+    env:
+      OCC_CI_SUITE_VIEW: full-integration
     runs-on: ubuntu-24.04
     needs:
       - preflight
@@ -668,6 +677,9 @@ jobs:
             if (lane === "all" || lane === name) {
               out[name] = needs[name] ?? { result: "missing" };
             }
+          }
+          if (lane === "all" || lane === "openshell") {
+            out.openshell = { ...out.openshell, lanes: ["openshell-policy", "openshell-installers"] };
           }
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/needs.json`, JSON.stringify(out));
           NODE

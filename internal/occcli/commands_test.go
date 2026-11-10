@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -582,6 +583,33 @@ func TestAgentRevisionsTellsRevisionsApart(t *testing.T) {
 	}
 }
 
+func TestAgentRevisionReadsExactSnapshotWithoutListing(t *testing.T) {
+	path := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions/" + testRevision1ID
+	snapshot := `{"id":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","harness":{"id":"codex","version":"1","mode":"dedicated","overrides":{},"configuration":{}}}`
+	out, requested, err := runOCC(t, map[string]string{path: snapshot}, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(requested, []string{path}) {
+		t.Fatalf("exact revision read must not select from history: %v", requested)
+	}
+	var got, want any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(snapshot), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot changed: %s", out)
+	}
+	denied := &fakeOCC{refuse: "revision read denied"}
+	out, _, err = runOCCAgainst(t, denied, "--namespace", testNamespaceID, "-o", "json", "agent", "revision", testAgentID, testRevision1ID)
+	if err == nil || out != "" || !slices.Equal(denied.requested, []string{path}) {
+		t.Fatalf("refused exact read must not fall back: output=%q requests=%v error=%v", out, denied.requested, err)
+	}
+}
+
 func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 	for _, format := range []string{"json", "yaml"} {
 		out, _, err := runOCC(t, agentRevisionResponses(), "--namespace", testNamespaceID, "-o", format, "agent", "revisions", testAgentID)
@@ -612,13 +640,16 @@ func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	out, requested, err := runOCC(t, map[string]string{
-		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`,
 		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
 			`","namespaceId":"` + testNamespaceID + `","status":"failed","error":{"code":"CONVERGENCE_DEADLINE_EXCEEDED","message":"Deployment did not converge."}}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
 	if err != nil {
 		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	if len(requested) != 3 || !strings.HasSuffix(strings.TrimSpace(out), testRevision2ID) {
+		t.Fatalf("expected the active revision after one list, deployment and Agent read: %v\n%s", requested, out)
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "CONVERGENCE_DEADLINE_EXCEEDED") {
 		t.Fatalf("expected the latest deployment failure:\n%s", out)
@@ -686,6 +717,47 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			}
 			if strings.Contains(out, "notice:") {
 				t.Fatalf("notice leaked to stdout:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestDeploymentStatusReportsCurrentAgentBesideRecordedSuccess(t *testing.T) {
+	path := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	record := path + "/deployments/" + testRevision1ID
+	const reason = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"
+	for _, tc := range []struct {
+		name, agent, cells string
+		current            map[string]any
+		redeploy           bool
+	}{
+		{"replaced", `{"desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`, "running " + testRevision2ID, map[string]any{"desiredRuntimeState": "running", "activeRevisionId": testRevision2ID}, false},
+		{"retired", `{"desiredRuntimeState":"running"}`, "running none", map[string]any{"desiredRuntimeState": "running", "activeRevisionId": nil}, true},
+		{"stopped", `{"desiredRuntimeState":"stopped"}`, "stopped none", map[string]any{"desiredRuntimeState": "stopped", "activeRevisionId": nil}, false},
+		{"revision-only reader", `raw:403 {"error":{"code":"FORBIDDEN","message":"Denied."}}`, "", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deployment := `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"`
+			wantRow := strings.TrimSpace(testRevision1ID + " - succeeded - - " + tc.cells)
+			if tc.redeploy {
+				deployment += `,"repositoryAccess":{"state":"redeploy-required","code":"` + reason + `","message":"Deploy again."}`
+				wantRow += " " + reason + ": Deploy again."
+			}
+			responses := map[string]string{path: tc.agent, record: deployment + "}"}
+			args := []string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision1ID}
+			out, _, err := runOCC(t, responses, args...)
+			_, row, _ := strings.Cut(out, "\n")
+			if err != nil || strings.Join(strings.Fields(row), " ") != wantRow {
+				t.Fatalf("table = %q, want row %q, error %v", out, wantRow, err)
+			}
+			out, _, err = runOCC(t, responses, append(args, "-o", "json")...)
+			var got map[string]any
+			if err != nil || json.Unmarshal([]byte(out), &got) != nil {
+				t.Fatalf("JSON = %q, error %v", out, err)
+			}
+			current, present := got["currentAgent"]
+			if got["status"] != "succeeded" || strings.Contains(out, reason) != tc.redeploy || present != (tc.current != nil) || (present && !reflect.DeepEqual(current, tc.current)) {
+				t.Fatalf("unexpected deployment: %s", out)
 			}
 		})
 	}
@@ -1300,6 +1372,60 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	}
 	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
 		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// A page is incomplete without its continuation notice. A failed stderr write
+// must not report success after printing only that page, including JSON output.
+func TestAgentRevisionsReportsContinuationWriteFailure(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	writeErr := errors.New("continuation output unavailable")
+	for _, format := range []string{"table", "json"} {
+		for _, cursor := range []string{"v1.2", ""} {
+			t.Run(format+"/"+cursor, func(t *testing.T) {
+				responses := agentRevisionResponses()
+				cursorJSON := "null"
+				if cursor != "" {
+					cursorJSON = strconv.Quote(cursor)
+				}
+				responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","backendId":null,"configurationId":"cfg_55555555-5555-4555-8555-555555555555","harness":{"id":"codex","version":"fixture","mode":"dedicated","overrides":{},"configuration":{}},"configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"}],"meta":{"requestId":"req_test","nextCursor":` + cursorJSON + `}}`
+				fake := &fakeOCC{responses: responses}
+				server := httptest.NewServer(fake)
+				defer server.Close()
+				t.Setenv("OCC_URL", server.URL)
+				t.Setenv("OCC_SERVICE_KEY_FILE", writeKeyFile(t, `{"data":{"key":"test-key"}}`))
+				t.Setenv("OCC_CA_BUNDLE", "")
+				t.Setenv("OCC_TIMEOUT_SECONDS", "5")
+				var out, notice bytes.Buffer
+				command := New(&out, logOutputFunc(func(data []byte) (int, error) {
+					notice.Write(data)
+					return 0, writeErr
+				}))
+				args := []string{"--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1"}
+				// Preserve both the complete-command branch and the explicit-override branch.
+				if format == "json" {
+					args = append(args, "-o", format)
+				}
+				command.SetArgs(args)
+				err := command.Execute()
+				if cursor != "" {
+					if !errors.Is(err, writeErr) {
+						t.Fatalf("continuation failure = %v, want %v", err, writeErr)
+					}
+					if !strings.Contains(notice.String(), "--cursor "+cursor) {
+						t.Fatalf("missing attempted continuation: %q", notice.String())
+					}
+				} else if err != nil || notice.Len() != 0 {
+					t.Fatalf("last page: error=%v notice=%q", err, notice.String())
+				}
+				if !strings.Contains(out.String(), testRevision2ID) {
+					t.Fatalf("page was not delivered: %q", out.String())
+				}
+				if want := []string{"GET " + agentPath + "/revisions?limit=1", "GET " + agentPath}; !slices.Equal(fake.requested, want) {
+					t.Fatalf("requests=%v, want one page and Agent read %v", fake.requested, want)
+				}
+			})
+		}
 	}
 }
 

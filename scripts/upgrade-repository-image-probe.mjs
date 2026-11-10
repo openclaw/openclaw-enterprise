@@ -16,8 +16,10 @@ const socket = "/run/openclaw/repository-control/private/control.sock";
 const origin = "https://credentials.example.test";
 const backend = "compatibility-probe";
 const brokerCommand = "/app/dist/composition/repository-credentials/projected-inputs.js";
-const controllerCommand =
-  "/app/apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs";
+const controllerProbePaths = [
+  "/app/apps/controller/src/drivers/repo/github/access/admission-probe.mjs",
+  "/app/apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs",
+];
 const interruption = new AbortController();
 
 class IncompatibleImageError extends Error {}
@@ -308,7 +310,7 @@ async function main() {
     ];
     // Diagnose a missing packaged probe only after Node runs successfully in
     // the selected image. Other container failures remain inconclusive.
-    const probeFile = await run("docker", [
+    const controllerCommand = await run("docker", [
       "run",
       "--rm",
       "--name",
@@ -320,13 +322,22 @@ async function main() {
       "node",
       controller,
       "-e",
-      'const fs = require("node:fs"); try { fs.accessSync(process.argv[1], fs.constants.R_OK); process.stdout.write("present"); } catch (error) { if (error.code !== "ENOENT") throw error; process.stdout.write("missing"); }',
-      controllerCommand,
+      `const fs = require("node:fs");
+for (const path of process.argv.slice(1)) {
+  try {
+    fs.accessSync(path, fs.constants.R_OK);
+    process.stdout.write(path);
+    break;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}`,
+      ...controllerProbePaths,
     ]);
-    assert.ok(probeFile === "present" || probeFile === "missing");
-    if (probeFile === "missing") {
+    if (!controllerCommand) {
       throw new IncompatibleImageError("controller admission probe is missing");
     }
+    assert.ok(controllerProbePaths.includes(controllerCommand));
     await run("docker", [
       "run",
       "-d",

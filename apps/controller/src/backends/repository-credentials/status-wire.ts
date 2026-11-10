@@ -1,4 +1,4 @@
-import { hasControlCharacter } from "../../drivers/repo/credentials/client-contracts.ts";
+import { hasControlCharacter } from "../../drivers/repo/access/client-contracts.ts";
 
 /** Identical private JSON primitives; each boundary owns its failure diagnostic. */
 export function createStatusWirePrimitives(invalid: () => never) {

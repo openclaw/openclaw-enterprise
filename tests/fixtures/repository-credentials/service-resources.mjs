@@ -21,8 +21,8 @@ export async function createGitHubTokenServiceFactory(
   },
 ) {
   const [{ createGitHubDriverFactory }, { createGitHubStaticTokenOwner }] = await Promise.all([
-    appModule("drivers/repo/github/credentials/factory"),
-    appModule("drivers/repo/github/credentials/static-token"),
+    appModule("drivers/repo/github/access/factory"),
+    appModule("drivers/repo/github/access/static-token"),
   ]);
   const owner = createGitHubStaticTokenOwner({ token: Buffer.from(token) });
   resources.after(() => owner.close());
@@ -78,7 +78,7 @@ export async function startServiceListeners(
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
     import("./service.ts"),
-    appModule("drivers/repo/credentials/server"),
+    appModule("drivers/repo/access/server"),
   ]);
   const service = createCredentialService({ config, factory, clock });
   let listeners;
@@ -148,9 +148,7 @@ export async function startStaticTokenService(resources, options) {
 }
 
 export async function writeSessionClientConfiguration(resources, { opened, ca }) {
-  const { writeClientConfiguration } = await appModule(
-    "drivers/repo/github/credentials/client/config",
-  );
+  const { writeClientConfiguration } = await appModule("drivers/repo/github/access/client/config");
   const parent = await temporaryDirectory(resources, "rcs-client-");
   await chmod(parent, 0o700);
   const clientDirectory = join(parent, "session");

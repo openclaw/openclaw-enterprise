@@ -1,6 +1,6 @@
 # OCC CLI command reference
 
-See [CLI setup](../guides/cli.md) to install `occ`. Run `occ --help` for commands and flags.
+Install `occ` with [CLI setup](../guides/cli.md); use `occ --help` for usage.
 
 ## Global options
 
@@ -27,15 +27,14 @@ HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
 
-Ctrl-C or `SIGTERM` cancels in-flight requests and exits with an error.
-If local I/O or cleanup still blocks the command, a second interrupt terminates
-it immediately; cleanup may remain incomplete.
+Ctrl-C or `SIGTERM` cancels requests and exits nonzero.
+If I/O or cleanup blocks, a second interrupt terminates immediately; cleanup
+may remain incomplete.
 
 ## Resource commands
 
-Replace `ID` with the corresponding resource ID, `NAME` with a Namespace name,
-and `FILE` with a JSON file path. `--file` reads a local file, not stdin; YAML
-input is not supported. The server validates document fields against the
+Replace `ID` with the resource ID, `NAME` with a Namespace name,
+and `FILE` with a JSON file path. `--file` requires local JSON, not stdin or YAML. The server validates document fields against the
 [HTTP API contract](api.md). `--help` on `configuration`, `secret`, `agent`,
 `iam role`, and `iam access-binding` `create` shows a minimal sample document.
 
@@ -88,8 +87,9 @@ input is not supported. The server validates document fields against the
 | `occ agent deploy ID [--harness-overrides FILE] [--retain-harness-overrides REVISION_ID]` | Requests deployment once and creates an immutable version. With neither override flag, uses current Installation defaults. See [Harness destinations](../guides/topics/agent-revisions.md#choose-a-harness-destination).                                                                                                                                                                          |
 | `occ agent deploy-first ID --configuration ID --generation N --key KEY`                   | Admits the reviewed first deployment and returns its receipt. On an uncertain reply, prints a read-only recovery command without resending. See [first deployment](../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).                                                                                                                                            |
 | `occ agent recover-first-deployment ID --configuration ID --generation N --key KEY`       | Reads the original receipt without deploying. A missing receipt does not authorize a retry.                                                                                                                                                                                                                                                                                                       |
-| `occ agent revisions ID`                                                                  | Lists the Agent's immutable versions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. The table shows `superseded` or `stopped` for work a newer version or a Stop ended. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                  |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]`                                          | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest version you can read, and says on stderr how it relates to the selected version. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
+| `occ agent revision AGENT_ID REVISION_ID`                                                 | Reads an exact revision and its Harness settings with `agent_revision:read`. Structured output preserves the API response, including saved-configuration read errors.                                                                                                                                                                                                                             |
+| `occ agent revisions ID`                                                                  | Lists version summaries newest first, with generation, deployment status, and `*` on the active version. Ended work shows `superseded` or `stopped`. `--limit` accepts 1–100 (default 50); `--cursor` reads older versions. A failed continuation notice makes the command unsuccessful.                                                                                                          |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`                                          | Shows recorded deployment status, errors, warnings, and redeployment notices. Defaults to the latest readable revision and explains the selection on stderr. With Agent read access, shows desired state and active revision. JSON and YAML include `currentAgent`, with `activeRevisionId: null` when no revision is active.                                                                     |
 | `occ agent runtime-credentials get ID`                                                    | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`                                              | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
 | `occ agent credential-withdrawal request ID SOURCE_ID`                                    | Revokes a credential source from the Agent's selected version; see [withdrawal](credential-sources/withdrawal.md).                                                                                                                                                                                                                                                                                |
@@ -115,8 +115,8 @@ including under a restrictive umask. Existing files and symlinks fail.
 `--expires-in-days` accepts 1–365 and defaults to 30. Explicit zero fails
 before creating the file.
 
-Resource IDs require the correct prefix and UUID. Validation errors identify
-the resource kind and its list command.
+Resource IDs require the correct prefix and UUID. Errors identify the resource
+kind and list command.
 
 `installation get`, `installation deployment-inventory` and `namespace list`
 require an Installation-scoped service key. A Namespace-scoped key can read

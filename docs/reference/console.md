@@ -259,8 +259,8 @@ For an unavailable gateway, follow the
 ## Open the native admin UI
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, all Agent
-detail tabs, including Configuration and Workspace files, show **Open Agent UI**
-in the header and its availability information to callers with exact Agent `administer`.
+detail tabs, including Configuration and Workspace files, show **Open chat** for chat access or **Open Agent UI** for administration
+in the header and its availability information to callers with exact Agent `operate` or `administer`. Chat access uses `operate`; native administration uses `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check

@@ -52,7 +52,7 @@ finding that replaces an old one.
 `tests/conformance/iam.test.mjs` and `tests/integration/occ-api.test.mjs` cover
 identity, authorization, isolation, and audit behavior. The service API key
 suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
-persistence and GitHub sign-in; memory-backed success does not prove them.
+persistence and external sign-in; memory-backed success does not prove them.
 
 `tests/integration/oidc-ca-trust.test.mjs` requires Helm, yq, and OpenSSL;
 `OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
@@ -219,7 +219,12 @@ or testing, including failure, run `node scripts/ci/cleanup.mjs --state
 confirm owned subprocesses have stopped before cleanup. See [CI testing](ci.md).
 
 This lane checks Helm-installed OCC metrics and logs, with no model calls or
-Prometheus, Grafana, or Loki. For the demo smoke, install Playwright Chromium
+Prometheus, Grafana, or Loki. It also checks separate database upgrades: revoked
+application access must fail the real migration hook without restarting either
+writer; after grant repair and an independent migration Job, Helm must recover
+the API and worker and deploy an Agent. The PostgreSQL lane separately verifies
+that pending migration history is refused without applying SQL.
+For the demo smoke, install Playwright Chromium
 with `pnpm exec playwright install --with-deps chromium`, use a fresh directory,
 and set `OBS_LANE=k3d-observability-demo` in the commands above. It checks a
 fixture dashboard stack, not OCC runtime behavior. CI retains `demo-log-dashboard`

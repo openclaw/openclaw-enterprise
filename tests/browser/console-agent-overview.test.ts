@@ -858,6 +858,8 @@ for (const readback of ["stop status", "deployment"]) {
     await page.getByRole("dialog").getByRole("button", { name: "Stop Agent", exact: true }).click();
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
     await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+    // The cancellation notice stays visible during the read; wait before another actor deploys.
+    await waitForEnabled(stopRegion.getByRole("button", { name: "Refresh stop status" }));
     await stopRegion.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true }).waitFor();
 
     // Another actor deploys. A lifecycle read must retire this viewer's earlier Stop result,
@@ -3282,7 +3284,7 @@ for (const viewport of [
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
       route.fulfill({
         json: {
-          data: { status: "available", url: "https://admin.example.test/" },
+          data: { status: "available", mode: "admin", url: "https://admin.example.test/" },
           meta: { requestId: "req_test_failing_deploy" },
         },
       }),

@@ -12,8 +12,8 @@ export { deriveNativeAdminHost } from "./native-admin-host.mjs";
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
+  readonly sessionMode?: "shared-cookie" | "host-only-exchange";
   readonly domain?: string;
-  readonly sharedCookieDomain?: string;
 }
 
 export interface NativeAdminTarget {
@@ -90,6 +90,8 @@ export function nativeAdminConfigurationSupported(
     auth?.mode === "trusted-proxy" &&
     unsupportedNativeGatewayAuthFields(auth).length === 0 &&
     proxy?.userHeader === "x-occ-identity" &&
+    Array.isArray(proxy.requiredHeaders) &&
+    proxy.requiredHeaders.includes("x-openclaw-scopes") &&
     Array.isArray(proxy.allowUsers) &&
     proxy.allowUsers.includes("occ-workspace-files") &&
     Array.isArray(scopes) &&
@@ -177,6 +179,11 @@ export function prepareNativeAdminConfiguration(
         trustedProxy: {
           ...proxy,
           userHeader: "x-occ-identity",
+          requiredHeaders: append(
+            proxy.requiredHeaders,
+            "x-openclaw-scopes",
+            "gateway.auth.trustedProxy.requiredHeaders",
+          ),
           allowUsers: append(
             proxy.allowUsers,
             "occ-workspace-files",

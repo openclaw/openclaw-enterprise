@@ -24,7 +24,7 @@ controllers first; create the service-key Secret and match Helm and Installation
 settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
 Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
-[GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
+[Google](google-sign-in.md) sign-in requires disabling native administration.
 
 Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
@@ -247,12 +247,13 @@ before the checks:
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
-  (`http` only for `localhost` or `127.0.0.1`), even a bare `?` or `#`, Unicode
+  (HTTPS is required for browser sessions), even a bare `?` or `#`, Unicode
   spaces or invisible characters (outer ASCII spaces are ignored), or forms the
   API's URL parser refuses, such as full-width `？`.
-  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
-  native admin, it must be `https` and its host inside
-  `agentNativeAdmin.sharedCookieDomain`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job.
+  In shared-cookie mode, Console and Agent hosts must share a non-public DNS
+  suffix; OCC derives the cookie domain. OIDC host-only exchange requires
+  same-site HTTPS without a shared Console cookie.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
@@ -307,7 +308,7 @@ only after every check succeeds:
       (.api.clients | length > 0) and .gatewayRouting.enabled == true and
       .gatewayRouting.gatewayClassName != "" and
       .gatewayRouting.apiKeySecretName != "" and (.agentNativeAdmin.enabled == true or
-      .auth.github.enabled == true or .auth.google.enabled == true or
+      .auth.google.enabled == true or
       .auth.oidc.enabled == true)' \
       "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null &&
     OCC_VALIDATION_STEP='runtime settings' &&
@@ -669,67 +670,38 @@ session copy.
 After authentication, follow [Namespace and Agent deployment](production-agents.md),
 including its [model-response check](production-agents.md#verify-production-workloads).
 
-## Enable GitHub browser sign-in
+## Enable external browser sign-in
 
-Install the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-with GitHub off and a compatible [published](#use-published-images) or [self-built](#build-and-publish-production-images) image.
-Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#roll-back-across-human-sign-in) past activation.
-[Deactivate during stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+Use [OIDC setup](oidc-sign-in.md) or [Google setup](google-sign-in.md) to register
+the client and prepare the provider's dedicated Secret and Helm settings.
+For an installation that uses direct GitHub sign-in, follow the
+[OIDC upgrade procedure](oidc-upgrade.md) before installing this release.
 
-1. Verify password sign-in as recovery administrator. Read `data.user.id` from
-   `GET /api/auth/session`.
-2. Reuse the release Namespace’s dedicated sign-in Secret without reading values.
-   If absent, use protected files:
+1. Verify password sign-in as the recovery administrator. Read `data.user.id`
+   from `GET /api/auth/session` and set `auth.recoveryUserId` to that ID.
+2. Close general ingress, disable automatic restarts and identity or policy
+   writers, drain requests, and [stop all database clients](auth-maintenance.md#stop-every-writer).
+   On first activation, [run `activate --recovery-user <userId> --writers-stopped`](auth-maintenance.md#run-the-command).
+   Review skipped accounts and verify `status`. Keep ingress closed and old
+   API and worker replicas at zero.
+3. Upgrade with the selected provider settings and initialization hooks enabled.
+   The Job checks the Installation, migrates and bootstraps without reissuing
+   credentials for a verified Installation. Confirm one serving controller and
+   no old API Pods.
+4. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, provider sign-in, expected resource access and
+   stale-session rejection. Attach each existing user's identity explicitly.
+   Enable [OIDC enrollment](../../reference/authentication/team-enrollment.md)
+   only with the intended admission rule, initial Role and Groups.
+5. Reopen ingress after verification. Before enabling `auth.passwordSignIn:
+recovery-only`, confirm that every ordinary account can sign in through its
+   attached provider identity.
 
-   ```bash
-   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
-     -n openclaw-system create secret generic occ-github-login \
-     --from-file=client-id=/secure/occ/github-client-id \
-     --from-file=client-secret=/secure/occ/github-client-secret
-   ```
-
-   Protected values:
-
-   ```yaml
-   auth:
-     recoveryUserId: "<recovery administrator user ID>"
-     github:
-       enabled: true
-       secretName: occ-github-login
-       clientIdKey: client-id
-       clientSecretKey: client-secret
-   agentNativeAdmin:
-     enabled: false
-   ```
-
-   Match its name and distinct keys (client ID, not App ID).
-   Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
-   See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
-
-3. Close ingress. Disable auto-restarts and policy/provisioning writers. Drain requests.
-   [Stop API, worker and other database clients](auth-maintenance.md#stop-every-writer).
-   At first activation, [run `activate --recovery-user <recoveryUserId> --writers-stopped`](auth-maintenance.md#run-the-command).
-   This enrolls qualifying accounts, reports skips, and ends unbound sessions. After `status`, return here with ingress closed and old API/worker replicas at zero.
-4. On success, one normal `helm upgrade` restores configured replicas. Keep initialization hooks enabled.
-   The Job checks the Installation, migrates, then bootstraps without reissuing verified Installations’ credentials.
-5. Confirm rollout completion, no old API Pods, and one serving controller.
-   Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access), verify password recovery, new sessions,
-   expected Namespaces and Agent detail, and stale-session rejection before reopening ingress.
-
-Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
-reattach under the new ID before detaching old methods.
-
-For automatic first-login accounts, configure [GitHub team enrollment](../../reference/authentication/team-enrollment.md)
-with an existing IAM Group and the App's email-read permission. Otherwise, follow
-the manual attachment procedure below.
-
-[Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
-Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
-Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
-Resolve failed or uncertain writes before retrying. Attach identities to all ordinary accounts. Each user must sign in once with theirs before
-[`auth.passwordSignIn: recovery-only`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in).
-
-Loopback cannot qualify production stop/drain, cookies, logging, and GitHub registration.
+Activation is one-way during normal operation. Returning to password-only mode
+requires [stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+Restart the API after secret rotation. Client ID or issuer changes require new
+identity attachments. Loopback checks do not qualify production ingress,
+provider registration or stop-and-drain procedures.
 
 ## Related
 
