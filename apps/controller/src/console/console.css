@@ -988,9 +988,9 @@ p {
 .page-meta-copied:empty {
   display: none;
 }
-@media (max-width: 760px) {
-  /* Phone: ← Agents shares its row with the actions, so the header is the back row, the title
-     and the meta row (spec 3.2 and 4: header bottom <= 240 px at 390). */
+@media (max-width: 1100px) {
+  /* Give the title its own row before the sidebar and actions squeeze it. On phones,
+     ← Agents shares the actions row (spec 3.2 and 4: header bottom <= 240 px at 390). */
   .page-header--subpage {
     grid-template-areas:
       "back actions"

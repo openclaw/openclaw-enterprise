@@ -18,7 +18,9 @@ together with GitHub and Google. One issuer is supported per Installation.
 
 - Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
-  Console origin, and `agentNativeAdmin.enabled: false`.
+  Console origin, and an Agent DNS suffix under the same non-public domain.
+  OIDC can enable [native chat and administration](native-admin.md); the existing
+  `operate` and `administer` permissions select access.
 - A controller image that includes OIDC sign-in.
   [Build a compatible image](production-installation.md#build-and-publish-production-images).
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
@@ -81,12 +83,13 @@ auth:
     tokenAuth: client_secret_post # or client_secret_basic
     displayName: Acme SSO # optional button label, up to 40 characters
     egressCidrs: [] # optional IPv4 CIDRs
-agentNativeAdmin:
-  enabled: false
 ```
 
-Rendering fails on the URL rules above, a shared Secret, an HTTP base URL, native
-administration, an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
+OIDC supports [native browser access](native-admin.md); enable it separately
+when users need Agent chat or administration.
+
+Rendering fails on the URL rules above, a shared Secret, an HTTP base URL,
+an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
 the API refuses the same values at startup. The chart adds the API-only NetworkPolicy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
 address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.

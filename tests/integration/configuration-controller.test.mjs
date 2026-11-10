@@ -189,6 +189,7 @@ async function sharedApp(withCompute, withConfiguration, computeImplementation) 
     auditSink,
     development: {
       enabled: true,
+      browserOrigin: "https://console.oce.localhost",
       issuer: principal.issuer,
       subject: principal.subject,
       principalId: principal.id,
@@ -276,7 +277,7 @@ async function request(
     headers["content-type"] = "application/json";
   }
   const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
+    new Request(`https://console.oce.localhost${pathname}`, {
       method,
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

@@ -7,6 +7,7 @@ const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
 const revisionId = id("rev");
+const nativeBrowserOrigin = "https://agent-0123456789abcdef0123456789abcdef.agents.example.com";
 const secretRef = { kind: "secret", namespaceId, id: id("sec") };
 const harnessAuth = { method: "api_key", source: secretRef };
 
@@ -87,7 +88,19 @@ const revision = {
   gatewayManagedMode: true,
   configuration,
   compute: { id: "kubernetes", implementation: "kubernetes" },
-  harness: { id: "codex", mode: "dedicated", version: "1" },
+  harness: {
+    id: "codex",
+    mode: "dedicated",
+    version: "1",
+    overrides: {},
+    configuration: {
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+  },
   backendId: null,
   harnessAuth,
   createdAt: time,
@@ -244,11 +257,14 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  "x-occ-session-key": "s".repeat(43),
+  origin: "https://console.example.com",
   oauthClientId,
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
+  harnessOverrides: "{}",
   namespaceId,
   agentId,
   configurationId,
@@ -288,6 +304,8 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  launchAgentNativeAdmin: {},
+  confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
@@ -303,6 +321,7 @@ export const requestExamples = {
     clientSecret: "example-client-secret",
   },
   rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
+  deployAgent: {},
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -533,6 +552,16 @@ export const responseExamples = {
   },
   getAgentHarnessStatus: { status: "unobserved" },
   getAgentNativeAdmin: { status: "stopped" },
+  launchAgentNativeAdmin: {
+    intentId: uuid,
+    origin: nativeBrowserOrigin,
+    landingUrl: `${nativeBrowserOrigin}/__occ/native-admin/launch?intent=${uuid}`,
+  },
+  confirmAgentNativeAdmin: {
+    intentId: uuid,
+    exchange: "e".repeat(43),
+    redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },
   provisionAgentRuntimeCredentials: { transportConfigured: true },
@@ -549,6 +578,22 @@ export const responseExamples = {
     readLogs: true,
     sandboxPolicyRead: true,
     update: true,
+  },
+  getNamespaceAgentCapabilities: {
+    capabilities: {
+      credentialSources: {
+        types: [
+          {
+            type: "openai",
+            config: [{ name: "authorized_base_url", required: false }],
+            secrets: [{ name: "api_key", required: true }],
+            rotation: "external",
+            harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+          },
+        ],
+      },
+      openclaw: { executionModes: ["dedicated"] },
+    },
   },
   getNamespaceCallerPermissions: {
     delete: true,

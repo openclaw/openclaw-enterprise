@@ -51,7 +51,13 @@ export interface ExchangeProvider {
   readonly methods: Readonly<
     Pick<
       CredentialProviderDefinition,
-      "classify" | "inject" | "normalizeGrant" | "credentialRejected" | "protectResponse"
+      | "routes"
+      | "normalizeConfig"
+      | "classify"
+      | "inject"
+      | "normalizeGrant"
+      | "credentialRejected"
+      | "protectResponse"
     >
   >;
   readonly isCurrent: () => boolean;
@@ -300,6 +306,8 @@ function captureProvider(
   }
   const ref = immutableCopy(receiver.ref);
   const methods = Object.freeze({
+    routes: receiver.routes,
+    normalizeConfig: receiver.normalizeConfig,
     classify: receiver.classify,
     inject: receiver.inject,
     normalizeGrant: receiver.normalizeGrant,
@@ -318,6 +326,8 @@ function captureProvider(
         current =
           ports.provider(route) === receiver &&
           isDeepStrictEqual(receiver.ref, ref) &&
+          receiver.routes === methods.routes &&
+          receiver.normalizeConfig === methods.normalizeConfig &&
           receiver.classify === methods.classify &&
           receiver.inject === methods.inject &&
           receiver.normalizeGrant === methods.normalizeGrant &&

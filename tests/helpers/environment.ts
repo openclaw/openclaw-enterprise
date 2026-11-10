@@ -60,3 +60,14 @@ function setEntry(name: string, value: string | undefined) {
     process.env[name] = value;
   }
 }
+
+// Test command fixtures inherit tool paths and selected inputs, not shell startup
+// code or options that can run before the fixture's first instruction.
+export function withoutShellStartup(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const result = { ...environment };
+  delete result.BASH_ENV;
+  delete result.ENV;
+  delete result.SHELLOPTS;
+  delete result.BASHOPTS;
+  return result;
+}

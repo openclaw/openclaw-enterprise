@@ -28,7 +28,7 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
     email: "production-security-admin@example.test",
     password: "production-security-generated-password",
   });
@@ -155,7 +155,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
-    baseURL: "http://127.0.0.1",
+    baseURL: "https://console.oce.localhost",
   });
   let restrictions = [];
   const native = new NativeIAMDriver({

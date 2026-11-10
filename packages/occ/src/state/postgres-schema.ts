@@ -774,8 +774,10 @@ export const agentRevisions = occSchema.table(
         AND mod((${table.admittedSpec}->>'configuration_generation')::numeric, 1) = 0
         AND jsonb_typeof(${table.admittedSpec}->'draft_spec') = 'object'
         AND jsonb_typeof(${table.admittedSpec}->'harness') = 'object'
-        AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode'])
-        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])
+        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration') = '{}'::jsonb
+        AND jsonb_typeof(${table.admittedSpec} #> '{harness,overrides}') = 'object'
+        AND jsonb_typeof(${table.admittedSpec} #> '{harness,configuration}') = 'object'
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{harness,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,version}') = 'string'
@@ -1093,6 +1095,12 @@ export const iamRoles = occSchema.table(
   (table) => [
     unique("iam_roles_namespace_id_id_unique").on(table.namespaceId, table.id).nullsNotDistinct(),
     check("iam_roles_permissions_array", sql`jsonb_typeof(${table.permissions}) = 'array'`),
+    check(
+      "iam_roles_configured_scope",
+      sql`${table.id} NOT LIKE 'role\\_config\\_%'
+        OR (${table.namespaceId} IS NULL
+          AND NOT ${table.permissions} @> '[{"resourceKind":"installation"}]'::jsonb)`,
+    ),
   ],
 );
 
@@ -1656,6 +1664,33 @@ export const humanAuthenticationSessions = occSchema.table(
   (table) => [
     check("human_authentication_session_version_positive", sql`${table.version} > 0`),
     check("human_authentication_session_method_version_positive", sql`${table.methodVersion} > 0`),
+  ],
+);
+
+export const humanAuthenticationResults = occSchema.table(
+  "human_authentication_results",
+  {
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => installation.id, { onUpdate: "restrict", onDelete: "cascade" }),
+    attemptId: text("attempt_id").notNull(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => humanAuthenticationSessions.sessionId, {
+        onUpdate: "restrict",
+        onDelete: "cascade",
+      }),
+    providerId: text("provider_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.installationId, table.attemptId] }),
+    check("human_authentication_result_attempt", sql`${table.attemptId} ~ '^[A-Za-z0-9_-]{43}$'`),
+    check(
+      "human_authentication_result_provider",
+      sql`char_length(${table.providerId}) BETWEEN 1 AND 200 AND ${table.providerId} <> 'credential'`,
+    ),
+    index("human_authentication_result_expiry").on(table.installationId, table.expiresAt),
   ],
 );
 
@@ -2632,5 +2667,99 @@ export const connectionSessions = occSchema.table(
       sql`array_position(${table.selectedScopes},NULL) IS NULL`,
     ),
     index("connection_sessions_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+function nativeBrowserColumns() {
+  return {
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => installation.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    parentSessionId: text("parent_session_id")
+      .notNull()
+      .references(() => humanAuthenticationSessions.sessionId, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+    principalId: text("principal_id")
+      .notNull()
+      .references(() => iamIdentities.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    origin: text("origin").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  };
+}
+
+export const nativeBrowserIntents = occSchema.table(
+  "native_browser_intents",
+  {
+    id: uuid("id").primaryKey(),
+    ...nativeBrowserColumns(),
+    challengeHash: text("challenge_hash"),
+    exchangeHash: text("exchange_hash").unique(),
+  },
+  (table) => [
+    foreignKey({
+      name: "native_browser_intent_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    check(
+      "native_browser_intents_origin_check",
+      sql`char_length(${table.origin}) BETWEEN 1 AND 512 AND ${table.origin} ~ '^https://[^/]+$'`,
+    ),
+    check(
+      "native_browser_intents_challenge_hash_check",
+      sql`${table.challengeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "native_browser_intents_exchange_hash_check",
+      sql`${table.exchangeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "native_browser_intent_exchange",
+      sql`${table.exchangeHash} IS NULL OR ${table.challengeHash} IS NOT NULL`,
+    ),
+    check(
+      "native_browser_intent_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '60 seconds'`,
+    ),
+    index("native_browser_intent_parent").on(table.parentSessionId),
+    index("native_browser_intent_expiry").on(table.installationId, table.expiresAt),
+  ],
+);
+
+export const nativeBrowserHandles = occSchema.table(
+  "native_browser_handles",
+  {
+    handleHash: text("handle_hash").primaryKey(),
+    ...nativeBrowserColumns(),
+  },
+  (table) => [
+    foreignKey({
+      name: "native_browser_handle_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    check(
+      "native_browser_handles_origin_check",
+      sql`char_length(${table.origin}) BETWEEN 1 AND 512 AND ${table.origin} ~ '^https://[^/]+$'`,
+    ),
+    check("native_browser_handles_handle_hash_check", sql`${table.handleHash} ~ '^[a-f0-9]{64}$'`),
+    check(
+      "native_browser_handle_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '8 hours'`,
+    ),
+    index("native_browser_handle_parent").on(table.parentSessionId),
+    index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
   ],
 );

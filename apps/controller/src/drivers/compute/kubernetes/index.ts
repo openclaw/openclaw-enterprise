@@ -223,6 +223,9 @@ import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import {
   modelProviderBaseUrl,
+  normalizeHarnessSettings,
+  savedModelProvider,
+  DEFAULT_MODEL_BASE_URL,
   modelProviderReferenceSetting,
   MODEL_PROVIDER_REFERENCE_REQUIREMENT,
   modelProviderConfiguration,
@@ -1667,6 +1670,17 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       `${description} ${kind} limit`,
       `${path}.limits.${resource}`,
     );
+    for (const [field, quantity] of [
+      ["requests", request],
+      ["limits", limit],
+    ] as const) {
+      if ((compareResourceQuantities(quantity, "0") ?? 0) < 0) {
+        throw configurationConstraintFailure(
+          `${description} ${kind} ${field} must be non-negative Kubernetes quantity strings, such as ${resource === "cpu" ? "500m" : "128Mi"}.`,
+          `/${path.replaceAll(".", "/")}/${field}/${resource}`,
+        );
+      }
+    }
     const compared = compareResourceQuantities(request, limit);
     if (compared === undefined) {
       throw configurationConstraintFailure(
@@ -4490,7 +4504,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration({
       configuration: this.namedGatewayConfigurationDocument(input.configuration),
-      harness: { id: "codex", version: "provisioning", mode: "dedicated" },
+      harness: { mode: "dedicated" },
     });
   }
 
@@ -4685,11 +4699,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
     const authentication = harnessModelAuthentication(configuration, embedded);
-    configuration = modelProviderConfiguration(
-      configuration,
-      harness,
-      this.providerForHarness(harness, auth, configuration),
-    );
+    if (
+      stage === "preparation" &&
+      this.usesModelProvider(harness, auth, configuration) !==
+        (savedModelProvider(harness.configuration) !== undefined)
+    ) {
+      throw new ConfigurationFailure(
+        "Saved Harness settings do not match its authentication and model selection.",
+      );
+    }
+    if (!agentSave) {
+      configuration = modelProviderConfiguration(
+        configuration,
+        harness,
+        savedModelProvider(
+          stage === "admission" && harness.configuration === undefined
+            ? this.resolveHarnessConfiguration(harness, auth, configuration)
+            : harness.configuration,
+        ),
+      );
+    }
 
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
@@ -4859,6 +4888,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? hostname
         : `${hostname}:${routing.endpointPort}`;
     return `wss://${authority}${this.gatewayRoutePath(revision)}`;
+  }
+
+  getGatewayChatEndpoint(revision: AgentRevision): string | undefined {
+    if (!this.usesWritableNativeAdminConfig(revision.configuration)) {
+      return undefined;
+    }
+    const gateway = asRecord(revision.configuration.gateway);
+    const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
+    if (
+      !Array.isArray(requiredHeaders) ||
+      !requiredHeaders.some(
+        (header) =>
+          typeof header === "string" && header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+      )
+    ) {
+      return undefined;
+    }
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (endpoint === undefined) {
+      return undefined;
+    }
+    const url = new URL(endpoint);
+    url.pathname = `/native-chat${url.pathname}`;
+    return url.href;
   }
 
   async getAgentRuntimeCredentialStatus(
@@ -6184,7 +6237,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
         throw new ConfigurationFailure(
-          "The Installation model provider changed; deploy a new Agent revision.",
+          "The saved model provider does not match the Agent revision admission.",
         );
       }
     } else if (provider !== undefined) {
@@ -6408,7 +6461,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -7709,7 +7762,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           modelProviderConfiguration(
             nativeConfiguration,
             revision.harness,
-            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+            savedModelProvider(revision.harness.configuration),
           ),
         ),
       ),
@@ -10170,7 +10223,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         (!approved.has(metadata.name) ||
           !isDeepStrictEqual(
             networkPolicySpecToJson(policy.spec as V1NetworkPolicySpec | undefined),
-            approved.get(metadata.name),
+            networkPolicySpecToJson(approved.get(metadata.name) as V1NetworkPolicySpec | undefined),
           ))
       ) {
         throw new OwnershipFailure(
@@ -11374,7 +11427,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     if (source?.type === "openai") {
-      requireModelSourceDestination(source.config, this.options.runtime?.modelProvider);
+      requireModelSourceDestination(
+        source.config,
+        savedModelProvider(revision.harness.configuration),
+      );
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
@@ -13610,9 +13666,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:
     // a trusted-proxy request without x-openclaw-scopes receives OpenClaw's default operator
-    // scopes, operator.admin included. Once a human is admitted, the Gateway must refuse
-    // requests that do not carry the header; the operator HTTPRoute sends the machine
-    // identity's exact grant, so OCC's own access keeps working.
+    // scopes, operator.admin included. Routed access must therefore require the scope
+    // header even for the shared machine identity: chat and admin routes set distinct
+    // ceilings. Explicit human ingress needs the same fail-closed requirement.
     const admitsHumans =
       Array.isArray(allowUsers) && allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY);
     const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
@@ -13657,7 +13713,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
-            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
+            ...(admitsHumans || this.options.gatewayRouting !== undefined
+              ? { requiredHeaders: requiredHeadersWithScopes }
+              : {}),
             userHeader: TRUSTED_PROXY_HEADER,
             allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
@@ -13804,18 +13862,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewayRouteHeaderFilter(
-    access: "operator" | "node" | "node-transfer",
+    access: "operator" | "chat" | "node" | "node-transfer",
   ): KubernetesRecord {
     return {
       type: "RequestHeaderModifier",
       requestHeaderModifier: {
         set: [
-          ...(access === "operator"
+          ...(access === "operator" || access === "chat"
             ? [
                 { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
-                // The machine identity's exact grant. The Gateway requires this header
-                // once humans are admitted, and a client value must never cap or widen it.
-                { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+                // Replace client authority before either HTTP or WebSocket reaches native auth.
+                {
+                  name: TRUSTED_PROXY_SCOPES_HEADER,
+                  value: access === "chat" ? "operator.sessions.write" : "operator.admin",
+                },
               ]
             : []),
           {
@@ -13853,6 +13913,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  private gatewayRootRouteRule(
+    service: ManagedKubernetesObject<"Service">,
+    path: string,
+    access: "operator" | "chat" | "node",
+    match: "Exact" | "PathPrefix",
+  ): KubernetesRecord {
+    return {
+      matches: [{ path: { type: match, value: path } }],
+      filters: [
+        {
+          type: "URLRewrite",
+          urlRewrite: {
+            path:
+              match === "Exact"
+                ? { type: "ReplaceFullPath", replaceFullPath: "/" }
+                : { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+          },
+        },
+        this.gatewayRouteHeaderFilter(access),
+      ],
+      backendRefs: [this.gatewayRouteBackendRef(service)],
+    };
+  }
+
   private gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
     if (routing.hostname !== undefined && routing.hostname.length > 0) {
       return routing.hostname;
@@ -13863,9 +13947,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     )}.${routing.envoyNamespace}.svc`;
   }
 
-  private verifyGatewayRoutingConfiguration(
-    revision: Pick<AgentRevision, "configuration" | "harness">,
-  ): void {
+  private verifyGatewayRoutingConfiguration(revision: {
+    readonly configuration: OpenClawConfigurationDocument;
+    readonly harness: Pick<RevisionHarnessDescriptor, "mode">;
+  }): void {
     if (this.options.executionCluster !== undefined && revision.harness.mode !== "dedicated") {
       throw new ConfigurationFailure("Two-cluster execution supports only dedicated Harnesses.");
     }
@@ -14007,24 +14092,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 },
               ]
             : [
-                {
-                  matches: [
-                    {
-                      path: {
-                        type: "Exact",
-                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                      },
-                    },
-                  ],
-                  filters: [
-                    {
-                      type: "URLRewrite",
-                      urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
-                    },
-                    this.gatewayRouteHeaderFilter(access),
-                  ],
-                  backendRefs: [this.gatewayRouteBackendRef(service)],
-                },
+                this.gatewayRootRouteRule(
+                  service,
+                  `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
+                  access,
+                  "Exact",
+                ),
+                ...(access === "operator" && this.getGatewayChatEndpoint(revision) !== undefined
+                  ? [
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}`,
+                        "chat",
+                        "Exact",
+                      ),
+                      this.gatewayRootRouteRule(
+                        service,
+                        `/native-chat${this.gatewayRoutePath(revision)}/`,
+                        "chat",
+                        "PathPrefix",
+                      ),
+                    ]
+                  : []),
                 ...(access === "node"
                   ? [
                       {
@@ -14105,26 +14194,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   : []),
                 ...(access === "operator"
                   ? [
-                      {
-                        matches: [
-                          {
-                            path: {
-                              type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}/`,
-                            },
-                          },
-                        ],
-                        filters: [
-                          {
-                            type: "URLRewrite",
-                            urlRewrite: {
-                              path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-                            },
-                          },
-                          this.gatewayRouteHeaderFilter(access),
-                        ],
-                        backendRefs: [this.gatewayRouteBackendRef(service)],
-                      },
+                      this.gatewayRootRouteRule(
+                        service,
+                        `${this.gatewayRoutePath(revision)}/`,
+                        access,
+                        "PathPrefix",
+                      ),
                     ]
                   : []),
               ],
@@ -14337,35 +14412,101 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return true;
   }
 
-  private providerForHarness(
+  private usesModelProvider(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-  ): ModelProviderConfiguration | undefined {
-    if (this.options.runtime?.modelProvider === undefined) {
-      return undefined;
-    }
+  ): boolean {
+    return (
+      (auth.method === "api_key" ||
+        (auth.method === "credential_source" && auth.loginMode === "api_key")) &&
+      (harness.id === "codex" ||
+        (harness.id === "openclaw" &&
+          nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
+    );
+  }
+
+  normalizeHarnessOverrides(overrides: Readonly<Record<string, unknown>>) {
+    return normalizeHarnessSettings(overrides);
+  }
+
+  resolveHarnessConfiguration(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): Readonly<Record<string, unknown>> {
+    const overrides = normalizeHarnessSettings(harness.overrides ?? {});
+    const applicable = this.usesModelProvider(harness, auth, configuration);
     if (
-      auth.method !== "api_key" &&
-      !(auth.method === "credential_source" && auth.loginMode === "api_key")
+      overrides.modelProvider !== undefined &&
+      (!applicable || auth.method !== "credential_source")
     ) {
-      return undefined;
+      throw new ConfigurationHarnessError(
+        "An explicit modelProvider override requires source-backed OpenAI API-key authentication.",
+      );
     }
-    if (
-      harness.id === "openclaw" &&
-      harnessModelAuthentication(configuration, harness.mode === "embedded").providerId !== "openai"
-    ) {
-      return undefined;
+    if (!applicable) {
+      return {};
     }
-    return this.options.runtime?.modelProvider;
+    const native = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
+    const protocol =
+      harness.id === "codex"
+        ? "openai-responses"
+        : (native?.api ??
+          nativeOpenAiModelSelections(configuration)?.[0]?.matches[0]?.entry.api ??
+          "openai-responses");
+    const provider =
+      overrides.modelProvider ??
+      normalizeHarnessSettings({
+        modelProvider: this.options.runtime?.modelProvider ?? {
+          protocol,
+          baseUrl: DEFAULT_MODEL_BASE_URL,
+          supportsStandaloneWebSearch: false,
+        },
+      }).modelProvider!;
+    modelProviderConfiguration(configuration, harness, provider);
+    return { modelProvider: provider };
+  }
+
+  validateHarnessCredentialSources(
+    harness: RevisionHarnessDescriptor,
+    sources: readonly Readonly<CredentialSource>[],
+  ): void {
+    const provider = savedModelProvider(harness.configuration);
+    for (const source of sources) {
+      if (source.type === "openai") {
+        requireModelSourceDestination(source.config, provider);
+      }
+    }
   }
 
   private providerAdmission(revision: Readonly<AgentRevision>): string | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    let provider: ModelProviderConfiguration | undefined;
+    try {
+      provider = savedModelProvider(revision.harness.configuration);
+      const requested = normalizeHarnessSettings(revision.harness.overrides);
+      if (
+        !isDeepStrictEqual(requested, revision.harness.overrides) ||
+        (revision.harness.id === "codex" &&
+          (revision.harnessAuth.method === "api_key" ||
+            (revision.harnessAuth.method === "credential_source" &&
+              revision.harnessAuth.loginMode === "api_key")) !==
+            (provider !== undefined)) ||
+        (revision.harness.id === "codex" &&
+          provider !== undefined &&
+          provider.protocol !== "openai-responses") ||
+        (requested.modelProvider !== undefined &&
+          (revision.harnessAuth.method !== "credential_source" ||
+            revision.harnessAuth.loginMode !== "api_key" ||
+            !isDeepStrictEqual(requested.modelProvider, provider)))
+      ) {
+        throw new Error("Inconsistent saved Harness settings");
+      }
+    } catch {
+      throw new ConfigurationFailure(
+        "Saved Harness settings are missing, malformed, or unsupported.",
+      );
+    }
     return provider === undefined
       ? undefined
       : sha256Hex(
@@ -14526,11 +14667,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   ): PluginRuntimeSnapshot | undefined {
-    const provider = this.providerForHarness(
-      revision.harness,
-      revision.harnessAuth,
-      revision.configuration,
-    );
+    const provider = savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
     if (
       provider !== undefined ||
@@ -16644,6 +16781,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               value: providerEndpoint.workspaceRoot,
             });
           }
+        }
+        if (dedicated) {
+          // The worker bytecode cache can outgrow the Gateway's 64 MiB temporary volume.
+          variables.push({ name: "NODE_DISABLE_COMPILE_CACHE", value: "1" });
         }
         if (configuration?.usesGatewayPasswordEnv === true) {
           variables.push(

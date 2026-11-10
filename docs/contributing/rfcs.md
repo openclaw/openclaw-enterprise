@@ -55,6 +55,9 @@ Cover the details that matter to this decision:
 - **Security and failure:** state relevant authority, trust and credential
   boundaries, defaults, denial behavior, and consequential failure or recovery.
   Explain what survives an uncertain outcome and who can act next.
+- **Acceptance criteria:** use the template's [Acceptance Criteria](rfc-template.md#acceptance-criteria)
+  section to define observable outcomes and end-to-end verification before
+  implementation begins.
 - **Delivery and evidence:** identify the smallest connected result, genuine
   dependencies, and checks for success and material failure. Distinguish
   source review, integrated behavior, installed runtime, and live-service proof

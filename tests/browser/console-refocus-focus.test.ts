@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
+import { Check } from "typebox/value";
 
-import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentListResponse,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
@@ -18,9 +22,11 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  recordFocusTrail,
   secretOptionLabel,
   selectSecret,
   settledView,
+  stopFocusTrail,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
@@ -193,6 +199,105 @@ test("refocusing the Agents list restores its focused link unless the reader mov
     read.release();
     await link.waitFor();
     assert.equal(await hasFocus(expectedFocus), true, "keep the reader's place after the check");
+  }
+});
+
+// The admitted selector becomes usable before the Agent list read settles. A reader who
+// tabs to it during the wait should keep that place when the shell redraws.
+test("The Namespace selector keeps keyboard focus acquired during Agents list revalidation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Selected workspace");
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Visible Agent", nativeValues("visible"));
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("other"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.locator(settledView).getByRole("link", { name: "Visible Agent", exact: true });
+  await row.waitFor();
+  await waitForIdleFetches(page);
+
+  const requests = apiRequests(page, fixture.origin);
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  const listUrl = page.url();
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+
+  for (const focus of ["navigation", "selector"] as const) {
+    await row.focus();
+    assert.equal(await hasFocus(row), true);
+    const read = await holdRequests(t, page, agentsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    await refocus(page);
+    const response = await read.requested;
+    assert.ok(response, "the hold received a real Controller response");
+    assert.equal(response.status(), 200, "the Controller admitted the selected list read");
+    const body: unknown = await response.json();
+    assert.ok(Check(AgentListResponse, body), "the Controller answered with the Agents list");
+    assert.deepEqual(
+      body.data.map(({ id }) => id),
+      [agent.id],
+    );
+
+    await page.locator(heldView).waitFor();
+    await waitForEnabled(selector);
+    await navigation.focus();
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    const previous = await selector.elementHandle();
+    assert.equal(await hasFocus(previous), true, "Tab reached the admitted Namespace selector");
+    assert.equal(await selector.inputValue(), namespace.id);
+    if (focus === "navigation") {
+      await navigation.focus();
+      assert.equal(await hasFocus(navigation), true, "the reader moved away from the selector");
+    }
+
+    await recordFocusTrail(page);
+    const delivered = page.waitForResponse(
+      (answer) => answer.url() === agentsUrl && answer.request().method() === "GET",
+    );
+    read.release();
+    assert.equal((await delivered).status(), 200);
+    await row.waitFor();
+    assert.equal(
+      await previous.evaluate((node) => node.isConnected),
+      false,
+      "the shell replaced its selector",
+    );
+    assert.equal(await selector.isVisible(), true);
+    assert.equal(await selector.isEnabled(), true);
+    assert.equal(await selector.inputValue(), namespace.id);
+    assert.equal(page.url(), listUrl, "keyboard focus does not switch Namespace");
+    assert.equal(await page.getByRole("link", { name: "Other Agent", exact: true }).count(), 0);
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "moving focus sends no writes");
+    assert.equal(
+      requests.some(({ path }) => path.startsWith(`/namespaces/${other.id}/`)),
+      false,
+    );
+
+    const { trail } = await stopFocusTrail(page);
+    const active = await page.evaluate(() => globalThis.document.activeElement?.tagName);
+    t.diagnostic(
+      `${focus} focus after the Controller read: ${trail.join(" → ")} (active ${active})`,
+    );
+    assert.equal(
+      trail.some((entry) => entry.endsWith(": Visible Agent")),
+      false,
+      "the old Agent link did not take focus back",
+    );
+    assert.equal(
+      await hasFocus(focus === "selector" ? selector : navigation),
+      true,
+      focus === "selector"
+        ? "focus remains on the current usable Namespace selector"
+        : "the Namespace selector does not take focus from navigation",
+    );
   }
 });
 

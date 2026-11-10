@@ -9,7 +9,7 @@ import {
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
-import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
+import { normalizeOpenAiBaseUrl, openAiBaseUrlRewritesIpv4 } from "../openai-endpoint.ts";
 
 export const MODEL_PROVIDER_REFERENCE_REQUIREMENT =
   "must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential";
@@ -51,6 +51,60 @@ export interface ModelProviderConfiguration {
 }
 
 export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
+
+/** Kubernetes owns this closed, nonsecret Harness settings contract. */
+export function normalizeHarnessSettings(
+  value: unknown,
+): Readonly<{ modelProvider?: ModelProviderConfiguration }> {
+  const settings = asRecord(value);
+  if (!settings || Object.keys(settings).some((key) => key !== "modelProvider")) {
+    throw new ConfigurationHarnessError("Harness settings contain unsupported fields.");
+  }
+  if (!Object.hasOwn(settings, "modelProvider")) {
+    return {};
+  }
+  const provider = asRecord(settings.modelProvider);
+  const baseUrl =
+    typeof provider?.baseUrl === "string" ? normalizeOpenAiBaseUrl(provider.baseUrl) : undefined;
+  if (
+    !provider ||
+    Object.keys(provider).some(
+      (key) => !["protocol", "baseUrl", "supportsStandaloneWebSearch"].includes(key),
+    ) ||
+    (provider.protocol !== "openai-responses" && provider.protocol !== "openai-completions") ||
+    typeof provider.baseUrl !== "string" ||
+    (provider.supportsStandaloneWebSearch !== undefined &&
+      typeof provider.supportsStandaloneWebSearch !== "boolean") ||
+    baseUrl === undefined ||
+    openAiBaseUrlRewritesIpv4(provider.baseUrl)
+  ) {
+    throw new ConfigurationHarnessError(
+      "Harness modelProvider requires a supported protocol, HTTPS /v1 baseUrl, and optional boolean supportsStandaloneWebSearch.",
+    );
+  }
+  return {
+    modelProvider: {
+      protocol: provider.protocol,
+      baseUrl,
+      supportsStandaloneWebSearch: provider.supportsStandaloneWebSearch === true,
+    },
+  };
+}
+
+/** Saved settings never consult Installation defaults, including after a restart. */
+export function savedModelProvider(settings: unknown): ModelProviderConfiguration | undefined {
+  const normalized = normalizeHarnessSettings(settings);
+  const supplied = asRecord(settings)!;
+  const provider = asRecord(supplied.modelProvider);
+  const expected = asRecord(normalized.modelProvider);
+  if (
+    expected &&
+    (!provider || Object.keys(expected).some((key) => provider[key] !== expected[key]))
+  ) {
+    throw new ConfigurationHarnessError("Saved Harness settings are not normalized.");
+  }
+  return normalized.modelProvider;
+}
 
 export function modelProviderBaseUrl(provider?: ModelProviderConfiguration): string {
   const endpoint = normalizeOpenAiBaseUrl(provider?.baseUrl ?? DEFAULT_MODEL_BASE_URL);
@@ -127,12 +181,12 @@ export function modelProviderConfiguration(
         ![endpoint, DEFAULT_MODEL_BASE_URL].includes(normalizeOpenAiBaseUrl(entry.baseUrl) ?? ""))
     ) {
       throw new ConfigurationHarnessError(
-        "OpenAI model baseUrl must match the Installation runtime.modelProvider.baseUrl.",
+        "OpenAI model baseUrl must match the resolved Harness modelProvider.baseUrl.",
       );
     }
     if (provider !== undefined && entry?.api !== undefined && entry.api !== provider.protocol) {
       throw new ConfigurationHarnessError(
-        "OpenAI model api must match the Installation runtime.modelProvider.protocol.",
+        "OpenAI model api must match the resolved Harness modelProvider.protocol.",
       );
     }
   }
