@@ -24,14 +24,14 @@ or service does not fail setup. Verified hits do not rewrite the cache.
 PostgreSQL, image and Kubernetes profiles share OS-, architecture- and
 installer-source-keyed caches. Direct callers can reuse verified installed bytes.
 
-For packaging and shared-runtime artifact consumers,
+For packaging and shared-runtime artifact consumers using `run-ci-lane`,
 `scripts/ci/setup-registry-transport.sh:verify_skopeo` reuses working `PATH` tools;
 packaging requires version 1.13.3. Missing, broken or mismatched tools trigger
 APT update and installation from configured repositories with signature checks.
 Version probes allow 10 seconds plus 5 seconds before forced termination;
 each APT command allows 120 plus 10 seconds, three acquisition retries and
-20-second HTTP/HTTPS timeouts. Sudo is non-interactive. Index errors fail setup;
-failed updates prevent installation. Output and failure status are preserved.
+20-second HTTP/HTTPS timeouts. Sudo is non-interactive. Failed updates prevent
+installation. APT output and failure status are preserved.
 The final version probe must pass.
 
 `scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
