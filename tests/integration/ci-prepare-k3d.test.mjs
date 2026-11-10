@@ -142,6 +142,10 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       const builds = calls.filter(({ args }) => args[0] === "buildx" && args[1] === "build");
       assert.equal(builds.length, 4, "probe and load both checkout images");
       for (const role of ["controller", "runtime"]) {
+        assertStderrMatch(
+          prepared.stderr,
+          new RegExp(`"stage":"${role}-image-reuse","outcome":"absent"`),
+        );
         const roleBuilds = builds.filter(
           ({ args }) => args.includes("--target") === (role === "controller"),
         );
