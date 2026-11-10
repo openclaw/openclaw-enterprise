@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/0029d37a-209b-4105-8242-a8c48c959c81
+last_updated_session: authoring-run/77c6dd8e-42d7-4688-9561-cf468610374c
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -216,7 +216,7 @@ Preparation/activation call `verifyScratchVolume` after predecessor shutdown;
 preserves `/sandbox/scratch`; `filesystemPolicy` permits writes. Native permissions
 stay unchanged. Cleanup retains operator-owned scratch; see [contract](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes).
 
-`sandboxDataMount` validates mounts. `OpenShellGitRuntime.prepare` supplies
+`sandboxDataMount` rejects scratch selection or overlapping data paths. `OpenShellGitRuntime.prepare` supplies
 process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
@@ -254,17 +254,17 @@ Renewal requires expired stored setup, later live expiry and unchanged endpoint,
 TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
 foreign ownership/drift prevents creation.
 
-State uses `/sandbox/.openclaw-runtime`; subpaths use
-`/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under `harnessHome`
-for native hooks. Codex hooks use provider-file Gateway CA and
-node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created `state` child,
-avoiding root-owned mounts and symlinks. `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
+State uses `/sandbox/.openclaw-runtime`; subpaths use `/sandbox/.openclaw-mounts`.
+Admitted `/home/node` paths relocate to `harnessHome` for hooks. Codex hooks
+use provider-file Gateway CA and node-reachable routing.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` set `0700` and clear setgid before setup/migration;
-OpenClaw retries child preparation. Retained workspace/state permissions persist; failures stop startup. Workspace, identity, sessions and images remain
-separate. The supervisor probes `/tmp`; native `TMPDIR` uses private runtime-home `tmp`.
+permission failures stop startup. [Writable runtime state](../reference/drivers/openshell-sandbox.md#writable-runtime-state)
+owns state-child isolation, retained permissions and temporary paths.
 
-`prepareNativeWorkspace` privatizes retained PVC subpaths in a restricted revision
-Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
+`prepareNativeWorkspace` creates missing scratch directories; existing ones must
+be process-owned `0700`. Sibling content stays untouched. Other subpaths use
+managed preparation in a restricted revision Deployment. Ownership/mode checks precede UID-fenced foreground deletion;
 completed preparation exits successfully on SIGTERM with normal grace. Sandbox
 creation waits for every writer Pod. Admission requires `userNamespaces: false`,
 one optional operator-mode ServiceAccount and the pinned Gateway's default identity.
@@ -435,6 +435,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 21:21: Guard scratch storage. (authoring-run/77c6dd8e-42d7-4688-9561-cf468610374c - 011cd43b9c88d4123b19f12bd5d7bd0938e905d2)
 
 - 2026-11-10 21:04: Trace scratch PVC admission and mounts. (authoring-run/0029d37a-209b-4105-8242-a8c48c959c81 - 8b0d0518cb8786253d9632ae4beb8a75758a2e61)
 

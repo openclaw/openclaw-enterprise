@@ -247,9 +247,12 @@ node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
 Select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs` with
-`--selected-file` during preparation and `--file` during execution. Use the full Codex scenario with an OpenAI API key and the same cleanup. It checks real tool
-write/read/cleanup, frozen selection and missing/wrong-UID claim refusal. It does
-not prove NVMe backing or node-loss recovery.
+`--selected-file` during preparation and `--file` during execution. For both, export
+`OCC_TEST_OPENSHELL_HARNESS=codex` and
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`; privately supply
+`OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`. Keep full scenario and cleanup.
+Checks include tool writes, frozen storage selection and worker refusal of
+missing/wrong-UID claims, not NVMe backing or node-loss recovery.
 
 The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
 checks finite-grant expiry and worker restart after installation.

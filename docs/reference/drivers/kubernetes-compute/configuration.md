@@ -132,6 +132,14 @@ claims are allowed for `WaitForFirstConsumer`; a successful check does not prove
 scheduling, filesystem permissions, or available capacity.
 
 The Harness mounts private subpath `scratch` read-write at `/sandbox/scratch`.
+OpenShell's `sandboxDataMount` cannot select the scratch claim or a path that
+overlaps `/sandbox/scratch`, including normalized aliases. It must retain separate
+durable storage. Native OpenClaw preparation creates the scratch directory if
+absent; an existing directory must already be owned by the preparation process
+with mode `0700`. The initializer does not chmod/chown existing scratch or move,
+delete or rewrite sibling content. Kubernetes or the storage driver may still
+change volume group ownership and modes through `fsGroup`; dedicate the claim to
+this Agent.
 Its workspace and the Gateway's state mounts stay unchanged. OCE retains the
 scratch claim on revision retirement and Agent deletion; the operator owns
 reclamation. Deleting its Kubernetes namespace still deletes the namespaced PVC. Native permission profiles still govern tool access. Commands must

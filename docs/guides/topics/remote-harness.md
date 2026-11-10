@@ -140,7 +140,10 @@ runtime:
 Before restarting API/worker and deploying a new Agent revision:
 
 1. Verify the claim's identity, writable filesystem, private-directory permissions,
-   and actual available capacity and quotas. Prevent concurrent PVC deletion or
+   and actual available capacity and quotas. For native OpenClaw, existing scratch
+   directories must be owned by the preparation process with mode `0700`;
+   the initializer refuses to repair them. Kubernetes may still change volume
+   group/modes; see the [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes). Prevent concurrent PVC deletion or
    recreation: Kubernetes mounts reference claim names, so a UID check alone
    cannot prevent replacement after verification.
 2. For [local storage](https://kubernetes.io/docs/concepts/storage/volumes/#local), set the PV's node affinity to the prepared storage node.

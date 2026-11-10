@@ -3091,6 +3091,17 @@ if (args[0] === "pull") {
         prepareLane: true,
       },
     ];
+    // The documented --selected-file command must admit the same API-key path.
+    for (const credentials of [["OPENAI_API_KEY"], ["CODEX_ACCESS_TOKEN"]]) {
+      cases.push({
+        harness: "codex",
+        endpoint: true,
+        credentials,
+        file: "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
+        selectedFile: true,
+        ...(credentials.includes("OPENAI_API_KEY") ? {} : { missing: "OPENAI_API_KEY" }),
+      });
+    }
     // Each split owner must retain the credential admission gate before any resource is created.
     for (const file of [
       "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
@@ -3140,7 +3151,9 @@ if (args[0] === "pull") {
               "openshell",
               "--state",
               statePath,
-              ...(value.file ? ["--file", value.file] : []),
+              ...(value.file
+                ? [value.selectedFile ? "--selected-file" : "--file", value.file]
+                : []),
             ],
             env,
           );

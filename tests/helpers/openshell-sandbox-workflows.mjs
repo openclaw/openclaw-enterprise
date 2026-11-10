@@ -2830,6 +2830,11 @@ async function prepareProductionInstallation(
     }
     assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
   }
+  // Read the Agent-owned claim by its independent identity before inspecting the
+  // provider Pod, so a substituted Pod volume cannot define the expected storage.
+  const workspaceClaim = withScratch
+    ? await resource("persistentvolumeclaim", `workspace-${hash(agent.data.id)}`, placement)
+    : undefined;
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
   process.stderr.write(
     "OpenShell integration: provider Harness ready; checking ownership and mounts.\n",
@@ -2841,6 +2846,20 @@ async function prepareProductionInstallation(
     ({ mountPath }) => mountPath === "/sandbox/scratch",
   );
   if (withScratch) {
+    assert.equal(workspaceClaim.metadata.labels["openclaw.dev/agent"], agent.data.id);
+    assert.equal(workspaceClaim.metadata.labels["openclaw.dev/namespace"], namespaceId);
+    assert.notEqual(workspaceClaim.metadata.name, scratchBinding.claimName);
+    const workspaceMount = harnessContainer.volumeMounts.find(
+      ({ mountPath }) => mountPath === "/sandbox/enterprise",
+    );
+    assert.ok(workspaceMount, "the original Agent workspace must remain mounted");
+    assert.equal(workspaceMount.subPath, bridgedWorkspaceSubPath);
+    assert.notEqual(workspaceMount.readOnly, true);
+    assert.equal(
+      harnessPod.spec.volumes.find(({ name }) => name === workspaceMount.name).persistentVolumeClaim
+        .claimName,
+      workspaceClaim.metadata.name,
+    );
     assert.ok(scratchMount, "the admitted scratch claim must reach the provider-owned Harness");
     assert.equal(scratchMount.subPath, "scratch");
     assert.notEqual(scratchMount.readOnly, true);
@@ -3034,6 +3053,7 @@ async function prepareProductionInstallation(
     agent: agent.data,
     revision: deployed.data,
     scratchBinding,
+    workspaceClaim,
     async deployScratch(binding) {
       await pauseWorker();
       await configureScratch(binding);
@@ -3044,12 +3064,6 @@ async function prepareProductionInstallation(
       assert.equal(next.status, 202, JSON.stringify(next.error));
       await resumeWorker();
       return next.data;
-    },
-    async readDeployment(revisionId) {
-      return await request(
-        "GET",
-        `/namespaces/${namespaceId}/agents/${agent.data.id}/deployments/${revisionId}`,
-      );
     },
     harnessPod,
     sandbox,
@@ -6585,15 +6599,6 @@ async function assertScratchToolAccess(topology) {
 
 async function assertScratchClaimRefusals(topology) {
   const binding = topology.scratchBinding;
-  const container = topology.harnessPod.spec.containers.find(({ name }) => name === "agent");
-  const workspace = container.volumeMounts.find(
-    ({ mountPath }) => mountPath === "/sandbox/enterprise",
-  );
-  assert.ok(workspace);
-  const workspaceName = topology.harnessPod.spec.volumes.find(({ name }) => name === workspace.name)
-    .persistentVolumeClaim.claimName;
-  const workspaceUid = (await resource("persistentvolumeclaim", workspaceName, topology.placement))
-    .metadata.uid;
   const missingName = `${binding.claimName}-missing`;
   assert.equal(
     (
@@ -6612,29 +6617,31 @@ async function assertScratchClaimRefusals(topology) {
   );
   // A replacement stops its predecessor before Compute checks the PVC. These
   // are destructive only to this disposable Agent, and do not claim otherwise.
-  for (const rejected of [
-    { ...binding, claimName: missingName, claimUid: randomUUID() },
-    { ...binding, claimUid: randomUUID() },
+  for (const [rejected, message] of [
+    [
+      { ...binding, claimName: missingName, claimUid: randomUUID() },
+      "Scratch PVC is missing from the execution Namespace.",
+    ],
+    [
+      { ...binding, claimUid: randomUUID() },
+      "Scratch PVC identity does not match its admitted binding.",
+    ],
   ]) {
     const revision = await topology.deployScratch(rejected);
-    const failed = await waitFor(
+    // Compute reports the precise refusal while the worker schedules a retry.
+    // A terminal deployment failure requires exhausting retries and is not this proof.
+    const failure = await waitFor(
       "scratch storage refusal through the worker",
-      async () => {
-        const response = await topology.readDeployment(revision.id);
-        assert.equal(response.status, 200, JSON.stringify(response.error));
-        return response.data.status === "failed" ? response.data : undefined;
-      },
+      () =>
+        topology.workerEvents.find(
+          (event) =>
+            event.event === "worker.compute-prepare-failed" && event.revisionId === revision.id,
+        ),
       180_000,
     );
-    const work = await topology.observerPool.query(
-      "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-      [`agent_revision:${revision.id}:reconcile`],
-    );
-    assert.equal(
-      work.rows[0]?.reason_code,
-      "KUBERNETES_CONFIGURATION_INVALID",
-      JSON.stringify(failed.error),
-    );
+    assert.equal(failure.code, "KUBERNETES_CONFIGURATION_INVALID");
+    assert.equal(failure.step, "harness_workspace_claim");
+    assert.equal(failure.message, message);
     assert.equal(
       (await resources("sandboxes.agents.x-k8s.io", topology.placement)).some(
         ({ metadata }) => metadata.labels?.["openclaw.dev/revision"] === revision.id,
@@ -6647,8 +6654,14 @@ async function assertScratchClaimRefusals(topology) {
       binding.claimUid,
     );
     assert.equal(
-      (await resource("persistentvolumeclaim", workspaceName, topology.placement)).metadata.uid,
-      workspaceUid,
+      (
+        await resource(
+          "persistentvolumeclaim",
+          topology.workspaceClaim.metadata.name,
+          topology.placement,
+        )
+      ).metadata.uid,
+      topology.workspaceClaim.metadata.uid,
     );
   }
 }

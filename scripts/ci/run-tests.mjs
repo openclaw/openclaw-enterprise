@@ -36,6 +36,7 @@ import {
 } from "./full-integration-coverage.ts";
 import { projectSkipperRunnerReceipt, qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
@@ -1437,7 +1438,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     lane.env,
     prepared.env,
   );
-  for (const name of requiredEnv) {
+  for (const name of openShellRequiredEnv(lane.name, relativePath, requiredEnv, env)) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
