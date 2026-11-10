@@ -133,6 +133,16 @@ test("Full Integration partitions OpenShell without changing the default focused
       assert.deepEqual(receipt.phases[phase], { elapsedMs: 10, outcome: "success" });
     }
     assert.equal(receipt.residualMs, 0);
+    if (lane === "openshell-policy") {
+      const { elapsedMs, residualMs, phases } = receipt;
+      assert.notEqual(timing.stdout, "", "MISSING_POLICY_TIMING_NOTICE");
+      assert.equal(
+        timing.stdout,
+        `::notice title=OpenShell policy phase timing::${JSON.stringify({ elapsedMs, residualMs, phases })}\n`,
+      );
+    } else {
+      assert.equal(timing.stdout, "");
+    }
   }
 
   const select = (lane: string, view?: string) =>
