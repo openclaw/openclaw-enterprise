@@ -132,7 +132,7 @@ target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
 
 ### Include reviewed settings
 
-Keep `--values` and `--installation` as the current live baseline. For configuration changes, make owner-only copies and review their diff:
+Keep `--values` and `--installation` as the live baseline. Review owner-only candidate copies:
 
 ```bash
 cp /secure/occ/values.yaml /secure/occ/candidate-values.yaml
@@ -146,6 +146,8 @@ These copies may change the
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 An explicit candidate may also wrap an existing single `drivers.plugin`
 registration in a one-element array, preserving its `id` and `configuration`.
+Remove obsolete `agentNativeAdmin.sharedCookieDomain` only if empty; keep
+`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
 The helper does not convert the baseline automatically. Other configuration
 changes are not supported by this upgrade command.
 Review image, draft and credential compatibility before maintenance; startup
@@ -239,14 +241,13 @@ Shared-namespace releases refuse this single-cluster layout.
 Add `--controller-compatibility-results /secure/occ/controller-results.json` with
 `--controller-image` to require the native PostgreSQL `run` result from
 [released-controller qualification](../../testing/postgresql.md#released-controller-compatibility).
-Before startup Jobs or writer changes, the selected case and cleanup must pass
-for the recorded incumbent release image and selected candidate image digests.
-Index, platform-manifest and configuration digests are not interchangeable.
+Before shutdown, both the database-write and configured IAM activation cases must
+pass, including cleanup, for the exact image digests. Index, manifest and config
+digests are distinct.
 
-The receipt stays [frozen through recovery](production-upgrade-recovery.md).
-Operators must establish authenticity. `sourceSha` identifies the runner checkout,
-not image revisions or worktree cleanliness. This proves neither IAM startup
-compatibility nor online or rollback safety; writers still stop.
+[Recovery retains the receipt](production-upgrade-recovery.md). Verify its provenance:
+`sourceSha` identifies the test checkout, not image revisions or worktree cleanliness.
+These checks do not qualify online migration or rollback; writers still stop.
 
 Omit `--runtime-image`:
 

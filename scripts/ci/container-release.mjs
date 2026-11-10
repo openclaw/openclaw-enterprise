@@ -633,8 +633,9 @@ async function smoke(directory, env) {
 
 async function seal(directory, env) {
   assert.match(env.IMAGE_DIGEST ?? "", digestPattern);
-  readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
+  const platformDigests = readArchivePlatforms(join(directory, "image.tar"), env.IMAGE_DIGEST);
   const metadata = {
+    platformDigests,
     ...identity(env, env.IMAGE),
     digest: env.IMAGE_DIGEST,
     archiveSha256: await fileDigest(join(directory, "image.tar")),

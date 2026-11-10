@@ -81,12 +81,15 @@ evidence/baseline aliases are rejected. Other edits and image provenance remain 
 
 Resume binds evidence path, device and inode. Aliases share its lock. Runtime upgrades separately lock their sibling dispatch journal.
 
-`matches_yaml` compares ordered candidate YAML mappings, including images, with
-the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-before protected-setting projections. Unusable inputs or unwritable evidence cause
-`Cannot compare upgrade YAML`. Only Slack directory proxy, curated Codex
-PluginDriver selection and wrapping one registration in an array may change before
-image selection. Immutable reference switches require string mapping keys. Startup validates the candidate controller; broker checks compare references, not referenced contents.
+`matches_yaml` compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+and live mappings, then validates candidates. Invalid input or unwritable
+evidence causes `Cannot compare upgrade YAML`. Projections and `cmp` compare
+protected settings, allowing Slack directory proxy, curated Codex PluginDriver selection,
+and wrapping one registration in an array. Removing empty
+`agentNativeAdmin.sharedCookieDomain` changes only the baseline projection;
+the live comparison remains exact. Immutable reference switches require
+string keys. Startup validates the controller; broker checks references,
+not contents.
 
 Runtime upgrades require complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
@@ -95,7 +98,7 @@ Stopped/deleting Agents are excluded; pending repository cleanup is allowed.
 `prepare_upgrade` copies the PostgreSQL `run` result;
 `validate_controller_compatibility` calls
 `scripts/upgrade-evidence.py:validate_compatibility` before preflight to check
-runner/file consistency, passing selected case and cleanup, and recorded incumbent
+runner/file consistency, both passing data and IAM cases, cleanup, and recorded incumbent
 release and selected candidate digests. Hashes freeze the copy for resume.
 Runner SHA cannot verify image source. This neither authenticates execution nor
 permits online migration or rollback; see [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
