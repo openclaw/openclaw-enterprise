@@ -27,6 +27,7 @@ import {
 } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   allowsPreparedGitGrantRead,
+  allowsPreparedGitGrantWrite,
   type PreparedGitGrantApprovals,
 } from "../../drivers/repo/github/access/prepared-git-redemption.ts";
 import {
@@ -77,8 +78,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
   gitGrantApprovals?: PreparedGitGrantApprovals;
-  /** Only the opt-in grant-delivery profile prepares its selected read token at redemption. */
-  prepareGitOnDemand?: boolean;
+  /** Only opt-in selected repository grant delivery prepares its token at redemption. */
+  prepareGitOnDemand?: boolean | "selected-repository-write";
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest;
@@ -360,7 +361,9 @@ export async function startPreparedGitHubGitOwner(
   const onDemand = (source: PreparedRepositoryGitSource) =>
     options.prepareGitOnDemand &&
     source.grant.profile === "github-repository" &&
-    allowsPreparedGitGrantRead(source.grant);
+    (allowsPreparedGitGrantRead(source.grant) ||
+      (options.prepareGitOnDemand === "selected-repository-write" &&
+        allowsPreparedGitGrantWrite(source.grant)));
   async function withAppKey(
     use: (
       key: Awaited<ReturnType<typeof appSigningKey>>["owner"],

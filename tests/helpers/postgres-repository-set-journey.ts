@@ -107,7 +107,7 @@ type NarrowPreparation = Pick<
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
 >;
 
-type SelectedReadJourney = Pick<
+type SelectedGrantJourney = Pick<
   NarrowJourney,
   "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
 > & {
@@ -126,19 +126,21 @@ type SelectedReadJourney = Pick<
 export async function selectedReadGitJourney(
   t: TestContext,
   testUrl: string,
-  exercise: (journey: SelectedReadJourney) => Promise<void>,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
 ) {
-  await repositoryGitJourney(
-    t,
-    testUrl,
-    undefined,
-    {},
-    undefined,
-    false,
-    undefined,
-    undefined,
+  await selectedGrantGitJourney(t, testUrl, exercise);
+}
+
+export async function selectedGrantGitJourney(
+  t: TestContext,
+  testUrl: string,
+  exercise: (journey: SelectedGrantJourney) => Promise<void>,
+  writeProfile?: "read" | "write",
+) {
+  await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
     exercise,
-  );
+    ...(writeProfile === undefined ? {} : { writeProfile }),
+  });
 }
 
 export async function beforeNarrowGitPreparation(
@@ -231,15 +233,19 @@ async function repositoryGitJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
-  selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
+  selectedGrant?: {
+    exercise: (journey: SelectedGrantJourney) => Promise<void>;
+    writeProfile?: "read" | "write";
+  },
 ) {
+  const selectedRead = selectedGrant?.exercise;
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
   const selectedRepositories = repositorySet.slice(0, standing || selectedRead ? 1 : 2);
   const selectedPermissions = selectedRead
-    ? ({ metadata: "read", contents: "read" } as const)
+    ? ({ metadata: "read", contents: selectedGrant?.writeProfile ?? "read" } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -356,6 +362,9 @@ async function repositoryGitJourney(
           privateKeyPath: tls.keyPath,
           issuerPublicKeyPath,
         },
+        ...(selectedGrant?.writeProfile && {
+          grantRedemptionProfile: "selected-repository-write" as const,
+        }),
         ...(grantEndpoint &&
           grantPort && {
             grantRedemption: {
@@ -453,7 +462,7 @@ async function repositoryGitJourney(
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    prepareGitOnDemand: !!selectedRead,
+    prepareGitOnDemand: selectedGrant?.writeProfile ? "selected-repository-write" : !!selectedRead,
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile

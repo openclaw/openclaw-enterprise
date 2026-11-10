@@ -30,6 +30,7 @@ import type {
 } from "../repo/access/delivery.ts";
 import {
   allowsPreparedGitGrantRead,
+  allowsPreparedGitGrantWrite,
   preparedGitRedemption,
   type PreparedGitRedemption,
 } from "../repo/github/access/prepared-git-redemption.ts";
@@ -105,8 +106,9 @@ export interface OpenShellGitRuntimeConfiguration {
   /** Dedicated supported stock gateway, only operator-controlled writers, no other workspace member. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
-  /** Opt-in redemption for one repository with contents read. */
+  /** Opt-in redemption for one selected repository. Existing configurations allow reads. */
   readonly grantRedemption?: OpenShellGatewayTokenGrantConfiguration;
+  readonly grantRedemptionProfile?: "selected-repository-write";
 }
 /** Only the worker that witnessed a held launch can authorize its next Git session. */
 function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
@@ -469,11 +471,12 @@ export class OpenShellGitRuntime {
   ) {
     const grant = configuration.grantRedemption;
     if (
-      grant &&
-      (configuration.observedHookPreviewWorkspace ||
-        !validTokenGrantConfiguration(grant) ||
-        grant.assertionSource !== "openshell_gateway" ||
-        grant.port === configuration.authority.port)
+      (configuration.grantRedemptionProfile && !grant) ||
+      (grant &&
+        (configuration.observedHookPreviewWorkspace ||
+          !validTokenGrantConfiguration(grant) ||
+          grant.assertionSource !== "openshell_gateway" ||
+          grant.port === configuration.authority.port))
     ) {
       throw new Error("Invalid OpenShell Git grant redemption configuration.");
     }
@@ -518,9 +521,15 @@ export class OpenShellGitRuntime {
       this.configuration.grantRedemption &&
       (state.bindings.length !== 1 ||
         !("scope" in scope.delivery) ||
-        !allowsPreparedGitGrantRead(scope.delivery))
+        (!allowsPreparedGitGrantRead(scope.delivery) &&
+          !(
+            this.configuration.grantRedemptionProfile === "selected-repository-write" &&
+            allowsPreparedGitGrantWrite(scope.delivery)
+          )))
     ) {
-      throw new Error("OpenShell Git grant redemption requires one selected read-only repository.");
+      throw new Error(
+        "OpenShell Git grant redemption requires one selected repository at the configured permission level.",
+      );
     }
     return scope;
   }
@@ -567,7 +576,16 @@ export class OpenShellGitRuntime {
   private grantProfile(delivery: RepositoryGitDeliveryBinding["delivery"], audience: string) {
     const endpoint = this.configuration.grantRedemption?.endpoint;
     const repository = "scope" in delivery ? delivery.repositories[0]?.repository : undefined;
-    return endpoint && repository ? { endpoint, audience, repository } : undefined;
+    if (!endpoint || !repository || !("scope" in delivery)) {
+      return undefined;
+    }
+    return {
+      endpoint,
+      audience,
+      repository,
+      ...(this.configuration.grantRedemptionProfile === "selected-repository-write" &&
+        allowsPreparedGitGrantWrite(delivery) && { allowPush: true as const }),
+    };
   }
 
   /** A warm owner can verify its launch. A cold owner can only prove replacement. */
@@ -2148,6 +2166,9 @@ export class OpenShellGitRuntime {
               observed.providerId,
               "installation_token",
             ),
+            ...(this.grantProfile(entry.authorization.delivery, entry.bindingId)?.allowPush && {
+              grantAllowPush: true as const,
+            }),
           }),
           installed:
             route && grant

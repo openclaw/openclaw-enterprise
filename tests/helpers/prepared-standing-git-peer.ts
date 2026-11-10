@@ -152,7 +152,7 @@ export async function preparedStandingGitPeer(
   namespaceId: string,
   options: {
     beforeIssue?: () => Promise<void>;
-    prepareGitOnDemand?: boolean;
+    prepareGitOnDemand?: boolean | "selected-repository-write";
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
