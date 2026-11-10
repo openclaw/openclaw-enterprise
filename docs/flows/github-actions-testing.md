@@ -54,16 +54,15 @@ graph TD
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
-`loadTestSuites` assembles `scripts/ci/test-suites.json` and its ordered
-`scripts/ci/test-suites/<lane>.json` references for runners and preparation.
-Each lane owns its tests, environment, required inputs and preparation settings.
+`loadTestSuites` assembles `scripts/ci/test-suites.json` and ordered
+`scripts/ci/test-suites/<lane>.json` references. Lanes own their tests, environment,
+required inputs and preparation settings.
 
-For focused proof, `run-tests.mjs:selectLane` requires a lane-owned path; the action
-validates it before setup. Focused results retain expected cases, environment and
-cleanup, but `validateLaneEvidence` rejects them for full-lane aggregation,
-including one-file lanes.
+`run-tests.mjs:selectLane` and the action validate lane-owned focused paths before setup.
+Focused results retain expected cases, environment and cleanup;
+`validateLaneEvidence` rejects them for full-lane aggregation, including one-file lanes.
 
-CI uses the event checkout without external service credentials. `CI Impact` selects coverage independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs in every mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists ordinary lanes and the separate `runtime-image-fixture`. The workflow owns runner classes; Kubernetes lanes require a NetworkPolicy-enforcing kernel.
+`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity in every mode. Ordinary CI uses the event checkout without external service credentials. The [coverage map](../testing/ci/required-checks.md#scenarios) lists lanes and `runtime-image-fixture`. Workflows select runners; Kubernetes requires a NetworkPolicy-enforcing kernel.
 
 Pull requests compare the verified merge with its first parent using that parent’s
 policy; the second parent must match the event head. Canonical main pushes compare
