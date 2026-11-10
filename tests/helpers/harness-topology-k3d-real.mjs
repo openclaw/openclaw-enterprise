@@ -455,7 +455,10 @@ async function configureInClusterOidc({
     OCC_AUTH_OIDC_JWKS_URL: `${oidc.issuer}/protocol/openid-connect/certs`,
     OCC_AUTH_OIDC_CLIENT_ID: oidc.clientId,
     OCC_AUTH_OIDC_DISPLAY_NAME: "Keycloak",
-    OCC_AUTH_GITHUB_RECOVERY_USER_ID: oidc.recoveryUserId,
+    ...(oidc.enrollment === undefined
+      ? {}
+      : { OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(oidc.enrollment) }),
+    OCC_AUTH_RECOVERY_USER_ID: oidc.recoveryUserId,
   };
   apiContainer.env.push(...Object.entries(values).map(([name, value]) => ({ name, value })), {
     name: "OCC_AUTH_OIDC_CLIENT_SECRET",

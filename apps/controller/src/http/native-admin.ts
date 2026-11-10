@@ -435,13 +435,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       if (
         !nativeBrowser ||
         options.auth.humanProfile !== "guarded" ||
-        !options.auth.githubEnabled ||
+        !options.auth.oidcEnabled ||
         options.auth.googleEnabled ||
-        options.auth.oidcEnabled ||
         options.auth.sharedCookieDomain !== undefined
       ) {
         throw new Error(
-          "Native admin UI host-only exchange requires guarded GitHub sign-in without shared cookies, Google or OIDC.",
+          "Native admin UI host-only exchange requires guarded OIDC sign-in without shared cookies or Google.",
         );
       }
       const consoleSite = parseDomain(new URL(publicOrigin).hostname, {

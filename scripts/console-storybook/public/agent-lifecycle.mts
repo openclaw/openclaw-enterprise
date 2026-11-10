@@ -113,6 +113,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   pluginCapabilities?: { driver: unknown };
   policyState?: string;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: ReturnType<typeof candidateDeploymentError>;
   cleanupStatus?: string;
@@ -657,7 +658,12 @@ export function createAgentLifecycle(
           backendId: item.backendId,
           configurationId: item.configurationId,
           configurationGeneration: item.configurationGeneration,
-          harness: item.harness,
+          harness:
+            item.agentId === seedAgentId &&
+            scenario.unrecordedHarnessRevision === item.revision &&
+            item.harness
+              ? { id: item.harness.id, version: item.harness.version, mode: item.harness.mode }
+              : item.harness,
           createdAt: item.createdAt,
           // The API lists each version's deployment outcome and error code (finding 2422).
           deploymentStatus: deployments.get(item.id)?.status ?? null,
@@ -672,6 +678,23 @@ export function createAgentLifecycle(
       const revision = revisions.get(suffix.split("/")[2] ?? "");
       if (!revision || revision.agentId !== id) {
         return error(404, "NOT_FOUND", "The requested platform resource was not found.");
+      }
+      if (
+        revision.agentId === seedAgentId &&
+        scenario.unrecordedHarnessRevision === revision.revision
+      ) {
+        return response({
+          id: revision.id,
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revision: revision.revision,
+          backendId: revision.backendId,
+          createdAt: revision.createdAt,
+          configurationReadError: {
+            code: "SAVED_CONFIGURATION_UNREADABLE",
+            field: "configuration",
+          },
+        });
       }
       return response(revision);
     }

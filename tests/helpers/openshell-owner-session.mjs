@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
 import { chromium } from "playwright";
 import { launchTrustingBrowser, publishedJSON } from "./dev-up-keycloak.mjs";
-import { enableInstalledGithubNativeAdmin } from "./native-admin-github-k3d.mjs";
+import { enableInstalledOidcNativeAdmin } from "./native-admin-oidc-k3d.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
 const execute = promisify(execFile);
@@ -404,9 +404,9 @@ export async function verifyOpenShellOwnerSession({
   );
 
   // The earlier phase proves the shared-cookie/password path. Switch only this
-  // disposable installation to guarded GitHub; all native runtime I/O stays real.
+  // disposable installation to guarded OIDC; all native runtime I/O stays real.
   const recoverySession = await api("GET", "/api/auth/session");
-  const github = await enableInstalledGithubNativeAdmin({
+  const oidc = await enableInstalledOidcNativeAdmin({
     t,
     cluster,
     stateDirectory,
@@ -440,8 +440,8 @@ export async function verifyOpenShellOwnerSession({
     },
   );
   const currentAccount = accountResponse.data;
-  await api("POST", `/api/auth/accounts/${account.id}/providers/github`, {
-    subject: github.subject,
+  await api("POST", `/api/auth/accounts/${account.id}/providers/oidc`, {
+    subject: oidc.subject,
     expectedVersion: currentAccount.version,
   });
   await grant(account.principalId, "agent", agent.id, ["administer"]);
@@ -484,18 +484,18 @@ export async function verifyOpenShellOwnerSession({
     });
   });
   const consolePage = await guarded.newPage();
-  await consolePage.route("https://github.com/login/oauth/authorize*", github.authorizeRoute);
+  await consolePage.route("https://idp.example.test/authorize*", oidc.authorizeRoute);
   await consolePage.goto(consoleOrigin + "/console/");
   const callback = consolePage.waitForResponse(
-    (res) => new URL(res.url()).pathname === "/api/auth/providers/github/callback",
+    (res) => new URL(res.url()).pathname === "/api/auth/providers/oidc/callback",
   );
-  await consolePage.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
+  await consolePage.getByRole("button", { name: "Continue with Test SSO", exact: true }).click();
   assert.equal((await callback).status(), 302);
   await consolePage.waitForURL(consoleOrigin + "/console/");
   const session = await consoleRequest(consolePage, "GET", "/api/auth/session");
-  assert.equal(session.data.user.id, account.id, "GitHub authenticated the attached collaborator");
+  assert.equal(session.data.user.id, account.id, "OIDC authenticated the attached collaborator");
   const parent = (await guarded.cookies(consoleOrigin)).find(
-    (cookie) => cookie.name === github.parentCookieName,
+    (cookie) => cookie.name === oidc.parentCookieName,
   );
   assert.ok(parent?.secure && parent.httpOnly);
   assert.equal(parent.domain, consoleHost, "the guarded parent cookie is host-only");
@@ -604,15 +604,15 @@ export async function verifyOpenShellOwnerSession({
         observedAt: new Date().toISOString(),
         source: source.stdout.trim(),
         trackedChanges: changes.stdout.trim().length > 0,
-        releaseRevision: github.releaseRevision,
-        controllerImage: github.controllerImage,
+        releaseRevision: oidc.releaseRevision,
+        controllerImage: oidc.controllerImage,
         agentId: agent.id,
         revisionId: rev.id,
         runtimeImagesBeforeUpgrade: native[0].status.containerStatuses.map(({ name, imageID }) => ({
           name,
           imageID,
         })),
-        provider: "GitHub protocol fixture; runtime and model are real",
+        provider: "OIDC protocol fixture; runtime and model are real",
         reopenedSameConversation: true,
         chatSubmissions: sends.length,
         originalReplySocketSurvivedRepeatLaunchAndRenewals: true,
@@ -627,6 +627,6 @@ export async function verifyOpenShellOwnerSession({
   );
   t.diagnostic(`Guarded native browser receipt: ${receiptPath}`);
   t.diagnostic(
-    "Guarded GitHub provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
+    "Guarded OIDC provider fixture: real host-only browser exchange, Gateway hello and model reply; repeated launch reopened the same conversation without a turn, the original socket survived two renewals, and parent sign-out closed both sockets.",
   );
 }

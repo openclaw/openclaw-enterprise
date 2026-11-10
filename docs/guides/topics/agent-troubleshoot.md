@@ -6,7 +6,13 @@ the console shows. Never include API keys, tokens, or Secret values.
 
 ## Codex refuses the required permission profile
 
-If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
+
+- `sandbox-readOnly` or `sandbox-workspaceWrite`: Codex returned a restricted sandbox. Ask the account administrator to check its managed permission requirements against the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+- `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
+- `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
+
+Older runtimes omit this category. Their error alone does not distinguish a restricted grant from an incompatible response.
 
 Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
 

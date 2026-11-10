@@ -1,16 +1,16 @@
 ---
-rfc: ../rfcs/0032-dedicated-openclaw-plugin-import.md
+rfc: ../rfcs/0033-dedicated-openclaw-plugin-import.md
 ---
 
 # Deliver imported plugins to dedicated OpenClaw Agents
 
-- **ID** RFC-0032
+- **ID** RFC-0033
 - **Delivery status** Completed
 - **Source baseline** `516ee6d87`
 
 ## Implementation
 
-1. Implement [Namespace-owned publication](../rfcs/0032-dedicated-openclaw-plugin-import.md#publication-authority). Extend the [Plugin Driver contract](../../packages/contracts/src/drivers/plugin/index.ts) and OCC admission for the server-resolved Namespace. Authorize and audit publication and use. Keep release bytes and immutable metadata together in OCC-owned storage. A release referenced by an Agent revision must remain available for retry and restart.
+1. Implement [Namespace-owned publication](../rfcs/0033-dedicated-openclaw-plugin-import.md#publication-authority). Extend the [Plugin Driver contract](../../packages/contracts/src/drivers/plugin/index.ts) and OCC admission for the server-resolved Namespace. Authorize and audit publication and use. Keep release bytes and immutable metadata together in OCC-owned storage. A release referenced by an Agent revision must remain available for retry and restart.
 2. Extend the [managed catalog](../../apps/controller/src/drivers/plugin/managed-catalog.ts) to inspect one package or selected marketplace entry. Return the effective component preview and its digest. Preserve the selected skill trees. Offer each admitted hosted descriptor as a scoped connection template. On CredentialSource creation, resolve its endpoint from the published release. The Credential Gateway accepts the matching source and the Agent owner binds it separately. Expose publication in the OCE Console and the published release in the existing Agent picker.
 3. Extend [Compute preparation](../../apps/controller/src/drivers/compute/plugin-runtime.ts) and the [Kubernetes launcher](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts) to verify and expose the selected skill trees and server descriptors on deployment. Use the existing credential discovery and [request enforcement](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) for hosted tools.
 4. Enforce managed-mode skill installation refusal in the pinned OpenClaw Gateway, before registry access, installation or workspace mutation. Carry the native control in the OCE runtime and surface the refusal to a native client. Update the [operator workflow](../../docs/guides/topics/plugins-configure.md), [plugin reference](../../docs/reference/agent-plugins.md), [runtime flow](../../docs/flows/agent-plugins.md) and [managed mode reference](../../docs/reference/agents/gateway-managed-mode.md) when each behavior ships.

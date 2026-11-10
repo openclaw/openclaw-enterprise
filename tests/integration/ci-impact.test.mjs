@@ -1382,7 +1382,8 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
   // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
   // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
   // NetworkPolicy. Keep the runner family; State retains its qualified eight-CPU
-  // Full Integration allocation while ordinary CI uses four CPUs.
+  // Full Integration allocation while ordinary CI uses four CPUs. Observability
+  // retains four CPUs here while ordinary CI qualifies two CPUs.
   const jobs = loadYaml(".github/workflows/full-integration.yml").jobs;
   const job = jobs["pr-safe-same-sha"];
   const runnerFor = (target, lane) => {
@@ -1409,7 +1410,11 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
   for (const lane of pinned) {
     assert.equal(
       runnerFor(job, lane),
-      lane === "k3d-fixture-state" ? "blacksmith-8vcpu-ubuntu-2404" : ciRunners.get(lane),
+      lane === "k3d-fixture-state"
+        ? "blacksmith-8vcpu-ubuntu-2404"
+        : lane === "k3d-observability"
+          ? "blacksmith-4vcpu-ubuntu-2404"
+          : ciRunners.get(lane),
       lane,
     );
   }
@@ -2732,7 +2737,13 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     // NetworkPolicy proofs need a runner kernel shown to enforce them.
     const netfilter = row.lane.startsWith("k3d-fixture-") || row.lane === "k3d-observability";
     if (netfilter) {
-      assert.equal(row.runner, "blacksmith-4vcpu-ubuntu-2404", row.lane);
+      assert.equal(
+        row.runner,
+        row.lane === "k3d-observability"
+          ? "blacksmith-2vcpu-ubuntu-2404"
+          : "blacksmith-4vcpu-ubuntu-2404",
+        row.lane,
+      );
     }
   }
   const valid = [

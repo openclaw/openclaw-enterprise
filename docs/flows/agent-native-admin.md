@@ -126,17 +126,15 @@ Stopped/unsupported states offer **Open draft**. Unavailable states offer
 **View deployment** for readable versions, otherwise **Refresh access**.
 
 `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
-sets `OPENCLAW_CONFIG_READONLY_NOTICE` and `OPENCLAW_DISABLE_SKILL_INSTALLS=1` on
-managed Docker and Kubernetes Gateways. The
-[notice](../reference/agents/gateway-managed-mode.md) directs operators to OCE.
-Skill installs and uploads fail even for `operator.admin`.
+sets `OPENCLAW_CONFIG_READONLY_NOTICE` and `OPENCLAW_DISABLE_SKILL_INSTALLS=1`.
+[Managed Gateways](../reference/agents/gateway-managed-mode.md) refuse skill installs and uploads even for `operator.admin`.
 
 ### 2. OCC protects the availability route
 
 `apps/controller/src/http/native-admin.ts:nativeAdminStatusOperation`
 
 `createNativeAdminAccess` owns host interception, upgrades and socket shutdown.
-A getter supplies the initialized controller after bootstrap. Shared route
+A getter supplies the controller after bootstrap. Shared route
 admission remains in `apps/controller/src/index.ts`.
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires a human session and exact-Agent `operate` or `administer`, not `read`. Administration takes precedence over chat. Authorization and existence checks precede even `disabled`.
@@ -182,6 +180,8 @@ Sign-out revokes the current session and expires its shared cookie. There is no 
 `apps/controller/src/http/native-admin.ts:confirm`
 `apps/controller/src/http/native-browser-bridge.ts:landingPage`
 `packages/occ/src/state/native-browser-access.ts:PostgresNativeBrowserAccess`
+
+`createControllerAuth` and `createNativeAdminAccess` restrict host-only exchange to guarded OIDC without Google.
 
 Host-only launch requires the Console session, `x-occ-session-key`, Console
 Origin, and exact-Agent `operate` or `administer`. An intent binds that session, Principal,

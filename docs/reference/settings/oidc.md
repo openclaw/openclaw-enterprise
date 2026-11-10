@@ -1,7 +1,7 @@
 # OIDC controller settings
 
 `auth.oidc.enabled` enables generic OpenID Connect sign-in for the API. It requires
-the [single-controller external sign-in profile](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+the [single-controller external sign-in profile](../authentication/external-sign-in.md#external-sign-in-profile)
 and a recovery account. Use [Enable OIDC sign-in](../../guides/deploy/oidc-sign-in.md)
 for setup.
 
@@ -13,7 +13,16 @@ for setup.
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
 
-The API Server must reach the configured token and JWKS URLs. If the cluster restricts egress, permit the IdP’s destination address and port. Rendering rejects invalid OIDC settings, a shared Secret, native administration with OIDC, or an HTTP base URL.
+`OCC_AUTH_OIDC_ENROLLMENT` (Helm `auth.oidc.enrollment`) accepts the JSON
+[OIDC enrollment policy](../authentication/team-enrollment.md). The installation
+profile uses `controlPlane.oidc.enrollment`. Absence requires explicit identity
+attachment and disables automatic account creation.
+
+The API Server connects to the token and JWKS URLs. If the cluster restricts
+egress, allow the IdP's destination address and port in the operator's network
+policy. For an in-cluster IdP, see [OIDC setup](../../guides/deploy/oidc-sign-in.md#configure-the-chart).
+The chart rejects invalid endpoint settings, a shared credential Secret or an HTTP
+base URL. OIDC supports native Agent access.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

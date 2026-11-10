@@ -39,6 +39,7 @@ import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-co
 import { createReadyComputeDriver } from "./development.mjs";
 import { selfSigned } from "./certificates.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { fixtureOidcIssuer } from "./production-sign-in.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { waitUntil } from "./wait-for.mjs";
 
@@ -253,29 +254,15 @@ export async function createApi(
     iamDriver,
     agentDomain: nativeDomain,
     sessionMode: options.exchange ? "host-only-exchange" : "shared-cookie",
-    ...(options.exchange
-      ? {
-          github: {
-            clientId: "native-browser-fixture",
-            clientSecret: "native-browser-fixture-secret",
-            recoveryUserId,
-          },
-        }
-      : {
-          // Shared native sessions retain main's guarded OIDC account path. Provider redirects
-          // are exercised separately; these cases sign in with the recovery password.
-          oidc: {
-            issuer: "https://idp.example.test",
-            authorizationUrl: "https://idp.example.test/authorize",
-            tokenUrl: "https://idp.example.test/token",
-            jwksUrl: "https://idp.example.test/jwks",
-            clientId: "native-session-proof",
-            clientSecret: "native-session-proof-secret",
-            tokenAuth: "client_secret_post",
-            displayName: "Test SSO",
-            recoveryUserId,
-          },
-        }),
+    // Provider redirects are exercised by the browser suite; API cases use recovery login.
+    oidc: {
+      ...fixtureOidcIssuer,
+      clientId: "native-session-proof",
+      clientSecret: "native-session-proof-secret",
+      tokenAuth: "client_secret_post",
+      displayName: "Test SSO",
+      recoveryUserId,
+    },
   });
   const computeDriver = nativeComputeDriver(upstreamPort);
   const configurationDriver = createTestConfigurationDriver({

@@ -8,8 +8,8 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  githubSignIn,
-  githubUpgradeSettings,
+  oidcSignIn,
+  oidcUpgradeSettings,
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
@@ -27,16 +27,17 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+    const { pool, state, oidc, onboard, composeApp } = await preparePostgresSignInInstallation(
       t,
       () => [app],
       {
+        oidc: true,
         email: "scope-recovery@example.test",
         password: "scope-limited-password",
         secrets: {
           "occ-auth/secret": "scope-admin-auth-test-secret-at-least-32-bytes",
-          "occ-github-login/client-id": "scope-client-id",
-          "occ-github-login/client-secret": "scope-client-secret",
+          "occ-oidc-login/client-id": "scope-client-id",
+          "occ-oidc-login/client-secret": "scope-client-secret",
         },
       },
     );
@@ -62,7 +63,7 @@ test(
     );
     assert.deepEqual(bindings, [{ resource_kind: "installation", resource_id: installation.id }]);
 
-    app = await composeApp(githubUpgradeSettings(admin.id));
+    app = await composeApp(oidcUpgradeSettings(admin.id));
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
     const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });
@@ -73,13 +74,19 @@ test(
     assert.equal(recovery.json().data.userId, admin.id);
     const target = await readAccount(app, limitedHeaders, admin.id);
 
-    const attached = await post(limitedHeaders, `/api/auth/accounts/${admin.id}/providers/github`, {
+    const attached = await post(limitedHeaders, `/api/auth/accounts/${admin.id}/providers/oidc`, {
       subject: takeoverSubject,
       expectedVersion: target.version,
     });
     assertApiError(attached, 403, "FORBIDDEN");
-    const { callback } = await githubSignIn(app, origin, takeoverSubject, address());
-    assert.equal(callback.headers.location, "/console/?authError=github", "no takeover sign-in");
+    const { callback } = await oidcSignIn(
+      app,
+      origin,
+      oidc,
+      { subject: String(takeoverSubject) },
+      address(),
+    );
+    assert.equal(callback.headers.location, "/console/?authError=oidc", "no takeover sign-in");
     assert.equal(callback.headers["set-cookie"], undefined);
 
     const revoked = await changeAccount(app, limitedHeaders, admin.id, "revoke", target.version);
@@ -104,7 +111,7 @@ test(
       }
     };
     assertCoverageDenials(
-      await coverageDenials(["openclaw.auth.accounts.github", "openclaw.auth.accounts.revoke"]),
+      await coverageDenials(["openclaw.auth.accounts.oidc", "openclaw.auth.accounts.revoke"]),
       2,
     );
 
@@ -112,12 +119,18 @@ test(
     assert.deepEqual(await readAccount(app, adminHeaders, admin.id), target);
 
     // The unscoped administrator's grants cover the narrower account.
-    const covered = await post(adminHeaders, `/api/auth/accounts/${limited.id}/providers/github`, {
+    const covered = await post(adminHeaders, `/api/auth/accounts/${limited.id}/providers/oidc`, {
       subject: limitedSubject,
       expectedVersion: limitedAccount.version,
     });
     assert.equal(covered.statusCode, 200, covered.body);
-    const signedIn = await githubSignIn(app, origin, limitedSubject, address());
+    const signedIn = await oidcSignIn(
+      app,
+      origin,
+      oidc,
+      { subject: String(limitedSubject) },
+      address(),
+    );
     await assertConsoleSignIn(app, signedIn.callback, limited.id);
 
     // Taking the recovery designation acts against its holder: disabling a holder returns 409,
@@ -130,14 +143,14 @@ test(
         expectedCurrentUserId,
         expectedVersion: (await readAccount(app, adminHeaders, userId)).version,
       });
-    // Attaching GitHub revoked the earlier password session.
+    // Attaching OIDC revoked the earlier password session.
     let limitedAgain = await signedInHeaders(app, origin, limited, address());
     const taken = await moveRecovery(limitedAgain, limited.id, admin.id);
     assertApiError(taken, 403, "FORBIDDEN");
     assert.equal(await recoveryHolder(), admin.id);
     // A refused move is audited against the current holder, whose grants were not covered.
     assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);
-    // The version read before the GitHub attach is stale, so the API refuses the change.
+    // The version read before the OIDC attach is stale, so the API refuses the change.
     const stale = await changeAccount(
       app,
       adminHeaders,

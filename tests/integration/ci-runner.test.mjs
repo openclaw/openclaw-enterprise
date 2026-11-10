@@ -66,6 +66,21 @@ function runnerEnv(env = {}) {
   };
 }
 
+function laneArgs(root, lane, statePath, resultsPath) {
+  return [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ];
+}
+
 function run(root, args, env = {}, { timeout } = {}) {
   return spawnSync(process.execPath, [runnerPath, ...args], {
     cwd: repositoryRoot,
@@ -646,34 +661,12 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   await writeFile(join(root, "tests/integration/exits.test.mjs"), "process.exit(42);\n");
   await writeFile(join(root, "tests/integration/empty.test.mjs"), "process.exit(0);\n");
 
-  const exits = run(root, [
-    "run",
-    "exits",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/exits.jsonl",
-    "--results",
-    "results/exits.json",
-  ]);
+  const exits = run(root, laneArgs(root, "exits", "state/exits.jsonl", "results/exits.json"));
   assert.notEqual(exits.status, 0);
   const exitSummary = JSON.parse(await readFile(join(root, "results/exits.json"), "utf8"));
   assert.equal(exitSummary.exitCode, exits.status);
 
-  const empty = run(root, [
-    "run",
-    "empty",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/empty.jsonl",
-    "--results",
-    "results/empty.json",
-  ]);
+  const empty = run(root, laneArgs(root, "empty", "state/empty.jsonl", "results/empty.json"));
   assert.equal(empty.status, 1);
   const emptySummary = JSON.parse(await readFile(join(root, "results/empty.json"), "utf8"));
   assert.deepEqual(
@@ -771,18 +764,7 @@ test("run records a sanitized file failure after all reported cases pass", async
     groups: { ci: ["failure"] },
   });
 
-  const result = run(root, [
-    "run",
-    "failure",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/file-failure.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "failure", "state/file-failure.jsonl", resultsPath));
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 1);
@@ -839,18 +821,8 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     },
   });
 
-  const missingEnv = run(root, [
-    "run",
-    "lane",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/lane.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const args = laneArgs(root, "lane", "state/lane.jsonl", resultsPath);
+  const missingEnv = run(root, args);
   assert.equal(missingEnv.status, 1);
   let summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(
@@ -862,18 +834,7 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
   delete manifest.lanes.lane.requiredEnv;
   manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
   await writeJson(join(root, "manifest.json"), manifest);
-  const missingFileEnv = run(root, [
-    "run",
-    "lane",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/lane.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const missingFileEnv = run(root, args);
   assert.equal(missingFileEnv.status, 1);
   summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(
@@ -882,18 +843,7 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
   );
   delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
-  const selected = run(root, [
-    "run",
-    "lane",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/lane.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const selected = run(root, args);
   assert.equal(selected.status, 1);
   summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
@@ -941,18 +891,7 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
         'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
       ].join("\n"),
     );
-    const escaped = run(root, [
-      "run",
-      "lane",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/lane.jsonl",
-      "--results",
-      resultsPath,
-    ]);
+    const escaped = run(root, args);
     const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
     const escapedSkip = escapedSummary.issues.find(
       (entry) => entry.name === "external skipped suite",
@@ -995,18 +934,7 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
     },
   });
 
-  const result = run(root, [
-    "run",
-    "dispositions",
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    "state/dispositions.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+  const result = run(root, laneArgs(root, "dispositions", "state/dispositions.jsonl", resultsPath));
 
   assert.notEqual(result.status, 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -1091,18 +1019,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
 
   const result = run(
     root,
-    [
-      "run",
-      "isolated",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/isolated.jsonl",
-      "--results",
-      "results/isolated.json",
-    ],
+    laneArgs(root, "isolated", "state/isolated.jsonl", "results/isolated.json"),
     {
       KEEP: "1",
       OCC_RUNTIME_KEEP: "1",
@@ -1161,32 +1078,17 @@ test("QA inputs", async () => {
     lanes: { "qa-matrix": { ...lane, files: [{ path: file }] } },
     groups: { qa: ["qa-matrix"] },
   });
-  const result = run(
-    root,
-    [
-      "run",
-      "qa-matrix",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/qa.json",
-      "--results",
-      "results/qa.json",
-    ],
-    {
-      ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
-      OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
-      OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
-      OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
-      QA_REPOSITORY_FIXTURE: "isolated",
-      OCC_TEST_QA_ARTIFACTS: artifacts,
-      OCC_TEST_QA_INSTALLATION: "compose",
-      OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "console-secrets,git-write",
-    },
-  );
+  const result = run(root, laneArgs(root, "qa-matrix", "state/qa.json", "results/qa.json"), {
+    ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
+    OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
+    OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
+    OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
+    QA_REPOSITORY_FIXTURE: "isolated",
+    OCC_TEST_QA_ARTIFACTS: artifacts,
+    OCC_TEST_QA_INSTALLATION: "compose",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_SCENARIOS: "console-secrets,git-write",
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(await readFile(join(artifacts, "matrix.json"), "utf8")), {
     outcome: "inputs received",
@@ -1220,22 +1122,9 @@ test("run records timeout cancellation without leaking child output", async (t) 
     },
   });
 
-  const result = run(
-    root,
-    [
-      "run",
-      "timeout",
-      "--manifest",
-      "manifest.json",
-      "--root",
-      root,
-      "--state",
-      "state/timeout.jsonl",
-      "--results",
-      resultsPath,
-    ],
-    { CI_RUNNER_TEST_TIMEOUT_MS: "100" },
-  );
+  const result = run(root, laneArgs(root, "timeout", "state/timeout.jsonl", resultsPath), {
+    CI_RUNNER_TEST_TIMEOUT_MS: "100",
+  });
 
   assert.equal(result.status, 1);
   const text = await readFile(resultsPath, "utf8");
@@ -4696,21 +4585,6 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
 // These fixtures hang forever, and their intervals keep the runner alive unless it gives up.
 const hangForever = "new Promise(() => setInterval(() => {}, 1_000))";
 
-function laneArgs(root, lane, statePath, resultsPath) {
-  return [
-    "run",
-    lane,
-    "--manifest",
-    "manifest.json",
-    "--root",
-    root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ];
-}
-
 waitingTest(
   "run gives up on a preparation still running at the lane deadline and names it",
   async (t) => {
@@ -5524,15 +5398,19 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
   });
 });
 
-test("audit fails when a referenced lane cannot be loaded", async (t) => {
-  const root = await fixture(t);
+async function auditManifest(root, { lanes, fileDurations, groups = { ci: Object.keys(lanes) } }) {
   await writeJson(join(root, "manifest.json"), {
     version: 1,
-    lanes: { missing: "./missing-lane.json" },
-    groups: { ci: ["missing"] },
+    ...(fileDurations === undefined ? {} : { fileDurations }),
+    lanes,
+    groups,
   });
+  return run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+}
 
-  const missing = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+test("audit fails when a referenced lane cannot be loaded", async (t) => {
+  const root = await fixture(t);
+  const missing = await auditManifest(root, { lanes: { missing: "./missing-lane.json" } });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
   assert.equal(missing.stdout, "");
@@ -5541,8 +5419,7 @@ test("audit fails when a referenced lane cannot be loaded", async (t) => {
 test("audit rejects obsolete manifest selectors", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/pattern.test.mjs"), "import 'node:test';\n");
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       obsolete: {
         files: [
@@ -5554,12 +5431,8 @@ test("audit rejects obsolete manifest selectors", async (t) => {
         ],
       },
     },
-    groups: {
-      ci: ["obsolete"],
-    },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.message).sort(), [
@@ -5573,8 +5446,7 @@ test("audit rejects invalid file concurrency marks", async (t) => {
   for (const name of ["one", "two"]) {
     await writeFile(join(root, `tests/integration/${name}.test.mjs`), "import 'node:test';\n");
   }
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       marks: {
         fileConcurrency: 0,
@@ -5595,10 +5467,8 @@ test("audit rejects invalid file concurrency marks", async (t) => {
         ],
       },
     },
-    groups: { ci: ["marks"] },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   assert.deepEqual(
     JSON.parse(result.stdout)
@@ -5823,13 +5693,10 @@ test("audit rejects an unusable file duration table", async (t) => {
     files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
   });
   const audit = async (fileDurations) => {
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
+    const result = await auditManifest(root, {
       fileDurations,
       lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
-      groups: { ci: ["one"] },
     });
-    const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
     assert.equal(result.status, 1, result.stdout);
     return JSON.parse(result.stdout).issues.map((entry) => entry.message);
   };
@@ -5856,8 +5723,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
   await mkdir(join(root, "tests/docs"), { recursive: true });
   await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
+  const result = await auditManifest(root, {
     lanes: {
       one: {
         files: [
@@ -5880,7 +5746,6 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     },
   });
 
-  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
   assert.equal(result.status, 1);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [

@@ -192,45 +192,31 @@ and rejects URLs the controller would reject at startup, including any `@` befor
 
 ### External sign-in and trusted proxies
 
-GitHub, Google and OIDC activation is one-way. Keep these inputs when rerendering. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
-the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
-`authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
-`auth.github`, `auth.google` or `auth.oidc` with
-`enabled: true`. GitHub disables native access unless host-only exchange is selected; Google
-disables it, and OIDC keeps it enabled.
-`agentNativeAdminDomain`, `recoveryUserId` and an HTTPS `authBaseUrl` are required.
-Shared-cookie mode derives their non-public cookie suffix; host-only exchange
-requires same-site HTTPS. Optional `passwordSignIn: "recovery-only"` renders
-[`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
-preflight lists attaching every ordinary account's identity first. Follow
-[Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).
-For [GitHub-only native admin](native-admin.md#install-on-an-existing-cluster),
-set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and
-`controlPlane.agentNativeAdminDomain`; omit `controlPlane.sharedCookieDomain`.
+Activation of Google or OIDC sign-in is one-way, so keep the selected provider in
+later renders. `controlPlane.google: {}` uses the chart's Secret defaults.
+`controlPlane.oidc` requires `issuer`, `authorizationUrl`, `tokenUrl` and `jwksUrl`;
+see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
+existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
+set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
+same-site HTTPS Console and Agent domains.
 
-Behind a proxy that adds forwarded headers, such as ingress-nginx, set
-`trustedProxy` ([presets](../../reference/settings/production.md#github-sign-in-and-trusted-proxies));
-it works with or without external sign-in. Without it, preflight warns (it does
-not fail), because an Installation whose API sees each client's own address, such
-as behind a source-preserving NLB, needs none.
+Use `controlPlane.oidc.enrollment` for the
+[enrollment policy](../../reference/authentication/team-enrollment.md), including
+admission, initial Role and Group selection. `controlPlane.github` is rejected;
+existing installations must follow the [upgrade instructions](oidc-upgrade.md).
+Follow [external sign-in activation](production-installation.md#enable-external-browser-sign-in)
+before enabling the provider. Confirm existing users' attachments before selecting
+`passwordSignIn: "recovery-only"`.
 
-```json
-{
-  "controlPlane": {
-    "recoveryUserId": "<administrator user ID>",
-    "github": {
-      "secretName": "occ-github-login"
-    },
-    "google": { "allowedDomains": ["example.com"] },
-    "trustedProxy": { "preset": "ingress-nginx", "cidrs": ["10.42.0.0/16"] }
-  }
-}
-```
+Behind an HTTP proxy, set `trustedProxy` using the
+[supported presets](../../reference/settings/production.md#external-sign-in-and-trusted-proxies).
+Without it, preflight warns because the API cannot identify individual clients
+through a shared proxy address. A source-preserving load balancer needs no preset.
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
 As the chart requires, each credential Secret is dedicated: a sign-in
-`secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
+`secretName` (default `occ-google-login` or `occ-oidc-login`),
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
 `codex.managedServiceAccounts`) and each repository Secret must differ from
@@ -240,10 +226,8 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`github`, `google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`.
-To restrict GitHub sign-in, set [`allowedOrgs` or `allowedTeams`](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist).
-To enroll team members in an existing IAM Group, set [`autoEnrollGroupId`](../../reference/authentication/team-enrollment.md).
-`oidc` also accepts `tokenAuth` and `displayName`.
+`google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`.
+OIDC also accepts `tokenAuth` and `displayName`.
 The `generic` trusted proxy preset requires `trustedProxy.clientAddressHeader`.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
