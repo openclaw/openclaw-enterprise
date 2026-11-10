@@ -39,7 +39,7 @@ import {
 import type { ExternalProviderName } from "./human-login.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
-import { oidcEnrollmentPolicy } from "./oidc-enrollment.ts";
+import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
 import { passwordSignOut } from "./password-sign-out.ts";
@@ -1809,14 +1809,14 @@ export async function createPostgresControllerAuth(
     ...controllerOptions
   } = options;
   const oidc =
-    configuredOidc?.enrollment === undefined
-      ? configuredOidc
+    configuredOidc === undefined
+      ? undefined
       : {
           ...configuredOidc,
-          enrollment: oidcEnrollmentPolicy({
-            ...configuredOidc.enrollment,
-            groupIds: configuredOidc.enrollment.groupIds ?? defaultUserGroupIds,
-          }),
+          enrollment:
+            configuredOidc.enrollment === undefined
+              ? undefined
+              : resolveOidcEnrollmentPolicy(configuredOidc.enrollment, defaultUserGroupIds),
         };
   // Sessions from an external provider instance outside this set (removed, or a changed
   // issuer or client ID) stop authenticating; password sessions are unaffected.
@@ -1865,8 +1865,8 @@ export async function createPostgresControllerAuth(
   }
   if (oidc?.enrollment !== undefined) {
     await persistence!.validateEnrollment({
-      groupIds: oidc.enrollment.groupIds ?? [],
-      role: oidc.enrollment.createAccount.role ?? null,
+      groupIds: oidc.enrollment.groupIds,
+      role: oidc.enrollment.createAccount.role,
     });
   }
   const humanLogin = !guarded

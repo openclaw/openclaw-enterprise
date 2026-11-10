@@ -9,7 +9,11 @@ import {
   type ProviderExchange,
 } from "./provider-transport.ts";
 import { verifyIdToken } from "./id-token.ts";
-import { oidcEnrollmentPolicy, type OidcEnrollmentPolicy } from "./oidc-enrollment.ts";
+import {
+  oidcEnrollmentPolicy,
+  type OidcEnrollmentPolicy,
+  type ResolvedOidcEnrollmentPolicy,
+} from "./oidc-enrollment.ts";
 
 // Generic OpenID Connect sign-in against one operator-configured issuer. The four URLs are
 // configuration copied from the IdP's discovery document; the controller never runs
@@ -18,7 +22,7 @@ import { oidcEnrollmentPolicy, type OidcEnrollmentPolicy } from "./oidc-enrollme
 export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
 
 export interface OidcLoginConfiguration {
-  readonly enrollment?: OidcEnrollmentPolicy;
+  readonly enrollment?: OidcEnrollmentPolicy | undefined;
   // The exact `iss` value, compared byte for byte.
   readonly issuer: string;
   readonly authorizationUrl: string;
@@ -35,6 +39,10 @@ export interface OidcLoginConfiguration {
 // recovery user ID travels with each configured provider.
 export interface OidcSignInConfiguration extends OidcLoginConfiguration {
   readonly recoveryUserId: string;
+}
+
+export interface ResolvedOidcLoginConfiguration extends Omit<OidcLoginConfiguration, "enrollment"> {
+  readonly enrollment?: ResolvedOidcEnrollmentPolicy | undefined;
 }
 
 export const OIDC_DEFAULT_DISPLAY_NAME = "single sign-on";
@@ -189,7 +197,7 @@ export function oidcNonce(secret: string, state: string): string {
 }
 
 export async function exchangeOidcSubject(
-  config: OidcLoginConfiguration,
+  config: ResolvedOidcLoginConfiguration,
   code: string,
   codeVerifier: string,
   redirectURI: string,
@@ -244,11 +252,10 @@ export async function exchangeOidcSubject(
       return {
         subject: claims.sub as string,
         enrollment: {
-          groupIds: policy.groupIds ?? [],
-          createAccount: policy.createAccount.enabled,
-          role: policy.createAccount.role ?? null,
-          policyId: createHash("sha256").update(JSON.stringify(policy)).digest("hex"),
-          profile: async () => oidcEnrollmentProfile(claims),
+          groupIds: policy.groupIds,
+          createAccount: policy.createAccount,
+          policyId: policy.policyId,
+          profile: oidcEnrollmentProfile(claims),
         },
       };
     }
@@ -262,9 +269,11 @@ export async function exchangeOidcSubject(
   }
 }
 
-function oidcEnrollmentProfile(claims: Record<string, unknown>): { email: string; name: string } {
+function oidcEnrollmentProfile(
+  claims: Record<string, unknown>,
+): { email: string; name: string } | undefined {
   if (claims.email_verified !== true || typeof claims.email !== "string") {
-    throw rejected();
+    return undefined;
   }
   const email = claims.email.trim().toLowerCase();
   const name =
@@ -280,7 +289,7 @@ function oidcEnrollmentProfile(claims: Record<string, unknown>): { email: string
     name.includes("\0") ||
     name.length > 200
   ) {
-    throw rejected();
+    return undefined;
   }
   return { email, name };
 }

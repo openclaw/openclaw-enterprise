@@ -1,5 +1,5 @@
 import { APIError } from "better-auth";
-import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";
+import type { ResolvedOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 
 // Bounded HTTP transport shared by the Google and OIDC sign-in providers.
 
@@ -57,12 +57,11 @@ export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABL
 export type ProviderExchange =
   | {
       readonly subject: string;
-      readonly enrollment?: {
-        readonly groupIds: readonly string[];
-        readonly createAccount: boolean;
-        readonly role: AccountEnrollmentRole | null;
-        readonly policyId: string;
-        readonly profile: () => Promise<{ readonly email: string; readonly name: string }>;
+      readonly enrollment?: Pick<
+        ResolvedOidcEnrollmentPolicy,
+        "groupIds" | "createAccount" | "policyId"
+      > & {
+        readonly profile: { readonly email: string; readonly name: string } | undefined;
       };
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }

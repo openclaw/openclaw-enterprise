@@ -30,14 +30,9 @@ import {
   oidcAuthorizationURL,
   oidcNonce,
   oidcProviderId,
-  type OidcLoginConfiguration,
+  type ResolvedOidcLoginConfiguration,
 } from "./oidc.ts";
-import {
-  ProviderUnavailableError,
-  rejected,
-  type ProviderExchange,
-  type ProviderFailure,
-} from "./provider-transport.ts";
+import { rejected, type ProviderExchange, type ProviderFailure } from "./provider-transport.ts";
 import { admissionKey, keyedAdmission } from "./admission.ts";
 import {
   issueKnownDevice,
@@ -49,7 +44,7 @@ import {
 export interface HumanLoginProviders {
   readonly recoveryUserId: string;
   readonly google?: GoogleLoginConfiguration;
-  readonly oidc?: OidcLoginConfiguration;
+  readonly oidc?: ResolvedOidcLoginConfiguration;
   /** `recovery-only` admits only the recovery account's password; absent admits every one. */
   readonly passwordSignIn?: "recovery-only";
 }
@@ -127,7 +122,7 @@ function googleProvider(
 }
 
 function oidcProvider(
-  config: OidcLoginConfiguration,
+  config: ResolvedOidcLoginConfiguration,
   baseURL: string,
   deadlineMs: number | undefined,
 ): ExternalProvider {
@@ -135,7 +130,7 @@ function oidcProvider(
   const callbackURL = new URL("/api/auth/providers/oidc/callback", baseURL).href;
   return {
     providerId,
-    attemptProviderId: `${providerId}:${digest(config.clientSecret)}:${digest(JSON.stringify(config.enrollment ?? null))}`,
+    attemptProviderId: `${providerId}:${digest(config.clientSecret)}:${config.enrollment?.policyId ?? digest("null")}`,
     callbackURL,
     authorizationURL: (secret, state, codeVerifier) =>
       oidcAuthorizationURL(config, state, codeVerifier, callbackURL, oidcNonce(secret, state)),
@@ -561,56 +556,42 @@ export function createHumanLogin(
                 exchange.subject,
                 attempt.createdAt,
               );
-              if (exchange.enrollment !== undefined && !(snapshot && "disabled" in snapshot)) {
+              if (snapshot === undefined) {
+                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
+                  subject: exchange.subject,
+                });
+              }
+              const enrollment = exchange.enrollment;
+              if (enrollment !== undefined && !("disabled" in snapshot)) {
                 let account;
-                if (
-                  snapshot === undefined &&
-                  exchange.enrollment.createAccount !== false &&
-                  !(await state.hasExternalMethod(provider.providerId, exchange.subject))
-                ) {
-                  try {
-                    const profile = await exchange.enrollment.profile();
-                    const prepared = {
-                      id: randomUUID(),
-                      credentialId: randomUUID(),
-                      ...profile,
-                      passwordHash: await ctx.context.password.hash(
-                        randomBytes(48).toString("base64url"),
-                      ),
-                    };
-                    account = { prepared };
-                  } catch (error) {
-                    if (error instanceof ProviderUnavailableError) {
-                      providerUnavailable(provider, name, error.failure);
-                      return rejectExternal(name, "PROVIDER_UNAVAILABLE", attemptId);
-                    }
-                    if (error instanceof APIError) {
-                      return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
-                        subject: exchange.subject,
-                      });
-                    }
-                    throw error;
+                if ("missing" in snapshot) {
+                  if (!enrollment.createAccount.enabled || enrollment.profile === undefined) {
+                    return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
+                      subject: exchange.subject,
+                    });
                   }
+                  const prepared = {
+                    id: randomUUID(),
+                    credentialId: randomUUID(),
+                    ...enrollment.profile,
+                    passwordHash: await ctx.context.password.hash(
+                      randomBytes(48).toString("base64url"),
+                    ),
+                  };
+                  account = {
+                    prepared,
+                    seed: admission.enrollmentPrincipal!(prepared, enrollment.createAccount.role),
+                  };
                 }
                 try {
                   snapshot = await state.enrollExternal({
                     providerId: provider.providerId,
                     subject: exchange.subject,
-                    groupIds: exchange.enrollment.groupIds,
-                    role: exchange.enrollment.role ?? null,
-                    policyId: exchange.enrollment.policyId,
+                    groupIds: enrollment.groupIds,
+                    role: enrollment.createAccount.role,
+                    policyId: enrollment.policyId,
                     attemptCreatedAt: attempt.createdAt,
-                    ...(account === undefined
-                      ? {}
-                      : {
-                          account: {
-                            prepared: account.prepared,
-                            seed: admission.enrollmentPrincipal!(
-                              account.prepared,
-                              exchange.enrollment.role,
-                            ),
-                          },
-                        }),
+                    ...(account === undefined ? {} : { account }),
                   });
                 } catch (error) {
                   if (error instanceof ResourceConflictError) {
@@ -621,7 +602,7 @@ export function createHumanLogin(
                   throw error;
                 }
               }
-              if (!snapshot) {
+              if (snapshot === undefined || "missing" in snapshot) {
                 return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId, {
                   subject: exchange.subject,
                 });

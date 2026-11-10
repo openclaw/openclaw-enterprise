@@ -281,10 +281,16 @@ and infers no grants.
 ### 6. Enroll an OIDC identity
 
 `auth/oidc-enrollment.ts:oidcEnrollmentPolicy` validates and canonicalizes the
-operator policy. Composition applies configured IAM first, then verifies Role,
-Namespace and Group references. `auth/oidc.ts:oidcEnrollmentProfile` requires a
-standard verified email for creation. The callback hashes a random password and
-asks native IAM for the configured initial binding or no direct grant.
+operator policy. `resolveOidcEnrollmentPolicy` resolves default Groups and computes
+the policy fingerprint once during composition. Composition applies configured
+IAM first, then verifies Role, Namespace and Group references.
+`auth/oidc.ts:oidcEnrollmentProfile` returns a profile only for a standard verified
+email. The callback receives that profile as data.
+
+`snapshotExternal` distinguishes missing identities from refused existing
+identities. Only a missing identity can start account creation, and creation
+requires a valid profile. The callback hashes a random password and asks native
+IAM for the configured initial binding or no direct grant.
 
 `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication.enrollExternal`
 serializes the provider/subject, holds the shared IAM configuration lock, validates

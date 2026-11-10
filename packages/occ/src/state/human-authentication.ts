@@ -783,33 +783,27 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  /** Distinguishes an absent identity from an attached identity whose login proof is stale. */
-  async hasExternalMethod(providerId: string, subject: string): Promise<boolean> {
-    return this.state.transact(async (unit) => {
-      const [method] = await this.query(
-        unit,
-        "SELECT 1 FROM occ.account WHERE provider_id = $1 AND account_id = $2",
-        [providerId, subject],
-      );
-      return method !== undefined;
-    });
-  }
-
+  /** Missing identities may enroll; refused existing identities must never be recreated. */
   async snapshotExternal(
     providerId: string,
     subject: string,
     attemptCreatedAt?: Date,
-  ): Promise<HumanAuthenticationSnapshot | DisabledExternalAccount | undefined> {
+  ): Promise<
+    HumanAuthenticationSnapshot | DisabledExternalAccount | { readonly missing: true } | undefined
+  > {
     if (providerId === "credential") {
       return undefined;
     }
     return this.state.transact(async (unit) => {
       const [method] = await this.query(
         unit,
-        `SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2 AND identity_only`,
+        `SELECT user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2`,
         [providerId, subject],
       );
       if (method === undefined) {
+        return { missing: true };
+      }
+      if (method.identity_only !== true) {
         return undefined;
       }
       const user = await this.lockUser(unit, method.user_id as string);

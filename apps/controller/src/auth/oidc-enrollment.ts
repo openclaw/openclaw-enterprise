@@ -1,13 +1,30 @@
+import { createHash } from "node:crypto";
 import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";
 
 export interface OidcEnrollmentPolicy {
   readonly admission: { readonly groupsClaim: string; readonly anyOf: readonly string[] };
   readonly additionalScopes: readonly string[];
-  readonly createAccount: {
-    readonly enabled: boolean;
-    readonly role?: AccountEnrollmentRole | null;
-  };
+  readonly createAccount:
+    | { readonly enabled: false; readonly role: null }
+    | { readonly enabled: true; readonly role: AccountEnrollmentRole | null };
   readonly groupIds?: readonly string[];
+}
+
+export interface ResolvedOidcEnrollmentPolicy extends OidcEnrollmentPolicy {
+  readonly groupIds: readonly string[];
+  readonly policyId: string;
+}
+
+/** Resolve installation defaults once, before binding attempts to this policy. */
+export function resolveOidcEnrollmentPolicy(
+  policy: OidcEnrollmentPolicy,
+  defaultGroupIds: readonly string[],
+): ResolvedOidcEnrollmentPolicy {
+  const resolved = { ...policy, groupIds: policy.groupIds ?? strings(defaultGroupIds) };
+  return Object.freeze({
+    ...resolved,
+    policyId: createHash("sha256").update(JSON.stringify(resolved)).digest("hex"),
+  });
 }
 
 function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -52,7 +69,7 @@ export function oidcEnrollmentPolicy(value: unknown): OidcEnrollmentPolicy {
   if (typeof enabled !== "boolean" || (!enabled && create.role !== undefined)) {
     throw new Error("OIDC enrollment has an invalid account creation policy.");
   }
-  let role: AccountEnrollmentRole | null | undefined;
+  let role: AccountEnrollmentRole | null = null;
   if (enabled) {
     if (create.role === null) {
       role = null;
@@ -77,7 +94,7 @@ export function oidcEnrollmentPolicy(value: unknown): OidcEnrollmentPolicy {
   return Object.freeze({
     admission: Object.freeze({ groupsClaim: text(admission.groupsClaim), anyOf }),
     additionalScopes,
-    createAccount: Object.freeze({ enabled, ...(role === undefined ? {} : { role }) }),
+    createAccount: Object.freeze(enabled ? { enabled, role } : { enabled, role: null }),
     ...(policy.groupIds === undefined ? {} : { groupIds: strings(policy.groupIds) }),
   });
 }
