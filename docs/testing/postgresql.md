@@ -59,20 +59,49 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+## Subnet pool exhaustion
+
+If Compose reports `all predefined address pools have been fully subnetted`,
+Docker could not allocate a subnet for the project network. Stop the run if it
+is still active. If its cleanup did not finish, run the printed command from the
+original checkout:
+
+```sh
+node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json
+```
+
+Cleanup uses the recorded Compose project, port, and bootstrap file. It tears
+down the project's containers, network, and disposable volume, even after partial
+startup. Keep the state and bootstrap directory if cleanup fails. Retry cleanup
+after resolving the error. `pnpm db:down` stops the development project and
+retains its volume.
+
+On a shared Docker host, ask the administrator to coordinate teardown with
+each project's owner. An empty bridge can still belong to a project with stopped
+containers and a named volume. Avoid global pruning and changes to shared
+daemon address pools. If capacity remains exhausted, ask for an isolated Docker
+host and start with a fresh run directory.
+
 <a id="postgresql"></a>
 
 ## Other PostgreSQL suites
 
-Use Docker Compose and fresh database names. The bootstrap suite needs a
-separate, migrated database with no Installation. It creates an Installation;
-do not rerun it against a previous bootstrap database. If a name exists,
-choose another name instead of dropping it.
+Run `pnpm db:up` from one checkout and reuse its PostgreSQL service on port 55432
+for standalone tests. Run the Compose setup commands from that checkout and
+create fresh disposable databases on the shared development server. Use the
+isolated workflow above for version-worker tests and full CI lanes.
+
+The bootstrap test creates an Installation. Give it a fresh migrated database
+with no Installation. The [Kubernetes HTTP fixture](kubernetes.md#kubernetes-http-fixture)
+uses `openclaw_k8s_local`. If a test database name is already in use, choose a
+new name in both setup and the test URL. Keep the `openclaw_k8s_` prefix for the
+Kubernetes fixture.
 
 ```sh
 pnpm db:up
 (
 set -eu
-for test_database in openclaw_test_local openclaw_bootstrap_local openclaw_k8s_local; do
+for test_database in openclaw_test_local openclaw_bootstrap_local openclaw_singleton_local openclaw_k8s_local; do
   docker compose -f compose.postgres.yaml exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
     -c "CREATE DATABASE $test_database"
   docker compose -f compose.postgres.yaml exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d "$test_database" \
@@ -84,10 +113,11 @@ done
 
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
+  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs
 OCC_PRODUCTION_WIREUP_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_bootstrap_local \
-  node --test --test-concurrency=1 tests/integration/postgres-platform-state.test.mjs \
-  tests/integration/postgres-production-wireup.test.mjs \
-  tests/integration/compute-singleton-worker-postgres.test.mjs
+  node --test --test-concurrency=1 tests/integration/postgres-production-wireup.test.mjs
+OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_singleton_local \
+  node --test --test-concurrency=1 tests/integration/compute-singleton-worker-postgres.test.mjs
 ```
 
 The bootstrap test uses passive Compute and test Drivers: it does not prove a
