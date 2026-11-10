@@ -287,6 +287,24 @@ try {
     () => ({ status: 0 }),
     (error) => error.result ?? {},
   );
+  if (runner.status !== 0) {
+    // Report only a known phase, source location, or failure category. Both raw streams
+    // and the runner's private diagnostics can contain the synthetic credentials.
+    const resultText = await readFile(privateResult, "utf8").catch(() => "");
+    const text =
+      String(runner.stderr) +
+      String(runner.stdout) +
+      resultText +
+      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
+        () => "",
+      ));
+    // Optional journey records may be incomplete when the test fails.
+    console.error(
+      "Installed test failed (%s, runner-exit=%s)",
+      skipperFailureSummary(resultText, process.cwd(), text),
+      runner.code ?? "unknown",
+    );
+  }
   const ledger = await readFile(join(directory, "compute-journey.jsonl"), "utf8").catch(() => "");
   const entries = ledger
     .trim()
@@ -299,16 +317,6 @@ try {
     progress(name);
   }
   if (runner.status !== 0) {
-    // Report only a known phase, source location, or failure category. Both raw streams
-    // and the runner's private diagnostics can contain the synthetic credentials.
-    const resultText = await readFile(privateResult, "utf8").catch(() => "");
-    const text =
-      String(runner.stderr) +
-      String(runner.stdout) +
-      resultText +
-      (await readFile(join(directory, "runner-state.json.diagnostics.json"), "utf8").catch(
-        () => "",
-      ));
     const chat = entries.find((e) => e.phase === "gateway-chat-refused");
     if (chat) {
       const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
@@ -392,12 +400,7 @@ try {
       "native-command-and-model-observed",
     ];
     const last = records.filter((p) => known.includes(p)).at(-1) ?? "before first test checkpoint";
-    console.error(
-      "Installed test failed after %s (%s, runner-exit=%s)",
-      last,
-      skipperFailureSummary(resultText, process.cwd(), text),
-      runner.code ?? "unknown",
-    );
+    console.error("Last observed installed test checkpoint: %s", last);
     assert.fail("selected test runner failed");
   }
   assert.deepEqual(observed, proof);

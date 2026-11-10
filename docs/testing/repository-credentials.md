@@ -188,9 +188,10 @@ categories; absent or malformed records retain the bounded fallback summary.
 Receiver failures distinguish transport, interrupted response bodies, and invalid
 JSON without printing response content. A failed `kubectl exec` reports
 `gateway-exec` with its available exit code or signal. Model observations are
-best-effort: unavailable counts appear as `unknown`, and diagnostic failures do
+best-effort: unavailable or replaced log history appears as `unknown`, and each
+optional model or Pod log read has a ten-second timeout. Diagnostic failures do
 not replace the failed request. The receiver category and HTTP status remain in
-the runner summary even when the optional journey log cannot be written. These categories identify where the check failed;
+the runner summary even when the optional journey log cannot be written or parsed. These categories identify where the check failed;
 they do not establish why the Gateway or native command failed.
 
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),

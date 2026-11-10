@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import pg from "pg";
 import {
   runSkipperOperation,
@@ -58,11 +58,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   assert.equal(modelContainer, "oce-first-agent-smoke-model");
   assert.match(clusterUID, /^[a-f0-9-]{36}$/);
   assert.equal(input.sourceCommit, (await exec("git", ["rev-parse", "HEAD"])).stdout.trim());
-  const kubectl = (...args) =>
+  const kubectlWithTimeout = (timeout, ...args) =>
     exec("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], {
       maxBuffer: 8 * 1024 * 1024,
-      timeout: 240_000,
+      timeout,
     });
+  const kubectl = (...args) => kubectlWithTimeout(240_000, ...args);
   const kc = async (...args) => (await kubectl(...args)).stdout;
   const resource = async (...args) => JSON.parse(await kc("get", ...args, "-o", "json"));
   const uid = async () => (await resource("namespace", "kube-system")).metadata.uid;
@@ -376,7 +377,10 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       });
       try {
         const after = await modelEvents(AbortSignal.timeout(10_000)).catch(() => undefined);
-        const events = before && after ? after.slice(before.length) : undefined;
+        const events =
+          before?.length && after && isDeepStrictEqual(after.slice(0, before.length), before)
+            ? after.slice(before.length)
+            : undefined;
         const nonce = prompt.match(/OCE_SMOKE_[a-f0-9-]+/)?.[0];
         // Do not retain runtime logs. An allowlisted signal can distinguish a native thread
         // sandbox failure before the first model request from an observed transport failure.
@@ -385,7 +389,8 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
             [gateway, "gateway"],
             [harness, "agent"],
           ].map(([pod, container]) =>
-            kc(
+            kubectlWithTimeout(
+              10_000,
               "logs",
               pod.metadata.name,
               "-n",
@@ -395,7 +400,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
               "--since-time=" + since,
               "--tail=200",
               "--limit-bytes=65536",
-            ),
+            ).then(({ stdout }) => stdout),
           ),
         ).then(
           (logs) => {
@@ -475,8 +480,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     (await exec("docker", ["logs", modelContainer], { maxBuffer: 8 * 1024 * 1024, signal })).stdout
       .trim()
       .split("\n")
-      .filter((l) => l.startsWith("{"))
-      .map((l) => JSON.parse(l));
+      .filter(Boolean)
+      .map((line) => {
+        const event = JSON.parse(line);
+        assert.ok(event && !Array.isArray(event) && typeof event.event === "string");
+        return event;
+      });
   const controlFile = join(modelDirectory, "skipper-command.json");
   const sendScript = async (cmd, label) => {
     const marker = "skipper-" + randomUUID();
