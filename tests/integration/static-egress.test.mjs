@@ -222,6 +222,12 @@ test("model request installation survives a material epoch change but fences pol
   f.observed.config.provider_env_revision = "11";
   assert.equal(await verify(), true, "a completed material refresh preserves model authorization");
 
+  // The stock uint64 fingerprint has no reserved zero. Proto3 omits that scalar,
+  // so two canonical zero observations remain a valid acknowledged epoch.
+  delete admission.provider_env_revision;
+  delete f.observed.config.provider_env_revision;
+  assert.equal(await verify(), true, "canonical proto3 zero remains a valid material epoch");
+  admission.provider_env_revision = "11";
   f.observed.config.provider_env_revision = "12";
   assert.equal(await verify(), false, "an unacknowledged material epoch still fails closed");
   f.observed.config.provider_env_revision = "11";
