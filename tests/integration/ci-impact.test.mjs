@@ -1048,10 +1048,16 @@ function mainPushEvent(f, overrides = {}) {
 }
 
 test("main push uses the before-tree policy to select and verify documentation", async (t) => {
-  const [f, shallow] = await policyFixture(t, ({ put }) => {
-    docsChange({ put });
-    put("docs/docs.json", '{"navigation":{}}\n');
-  });
+  const navigation = await fixture(
+    t,
+    ({ put }) => put("docs/docs.json", '{"navigation":{"tabs":[]}}\n'),
+    { "scripts/ci/impact.mjs": policy, "docs/docs.json": '{"navigation":{}}\n' },
+  );
+  mainPushEvent(navigation);
+  await navigation.expect("docs", mainPushEnvironment, "docs_only");
+  await (await shallowBootstrap(navigation)).expect("docs", mainPushEnvironment, "docs_only");
+
+  const [f, shallow] = await policyFixture(t, docsChange);
   mainPushEvent(f);
   await f.expect("docs", mainPushEnvironment, "docs_only");
   await shallow.expect("docs", mainPushEnvironment, "docs_only");

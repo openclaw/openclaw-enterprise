@@ -69,9 +69,9 @@ policy; the second parent must match the event head. Canonical main pushes compa
 the complete `before` to verified `after` range using `before` policy. Missing history,
 forced pushes, and older policies retain full CI.
 Path decoding preserves leading UTF-8 BOMs.
-`scripts/ci/impact.mjs:documentationPath` admits regular Markdown and `docs/docs.json`
+`scripts/ci/impact.mjs:documentationPath` admits allowlisted Markdown and `docs/docs.json`
 changes to docs mode. Generated API references (including `docs/reference/api/`),
-executables, symlinks and other JSON require full CI.
+executables and symlinks require full CI.
 
 Registered test changes may include docs and their own lane-manifest entries. CI runs
 the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and uses
