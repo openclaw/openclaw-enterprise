@@ -182,8 +182,9 @@ and give the Agent one explicit `github-repository` binding per repository. The
 bindings must share the same Git permission level, read or write. The Worker
 checks every binding before each redemption and requests one token for the
 exact set. Removing A from A+B invalidates the current execution's Git
-approvals for both repositories. B can resume once a new execution admits
-the B-only set. Other executions keep their own grants.
+approvals for both repositories. A verified mixed online execution can keep
+its required model route. B can resume Git once a new execution admits the
+B-only set. Other executions keep their own grants.
 
 Configure the Worker’s HTTPS `/token` listener on a port separate from its
 middleware authority. Set `assertionSource: openshell_gateway`, the exact
@@ -221,13 +222,15 @@ Run these checks against the exact images and configuration selected for rollout
    model source's IAM grant and confirm that model requests cannot reach their
    origin while authorized Git still works. Restore that grant, then remove
    Git [standing approval](../repository-credentials.md#keep-git-access-on-the-same-running-agent)
-   with its current generation. Verify that fresh Git requests are denied with
-   no new origin request. Version 9 may retire the entire runtime on Git removal;
-   record that outcome. Continued inference after this removal is not guaranteed.
+   with its current generation. After Worker cleanup, verify that a fresh Git
+   request on the same inspected connection is denied before reaching the
+   origin, even with a warm credential. Compare the Sandbox, workload and
+   policy generation, then complete a new model turn in the original
+   conversation.
 
-Keep the saved bindings unchanged during these checks. Removing a model or
-Git binding may stop or redeploy the execution; version 9 does not support live
-policy reduction that keeps the other path running.
+Keep the saved bindings in place during these checks. Optional Git withdrawal
+takes effect at OCC on the next request. Removing a saved model or Git binding
+may stop or redeploy the execution.
 
 Middleware refusal reports `request_credential_denied`. A token response of
 `invalid_client` points to identity, trust or audience; `invalid_grant` points to
