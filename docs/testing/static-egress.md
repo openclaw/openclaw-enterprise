@@ -287,8 +287,8 @@ parameters, which can override host or database. Keep both files and credentials
 
 Set `authorityProfile: "fresh-whole-execution"` and omit `credentialConnector`.
 This lane requires execution authority, all five supplier capabilities, and a
-loaded managed policy with no caller executable list. Run it from the candidate
-checkout named by `oceCommit`.
+loaded managed policy with the `/**` binary matcher on each model route. Run it
+from the candidate checkout named by `oceCommit`.
 
 With those prerequisites ready, select a fresh result directory:
 
