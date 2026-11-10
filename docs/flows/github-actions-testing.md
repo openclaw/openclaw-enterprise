@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4
+last_updated_session: authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594
 ---
 
 # GitHub Actions testing flow
@@ -260,6 +260,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:53: Trace cache observations. (authoring-run/9ff30b3c-1145-4acb-9fa3-8a4eb3a5e594 - dd7a47c0e1d7428068bdc79d311ceb07fbea767f)
 
 - 2026-11-10 10:38: Reconcile builder reuse and live progress documentation. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 280ae7e6db4b38b68bd76bd7aefdd7d874d28bbd)
 

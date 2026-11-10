@@ -266,6 +266,21 @@ async function fakeCommand({
         return finish();
       }
     }
+    if (scenario === "cache-progress" && equals(args.slice(0, 2), ["buildx", "build"])) {
+      // Probe and load deliberately differ: a load can reuse work from the probe.
+      // Include private-looking text to prove the summary never forwards raw output.
+      const probe = args.includes("--metadata-file");
+      stderr(
+        (probe
+          ? "#1 importing cache manifest from https://cache.example.test/private-step\n"
+          : "") +
+          "#2 [openclaw-build 1/2] RUN synthetic-cache-credential\n" +
+          "#2 CACHED\n#2 CACHED\n" +
+          "#3 [openclaw-build 2/2] RUN synthetic-build-command\n" +
+          (probe ? "#3 DONE 1.0s\n" : "#3 CACHED\n") +
+          "synthetic-build-output\n",
+      );
+    }
     // The cache-only probe reports each image's config digest. In the engine-*
     // scenarios the cache resolves to images the engine may hold: engine-holds-images
     // holds both; the others fail one step of the probe.

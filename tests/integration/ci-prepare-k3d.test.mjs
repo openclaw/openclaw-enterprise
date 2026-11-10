@@ -100,12 +100,41 @@ async function interceptFixtureDocker(t, commands, scriptFor) {
   await writeFixtureCommand(engine, "docker", server);
 }
 
+// Exercise the real preparation log projection with controlled command output;
+// these counters do not establish a remote cache hit or live BuildKit behavior.
+function assertImageCacheObservations(stderr, lane) {
+  const prefix = `[prepare:${lane}] `;
+  const records = stderr.split("\n").flatMap((line) => {
+    if (!line.startsWith(prefix + "{")) {
+      return [];
+    }
+    const record = JSON.parse(line.slice(prefix.length));
+    return record.stage === "image-cache" ? [record] : [];
+  });
+  assert.equal(records.length, 4, "one summary per image and completed probe/load");
+  for (const role of ["controller", "runtime"]) {
+    assert.deepEqual(
+      records.filter((record) => record.role === role),
+      ["probe", "load"].map((phase) => ({
+        stage: "image-cache",
+        role,
+        phase,
+        cacheImports: phase === "probe" ? 1 : 0,
+        cachedSteps: phase === "probe" ? 1 : 2,
+        openclawBuildSteps: 2,
+        openclawBuildCached: phase === "probe" ? 1 : 2,
+      })),
+    );
+  }
+  assert.doesNotMatch(stderr, /private-step|synthetic-build-command|synthetic-build-output/);
+}
+
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
 describe("CI k3d preparation", { concurrency: true }, () => {
   for (const lane of ["slack", "production-tui"]) {
     test(`${lane} prepares checkout images with read-only BuildKit caches`, async (t) => {
-      const commands = await fixtureImageCommands(t, "success", lane, {
+      const commands = await fixtureImageCommands(t, "cache-progress", lane, {
         GITHUB_ACTIONS: "true",
         OCC_CI_IMAGE_CACHE: "1",
         ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
@@ -138,6 +167,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       assert.equal(prepared.status, 1);
       assertStderrMatch(prepared.stderr, /synthetic import stop/);
       assert.equal(imports, 1);
+      assertImageCacheObservations(prepared.stderr, lane);
       const calls = await commands.commands();
       const builds = calls.filter(({ args }) => args[0] === "buildx" && args[1] === "build");
       assert.equal(builds.length, 4, "probe and load both checkout images");
@@ -166,6 +196,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
         );
         assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
+        assert.ok(args.includes("--progress=plain"));
       }
       assert.equal(
         calls.some(({ args }) =>
@@ -189,7 +220,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     });
   }
   test("Gateway Routing prepares checkout images with read-only BuildKit caches", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "gateway-routing", {
+    const commands = await fixtureImageCommands(t, "cache-progress", "gateway-routing", {
       GITHUB_ACTIONS: "true",
       OCC_CI_IMAGE_CACHE: "1",
       ACTIONS_RUNTIME_TOKEN: "synthetic-cache-credential",
@@ -211,6 +242,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(prepared.status, 1);
     assertStderrMatch(prepared.stderr, /synthetic import stop/);
     assert.equal(imports, 1);
+    assertImageCacheObservations(prepared.stderr, "gateway-routing");
     const calls = await commands.commands();
     const builds = calls.filter(
       ({ command, args }) => command === "docker" && args[0] === "buildx" && args[1] === "build",
@@ -233,6 +265,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
       );
       assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
+      assert.ok(args.includes("--progress=plain"));
     }
     assert.equal(
       calls.some(({ args }) =>
