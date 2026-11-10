@@ -1090,7 +1090,10 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
 
 /** The selected Driver proved that this execution's repository access cannot be resumed.
  * Missing evidence or a failed dependency read must not produce this terminal result. */
@@ -1126,12 +1129,10 @@ export class ComputePreparationFailedError extends Error {
 }
 
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;

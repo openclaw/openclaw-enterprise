@@ -1,3 +1,4 @@
+import { emitOpenShellProgress } from "../../scripts/ci/openshell-progress.mjs";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
 import {
   openShellGatewayGrpcChannel,
@@ -7939,6 +7940,7 @@ const sandboxPhaseByStage = {
 // administrator-origin chat. Direct tools.invoke probes are recorded separately:
 // an unavailable tool in a model response is not an invocation-denial proof.
 async function measureOpenShellStage(context, stage, operation) {
+  emitOpenShellProgress(stage, "started");
   const started = performance.now();
   let outcome = "failed";
   try {
@@ -7947,6 +7949,7 @@ async function measureOpenShellStage(context, stage, operation) {
     return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
+    emitOpenShellProgress(stage, outcome);
     if (stage !== "exposure-auth") {
       context.diagnostic(
         `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-stage", stage, outcome, elapsedMs })}`,

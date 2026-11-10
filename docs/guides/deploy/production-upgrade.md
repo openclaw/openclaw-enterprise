@@ -79,21 +79,19 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review runtime drafts; deployments snapshot them.
+Review runtime drafts; deployments snapshot them. Every upgrade needs the serving
+API’s inventory endpoint. Controller-only upgrades also read retained revisions
+with `occ agent revision`, requiring saved Harness settings and an accepted
+[repository restart disposition](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments refuse retention, including on the first upgrade from an
+older controller. Stop and settle affected Agents under an authorized interruption,
+or plan normal runtime replacement. Missing or denied inventory is not an empty
+fleet. A changed pre-stop inventory requires new preparation. Git continuity still
+requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
-Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
-also need exact revision reads for retained running Agents.
-
-Controller-only upgrades read each active revision with `occ agent revision`,
-refusing missing or unreadable Harness settings before stopping OCC. Plan an
-authorized replacement, or stop and settle the Agent before upgrading, then deploy
-reviewed drafts. Git session continuity still requires the
-[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
-
-For OpenShell, a controller change to the generated Harness command requires a
-fresh Agent revision. Existing Sandboxes require the same launch specification;
-a controller-only upgrade cannot reuse them with a changed command. Plan an
-authorized redeployment from reviewed drafts, even if the runtime image is unchanged.
+For OpenShell, changed Harness commands require fresh Agent revisions: existing
+Sandboxes require the original launch specification. Plan an authorized redeployment
+from reviewed drafts, even with an unchanged runtime image.
 
 If a controller-only release changes Pod specs, the new worker restarts affected
 Agent Pods once on the same image. A broker restart recreates
@@ -182,8 +180,7 @@ at these paths for recovery.
 
 ### Apply other Installation changes
 
-An upgrade keeps your Installation YAML. A candidate that changes any setting
-other than these Plugin Driver changes stops the helper with `candidate
+Unsupported candidate settings stop the helper with `candidate
 Installation changes a protected setting`. Apply other changes, such as newly
 recommended resource values, separately with
 [apply other Installation changes](production-installation-changes.md).

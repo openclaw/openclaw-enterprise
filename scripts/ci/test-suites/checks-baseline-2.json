@@ -64,6 +64,7 @@
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
     "tests/integration/ci-download-pinned.test.mjs",
+    "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
@@ -281,6 +282,9 @@
     },
     {
       "path": "tests/integration/ci-download-pinned.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

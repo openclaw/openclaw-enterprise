@@ -21,6 +21,8 @@ import { OpenShellServiceTransportError } from "../../apps/controller/src/driver
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
@@ -45,7 +47,10 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   const requests = [];
   let answer = { authMethod: null, authToken: null, requiresOpenaiAuth: true };
   let hold = false;
+  let requirements = null;
   let advertisedPort = 9443;
+  let transportToken = TOKEN;
+  let targetPort = 8080;
   const negotiated = [];
   let plainRequests = 0;
   const gateway = createSecureServer(
@@ -58,7 +63,7 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   gateway.on("secureConnection", (socket) => negotiated.push(socket.alpnProtocol));
   gateway.on("upgrade", (request, socket, head) => {
     assert.equal(request.headers.host, `codex.example.test:${advertisedPort}`);
-    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
+    assert.equal(request.headers.authorization, `Bearer ${transportToken}`);
     peers.handleUpgrade(request, socket, head, (peer) => {
       peers.emit("connection", peer);
       peer.on("message", (data) => {
@@ -76,6 +81,8 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
               },
             }),
           );
+        } else if (message.method === "configRequirements/read") {
+          peer.send(JSON.stringify({ id: message.id, result: { requirements } }));
         } else if (message.method === "getAuthStatus") {
           if (hold) {
             gateway.emit("auth-held", peer);
@@ -106,9 +113,10 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   });
   t.after(() => untrusted.close());
   assert.equal(
-    await untrusted.serviceCodexPatStatus(
+    await untrusted.serviceCodexReadinessStatus(
       "https://codex.example.test:9443/",
       TOKEN,
+      true,
       AbortSignal.timeout(5_000),
     ),
     "unavailable",
@@ -119,7 +127,7 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   client.getService = async (_workspace, sandbox, name) => ({
     sandbox,
     name,
-    targetPort: 8080,
+    targetPort,
     authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
     url: `https://codex.example.test:${advertisedPort}/`,
     advertisedUrl: `https://codex.example.test:${advertisedPort}/`,
@@ -148,11 +156,11 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
       },
     },
     {
-      id: "openshell-sandbox",
+      id: "sandbox-provider",
       implementation: "openshell",
       backend: {
         id: "openshell",
-        drivers: { sandbox: "openshell-sandbox" },
+        drivers: { sandbox: "sandbox-provider" },
         client: new OpenShellGateway(
           { serviceName: "openshell-gateway" },
           { gatewayClient: client },
@@ -202,20 +210,117 @@ test("OpenShell PAT readiness requires the serving process's authentication thro
   }
   answer = { authMethod: "personalAccessToken", authToken: null, requiresOpenaiAuth: true };
   assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  // Native requirements include complete managed instructions. A legitimate
+  // policy larger than the small status budget must still reach PAT readiness.
+  requirements = {
+    allowedSandboxModes: ["read-only", "workspace-write", "danger-full-access"],
+    additionalDeveloperInstructions: "Native managed instruction. ".repeat(1_000),
+  };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
+  // The policy allowance must not enlarge the authentication/status budget.
+  answer = { ...answer, extra: "x".repeat(20_000) };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  delete answer.extra;
+  // Oversized policy responses fail closed before asking for authentication.
+  requirements = { modelProviders: { managed: { name: "x".repeat(1024 * 1024) } } };
+  const beforeOversized = requests.length;
+  await assert.rejects(driver.harnessStatus(context), {
+    code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+  });
+  assert.ok(!requests.slice(beforeOversized).some(({ method }) => method === "getAuthStatus"));
+  // Size alone is not enough to classify malformed or incomplete policy evidence.
+  requirements = { ...requirements, allowedSandboxModes: [true] };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  requirements = { modelProviders: { managed: { name: "x".repeat(2 * 1024 * 1024) } } };
+  assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  // A hydrated PAT and an allowed profile name still cannot activate a
+  // runtime whose effective sandbox policy excludes that profile's mode.
+  requirements = {
+    allowedSandboxModes: ["read-only", "workspace-write"],
+    allowedPermissionProfiles: { ":danger-full-access": true },
+  };
+  for (const target of [
+    context,
+    { ...context, revision: { ...context.revision, harnessAuth: undefined } },
+  ]) {
+    await assert.rejects(driver.harnessStatus(target), {
+      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    });
+  }
+  for (const policy of [
+    { allowedPermissionProfiles: { ":workspace": true } },
+    { allowedApprovalsReviewers: ["auto_review"] },
+  ]) {
+    requirements = policy;
+    await assert.rejects(driver.harnessStatus(context), {
+      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+    });
+  }
+  for (const policy of [
+    undefined,
+    { allowedSandboxModes: [true] },
+    { allowedSandboxModes: ["danger-full-access", "unrecognized"] },
+    { allowedApprovalsReviewers: ["user", "unrecognized"] },
+    { allowedApprovalsReviewers: ["unrecognized"] },
+  ]) {
+    requirements = policy;
+    assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
+  }
+  requirements = { allowedSandboxModes: ["danger-full-access"] };
+  const beforeNonPat = requests.length;
+  assert.deepEqual(
+    await driver.harnessStatus({
+      ...context,
+      revision: { ...context.revision, harnessAuth: undefined },
+    }),
+    { state: "serving" },
+  );
+  assert.ok(!requests.slice(beforeNonPat).some(({ method }) => method === "getAuthStatus"));
+  requirements = null;
   // A valid backend service port must not inherit Fetch's browser-only port blocklist.
   // The real TLS endpoint remains on its ephemeral port; advertised Host selects the service.
   advertisedPort = 10080;
   assert.deepEqual(await driver.harnessStatus(context), { state: "serving" });
   assert.equal(plainRequests, 0, "an upgraded Harness must not receive a plain status request");
-  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 7);
+  assert.equal(requests.filter(({ method }) => method === "getAuthStatus").length, 9);
   assert.ok(
     requests
       .filter(({ method }) => method === "getAuthStatus")
       .every(({ params }) => params.includeToken === false && params.refreshToken === false),
   );
   assert.ok(
-    requests.every(({ method }) => ["initialize", "initialized", "getAuthStatus"].includes(method)),
+    requests.every(({ method }) =>
+      ["initialize", "initialized", "configRequirements/read", "getAuthStatus"].includes(method),
+    ),
   );
+
+  // Compose the real Compute readiness caller with the real Sandbox and TLS
+  // service transport. Kubernetes/provisioning remain the existing in-memory
+  // fixture; the controlled JSON-RPC peer supplies policy data.
+  const compute = providerEndpointFixture();
+  compute.sandbox.harnessStatus = driver.harnessStatus.bind(driver);
+  await compute.prepare();
+  compute.setGatewayServing();
+  compute.setSetupAvailable(true);
+  compute.observePods([compute.pod("ready")]);
+  transportToken = "test-transport";
+  targetPort = 18_790;
+  requirements = { allowedSandboxModes: ["read-only"] };
+  await assert.rejects(compute.prepare(), {
+    code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+  });
+  requirements = null;
+  assert.equal((await compute.prepare()).ready, true);
+  // A policy change after preparation must block Gateway replacement as well.
+  requirements = { allowedSandboxModes: ["read-only"] };
+  const beforeActivation = compute.writes.length;
+  await assert.rejects(compute.activate(), {
+    code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+  });
+  assert.equal(compute.writes.length, beforeActivation);
+  transportToken = TOKEN;
+  targetPort = 8080;
+  requirements = null;
 
   // A connected but unresponsive process must retain the existing bounded read
   // and caller cancellation semantics, without spending a model request.
@@ -281,6 +386,8 @@ test("OpenShell PAT status closes unresponsive upgraded peers within its cleanup
               platformFamily: "unix",
               platformOs: "linux",
             });
+          } else if (message.method === "configRequirements/read") {
+            reply(message.id, { requirements: null });
           } else if (message.method === "getAuthStatus") {
             if (outcome === "serving") {
               reply(message.id, {
@@ -323,9 +430,10 @@ test("OpenShell PAT status closes unresponsive upgraded peers within its cleanup
         }),
       );
       const started = performance.now();
-      const reading = client.serviceCodexPatStatus(
+      const reading = client.serviceCodexReadinessStatus(
         serviceUrl,
         TOKEN,
+        true,
         outcome === "cancelled" ? cancelled.signal : deadline,
       );
       const verified =
@@ -375,7 +483,7 @@ test("OpenShell PAT cancellation releases a connection stalled before TLS comple
     once(socket, "end", { signal: deadline }),
   );
   const rejected = assert.rejects(
-    client.serviceCodexPatStatus(serviceUrl, TOKEN, cancelled.signal),
+    client.serviceCodexReadinessStatus(serviceUrl, TOKEN, true, cancelled.signal),
     (error) => error === reason,
   );
   await Promise.all([rejected, ended]);
@@ -822,7 +930,13 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     );
   }
   for (const origin of [
-    "http://user:pass@host/",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "user",
+      password: "pass",
+      host: "host",
+      pathname: "/",
+    }),
     "http://host/path",
     "http://host/?query",
     "ftp://host/",

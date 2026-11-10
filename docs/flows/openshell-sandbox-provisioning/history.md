@@ -8,6 +8,40 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
+
+- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
+
+- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
+
+- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
+
+- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
+
+- 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
+
+- 2026-11-04 03:20: Record all applied quickstart service policies for removal. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - d64367ecb30d4b56e944b4bfd385496e7e1f3b0f)
+
+- 2026-11-04 03:10: Bind persistent tenant ingress to namespace ownership. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 7446e87d35b0fdaa7a80d01dead82fec488b66d5)
+
+- 2026-11-04 03:07: Refuse malformed repository probes before binding lookup. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 05d56a9176b8e2785a4968fdd7d381a7d5c5e263)
+
+- 2026-11-04 01:57: Preserve quickstart management callers across tenant policy updates. (authoring-run/142bbf24-9a49-48de-816c-9898b58c311b - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-11-04 01:57: Keep the held Git denial probe within its provider endpoint in the accompanying Driver fix. (authoring-run/8e4a06a2-463e-437c-9f6b-11ea7548f898 - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-11-03 18:15: Correct provider ownership. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
+
+- 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
+- 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-29 23:56: Merge both capabilities. (authoring-run/0f5c25dc-b648-4d4a-9ef2-24db4179b122 - fbb3b8065fc907305e4f607208fb419df2ffe17a)
+
+- 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
+
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 
 - 2026-10-28 21:24: Unify preparation cleanup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 208172f773)

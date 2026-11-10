@@ -2557,7 +2557,7 @@ exit 93
       helm: `#!/usr/bin/env bash
 case "$1 $2" in
   'get values') cat "$TEST_LIVE_VALUES" ;;
-  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
+  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"name":"oce","namespace":"openclaw-system","version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
   'template oce') exec "$TEST_REAL_HELM" "$@" ;;
   'upgrade --install') exit 47 ;;
   *) exit 91 ;;
@@ -6453,7 +6453,7 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
 test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
-  async () => {
+  async (t) => {
     const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
@@ -6470,7 +6470,7 @@ test(
         `${key}=${value}`,
       );
     }
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
     const selectorValues = join(directory, "selector.yaml");
     await writeFile(
       selectorValues,
@@ -6480,7 +6480,6 @@ test(
       render({}, { valuesFiles: [selectorValues] }),
       ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
     );
-    await rm(directory, { recursive: true, force: true });
     const { stdout } = await render(
       {},
       {
