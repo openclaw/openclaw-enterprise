@@ -801,7 +801,10 @@ export const agentRevisions = occSchema.table(
         AND jsonb_typeof(${table.admittedSpec}->'draft_spec') = 'object'
         AND jsonb_typeof(${table.admittedSpec}->'harness') = 'object'
         AND ((${table.admittedSpec}->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])
-        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration' - 'modelProviderId') = '{}'::jsonb
+        AND (NOT ((${table.admittedSpec}->'harness') ? 'modelProviderId')
+             OR (jsonb_typeof(${table.admittedSpec} #> '{harness,modelProviderId}') = 'string'
+                 AND (${table.admittedSpec} #>> '{harness,modelProviderId}') ~ '^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'))
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,overrides}') = 'object'
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,configuration}') = 'object'
         AND jsonb_typeof(${table.admittedSpec} #> '{harness,id}') = 'string'
