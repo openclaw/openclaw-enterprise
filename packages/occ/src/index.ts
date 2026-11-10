@@ -1881,12 +1881,20 @@ function modelProviderView(provider: Readonly<ModelProvider>): ModelProviderView
   return { ...provider, settingsFingerprint };
 }
 
-function requireModelProviderGrant(
+async function requireModelProviderGrant(
+  state: PlatformReadView,
   provider: Readonly<ModelProvider>,
   grant: CredentialSource["staticKeyGrant"],
 ) {
+  const template = await state.connectionTemplates.findConnectionTemplate(
+    provider.connectionTemplateId,
+  );
   if (
+    template?.current.mode !== "static_bearer" ||
+    template.current.baseUrl !== provider.baseUrl ||
+    template.current.protocol !== provider.protocol ||
     !grant ||
+    !isDeepStrictEqual(template.current.privatePeer, grant.privatePeer) ||
     grant.connectionTemplateId !== provider.connectionTemplateId ||
     grant.protocol !== provider.protocol ||
     grant.baseUrl !== provider.baseUrl
@@ -13639,8 +13647,34 @@ export class OpenClawController {
         configuration.values,
       );
       const runtimeValues = named?.values ?? configuration.values;
+      // admitHarnessAuth has authorized this exact source. Recheck the template's immutable
+      // Service identity before recording the sender's network grant for this revision.
+      const sourceGrant =
+        provider && harnessAuth.method === "credential_source"
+          ? (
+              await state.credentialSources.findCredentialSource(
+                lockedAgent.namespaceId,
+                harnessAuth.sourceId,
+              )
+            )?.staticKeyGrant
+          : undefined;
+      const privateInferencePeer = sourceGrant?.privatePeer;
+      if (privateInferencePeer && sourceGrant) {
+        if (
+          !compute.resolveInferencePrivatePeer ||
+          !isDeepStrictEqual(
+            privateInferencePeer,
+            await compute.resolveInferencePrivatePeer(privateInferencePeer, sourceGrant.baseUrl),
+          )
+        ) {
+          throw new ResourceStateConflictError(
+            "The approved private inference peer changed. Register a credential for the current template version before deploying.",
+          );
+        }
+      }
       const revisionHarness = immutableCopy({
         ...requestedHarness,
+        ...(privateInferencePeer && { privateInferencePeer }),
         configuration:
           named?.settings ??
           compute.resolveHarnessConfiguration?.(
@@ -15510,7 +15544,7 @@ export class OpenClawController {
         agent.harnessAuth?.method === "credential_source" &&
         sourceId === agent.harnessAuth.sourceId
       ) {
-        requireModelProviderGrant(modelProvider, source.staticKeyGrant);
+        await requireModelProviderGrant(state, modelProvider, source.staticKeyGrant);
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
       const owner = this.credentialSourceOwner(source);
@@ -15702,7 +15736,7 @@ export class OpenClawController {
         namespaceId,
         binding.sourceId,
       );
-      requireModelProviderGrant(provider, source?.staticKeyGrant);
+      await requireModelProviderGrant(state, provider, source?.staticKeyGrant);
     }
     const named = resolveNamedModelProvider(compute, provider, harness, plan.configuration.values);
     const values = named?.values ?? plan.configuration.values;

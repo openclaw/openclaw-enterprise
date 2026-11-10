@@ -150,6 +150,7 @@ export interface OpenShellWorkspaceResponse {
 }
 
 export interface OpenShellProviderProfileEndpoint {
+  readonly allowedIps?: readonly string[];
   readonly host: string;
   readonly port: number;
   readonly protocol: string;
@@ -163,9 +164,10 @@ export interface OpenShellProviderProfileEndpoint {
 
 /** Exact stock endpoint sent at import and compared when the provider is observed. */
 export function openShellProfileEndpoint(endpoint: OpenShellProviderProfileEndpoint) {
-  const { rules, access = "NETWORK_ACCESS_PRESET_READ_WRITE", ...target } = endpoint;
+  const { rules, allowedIps, access = "NETWORK_ACCESS_PRESET_READ_WRITE", ...target } = endpoint;
   return {
     ...target,
+    ...(allowedIps && { allowed_ips: [...allowedIps] }),
     enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
     ...(rules ? { rules } : { access }),
   };

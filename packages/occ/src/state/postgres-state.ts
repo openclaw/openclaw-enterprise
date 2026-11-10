@@ -727,6 +727,13 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
       id: harness.id,
       version: harness.version,
       mode: harness.mode,
+      ...(harness.privateInferencePeer === undefined
+        ? {}
+        : {
+            privateInferencePeer: harness.privateInferencePeer as NonNullable<
+              AgentRevision["harness"]["privateInferencePeer"]
+            >,
+          }),
       ...(typeof harness.modelProviderId === "string"
         ? { modelProviderId: harness.modelProviderId }
         : {}),
