@@ -39,7 +39,7 @@ exact CI. The receipt's base digest must still match `CONTAINER_NODE_BASE_IMAGE`
 The two images are not an atomic transaction. Inspect the remote digests after
 partial failure; do not remove or replace tags automatically.
 
-Local contract checks: `node --test tests/integration/container-promote.test.mjs`.
+Local contract checks: `node --test tests/integration/container-promote.test.ts`.
 These tests do not authenticate to either registry or prove a live transfer.
 
 ## Verify the served Console
