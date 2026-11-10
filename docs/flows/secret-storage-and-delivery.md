@@ -196,8 +196,8 @@ and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
 with `workspace-write` are recognized; new deployments use current policy.
 Other workspace or Configuration differences fail drift checks.
 After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.mjs)
-resolves `openclaw.dev/namespace`. This single-cluster helper places embedded and
-dedicated Gateways beside the provider-owned Harness. It requires exact Agent
+resolves `openclaw.dev/namespace`. In this single-cluster setup, embedded and
+dedicated Gateways share the provider-owned Harness namespace. It requires exact Agent
 labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
 sending the prompt. Embedded OpenClaw requires the key in the Gateway container;
 dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
