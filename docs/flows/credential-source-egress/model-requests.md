@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-10
-last_updated_session: authoring-run/18b830fb-bbb7-4b75-b14c-a01437b51c41
+last_updated_session: authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e
 ---
 
 # Authorize model credentials per request
@@ -193,6 +193,24 @@ approval for the next operation. Rotation or withdrawal after the final release
 cannot recall material already released. Such a request may finish, including
 its streamed response.
 
+### 4. Withdraw optional Git authority
+
+After an optional Git withdrawal closes the repository sessions, the Worker
+checks the saved revision and its independent authority. The OpenShell
+repository adapter matches the original v9 plan, successful deployment and
+installed recipient before recording a Git-only withdrawal fence. Fresh Git
+requests still pass through OCC and fail authorization. The adapter observes
+the original model launch and rechecks its fence. An aggregate Git expiry
+report can identify that launch when its generation and observation are
+current. The Worker can then resume maintenance of that revision.
+The existing Sandbox policy stays installed. A moved fence or unavailable
+observation leaves completion pending. A replacement launch requires runtime
+retirement.
+
+`apps/controller/src/worker.ts:withdrawExpiredRepositoryAccess` ·
+`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:expire` ·
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:observeOnlineGitWithdrawal`
+
 ## Selected repository pull request preview
 
 The same admitted repository entitlement owns the Git Basic and GitHub API
@@ -236,10 +254,11 @@ zero-cache grants, source withdrawal and absence of a direct route. Revoke the
 model source's IAM grant and verify that model requests cannot reach their origin
 while authorized Git remains usable. Separately, remove Git
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
-with its current generation and verify that fresh Git requests do not reach
-the origin. Version 9 may retire the entire runtime on Git removal; record that
-outcome instead of claiming continued inference. These checks do not establish
-continuity during binding removal.
+with its current generation. Observe `REPOSITORY_ACCESS_WITHDRAWN` and the
+next maintenance pass. Require zero upstream bytes on a fresh Git request,
+the original policy generation, and a new model response on the same
+execution and conversation. Exercise the fresh Git request with a warm
+credential and a reused inspected connection.
 
 ## Related docs
 
@@ -253,6 +272,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-10 13:08: Trace optional online Git withdrawal and observation of the original model execution. (authoring-run/35058d66-8c8f-4762-ab31-00d58e56de3e - e6093eef7ab860968e5e185ca14c8f0b6c2bc5ca)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)
 

@@ -5278,10 +5278,20 @@ export class ControllerWorker {
   private async requiredModelCredentialWithdrawn(
     revision: Readonly<AgentRevision>,
   ): Promise<boolean> {
-    if (revision.harnessAuth.method !== "credential_source") {
+    const plan = revision.egressPlan;
+    const onlineModel =
+      revision.executionAdmission?.version === 9 &&
+      plan?.authorization === "online-request" &&
+      plan.routes.length === 1
+        ? plan.routes[0]?.binding.source.source.id
+        : undefined;
+    const sourceId =
+      revision.harnessAuth.method === "credential_source"
+        ? revision.harnessAuth.sourceId
+        : onlineModel;
+    if (sourceId === undefined) {
       return false;
     }
-    const sourceId = revision.harnessAuth.sourceId;
     return this.state.read(
       async (view) =>
         (await view.credentialSources.findCredentialWithdrawal(
