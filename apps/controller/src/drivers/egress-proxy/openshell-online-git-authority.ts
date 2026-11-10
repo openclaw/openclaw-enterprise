@@ -1,5 +1,6 @@
 import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
 import type { InstalledGitMaterial } from "../repo/github/access/prepared-repository-git.ts";
+import type { PreparedGitGrantRequest } from "../repo/github/access/prepared-git-redemption.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
@@ -38,6 +39,7 @@ type GitBindingIdentity = {
   readonly providerInstanceId: string;
   readonly grantId: string;
   readonly installed: InstalledGitMaterial;
+  readonly grantCredentialIdentity?: string;
 };
 
 type RepositoryBinding = GitBindingIdentity & {
@@ -94,6 +96,12 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
     installed: InstalledGitMaterial,
     signal: AbortSignal,
   ) => Promise<RepositoryGitOnlineDecision>;
+  readonly approveGrantRequest?: (
+    request: PreparedGitGrantRequest,
+    binding: OpenShellOnlineGitBinding,
+    identity: OpenShellOnlineGitIdentity,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
 };
 
 /**
@@ -340,6 +348,27 @@ export function createOpenShellOnlineGitAuthority(
       const { installed } = binding;
       let allowed: false | "draft_already_opened" | "access_withdrawn";
       try {
+        if (options.approveGrantRequest) {
+          const { operation } = q;
+          if (
+            !binding.grantCredentialIdentity ||
+            !("scope" in q) ||
+            q.scope !== "github-repository" ||
+            q.repositories.length !== 1 ||
+            (operation !== "advertise-upload-pack" && operation !== "upload-pack")
+          ) {
+            return deny("route_unsupported", operation);
+          }
+          const replyBy = await options.approveGrantRequest(
+            { ...q, operation },
+            binding,
+            { sandboxId, bindingId, requestId, workspace },
+            signal,
+          );
+          return replyBy && !signal.aborted && Date.parse(replyBy) <= Date.parse(request.deadlineAt)
+            ? { kind: "allow", replyBy }
+            : deny("approval_denied", operation);
+        }
         const result = await options.authorizeOnlineRequest(q, installed, signal);
         if (result.kind === "denied") {
           const { reason } = result;

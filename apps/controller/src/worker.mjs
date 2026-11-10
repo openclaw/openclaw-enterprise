@@ -1,5 +1,9 @@
 import { unlink, writeFile } from "node:fs/promises";
-import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
+import {
+  createPostgresPool,
+  PostgresPlatformState,
+  postgresRequestCredentialApprovals,
+} from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
   PreparedGitHubAppKeyError,
@@ -188,6 +192,7 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
+      gitGrantApprovals: postgresRequestCredentialApprovals,
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });

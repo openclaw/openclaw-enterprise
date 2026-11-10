@@ -717,6 +717,7 @@ export type {
   HumanAuthenticationMaintenanceStatus,
 } from "./state/human-authentication-maintenance.ts";
 export { createPostgresPool } from "./state/postgres-pool.ts";
+export { postgresRequestCredentialApprovals } from "./state/request-credential-approvals.ts";
 export type {
   RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
@@ -8043,6 +8044,7 @@ export class OpenClawController {
         }
       } else if (
         request.policyDigest !== policyDigest ||
+        request.expectedCredentialIdentity !== installed.enforcement.requestCredentialIdentity ||
         !isDeepStrictEqual(request.driver, owner.ref)
       ) {
         return refuse("stale_configuration");
@@ -8104,6 +8106,7 @@ export class OpenClawController {
             deadlineAt: request.deadlineAt,
             replayUntilAt: request.replayUntilAt,
             policyDigest,
+            expectedCredentialIdentity: installed.enforcement.requestCredentialIdentity,
           },
           this.timestamp(),
           this.credentialProxyCapacity,

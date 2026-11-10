@@ -66,6 +66,7 @@ export async function gitExpiryGateway(
     deadline,
     platformProfile,
     trackGitExpiry = false,
+    grantOnly = false,
     onGitInstall = (_value) => {},
     modelSourceId = "",
     gatewayVersion = "",
@@ -104,6 +105,7 @@ export async function gitExpiryGateway(
     repositoryGitRecipient,
     writes: 0,
     providerCreates: [],
+    providerCredentialKeys: [],
     profileImports: [],
     detaches: [],
     reports: [],
@@ -347,13 +349,24 @@ export async function gitExpiryGateway(
       assert.equal(workspace_scope.workspace, workspace);
       return profiles[id] && { profile: profiles[id] };
     },
+    ...(grantOnly && {
+      LintProviderProfiles: () => ({
+        valid: true,
+        supports_openshell_gateway_assertion_source: true,
+      }),
+    }),
     ImportProviderProfiles: ({ profiles: [{ profile }] }) => {
       world.profileImports.push(profile.id);
-      profiles[profile.id] = { ...profile, resource_version: "1" };
+      profiles[profile.id] = {
+        ...profile,
+        ...(grantOnly && { scope: "workspace" }),
+        resource_version: "1",
+      };
       return { imported: true };
     },
-    CreateProvider: ({ provider: { metadata, type, profile_workspace } }) => {
+    CreateProvider: ({ provider: { metadata, type, profile_workspace, credentials } }) => {
       world.providerCreates.push(metadata.name);
+      world.providerCredentialKeys.push(...Object.keys(credentials ?? {}));
       gitName = metadata.name;
       const provider = {
         metadata: {
@@ -421,7 +434,15 @@ export async function gitExpiryGateway(
           ...supervisor.policy,
           network_policies: {
             ...supervisor.policy.network_policies,
-            [supervisor.gitRule.name]: supervisor.gitRule,
+            [supervisor.gitRule.name]: grantOnly
+              ? {
+                  ...supervisor.gitRule,
+                  endpoints: supervisor.gitRule.endpoints.map((endpoint) => ({
+                    ...endpoint,
+                    token_grant_owner: "grant-owner:v1:" + "a".repeat(64),
+                  })),
+                }
+              : supervisor.gitRule,
             ["_provider_" + model.replaceAll("-", "_")]: {
               name: "_provider_" + model.replaceAll("-", "_"),
               endpoints: [{ host: "api.openai.com", port: 443 }],
@@ -461,7 +482,7 @@ export async function gitExpiryGateway(
             ) {
               throw Object.assign(Error("unauthenticated"), { code: grpc.status.UNAUTHENTICATED });
             }
-            const response = handle(call.request);
+            const response = handle(call.request, call.metadata);
             done(response ? null : { code: grpc.status.NOT_FOUND }, response);
           } catch (error) {
             done(error);

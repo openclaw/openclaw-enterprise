@@ -26,6 +26,18 @@ export const openShellGitChartListener = {
   },
 } as const;
 
+export const openShellGitGrantChartListener = {
+  path: "repository.openShell.grantRedemption",
+  chart: "openshellGit.tokenGrant",
+  variable: "OCC_OPENSHELL_GIT_TOKEN_GRANT_PORT",
+  files: {
+    bundlePath: [
+      "/etc/openclaw/openshell-git/token-grant/bundle.json",
+      "openshellGit.tokenGrant.bundleConfigMapName",
+    ],
+  },
+} as const;
+
 export function openShellRepositoryConfiguration(
   input: unknown,
   mode: "development" | "production",
@@ -34,14 +46,23 @@ export function openShellRepositoryConfiguration(
     return undefined;
   }
   const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
+  closed(value, ["registrationName", "authority", "grantRedemption"], "repository.openShell");
+  const authority = egressAuthorityConfiguration(value.authority, mode, "repository.openShell.authority");
+  const grant = value.grantRedemption;
+  if (grant !== undefined && (
+    !validTokenGrantConfiguration(grant) ||
+    grant.assertionSource !== "openshell_gateway" ||
+    new URL(grant.endpoint).pathname !== "/token" ||
+    !authority ||
+    authority.port === grant.port ||
+    authority.issuer !== grant.issuer
+  )) {
+    throw new Error("OpenShell Git grant redemption requires its own HTTPS token listener and the selected Gateway issuer.");
+  }
   return {
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(
-      value.authority,
-      mode,
-      "repository.openShell.authority",
-    ),
+    authority,
+    ...(grant === undefined ? {} : { grantRedemption: grant }),
   };
 }
 
@@ -90,6 +111,9 @@ export function openShellProxyConfiguration(
     if (requestCredentials?.middlewareName === repository.registrationName) {
       throw new Error("Model and repository requests require distinct middleware registrations.");
     }
+    if (repository.grantRedemption && egress.observedHookPreviewWorkspace !== undefined) {
+      throw new Error("OpenShell Git grant redemption cannot be enabled for observed preview access.");
+    }
     const preview =
       egress.observedHookPreviewWorkspace === undefined
         ? {}
@@ -112,6 +136,9 @@ export function openShellProxyConfiguration(
           requestCredentials: {
             audience: requestCredentials.authority.audience,
             tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+            ...(requestCredentials.tokenGrant.assertionSource && {
+              assertionSource: requestCredentials.tokenGrant.assertionSource,
+            }),
           },
         }),
         repositoryMiddlewareName: repository.registrationName,
@@ -134,6 +161,9 @@ export function openShellProxyConfiguration(
         requestCredentials: {
           audience: requestCredentials.authority.audience,
           tokenEndpoint: requestCredentials.tokenGrant.endpoint,
+          ...(requestCredentials.tokenGrant.assertionSource && {
+            assertionSource: requestCredentials.tokenGrant.assertionSource,
+          }),
         },
       }),
     },

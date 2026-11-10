@@ -3,7 +3,10 @@ import {
   verifyModelRequestProfile,
   verifyModelRequestPolicy,
 } from "../sandbox/openshell-model-request-policy.ts";
-import type { OpenShellTokenGrantConfiguration } from "./openshell-token-grant.ts";
+import {
+  openShellGrantCredentialIdentity,
+  type OpenShellTokenGrantConfiguration,
+} from "./openshell-token-grant.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -79,6 +82,7 @@ export interface OpenShellProxyOptions {
   readonly requestCredentials?: {
     readonly audience: string;
     readonly tokenEndpoint: string;
+    readonly assertionSource?: OpenShellTokenGrantConfiguration["assertionSource"];
   };
 }
 
@@ -86,7 +90,9 @@ function validRequestCredentials(input: unknown): boolean {
   const value = asRecord(input);
   if (
     !value ||
-    Object.keys(value).length !== 2 ||
+    ("assertionSource" in value
+      ? Object.keys(value).length !== 3 || value.assertionSource !== "openshell_gateway"
+      : Object.keys(value).length !== 2) ||
     typeof value.audience !== "string" ||
     !value.audience.trim() ||
     typeof value.tokenEndpoint !== "string" ||
@@ -342,6 +348,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         properties: {
           audience: { type: "string", minLength: 1 },
           tokenEndpoint: { type: "string", minLength: 1 },
+          assertionSource: { type: "string", const: "openshell_gateway" },
         },
       },
     },
@@ -407,7 +414,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       (options.requestCredentials &&
         (!exchange ||
           options.requestCredentials.audience !== exchange.audience ||
-          options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint))
+          options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint ||
+          options.requestCredentials.assertionSource !== selection.tokenGrant?.assertionSource))
     ) {
       throw new Error("Request credentials require their selected authority and token grant.");
     }
@@ -553,7 +561,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     // requests recheck the full effective policy, without adopting its private Git custody.
     return (
       current !== undefined &&
-      current.configurationId === installation.enforcement.requestConfigurationId
+      current.configurationId === installation.enforcement.requestConfigurationId &&
+      current.requestCredentialIdentity === installation.enforcement.requestCredentialIdentity
     );
   }
 
@@ -607,6 +616,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     ) {
       return undefined;
     }
+    const gatewayAssertion =
+      this.options.requestCredentials?.assertionSource === "openshell_gateway";
+    const requestCredentialIdentity =
+      gatewayAssertion && provider.id
+        ? openShellGrantCredentialIdentity(
+            provider.id,
+            expected.provider.profile.credentials[0]!.name,
+          )
+        : undefined;
+    if (gatewayAssertion && !requestCredentialIdentity) {
+      return undefined;
+    }
     const profile = await client.getProviderProfile(workspace, provider.type, signal);
     verifyModelRequestProfile(profile, expected.provider.profile, workspace);
     const config = await client.getSandboxConfig?.(workspace, ref.resourceName, signal);
@@ -652,6 +673,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       instanceId: sandbox.mainProcessInstanceId,
       configurationId,
       requestConfigurationId: configurationId,
+      ...(requestCredentialIdentity && { requestCredentialIdentity }),
       policyHash: config.policy_hash,
       authorityScope: "execution",
     };
@@ -871,6 +893,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         return {
           ...existing,
           requestConfigurationId: model.configurationId,
+          ...(model.requestCredentialIdentity && {
+            requestCredentialIdentity: model.requestCredentialIdentity,
+          }),
           configurationId: sha256Hex(
             JSON.stringify([existing.configurationId, model.configurationId]),
           ),

@@ -108,6 +108,12 @@ spec:
                   name: {{ $.Values.openshellGit.issuerPublicKeyConfigMapName | quote }}
                   items:
                     - {key: gateway-public.pem, path: gateway-public.pem}
+              {{- if $.Values.openshellGit.tokenGrant.enabled }}
+              - configMap:
+                  name: {{ $.Values.openshellGit.tokenGrant.bundleConfigMapName | quote }}
+                  items:
+                    - {key: bundle.json, path: token-grant/bundle.json}
+              {{- end }}
         {{- end }}
         {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
         - name: console-theme
@@ -606,6 +612,10 @@ spec:
             {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
             - name: openshell-git
               containerPort: {{ $.Values.openshellGit.port }}
+            {{- if $.Values.openshellGit.tokenGrant.enabled }}
+            - name: git-token-grant
+              containerPort: {{ $.Values.openshellGit.tokenGrant.port }}
+            {{- end }}
             {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: metrics

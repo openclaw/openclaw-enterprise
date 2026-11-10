@@ -413,6 +413,7 @@
     {
       "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
+        "Git HTTPS grant consumes one signed request and refuses withdrawal before redemption",
         "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
         "another fixture cannot inherit a stopped Agent's custody",
         "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"
@@ -665,6 +666,7 @@
       "path": "tests/integration/credential-proxy-request-transport.test.ts",
       "expectedTests": [
         "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
+        "Gateway provider assertion redeems once through the existing PostgreSQL HTTPS grant",
         "model-only request admission uses the registered request profile without strict capabilities",
         "model request installation survives a material epoch change but fences policy and recipient drift"
       ]

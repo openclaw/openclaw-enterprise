@@ -11,8 +11,8 @@ import { writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import test from "node:test";
 import type {
   CredentialProxyDriver,
   RequestCredentialInput,
@@ -44,10 +44,8 @@ const { SignJWT } = createRequire(new URL("../../apps/controller/package.json", 
   "jose",
 );
 
-test(
-  "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
-  { ...requiresPostgres, timeout: 90_000 },
-  async (t) => {
+function exerciseRequestTransport(gatewayGrant: boolean) {
+  return async (t: TestContext) => {
     const tls = await harnessTlsFixture(t);
     const issuerKeys = generateKeyPairSync("ed25519");
     const svidKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -55,17 +53,32 @@ test(
     const untypedKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
     const bundlePath = join(tls.directory, "jwt-bundle.json");
+    const grantKeys = generateKeyPairSync("ed25519");
+    const grantIssuer = "openshell-gateway:fixture";
+    const immutableProviderId = randomUUID();
+    const credentialKey = "access_token";
+    const expectedIdentity = createHash("sha256")
+      .update(JSON.stringify([immutableProviderId, credentialKey]))
+      .digest("hex");
+    const expectedKey = gatewayGrant
+      ? {
+          ...grantKeys.publicKey.export({ format: "jwk" }),
+          kid: "grant-key",
+          use: "sig",
+          alg: "EdDSA",
+        }
+      : { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" };
     await writeFile(
       issuerPublicKeyPath,
       issuerKeys.publicKey.export({ type: "spki", format: "pem" }),
+      { mode: 0o644 },
     );
     await writeFile(
       bundlePath,
       JSON.stringify({
-        keys: [
-          { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
-        ],
+        keys: [expectedKey],
       }),
+      { mode: 0o644 },
     );
     const grpcPort = await reservePort();
     const grantPort = await reservePort();
@@ -90,20 +103,24 @@ test(
         tokenGrant: {
           endpoint: tokenEndpoint,
           port: grantPort.port,
-          trustDomain: "fixture.test",
           bundlePath,
+          ...(gatewayGrant
+            ? { assertionSource: "openshell_gateway", issuer: grantIssuer }
+            : { trustDomain: "fixture.test" }),
         },
       });
     const fixture = await requestCredentialFixture(t, {
       credentialProxyCapacity: { operations: 2, authenticatingOperations: 1, sandboxOperations: 2 },
       bindExchange,
+      ...(gatewayGrant && { requestCredentialIdentity: expectedIdentity }),
     });
     const { f } = fixture;
     // Production and development composition expose a restricted exchange facade to the
     // selected Driver. Exercise that facade before sending any real TLS request.
     const binding = await installEgressAuthority(f.controller, fixture.owner);
     assert.ok(binding);
-    t.after(() => binding.close());
+    let closeBinding = () => binding.close();
+    t.after(() => closeBinding());
     await grpcPort.release();
     await grantPort.release();
     const client = openShellMiddlewareClient(t, grpcPort.port, tls.caBundle);
@@ -151,13 +168,40 @@ test(
         .setIssuedAt()
         .setExpirationTime("2m")
         .sign(key);
-    const redeem = async (input: RequestCredentialInput, assertion = svid()) => {
-      const body = new URLSearchParams({
+    const providerAssertion = (
+      overrides: Record<string, unknown> = {},
+      key = grantKeys.privateKey,
+      typ = "openshell-provider-assertion+jwt",
+    ): Promise<string> => {
+      const now = Math.floor(Date.now() / 1_000);
+      return new SignJWT({
+        iss: grantIssuer,
+        sub: `openshell-sandbox:${fixture.installation.sandboxId}`,
+        aud: tokenEndpoint,
+        iat: now,
+        exp: now + 60,
+        jti: randomUUID(),
+        caller_kind: "supervisor",
+        sandbox_id: fixture.installation.sandboxId,
+        provider_id: immutableProviderId,
+        credential_key: credentialKey,
+        ...overrides,
+      })
+        .setProtectedHeader({ alg: "EdDSA", kid: "grant-key", typ })
+        .sign(key);
+    };
+    const redeem = async (
+      input: RequestCredentialInput,
+      assertion = gatewayGrant ? providerAssertion() : svid(),
+      extra?: (form: URLSearchParams) => void,
+    ) => {
+      const form = new URLSearchParams({
         grant_type: "client_credentials",
         client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         client_assertion: await assertion,
         audience: input.bindingId,
-      }).toString();
+      });
+      extra?.(form);
       return new Promise<{
         status: number;
         body: Record<string, unknown>;
@@ -167,6 +211,7 @@ test(
           tokenEndpoint,
           {
             method: "POST",
+            agent: false,
             ca: tls.caBundle,
             family: 4,
             headers: {
@@ -188,7 +233,7 @@ test(
           },
         );
         req.on("error", reject);
-        req.end(body);
+        req.end(form.toString());
       });
     };
 
@@ -292,26 +337,73 @@ test(
       reads,
       "the authorization RPC does not release or read key material",
     );
-    assert.equal((await redeem(input, svid(randomUUID()))).status, 403);
-    assert.equal((await redeem(input, svid(undefined, "wrong-audience"))).status, 401);
-    // A mixed SPIFFE bundle does not make generic signing keys workload identity authorities.
-    await writeFile(
-      bundlePath,
-      JSON.stringify({
-        keys: [
-          { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
-          { ...genericKeys.publicKey.export({ format: "jwk" }), kid: "generic-key", use: "sig" },
-          { ...untypedKeys.publicKey.export({ format: "jwk" }), kid: "untyped-key" },
-        ],
-      }),
-    );
-    for (const [key, kid] of [
-      [genericKeys.privateKey, "generic-key"],
-      [untypedKeys.privateKey, "untyped-key"],
-    ] as const) {
-      assert.equal((await redeem(input, svid(undefined, undefined, key, kid))).status, 401);
-      assert.equal(f.secretReads, reads, "non-SVID keys never reach credential resolution");
+    if (gatewayGrant) {
+      // An API still running the legacy UPDATE cannot consume this approval during a rollout.
+      await assert.rejects(
+        f.pool.query(
+          "UPDATE occ.request_credential_approvals SET consumed = true WHERE recipient_id = $1 AND request_id = $2",
+          [input.recipient.id, input.requestId],
+        ),
+        { code: "23514", constraint: "request_credential_approval_assertion_replay" },
+      );
+      const differentSandbox = randomUUID();
+      const issuedAt = Math.floor(Date.now() / 1_000);
+      for (const assertion of [
+        providerAssertion({ aud: [tokenEndpoint] }),
+        providerAssertion({ iss: "https://other.example.test" }),
+        providerAssertion({ sub: "openshell-sandbox:wrong" }),
+        providerAssertion({ caller_kind: "gateway" }),
+        providerAssertion({ iat: issuedAt - 120, exp: issuedAt - 60 }),
+        providerAssertion({ iat: issuedAt + 5, exp: issuedAt + 60 }),
+        providerAssertion({ iat: issuedAt - 30, exp: issuedAt + 60 }),
+        providerAssertion({}, issuerKeys.privateKey),
+        providerAssertion({}, grantKeys.privateKey, "openshell-ext+jwt"),
+        svid(),
+      ]) {
+        assert.equal((await redeem(input, assertion)).status, 401);
+      }
+      for (const assertion of [
+        providerAssertion({ provider_id: "provider-display-name" }),
+        providerAssertion({ credential_key: "wrong-key" }),
+        providerAssertion({
+          sub: `openshell-sandbox:${differentSandbox}`,
+          sandbox_id: differentSandbox,
+        }),
+      ]) {
+        assert.equal((await redeem(input, assertion)).status, 403);
+      }
+      assert.equal(
+        (await redeem(input, undefined, (form) => form.append("scope", "write"))).status,
+        400,
+      );
+      assert.equal(
+        (await redeem(input, undefined, (form) => form.append("audience", input.bindingId))).status,
+        400,
+      );
+      assert.equal((await redeem({ ...input, bindingId: "different-binding" })).status, 403);
+    } else {
+      assert.equal((await redeem(input, svid(randomUUID()))).status, 403);
+      assert.equal((await redeem(input, svid(undefined, "wrong-audience"))).status, 401);
+      // A mixed SPIFFE bundle does not make generic signing keys workload identity authorities.
+      await writeFile(
+        bundlePath,
+        JSON.stringify({
+          keys: [
+            { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
+            { ...genericKeys.publicKey.export({ format: "jwk" }), kid: "generic-key", use: "sig" },
+            { ...untypedKeys.publicKey.export({ format: "jwk" }), kid: "untyped-key" },
+          ],
+        }),
+      );
+      for (const [key, kid] of [
+        [genericKeys.privateKey, "generic-key"],
+        [untypedKeys.privateKey, "untyped-key"],
+      ] as const) {
+        assert.equal((await redeem(input, svid(undefined, undefined, key, kid))).status, 401);
+        assert.equal(f.secretReads, reads, "non-SVID keys never reach credential resolution");
+      }
     }
+    assert.equal(f.secretReads, reads, "refused assertions never reach credential resolution");
     const result = await redeem(input);
     assert.equal(result.status, 200);
     assert.equal(result.body.access_token, "synthetic-key-initial");
@@ -418,13 +510,48 @@ test(
     await writeFile(
       bundlePath,
       JSON.stringify({
-        keys: [
-          { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
-        ],
+        keys: [expectedKey],
       }),
     );
-    assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
-  },
+    const rotatedAssertion = gatewayGrant ? providerAssertion() : svid();
+    assert.equal((await redeem(next, rotatedAssertion)).body.access_token, "synthetic-key-rotated");
+
+    if (gatewayGrant) {
+      // Rebind the real HTTPS listener to a new controller over the same PostgreSQL state.
+      // The assertion remains valid and the second request has its own live approval.
+      const replay = fixture.request();
+      assert.equal((await evaluate(replay)).decision, 1);
+      await closeBinding();
+      closeBinding = () => {};
+      const restarted = await installEgressAuthority(fixture.restartController(), fixture.owner);
+      assert.ok(restarted);
+      closeBinding = () => restarted.close();
+      const readsAfterRelease = f.secretReads;
+      assert.equal(
+        (await redeem(replay, rotatedAssertion)).status,
+        403,
+        "a consumed assertion cannot redeem a different request after API restart",
+      );
+      assert.equal(f.secretReads, readsAfterRelease);
+      assert.equal(
+        (await redeem(replay)).status,
+        200,
+        "a fresh assertion can redeem that approval",
+      );
+    }
+  };
+}
+
+test(
+  "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
+  { ...requiresPostgres, timeout: 90_000 },
+  exerciseRequestTransport(false),
+);
+
+test(
+  "Gateway provider assertion redeems once through the existing PostgreSQL HTTPS grant",
+  { ...requiresPostgres, timeout: 90_000 },
+  exerciseRequestTransport(true),
 );
 
 test(

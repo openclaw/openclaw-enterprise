@@ -209,6 +209,8 @@ export interface EgressInstallation {
     readonly configurationId: string;
     /** Request-profile witness readable without acquiring a Worker-owned credential session. */
     readonly requestConfigurationId?: string;
+    /** Immutable installed credential identity required for assertion redemption. */
+    readonly requestCredentialIdentity?: string;
     readonly policyHash: string;
     readonly authorityScope: "execution";
     /** Public key bound by the adapter to this installation, never selected by a request. */

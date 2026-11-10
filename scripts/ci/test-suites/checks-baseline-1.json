@@ -276,7 +276,11 @@
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
-      "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
+      "expectedTests": [
+        "provider profile wire defaults preserve Git overlap enforcement",
+        "Gateway assertion profiles use the exact supported wire and refuse a downgraded grant",
+        "Git grant provider creates an empty attachment for a single repository read route"
+      ]
     },
     {
       "path": "tests/conformance/oauth-connection.test.mjs"
@@ -670,6 +674,7 @@
     {
       "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
       "expectedTests": [
+        "native worker waits for signed release before entering runtime setup",
         "held enrollment distinguishes probe failures without exposing proxy output or retrying"
       ]
     },

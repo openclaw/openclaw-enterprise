@@ -7,6 +7,8 @@ import { isOpenShellRequestHost } from "../egress-proxy/openshell-http-request.t
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "./openshell-codex-artifacts.ts";
 import {
+  matchesOpenShellGatewayAssertionGrant,
+  OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE,
   openShellProfileEndpoint,
   type OpenShellProviderProfile,
   type OpenShellStoredProviderProfile,
@@ -25,16 +27,25 @@ export function modelRequestProviderName(revisionId: string): string {
 export function openShellModelRequestPolicy(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
-  revision?: Readonly<AgentRevision>,
+  revision?: Readonly<
+    Pick<AgentRevision, "id" | "namespaceId" | "agentId"> & {
+      readonly harness: Pick<AgentRevision["harness"], "id" | "mode">;
+    }
+  >,
 ) {
   if (plan.authorization !== "online-request") {
     return undefined;
   }
   const registration = options.requestCredentials;
+  // The native worker and its authentication probe use Node as the actual
+  // network executable. OpenShell does not authorize from script arguments.
+  const native =
+    revision?.harness.id === "openclaw" && registration?.assertionSource === "openshell_gateway";
   const route = plan.routes[0];
   if (
     !registration ||
-    revision?.harness.id !== "codex" ||
+    !revision ||
+    (revision.harness.id !== "codex" && !native) ||
     revision.harness.mode !== "dedicated" ||
     revision.id !== plan.execution.revisionId ||
     revision.namespaceId !== plan.execution.namespaceId ||
@@ -42,9 +53,11 @@ export function openShellModelRequestPolicy(
     plan.routes.length !== 1 ||
     !route ||
     route.binding.grant.kind !== "inference" ||
+    (native && route.binding.grant.providerTools !== "none") ||
+    route.method !== "POST" ||
     route.path !== "/v1/responses"
   ) {
-    unsupported("Online model authorization requires one dedicated Codex Responses binding.");
+    unsupported("Online model authorization requires one dedicated Harness Responses binding.");
   }
   const origin = new URL(route.origin);
   const host = origin.hostname;
@@ -55,6 +68,7 @@ export function openShellModelRequestPolicy(
     origin.pathname !== "/" ||
     origin.search ||
     origin.hash ||
+    (native && origin.port !== "") ||
     !isOpenShellRequestHost(host) ||
     /(?:^|\.)github\.com$/.test(host)
   ) {
@@ -83,6 +97,17 @@ export function openShellModelRequestPolicy(
     },
   };
   const name = modelRequestProviderName(revision.id);
+  const tokenGrant: NonNullable<OpenShellProviderProfile["credentials"][number]["tokenGrant"]> = {
+    token_endpoint: registration.tokenEndpoint,
+    audience: bindingId,
+    cache_ttl: { seconds: 0, nanos: 0 },
+    ...(registration.assertionSource === "openshell_gateway"
+      ? { grant_type: OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE }
+      : {
+          jwt_svid_audience: registration.tokenEndpoint,
+          client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        }),
+  };
   const profile = {
     id: name,
     displayName: "Request-authorized model access",
@@ -94,13 +119,7 @@ export function openShellModelRequestPolicy(
         required: false,
         authStyle: "bearer",
         headerName: "Authorization",
-        tokenGrant: {
-          token_endpoint: registration.tokenEndpoint,
-          jwt_svid_audience: registration.tokenEndpoint,
-          audience: bindingId,
-          client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-          cache_ttl: { seconds: 0, nanos: 0 },
-        },
+        tokenGrant,
       },
     ],
     endpoints: [
@@ -112,7 +131,7 @@ export function openShellModelRequestPolicy(
         rules: [{ allow: { method: "POST", path: route.path } }],
       },
     ],
-    binaries: OPEN_SHELL_CODEX_BINARIES,
+    binaries: native ? ["/usr/local/bin/node"] : OPEN_SHELL_CODEX_BINARIES,
     inferenceCapable: false,
   } satisfies Omit<OpenShellProviderProfile, "annotations">;
   return {
@@ -139,6 +158,7 @@ export function verifyModelRequestProfile(
   const actual = asRecord(credential?.token_grant);
   const ttl = asRecord(actual?.cache_ttl);
   const grant = expected.credentials[0]!.tokenGrant;
+  const gatewayAssertion = grant.grant_type === OPEN_SHELL_GATEWAY_ASSERTION_GRANT_TYPE;
   if (
     stored?.id !== expected.id ||
     definition?.scope !== "workspace" ||
@@ -147,10 +167,12 @@ export function verifyModelRequestProfile(
     Number(ttl.seconds ?? 0) !== 0 ||
     Number(ttl.nanos ?? 0) !== 0 ||
     actual.token_endpoint !== grant.token_endpoint ||
-    actual.jwt_svid_audience !== grant.jwt_svid_audience ||
     actual.audience !== grant.audience ||
-    actual.client_assertion_type !== grant.client_assertion_type ||
-    (actual.grant_type !== undefined && actual.grant_type !== 0 && actual.grant_type !== 1) ||
+    (gatewayAssertion
+      ? !matchesOpenShellGatewayAssertionGrant(actual, grant.token_endpoint, grant.audience)
+      : actual.jwt_svid_audience !== grant.jwt_svid_audience ||
+        actual.client_assertion_type !== grant.client_assertion_type ||
+        (actual.grant_type !== undefined && actual.grant_type !== 0 && actual.grant_type !== 1)) ||
     actual.subject_token != null ||
     actual.requested_token_type ||
     (Array.isArray(actual.audience_overrides) && actual.audience_overrides.length) ||

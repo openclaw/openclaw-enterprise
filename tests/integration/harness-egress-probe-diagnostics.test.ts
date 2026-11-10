@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { once } from "node:events";
+import { writeFile } from "node:fs/promises";
 import { createServer as httpServer } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { createConnection } from "node:net";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import {
@@ -15,6 +17,9 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { nativeWorkerEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { computeReleasePublicKey } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 
 type ProbeScenario = {
   name: string;
@@ -24,6 +29,106 @@ type ProbeScenario = {
   status?: number;
   expected?: { error: string; code?: number };
 };
+
+test("native worker waits for signed release before entering runtime setup", async (t) => {
+  const directory = await temporaryDirectory(t, "protected-native-enrollment-");
+  const blocker = join(directory, "file");
+  await writeFile(blocker, "A file deliberately blocks the first runtime setup operation.");
+  const reservation = await reservePort({ host: "0.0.0.0" });
+  t.after(reservation.release);
+  const transport = randomUUID();
+  const keys = generateKeyPairSync("ed25519");
+  const enrollment = {
+    inference: true,
+    authorization: "online-request",
+    routeCount: 1,
+    plan: { id: "plan", generation: 1 },
+    execution: {
+      installationId: "installation",
+      namespaceId: "namespace",
+      agentId: "agent",
+      servicePrincipalId: "principal",
+      revisionId: "revision",
+      executionId: "execution",
+    },
+  } as const;
+  const child = spawn(
+    process.execPath,
+    [
+      ...reservedPortArgs(reservation),
+      "--input-type=commonjs",
+      "-e",
+      nativeWorkerEntrypoint(enrollment),
+    ],
+    {
+      env: {
+        APP_TOKEN_SHA: createHash("sha256").update(transport).digest("hex"),
+        APP_SERVER_PORT: String(reservation.port),
+        OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: enrollment.execution.revisionId,
+        OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: computeReleasePublicKey(keys.privateKey),
+        OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+        OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+        OPENCLAW_NODE_STATE_DIR: join(directory, "state"),
+        OPENCLAW_NODE_SETUP_CODE: "fixture",
+        OPENCLAW_WORKSPACE_DIR: directory,
+        TMPDIR: join(blocker, "child"),
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let output = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  const closed = once(child, "close");
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+    }
+    await closed;
+  });
+  const url = "http://127.0.0.1:" + reservation.port + HARNESS_EGRESS_ENROLLMENT_PATH;
+  const headers = { authorization: "Bearer " + transport, "content-type": "application/json" };
+  let challenge: ({ startupId: string } & Record<string, unknown>) | undefined;
+  const deadline = Date.now() + 5000;
+  while (!challenge && Date.now() < deadline) {
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(300) }).catch(
+      () => undefined,
+    );
+    if (response?.ok) {
+      challenge = await response.json();
+    } else {
+      await delay(25);
+    }
+  }
+  assert.ok(challenge, output);
+  assert.deepEqual(challenge.execution, enrollment.execution);
+  assert.equal(challenge.authorization, "online-request");
+  await reservation.release();
+  const installation = { sandboxId: "sandbox", instanceId: "instance", configurationId: "config" };
+  const expiresAt = Date.now() + 10_000;
+  const release = (signature: string) =>
+    fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ challenge, installation, expiresAt, signature }),
+      signal: AbortSignal.timeout(2000),
+    });
+  assert.equal((await release("A".repeat(86))).status, 409);
+  assert.doesNotMatch(output, /ENOTDIR|openclaw\.model_probe/);
+  assert.equal(child.exitCode, null);
+  const signature = sign(
+    null,
+    Buffer.from(JSON.stringify([challenge, installation, expiresAt])),
+    keys.privateKey,
+  ).toString("base64url");
+  const response = await release(signature);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { enrolled: true, startupId: challenge.startupId });
+  const [exitCode] = await closed;
+  assert.equal(exitCode, 1);
+  assert.match(output, /ENOTDIR/);
+});
 
 // Run the generated listener and its unmodified curl against an owned loopback proxy.
 // This covers startup diagnostics, not installed supervisor policy or production egress.

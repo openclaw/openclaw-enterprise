@@ -368,6 +368,13 @@ openshellGit:
   issuerPublicKeyConfigMapName: ""
   # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
   clients: []
+  # Optional scoped Git redemption on the same worker and serving certificate.
+  tokenGrant:
+    enabled: false
+    port: 9446
+    bundleConfigMapName: ""
+    # Only trusted supervisor Pods may call the token endpoint.
+    clients: []
 
 # Optional OCE custody for explicitly enrolled, Agent-scoped GitHub metadata reads.
 # In the Installation's drivers.credential_proxy.configuration.preparedGitHub set

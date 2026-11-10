@@ -402,6 +402,24 @@ test(
     });
     const acceptedToken = await runCheck(t, requestCredentials, {}, () => tokenEnvironment);
     assert.equal(acceptedToken.status, 0, acceptedToken.stderr);
+    const gatewayCredentials = structuredClone(requestCredentials);
+    gatewayCredentials.drivers.credential_proxy.configuration.tokenGrant = {
+      endpoint: "https://authority.example.test:9445/token",
+      port: 9445,
+      bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+      assertionSource: "openshell_gateway",
+      issuer: "openshell-gateway:fixture",
+    };
+    const acceptedGateway = await runCheck(t, gatewayCredentials, {}, () => tokenEnvironment);
+    assert.equal(acceptedGateway.status, 0, acceptedGateway.stderr);
+    gatewayCredentials.drivers.credential_proxy.configuration.tokenGrant.trustDomain =
+      "example.test";
+    const mixedTrust = await runCheck(t, gatewayCredentials, {}, () => tokenEnvironment);
+    assert.equal(mixedTrust.status, 1);
+    assert.match(
+      mixedTrust.stderr,
+      /Invalid OpenShell request-credential token grant configuration/,
+    );
     const wrongBundle = structuredClone(requestCredentials);
     wrongBundle.drivers.credential_proxy.configuration.tokenGrant.bundlePath =
       "/unmounted/bundle.json";

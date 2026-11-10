@@ -121,6 +121,8 @@ export interface RepositoryGitRecipientEvidence {
   /** Under FOR SHARE of r and p: match (revisionId, fence, observed) and optionally (attemptId, version). */
   readonly observed: string;
   readonly installed: string;
+  /** The verified supervisor can request a grant. No provider material was installed. */
+  readonly grantReady?: string;
 }
 
 const registeredObservation = `SELECT FROM occ.credential_deliveries WHERE revision_id=$1 AND fence=$2

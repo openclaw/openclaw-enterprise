@@ -54,6 +54,7 @@ service OpenShell {
   rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
   rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);
   rpc ListProviderProfiles(ListProviderProfilesRequest) returns (ListProviderProfilesResponse);
+  rpc LintProviderProfiles(LintProviderProfilesRequest) returns (LintProviderProfilesResponse);
   rpc ImportProviderProfiles(ImportProviderProfilesRequest)
       returns (ImportProviderProfilesResponse);
   rpc UpdateProviderProfiles(UpdateProviderProfilesRequest)
@@ -869,7 +870,8 @@ message ProviderProfileCredential {
   bool stable_placeholder = 12;
 }
 
-// Stock dynamic client credentials. A present zero Duration disables token caching.
+// A present zero Duration disables token caching. Keep the raw grant discriminator
+// for exact readback, including value 3 for client_credentials with a Gateway assertion.
 message ProviderCredentialTokenGrant {
   string token_endpoint = 1;
   string audience = 2;
@@ -1046,6 +1048,17 @@ message ListProviderProfilesRequest {
 message ListProviderProfilesResponse {
   repeated ProviderProfile profiles = 1;
   string next_page_token = 2;
+}
+
+message LintProviderProfilesRequest {
+  repeated ProviderProfileImportItem profiles = 1;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message LintProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  bool valid = 2;
+  bool supports_openshell_gateway_assertion_source = 4;
 }
 
 message ImportProviderProfilesRequest {
