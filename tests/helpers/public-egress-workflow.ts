@@ -187,6 +187,7 @@ export async function runPublicEgressConnected({ signal, diagnostic }: Reporter)
       if (baseline) {
         assert.deepEqual(profile, baseline.profile);
       }
+      const hosts = managedHosts(profile, policy.policy, input.publicTcp);
       const probes = publicEgressProbes({
         stack,
         input,
@@ -196,7 +197,6 @@ export async function runPublicEgressConnected({ signal, diagnostic }: Reporter)
         evidence,
         window,
       });
-      const hosts = managedHosts(profile, policy.policy);
       const network = () => probes.network(mode, mode === "public", hosts);
       const bootstrap = () => probes.bootstrap(mode + "-bootstrap", mode === "public");
       const git = () => probes.gitReads(mode);

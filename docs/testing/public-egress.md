@@ -113,7 +113,10 @@ and `baselineRevisionId`. The runner waits up to 20 minutes for this receipt.
 The runner verifies that the retained revision remains restricted, then deploys
 its public successor. It requires public HTTPS reads at `registry.npmjs.org` and
 `nodejs.org`, a successful response from the controlled nonstandard-port endpoint,
-and a cold integrity-pinned Corepack bootstrap. Managed hosts remain denied on
+and a cold integrity-pinned Corepack bootstrap. In each revision the runner checks
+the effective rules, model Provider endpoints, and Git middleware before probing.
+Use exact hostnames in this fixture so it can establish that all three public
+destinations are unclaimed. Managed hosts remain denied on
 undeclared ports in both modes. The probe derives those hosts from the installed
 model Provider profile and protected Git middleware. It records the workload
 process identity separately from the supervisor configuration identity; fresh

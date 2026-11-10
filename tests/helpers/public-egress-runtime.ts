@@ -9,12 +9,13 @@ import type { DeploymentStatusResult } from "../../packages/occ/src/index.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { connectedReceiptRevision } from "./egress-connected-inputs.mjs";
 import type { RunWindow } from "./public-egress-deadline.ts";
-import type { PublicEgressInputs } from "./public-egress-inputs.ts";
+import type { PublicEgressInputs, PublicTcp } from "./public-egress-inputs.ts";
 import {
   assertSupervisorRuntimeIdentity,
   onlyReadyPod,
   runningContainer,
 } from "./public-egress-kubernetes.ts";
+import { publicProbeUrls } from "./public-egress-programs.ts";
 import type { PublicEgressEvidence, PublicEgressStack } from "./public-egress-stack.ts";
 
 type Revision = Pick<AgentRevision, "id">;
@@ -308,22 +309,63 @@ export type PublicEgressProfile = Awaited<
   ReturnType<ReturnType<typeof publicEgressRuntime>["providerProfile"]>
 >;
 
-export function managedHosts(profile: PublicEgressProfile, policy: PublicEgressPolicy["policy"]) {
+export function managedHosts(
+  profile: Pick<PublicEgressProfile, "definition">,
+  policy: PublicEgressPolicy["policy"],
+  publicTcp: PublicTcp,
+) {
+  function literalHost(value: unknown, owner: string) {
+    assert.ok(typeof value === "string", `${owner} requires a literal DNS host`);
+    const host = value.toLowerCase().replace(/\.$/u, "");
+    assert.match(
+      host,
+      /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u,
+      `${owner} requires a literal DNS host`,
+    );
+    return host;
+  }
+
+  const publicHosts = new Set(
+    publicProbeUrls(publicTcp).map((url) => literalHost(new URL(url).hostname, "public probe")),
+  );
+  function routeHost(value: unknown, owner: string) {
+    const host = literalHost(value, owner);
+    // A named route reserves the host even on ports the route itself denies.
+    assert.ok(!publicHosts.has(host), `${owner} already claims ${host}`);
+    return host;
+  }
+
+  // GetSandboxConfig includes attached Provider routes as well as Sandbox rules.
+  for (const rule of Object.values(
+    record(policy.network_policies === undefined ? {} : policy.network_policies),
+  )) {
+    const { endpoints = [] } = record(rule);
+    assert.ok(Array.isArray(endpoints), "expected effective Sandbox policy endpoints");
+    for (const endpoint of endpoints as unknown[]) {
+      routeHost(record(endpoint).host, "effective Sandbox policy");
+    }
+  }
+
   const modelEndpoints = profile.definition?.endpoints;
   assert.ok(Array.isArray(modelEndpoints) && modelEndpoints.length > 0);
   const modelHosts = (modelEndpoints as unknown[]).map((value) => {
     const { host, port, ports } = record(value);
-    assert.ok(typeof host === "string" && host.length > 0 && !host.includes("*"));
     assert.notEqual(port, 8443);
     assert.ok(ports === undefined || (Array.isArray(ports) && !ports.includes(8443)));
-    return host;
+    return routeHost(host, "model Provider profile");
   });
-  const middleware = record(record(policy.network_middlewares)["oce-prepared-git"]);
-  const gitHosts = record(middleware.endpoints).include;
-  assert.ok(
-    Array.isArray(gitHosts),
-    "the installed policy must carry the protected Git middleware",
+  const middlewares = record(policy.network_middlewares);
+  assert.deepEqual(
+    Object.keys(middlewares),
+    ["oce-prepared-git"],
+    "expected only the protected Git middleware",
   );
-  assert.deepEqual([...gitHosts].sort(), ["api.github.com", "github.com"]);
+  const selector = record(record(middlewares["oce-prepared-git"]).endpoints);
+  const { include, exclude = [], ...other } = selector;
+  assert.deepEqual(other, {}, "unsupported Git middleware host selector");
+  assert.deepEqual(exclude, [], "unexpected Git middleware host exclusions");
+  assert.ok(Array.isArray(include), "expected Git middleware host inclusions");
+  const gitHosts = (include as unknown[]).map((host) => routeHost(host, "Git middleware"));
+  assert.deepEqual(gitHosts.sort(), ["api.github.com", "github.com"]);
   return [...new Set<string>([...modelHosts, ...gitHosts])].sort();
 }

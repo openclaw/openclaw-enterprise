@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 
 import type { PublicTcp } from "./public-egress-inputs.ts";
 
+const npmRegistry = "https://registry.npmjs.org";
+
+export function publicProbeUrls(publicTcp: PublicTcp) {
+  return [npmRegistry + "/pnpm/latest", "https://nodejs.org/dist/index.json", publicTcp.url];
+}
+
 // These programs run through the Agent's ordinary shell tool. Their receipt files
 // are read only after the native thread confirms the exact command completed.
 export function publicBootstrapProgram({
@@ -23,7 +29,7 @@ fs.mkdirSync(cache);
 const env = { ...process.env, COREPACK_HOME: cache,
   COREPACK_ENABLE_DOWNLOAD_PROMPT: '0', COREPACK_DEFAULT_TO_LATEST: '0',
   COREPACK_ENABLE_NETWORK: '1', COREPACK_ENABLE_PROJECT_SPEC: '1',
-  COREPACK_ENABLE_STRICT: '1', COREPACK_NPM_REGISTRY: 'https://registry.npmjs.org' };
+  COREPACK_ENABLE_STRICT: '1', COREPACK_NPM_REGISTRY: ${JSON.stringify(npmRegistry)} };
 delete env.COREPACK_INTEGRITY_KEYS;
 delete env.COREPACK_NPM_TOKEN;
 delete env.COREPACK_NPM_USERNAME;
@@ -130,11 +136,7 @@ const connect = host => new Promise(resolve => {
   socket.on('error', error => resolve({ code: error.code }));
 });
 (async () => {
-  const publicReads = await Promise.all([
-    'https://registry.npmjs.org/pnpm/latest',
-    'https://nodejs.org/dist/index.json',
-    ${JSON.stringify(publicTcp.url)},
-  ].map(read));
+  const publicReads = await Promise.all(${JSON.stringify(publicProbeUrls(publicTcp))}.map(read));
   const managedPorts = await Promise.all(${JSON.stringify(managedHosts)}.map(async host => ({ host, ...await connect(host) })));
   fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ nonce: ${JSON.stringify(nonce)}, publicReads, managedPorts }), { flag: 'wx', mode: 384 });
   console.log(${JSON.stringify(nonce)});

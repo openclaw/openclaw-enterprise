@@ -23,7 +23,77 @@ import {
   publicEgressResources,
   type PublicEgressRequest,
 } from "../helpers/public-egress-resources.ts";
+import { managedHosts } from "../helpers/public-egress-runtime.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+
+test("public egress qualification requires unclaimed probe destinations in both modes", () => {
+  const publicTcp = {
+    url: "https://receiver.example.test.:9443/",
+    expectedBodySha256: "a".repeat(64),
+  };
+  const modelEndpoints = [{ host: "chatgpt.com", ports: [443] }];
+  const profile = { definition: { endpoints: modelEndpoints } };
+  const git = { endpoints: { include: ["github.com", "api.github.com"] } };
+  for (const publicMode of [false, true]) {
+    const policy = {
+      allow_unconfigured_public_tcp: publicMode,
+      network_policies: { model: { endpoints: modelEndpoints } },
+      network_middlewares: { "oce-prepared-git": git },
+    };
+    assert.deepEqual(managedHosts(profile, policy, publicTcp), [
+      "api.github.com",
+      "chatgpt.com",
+      "github.com",
+    ]);
+    // An installed grant could explain a successful probe without the public fallback.
+    for (const [endpoint, reason] of [
+      [{ host: "Receiver.Example.Test.", ports: [9443] }, /already claims receiver\.example\.test/],
+      [{ host: "registry.npmjs.org", ports: [443] }, /already claims registry\.npmjs\.org/],
+      [{ host: "nodejs.org", ports: [443] }, /already claims nodejs\.org/],
+      [{ host: "**.example.test", ports: [9443] }, /requires a literal DNS host/],
+      [{ allowed_ips: ["192.0.2.0/24"], ports: [9443] }, /requires a literal DNS host/],
+    ] as const) {
+      const extra = { endpoints: [endpoint] };
+      assert.throws(
+        () =>
+          managedHosts(
+            profile,
+            { ...policy, network_policies: { ...policy.network_policies, extra } },
+            publicTcp,
+          ),
+        reason,
+      );
+    }
+    assert.throws(
+      () =>
+        managedHosts(
+          { definition: { endpoints: [{ host: "receiver.example.test", port: 443 }] } },
+          policy,
+          publicTcp,
+        ),
+      /already claims receiver\.example\.test/,
+    );
+    assert.throws(
+      () =>
+        managedHosts(
+          profile,
+          {
+            ...policy,
+            network_middlewares: {
+              ...policy.network_middlewares,
+              extra: { endpoints: { include: ["*"] } },
+            },
+          },
+          publicTcp,
+        ),
+      /expected only the protected Git middleware/,
+    );
+    assert.throws(
+      () => managedHosts(profile, policy, { ...publicTcp, url: "https://GitHub.com:9443/" }),
+      /Git middleware already claims github\.com/,
+    );
+  }
+});
 
 test("public egress requires a running supervisor with a runtime image identity", () => {
   const image = "registry.example.test/supervisor@sha256:" + "a".repeat(64);

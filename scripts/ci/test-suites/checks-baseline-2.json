@@ -652,6 +652,7 @@
     {
       "path": "tests/integration/public-egress-preflight.test.ts",
       "expectedTests": [
+        "public egress qualification requires unclaimed probe destinations in both modes",
         "public egress requires a running supervisor with a runtime image identity",
         "public egress QA waits for owned retirement after acceptance times out"
       ]
