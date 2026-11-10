@@ -231,6 +231,7 @@ test(
       for (const [table, constraint] of [
         ["egress_send_receipts", "egress_send_receipts_check_17"],
         ["repository_standing_approvals", "standing_approvals_binding_check"],
+        ["prepared_github_families", "prepared_github_families_check"],
         ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
         ["agent_revisions", "agent_revisions_execution_admission"],
@@ -2697,6 +2698,7 @@ test(
       [76, "preRequestCredentialApprovals"],
       [77, "preRequestCredentialAssertions"],
       [78, "preSharedGitHubIssuance"],
+      [79, "preGitHubPullApiCustody"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2894,6 +2896,8 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
       [77, "preRequestCredentialAssertions"],
+      [78, "preSharedGitHubIssuance"],
+      [79, "preGitHubPullApiCustody"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2910,6 +2914,244 @@ test(
         history: "completed",
       });
     }
+  },
+);
+
+test(
+  "GitHub pull API custody preserves retained families and refuses broader siblings",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "pullapicustody", { prefix: 79 });
+
+    function selected(admissionId, suffix, permissions) {
+      const sourceId = "repository-git:" + admissionId + suffix;
+      const binding = {
+        repositoryRef: "selected",
+        profile: "github-repository",
+        grant: {
+          grantId: "fixture-grant",
+          repositoryId: "31",
+          providerInstanceId: "github-fixture",
+        },
+      };
+      const grant = {
+        id: binding.grant.grantId,
+        isolationId: "fixture-revision",
+        profile: "github-repository",
+        appId: "11",
+        installationId: "19",
+        repositories: [{ repositoryId: "31", repository: "fixture/selected" }],
+        permissions,
+      };
+      return {
+        sourceId,
+        source: {
+          adoption: "credential_proxy_github_repository",
+          key: { source: { id: sourceId } },
+          session: {
+            admissionId,
+            revisionId: grant.isolationId,
+            grant: binding.grant,
+            binding,
+            bindings: [structuredClone(binding)],
+            credentialProxyExecution: {
+              driver: { id: "openshell" },
+              enforcement: { repositoryGitRecipient: { deliveryProfile: "github_repository" } },
+            },
+          },
+          grant,
+        },
+        issuer: { kind: "worker-mounted-github-app-key" },
+        admission: { familyId: sourceId, grant },
+      };
+    }
+    const native = selected("same-admission", "", { metadata: "read", contents: "write" });
+    const pullOnly = { metadata: "read", pull_requests: "write" };
+    const sibling = selected("same-admission", ":pull-api", pullOnly);
+    const sharedId = "repository-git-shared:" + "a".repeat(64);
+    const sharedGrant = { ...native.source.grant, id: sharedId, isolationId: "fixture-namespace" };
+    const shared = {
+      sourceId: sharedId,
+      source: {
+        adoption: "credential_proxy_shared_github_repository",
+        key: { source: { id: sharedId } },
+        enrollment: {
+          issuerId: "b".repeat(64),
+          installationId: "fixture-installation",
+          namespaceId: sharedGrant.isolationId,
+          repositoryBackendId: "fixture-backend",
+          providerInstanceId: "github-fixture",
+          driver: { id: "openshell" },
+        },
+        issuance: {
+          schemaVersion: 1,
+          kind: "selected",
+          appId: sharedGrant.appId,
+          installationId: Number(sharedGrant.installationId),
+          permissions: sharedGrant.permissions,
+        },
+        grant: sharedGrant,
+      },
+      issuer: native.issuer,
+      admission: { familyId: sharedId, grant: sharedGrant },
+    };
+    const insert = ({ sourceId, source, issuer, admission }, client = db.app) =>
+      client.query(
+        `INSERT INTO occ.prepared_github_families (source_id,source,issuer,admission)
+         VALUES ($1,$2,$3,$4)`,
+        [sourceId, source, issuer, admission],
+      );
+    const rows = (client) =>
+      client
+        .query(
+          "SELECT source_id,source,issuer,admission FROM occ.prepared_github_families ORDER BY source_id",
+        )
+        .then(({ rows }) => rows);
+    const privileges = (client) =>
+      client
+        .query(
+          `SELECT
+        has_table_privilege(current_user, 'occ.prepared_github_families', 'SELECT') AS read,
+        has_table_privilege(current_user, 'occ.prepared_github_families', 'INSERT') AS insert,
+        has_table_privilege(current_user, 'occ.prepared_github_families', 'DELETE') AS delete,
+        has_column_privilege(current_user, 'occ.prepared_github_families', 'source', 'UPDATE') AS rewrite_source,
+        has_column_privilege(current_user, 'occ.prepared_github_families', 'admission', 'UPDATE') AS update_admission`,
+        )
+        .then(({ rows }) => rows);
+    const shapeRefusal = { code: "23514", constraint: "prepared_github_families_check" };
+    await insert(native);
+    await insert(shared);
+    await assert.rejects(insert(sibling), shapeRefusal);
+    const before = await rows(db.app);
+    const access = await privileges(db.app);
+    const previousArchive = await dumpHistoryArchive(fixture, db);
+    assert.deepEqual(access, [
+      { read: true, insert: true, delete: false, rewrite_source: false, update_admission: true },
+    ]);
+    for (const flag of ["--check", undefined]) {
+      assert.deepEqual(await runHistoryMigration(db, "production", flag), {
+        ok: true,
+        history: "preGitHubPullApiCustody",
+      });
+    }
+    assert.deepEqual(await rows(db.app), before);
+    assert.deepEqual(await privileges(db.app), access);
+    await insert(sibling);
+
+    await assert.rejects(insert(selected("unknown-suffix", ":issues-api", pullOnly)), shapeRefusal);
+    for (const [name, change] of [
+      [
+        "read-only-pulls",
+        ({ source }) => {
+          source.grant.permissions.pull_requests = "read";
+        },
+      ],
+      [
+        "extra-contents",
+        ({ source }) => {
+          source.grant.permissions.contents = "write";
+        },
+      ],
+      [
+        "missing-metadata",
+        ({ source }) => {
+          delete source.grant.permissions.metadata;
+        },
+      ],
+      [
+        "other-repository",
+        ({ source }) => {
+          source.grant.repositories[0].repositoryId = "32";
+        },
+      ],
+      [
+        "empty-name",
+        ({ source }) => {
+          source.grant.repositories[0].repository = "";
+        },
+      ],
+      [
+        "nested-repository-name",
+        ({ source }) => {
+          source.grant.repositories[0].repository = "fixture/another/repository";
+        },
+      ],
+      [
+        "two-repositories",
+        ({ source }) => {
+          source.grant.repositories.push({ repositoryId: "32", repository: "fixture/second" });
+          source.session.bindings.push({
+            ...source.session.binding,
+            repositoryRef: "second",
+            grant: { ...source.session.grant, repositoryId: "32" },
+          });
+        },
+      ],
+      [
+        "different-session-binding",
+        ({ source }) => {
+          source.session.bindings[0].repositoryRef = "another-binding";
+        },
+      ],
+      [
+        "different-session-grant",
+        ({ source }) => {
+          source.session.grant = {
+            ...source.session.grant,
+            providerInstanceId: "another-provider",
+          };
+        },
+      ],
+      [
+        "other-issuer",
+        (row) => {
+          row.issuer = { kind: "unregistered" };
+        },
+      ],
+      [
+        "other-delivery-profile",
+        ({ source }) => {
+          source.session.credentialProxyExecution.enforcement.repositoryGitRecipient.deliveryProfile =
+            "github_installation";
+        },
+      ],
+      [
+        "other-admission",
+        ({ admission }) => {
+          admission.familyId = "other-family";
+        },
+      ],
+    ]) {
+      const row = selected(name, ":pull-api", { ...pullOnly });
+      change(row);
+      await assert.rejects(insert(row), shapeRefusal, name);
+    }
+
+    const persisted = await rows(db.app);
+    assert.deepEqual(
+      persisted.map(({ source_id }) => source_id).sort(),
+      [shared.sourceId, native.sourceId, sibling.sourceId].sort(),
+    );
+    const restored = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, db),
+    );
+    assert.deepEqual(await rows(restored.app), persisted);
+    assert.deepEqual(await privileges(restored.app), access);
+    assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+    const previous = await restoreHistoryArchive(context, fixture, previousArchive);
+    assert.deepEqual(await rows(previous.app), before);
+    assert.deepEqual(await privileges(previous.app), access);
+    await assert.rejects(insert(sibling, previous.app), shapeRefusal);
+    assert.deepEqual(await runHistoryMigration(previous, "production", "--check"), {
+      ok: true,
+      history: "preGitHubPullApiCustody",
+    });
   },
 );
 
