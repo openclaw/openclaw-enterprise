@@ -224,7 +224,7 @@ and exit codes.
 
 Activation requires stopped admission, drained or terminated requests, and stopped
 old controllers; startup does not fence live readers. Both PostgreSQL compositions
-reject Google with native administration; OIDC permits shared-cookie or host-only exchange.
+reject Google with native administration; OIDC uses the same shared session boundary as password sign-in.
 `apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
 canonical origin and profile before activation. Invalid configuration leaves
 sessions, enrollment and recovery designation unchanged.

@@ -2,25 +2,6 @@
 
 Native browser access is disabled by default. It exposes an Agent Gateway’s chat or administration surface according to the caller’s Agent permission, subject to [Gateway managed mode](#gateway-managed-mode). OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the human’s OCE session.
 
-## Host-only session exchange
-
-For guarded OIDC sign-in, select `agentNativeAdmin.sessionMode: host-only-exchange`
-(`OCC_AGENT_NATIVE_ADMIN_SESSION_MODE=host-only-exchange`) and omit
-`agentNativeAdmin.sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN`. Console and Agent
-origins must use same-site HTTPS and route to OCC. Launch creates no account or grant.
-
-Opening the Agent creates a 60-second, window-bound challenge, confirmed through
-the same Console session. One-use redemption sets a Secure, HttpOnly,
-SameSite=Strict host-only cookie, expiring with its parent session (at most eight
-hours). HTTP, WebSocket admission and renewal recheck the session, Principal,
-Agent, Namespace, revision and authorization. Neither cookie reaches the Gateway.
-
-Repeating **Open Agent UI** reuses a valid handle with the same authority and
-expiry, preserving WebSockets. Otherwise, redemption issues a new handle.
-A version-change refusal on an [eligible HTML navigation](#authorization-and-availability)
-shows HTTP 403 **Agent version changed** with a Console return link. It never
-redirects or transfers access.
-
 ## Who can open it
 
 The console’s Agent browser surface requires a human session and exact Agent
@@ -29,7 +10,6 @@ The console’s Agent browser surface requires a human session and exact Agent
 granted. Agent `read` alone and service API keys grant neither mode.
 
 Password and OIDC sign-in support native browser access with shared cookies.
-OIDC also supports the [host-only session exchange](#host-only-session-exchange).
 Google sign-in does not support native browser access.
 
 ## Enable during creation
@@ -148,7 +128,7 @@ For browser proxying, OCC maps the selected endpoint to the same authority and p
 
 ## Shared session boundary
 
-Shared-cookie mode uses the automatically derived domain. Every host receiving that cookie must be a trusted OCE ingress endpoint. Agent hosts route to OCC, not Envoy or tenant Services. OCC strips cookies, `Authorization`, API keys, forwarded identity/scope headers and native `Set-Cookie`; the Gateway never receives the OCE cookie.
+Browser access uses the automatically derived cookie domain. Every host receiving that cookie must be a trusted OCE ingress endpoint. Agent hosts route to OCC, not Envoy or tenant Services. OCC strips cookies, `Authorization`, API keys, forwarded identity/scope headers and native `Set-Cookie`; the Gateway never receives the OCE cookie.
 
 Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal or a change between chat and administration authority, pilot disablement, Agent unavailability, or a version change closes active WebSockets during the authorization lease. A socket remains bound to the session that opened it; replacing a browser cookie does not replace that socket’s session. Reconnecting uses the same stable Agent host and the selected version when the shared OCE session, exact Agent permission, and native configuration remain valid.
 
@@ -200,9 +180,9 @@ device state, plugins, or other persistent gateway data.
 - Helm requires HTTPS and an Agent DNS suffix even when native access is disabled. Native access also requires private gateway routing.
 - Auth setup rejects missing or incompatible Console and Agent DNS hosts, public-suffix cookie scope, and short auth secrets. The removed `sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN` inputs are rejected, including empty values.
 - Native access setup rejects invalid enablement, origins, or transport prerequisites. A missing `OCC_GATEWAY_API_KEY_PATH` reports `GATEWAY_API_KEY_UNAVAILABLE`.
-- Host-only exchange requires guarded OIDC sign-in, same-site HTTPS Console and Agent origins, and disabled sandbox preview.
+- Former host-only exchange settings fail validation. See [upgrade from host-only exchange](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
 - See [availability statuses](#authorization-and-availability). With a selected version and derived origin, unsupported native configuration, gateway routing or an unclean Compute endpoint returns `unsupported`.
-- The console hides native access for disabled and denied states and explains stopped, unsupported, or unavailable states. When available, **Open chat** or **Open Agent UI** opens a new tab directly in shared-cookie mode or completes the host-only exchange.
+- The console hides native access for disabled and denied states and explains stopped, unsupported, or unavailable states. When available, **Open chat** or **Open Agent UI** opens the Agent in a new tab.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.
 - Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.
 

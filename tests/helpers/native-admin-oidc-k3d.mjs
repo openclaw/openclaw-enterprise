@@ -11,7 +11,7 @@ const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
 // Serialized into this test's API Pod. Only the external OIDC protocol is
-// simulated; the installed authentication, session, IAM and browser exchange run normally.
+// simulated; the installed authentication, session, IAM and browser access run normally.
 async function installOidcFixture({ subject, callbackUrl, clientId, clientSecret, issuer }) {
   const originalFetch = globalThis.fetch;
   const key = await crypto.subtle.generateKey(
@@ -176,7 +176,6 @@ export async function enableInstalledOidcNativeAdmin({
     // No provider network is needed. Do not widen this test's API Internet access.
     egressCidrs: ["192.0.2.1/32"],
   });
-  expected.agentNativeAdmin.sessionMode = "host-only-exchange";
   const valuesFile = join(directory, "values.json");
   await writeFile(valuesFile, JSON.stringify(expected), { mode: 0o600 });
 
@@ -244,10 +243,10 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
   for (const [name, value] of Object.entries({
     OCC_AUTH_RECOVERY_USER_ID: recoveryUserId,
     OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
-    OCC_AGENT_NATIVE_ADMIN_SESSION_MODE: "host-only-exchange",
   })) {
     assert.equal(configured[name]?.value, value, name);
   }
+  assert.equal(configured.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, undefined);
   assert.equal(configured.OCC_AUTH_COOKIE_DOMAIN, undefined);
   for (const [name, key] of [
     ["OCC_AUTH_OIDC_CLIENT_ID", "client-id"],
@@ -261,7 +260,6 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
   assert.equal(status.info.status, "deployed");
   return {
     subject,
-    parentCookieName: "__Host-openclaw_occ.session_token",
     releaseRevision: status.version,
     controllerImage: api.image,
     async authorizeRoute(route) {

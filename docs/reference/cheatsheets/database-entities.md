@@ -639,7 +639,8 @@ provider token. Consumed attempts are deleted before exchange.
 
 ### `native_browser_intents`
 
-Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Short-lived, browser-bound native Agent launches retained for deployments that
+previously used [host-only exchange](../../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
 Consumed atomically; deleted with the parent session or revision.
 
 - `id`, `installation_id`, `parent_session_id`, `principal_id`
@@ -649,7 +650,8 @@ Consumed atomically; deleted with the parent session or revision.
 
 ### `native_browser_handles`
 
-Hashed Agent access handles dependent on a live parent human session.
+Hashed Agent access handles from host-only exchange, dependent on a live parent
+human session.
 
 - `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
 - `namespace_id`, `agent_id`, `revision_id`, `origin`

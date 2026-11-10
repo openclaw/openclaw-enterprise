@@ -1490,29 +1490,23 @@ function buildRendered(profile, parsed, diagnostics) {
       "controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc.",
     );
   }
-  const sessionMode =
-    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
-      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
-      description: "shared-cookie or host-only-exchange",
-    }) ?? "shared-cookie";
+  if (
+    Object.hasOwn(controlPlane, "agentNativeAdminSessionMode") &&
+    controlPlane.agentNativeAdminSessionMode !== "shared-cookie"
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode is no longer configurable; review the shared browser cookie domain before removing this setting.",
+    );
+  }
   const agentNativeAdminDomain = asString(
     controlPlane,
     ["controlPlane", "agentNativeAdminDomain"],
     diagnostics,
   );
   validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
-  if (
-    sessionMode === "host-only-exchange" &&
-    (controlPlane.oidc === undefined || controlPlane.google !== undefined)
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires OIDC sign-in without Google.",
-    );
-  }
   const agentNativeAdmin = {
     enabled: controlPlane.google === undefined,
     domain: agentNativeAdminDomain.toLowerCase(),
-    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
   };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??

@@ -1668,52 +1668,38 @@ test(
   },
 );
 
-test(
-  "chart host-only native admin is explicit and preserves guarded cookie scope",
-  tooling,
-  async () => {
-    const values = {
-      ...oidcUpgradeValues(recoveryUserId),
-      "agentNativeAdmin.enabled": "true",
-      "agentNativeAdmin.sessionMode": "host-only-exchange",
-      "agentNativeAdmin.domain": "agents.oce.example.internal",
-      "gatewayRouting.enabled": "true",
-    };
-    // Disabling the UI keeps the selected cookie boundary and its provider restrictions.
-    for (const enabled of ["true", "false"]) {
-      const selected = { ...values, "agentNativeAdmin.enabled": enabled };
-      const objects = await renderChart(selected);
-      const settings = signInSettings(deploymentEnv(objects, "api"));
-      assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, "host-only-exchange");
-      assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
-      assert.equal(
-        signInSettings(deploymentEnv(objects, "worker")).OCC_AGENT_NATIVE_ADMIN_SESSION_MODE,
-        undefined,
+test("chart and API refuse retired native admin session modes", tooling, async () => {
+  const values = {
+    ...oidcUpgradeValues(recoveryUserId),
+    "agentNativeAdmin.domain": "agents.oce.example.internal",
+    "gatewayRouting.enabled": "true",
+  };
+  // Native access enablement does not change the browser session boundary.
+  for (const enabled of ["true", "false"]) {
+    const selected = { ...values, "agentNativeAdmin.enabled": enabled };
+    const defaults = await renderChart(selected);
+    const settings = signInSettings(deploymentEnv(defaults, "api"));
+    assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, undefined);
+    assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
+    const shared = await renderChart({
+      ...selected,
+      "agentNativeAdmin.sessionMode": "shared-cookie",
+    });
+    assert.deepEqual(signInSettings(deploymentEnv(shared, "api")), settings);
+    await startsUp(resolveSecrets(settings), `shared OIDC native admin ${enabled}`);
+
+    for (const sessionMode of ["host-only-exchange", "unknown", ""]) {
+      assert.match(
+        await chartRefusal({ ...selected, "agentNativeAdmin.sessionMode": sessionMode }),
+        /agentNativeAdmin\.sessionMode is no longer configurable; review the shared browser cookie domain/,
       );
-      await startsUp(resolveSecrets(settings), `host-only native admin ${enabled}`);
-      for (const provider of [
-        { "auth.oidc.enabled": "false", "auth.recoveryUserId": "" },
-        googleUpgradeValues(recoveryUserId),
-      ]) {
-        assert.match(
-          await chartRefusal({ ...selected, ...provider, "agentNativeAdmin.enabled": enabled }),
-          enabled === "true" && provider["auth.google.enabled"] === "true"
-            ? /auth.google requires agentNativeAdmin.enabled: false/
-            : /host-only-exchange requires guarded OIDC sign-in without Google/,
-        );
-      }
+      assert.equal(
+        await startupCode({
+          ...resolveSecrets(settings),
+          OCC_AGENT_NATIVE_ADMIN_SESSION_MODE: sessionMode,
+        }),
+        "AGENT_NATIVE_ADMIN_SESSION_MODE_REMOVED",
+      );
     }
-    for (const [overrides, message] of [
-      [{ "agentNativeAdmin.sessionMode": "unknown" }, /sessionMode must be/],
-      [{ "agentNativeAdmin.sessionMode": "" }, /sessionMode must be/],
-      [
-        { "agentNativeAdmin.sharedCookieDomain": "example.com" },
-        /sharedCookieDomain is no longer supported/,
-      ],
-      [{ "gatewayRouting.sandbox.enabled": "true" }, /does not support sandbox preview/],
-      [{ "gatewayRouting.enabled": "false" }, /requires gatewayRouting.enabled/],
-    ]) {
-      assert.match(await chartRefusal({ ...values, ...overrides }), message);
-    }
-  },
-);
+  }
+});

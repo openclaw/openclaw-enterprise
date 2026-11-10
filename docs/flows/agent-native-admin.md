@@ -1,14 +1,14 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-10
-last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
+last_updated_session: authoring-run/ee831f01-accb-4420-bc71-6678c0843d90
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-OCC authorizes exact-Agent browser access through the OCE session or a host-only handle, then proxies HTTP and WebSockets under the selected access mode.
+OCC authorizes exact-Agent browser access through the shared OCE session, then proxies HTTP and WebSockets under the selected access mode.
 
 ## Entry Points
 
@@ -16,7 +16,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
+- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [shared session boundary](../reference/agent-native-admin.md#shared-session-boundary). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
 
 ## Flow
 
@@ -58,7 +58,7 @@ graph TD
   CO -->|yes| EP{"Private gateway endpoint supported?"}
   EP -->|no| N
   EP -->|yes| O["Return available Agent URL"]
-  O --> OPEN["Open Agent host directly or exchange<br/>a challenge for a host-only handle"]
+  O --> OPEN["Open the Agent host with the shared OCE session"]
   OPEN -->|HTTP| Q["Resolve host to Agent"]
   OPEN -->|WebSocket| V["OCC guards client socket during admission"]
   V --> Q
@@ -69,7 +69,7 @@ graph TD
   T -->|matching owner| U["Strip browser credentials;<br/>proxy to private Gateway"]
   T -->|WebSocket client reset| VB["Stop before gateway connection"]
   T -->|WebSocket client connected with matching owner and exact Origin| VC["Proxy 101 upgrade with version lease"]
-  U -->|shared-cookie mode and sandbox routing enabled| W["Load separate preview origin"]
+  U -->|sandbox routing enabled| W["Load separate preview origin"]
   W --> Z["Route to sandbox listener"]
   Z --> AA["Deliver HTML in isolated iframe"]
 ```
@@ -115,10 +115,9 @@ An existing helper-owned name cannot change this selection.
 
 Agent detail reads `${path}/native-admin` when `operate` or `administer` is allowed
 or unknown. Disabled/denied access stays hidden; other refusals explain why.
-Only `available` enables **Open chat** or **Open Agent UI**. Shared-cookie mode
-uses `noopener noreferrer`. Host-only exchange opens a window and completes
-step 5a, accepting challenges only from that window and origin. Redemption
-clears `window.opener`; errors close the pending window. An audited `403` in tab `sessionStorage` suppresses reads
+Only `available` enables **Open chat** or **Open Agent UI**. The Console opens
+the Agent host with `noopener noreferrer`. An audited `403` in tab
+`sessionStorage` suppresses reads
 until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
 changes refresh access; concurrent requests coalesce into one follow-up.
 Browsing a historical version does not change the selected destination.
@@ -170,40 +169,21 @@ Compute `id` and `implementation` must match `revision.compute`; changing select
 
 `deriveSharedCookieDomain` computes the longest common DNS-label suffix of the
 HTTPS Console origin and Agent domain. It rejects IP addresses, missing hosts,
-and public suffixes. In shared-cookie mode this applies even when native
-access is disabled and uses `__Secure-openclaw_occ_shared.session_token`.
+and public suffixes. This applies even when native access is disabled and uses
+`__Secure-openclaw_occ_shared.session_token`.
 Sign-out revokes the current session and expires its shared cookie. There is no obsolete-cookie cleanup. See the [session contract](../reference/authentication.md#native-admin-shared-sessions).
 
-### 5a. Host-only exchange binds access to the parent session
-
-`apps/controller/src/http/native-admin.ts:launch`
-`apps/controller/src/http/native-admin.ts:confirm`
-`apps/controller/src/http/native-browser-bridge.ts:landingPage`
-`packages/occ/src/state/native-browser-access.ts:PostgresNativeBrowserAccess`
-
-`createControllerAuth` and `createNativeAdminAccess` restrict host-only exchange to guarded OIDC without Google.
-
-Host-only launch requires the Console session, `x-occ-session-key`, Console
-Origin, and exact-Agent `operate` or `administer`. An intent binds that session, Principal,
-Agent, Namespace, revision and origin. The landing page sets its challenge
-cookie; the opener confirms it. Redemption checks challenge and exchange, consumes
-and audits the intent, and sets the access cookie. It reuses an unexpired handle
-only when Installation, parent session, Principal, Agent, Namespace, revision,
-origin and parent expiry match; otherwise it replaces it. Reuse preserves existing
-WebSockets without allocating another handle. Stored secrets are hashed; expired,
-replayed or mismatched exchanges fail closed.
-
-Human authentication owns parent-session currentness. Admission and renewal
-recheck that session, exact-Agent access and revision. The exchange creates no
-account or grant. See [session limits](../reference/agent-native-admin.md#host-only-session-exchange).
+`apps/controller/src/api-startup.mjs:configuration` rejects a legacy non-shared
+session mode before constructing auth or native admin. Helm and the profile
+renderer also reject it without generating a replacement configuration.
+Operators must [review the new cookie scope before upgrading](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
 
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
 The `onRequest` hook intercepts the native domain before routing, preventing
-Agent origins from exposing controller routes. It authenticates the session or
-handle, resolves the exact Agent and IAM identity, selects `admin` or `chat`,
+Agent origins from exposing controller routes. It authenticates the session, resolves the exact Agent and IAM identity, selects `admin` or `chat`,
 and checks the selected version and native configuration.
 Attributable IAM denials receive one audit attempt, including after the
 five-second admission wait, disconnect or shutdown. Timely HTTP denials await
@@ -246,7 +226,7 @@ Before Fastify routing, the API intercepts derived-host upgrades and tracks sock
 
 The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
 
-Bridge requests, admission and close audits share one five-second shutdown drain. Bridge handlers stop before subsequent phases or secret delivery after shutdown or client disconnect. Work still pending
+Admission and close audits share one five-second shutdown drain. Work still pending
 afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
 audit attempt while the process lives. The drain neither cancels producers nor
 guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
@@ -256,7 +236,7 @@ guarantees durable delivery; process exit can prevent or interrupt an audit atte
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewaySandboxConfiguration`
 `apps/controller/src/drivers/compute/kubernetes/index.ts:reconcileGatewayRoute`
 
-In shared-cookie mode with sandbox routing configured, preparation and activation render the
+With sandbox routing configured, preparation and activation render the
 Agent's stable preview origin and adjacent sandbox port in its native document.
 The worker reconciles its GET/HEAD route, public-shell SecurityPolicy and
 Agent-scoped backend ingress policy under the serving version. A separate Helm listener admits only configured ingress
@@ -282,10 +262,10 @@ admin Configuration remains Pod-local.
 
 ## Debugging and Verification
 
-- For startup failures, check the [configuration error codes](../reference/agent-native-admin.md#failure-behavior) against the selected session mode.
+- For startup failures, check the [configuration error codes](../reference/agent-native-admin.md#failure-behavior).
 - Use the [availability definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
 - Unknown Agent hosts fail before proxying. Check host derivation, Agent state, and `agentNativeAdmin.domain`.
-- Shared-cookie mode opens the Agent directly. Host-only exchange uses launch, challenge and redemption requests; verify the Console cookie is absent from Agent-host requests and both cookies are absent upstream.
+- The Console opens the Agent directly. Verify the shared session cookie reaches the Agent host at OCC but is absent upstream.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - WebSocket connect and close audits share `connectionId`; close audits add a `closeReason` category from step 7.
@@ -305,6 +285,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:33: Retire the host-only exchange deployment setting and refuse legacy non-shared configurations before startup. (authoring-run/ee831f01-accb-4420-bc71-6678c0843d90 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 
