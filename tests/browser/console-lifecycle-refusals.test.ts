@@ -944,7 +944,7 @@ test("a cleanup retry denied after its permission check explains the refusal and
   await notice.getByRole("heading", { name: "Cleanup retry not allowed", exact: true }).waitFor();
   await notice
     .getByText(
-      `Your current access does not allow retrying cleanup. Request ID: ${meta.requestId}`,
+      `Your current access does not allow retrying cleanup. Ask an Installation administrator for Agent delete on this Agent, or retry from an account that holds it. Request ID: ${meta.requestId}`,
       { exact: true },
     )
     .waitFor();

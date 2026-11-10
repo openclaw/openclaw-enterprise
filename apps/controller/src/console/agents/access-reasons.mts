@@ -84,6 +84,8 @@ export const stopRefused = (target: string) =>
   `Stop was refused: your access does not include stopping ${target}. ${askForGrant("Agent operate on it")}`;
 export const deleteRefused = (target: string) =>
   `Deletion was refused: your access does not include deleting ${target}. ${askForGrant("Agent delete on it")}`;
+// A cleanup retry re-sends DELETE /agents/{id}, so the refusal names the same grant.
+export const AGENT_CLEANUP_RETRY_DENIED = `Your current access does not allow retrying cleanup. ${ASK} for Agent delete on this Agent, or retry from an account that holds it.`;
 // POST /agents/{id}/deploy authorizes Agent deploy.
 export const AGENT_DEPLOY_DENIED = notIncluded("deploying this Agent", "Agent deploy on it");
 // A Namespace the reader cannot read: deleted, never shared or no longer shared. One sentence

@@ -2,6 +2,7 @@ import type { AgentDeletionStatusResponse, AgentResponse } from "@openclaw-enter
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setHidden, setText } from "../dom.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
+import { AGENT_CLEANUP_RETRY_DENIED } from "./access-reasons.mjs";
 import { displayDate, GENERIC_DENIAL, link, namespacePath } from "./list.mjs";
 import { grantRefusal } from "./lifecycle-confirmation.mjs";
 
@@ -310,7 +311,7 @@ export function renderDeletionStatus(context: StatusContext, agentId: string) {
             const reason =
               !grantRefusal(cause) && serverMessage && serverMessage !== GENERIC_DENIAL
                 ? serverMessage
-                : "Your current access does not allow retrying cleanup.";
+                : AGENT_CLEANUP_RETRY_DENIED;
             show("Cleanup retry not allowed", reason + reference);
           } else {
             show(
