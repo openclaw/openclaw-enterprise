@@ -282,13 +282,14 @@ export async function requestCredentialFixture(
   const restartController = (
     credentialProxyCapacity = configuration.credentialProxyCapacity,
     authorize?: ControllerOptions["authorize"],
+    pool = f.pool,
   ) => {
     const capacity = resolveCredentialProxyCapacity(
       { ...credentialProxyCapacity },
       "requestCapacity",
     );
     assert.ok(capacity.capacity);
-    const restartedState = new PostgresPlatformState(f.pool);
+    const restartedState = new PostgresPlatformState(pool);
     const restarted = new OpenClawController(f.controller.installation, {
       state: restartedState,
       ...(authorize && { authorize }),
@@ -319,6 +320,34 @@ export async function requestCredentialFixture(
     request,
     grant,
     restartController,
+    pauseFinalPolicyLock() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let checks = 0;
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      for (const method of ["transact", "transactReadCommitted"] as const) {
+        const original = policyState[method].bind(policyState);
+        policyState[method] = (work) =>
+          original((unit) =>
+            work({
+              ...unit,
+              namespaces: {
+                ...unit.namespaces,
+                async lockNamespace(...args) {
+                  // Both real transactions have established their snapshot before this lock.
+                  if (++checks === 2) {
+                    reached.resolve();
+                    await release.promise;
+                  }
+                  return unit.namespaces.lockNamespace(...args);
+                },
+              },
+            }),
+          );
+      }
+      return { reached: reached.promise, release: release.resolve };
+    },
     pauseFinalMaterialRead() {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

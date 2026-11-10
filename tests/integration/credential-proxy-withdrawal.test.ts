@@ -1,6 +1,7 @@
 import { requestCredentialFixture } from "../helpers/request-credential-fixture.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
+import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
@@ -33,7 +34,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
@@ -1343,8 +1344,8 @@ test(
     assert.equal(await replica(b).authorizeRequestCredential(b.request(), signal), "credential");
     assert.equal(await replica(c).authorizeRequestCredential(c.request(), signal), "credential");
 
-    // A transaction-wide snapshot cannot see quota changes committed while waiting
-    // for the admission lock. Refuse it instead of silently exceeding the shared cap.
+    // Online authorization and redemption select READ COMMITTED independently of a
+    // pool's default, so quota and policy reads see commits after lock acquisition.
     const snapshot = await requestCredentialFixture(t, {
       poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
     });
@@ -1353,9 +1354,49 @@ test(
         .default_transaction_isolation,
       "repeatable read",
     );
+    const defaultIsolationInput = snapshot.request();
     assert.equal(
-      await snapshot.exchange.authorizeRequestCredential(snapshot.request(), signal),
+      await snapshot.exchange.authorizeRequestCredential(defaultIsolationInput, signal),
+      "credential",
+      "online admission must select current-policy isolation instead of the pool default",
+    );
+    assert.equal(
+      (
+        await snapshot.exchange.resolveRequestCredential(
+          snapshot.grant(defaultIsolationInput),
+          signal,
+        )
+      )?.value,
+      "synthetic-key-initial",
+    );
+
+    // Approve through an ordinary READ COMMITTED replica, then redeem on a replica
+    // whose connection default is REPEATABLE READ. Hold its final policy check after
+    // the initial database read; an actual IAM API deletion must invalidate that approval.
+    const committedPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+    t.after(() => committedPool.end());
+    const committedApi = snapshot
+      .restartController(undefined, undefined, committedPool)
+      .createCredentialProxy(transport);
+    const selected = snapshot.request();
+    assert.equal(await committedApi.authorizeRequestCredential(selected, signal), "credential");
+    const policy = snapshot.pauseFinalPolicyLock();
+    t.after(() => policy.release());
+    const releasing = snapshot.exchange.resolveRequestCredential(snapshot.grant(selected), signal);
+    await policy.reached;
+    try {
+      const deletion = await snapshot.f.request(
+        "DELETE",
+        `/namespaces/${snapshot.f.namespace.id}/iam/access-bindings/${snapshot.f.grant.id}`,
+      );
+      assert.equal(deletion.status, 204, JSON.stringify(deletion.body));
+    } finally {
+      policy.release();
+    }
+    assert.equal(
+      await releasing,
       undefined,
+      "final authorization must observe grant withdrawal committed after its first database read",
     );
   },
 );

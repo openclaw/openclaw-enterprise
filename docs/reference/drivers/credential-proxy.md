@@ -114,7 +114,8 @@ redeploy the execution; it does not promise uninterrupted use of the other path.
 
 `authorizeRequestCredential` checks the captured request and saves a nonsecret,
 single-use approval. `resolveRequestCredential` authenticates its redemption,
-consumes the approval and rechecks authority. Two outside-lock Secret observations
+consumes approval and rechecks authority in explicit `READ COMMITTED` transactions,
+regardless of pool defaults. Two outside-lock Secret observations
 must match a final read under OCC's Namespace rotation lock. External writes
 share no lock; see the [release boundary](../../flows/credential-source-egress/model-requests.md#3-redeem-once-against-current-authority).
 The token-grant lease bounds release; it is not the API key's expiry. Required

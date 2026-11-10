@@ -113,10 +113,15 @@ admission. OpenShell uses the authenticated extension identity's expiry.
 `packages/occ/src/state/request-credential-approvals.ts` retains consumed or
 expired approvals until that horizon, so redemption expiry cannot permit
 reapproval of the same recipient/request ID. Its global and per-recipient ID
-quotas are durable and shared across API replicas. Admission requires PostgreSQL
-READ COMMITTED isolation so quota counts observe preceding holders of the
-transaction lock; other isolation levels deny admission. Strict exchange ID maps
-remain per process.
+quotas are durable and shared across API replicas. Online approval consumption
+and policy checks explicitly use State's `transactReadCommitted`, regardless of
+the connection pool's default isolation. PostgreSQL starts `READ COMMITTED`
+transactions so policy reads and quota counts observe committed changes after
+lock waits; the in-memory implementation serializes writers. Missing capability
+or an enclosing transaction refuses the operation rather than falling back.
+The SQL insertion guard additionally denies admission if the actual transaction
+is not `READ COMMITTED`. Strict transactions and exchange ID maps are unchanged;
+the latter remain per process.
 
 ### 3. Redeem once against current authority
 
@@ -190,6 +195,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-10 03:32: Document explicit current-policy transactions independently of pool isolation defaults. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - 19dccca3aef8702fcfb048198368a563ce359401)
 
 - 2026-11-10 03:19: Trace the final rotation fence, authenticated replay retention and separate operation/approval budgets. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - 072bdbf9c66b0b67008e1ec4859b3f0e02f1d3ee)
 

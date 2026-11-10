@@ -7508,7 +7508,7 @@ export class OpenClawController {
                 }
               }),
             consume: (grant) =>
-              this.transact((state) =>
+              this.transactReadCommitted((state) =>
                 state.requestCredentialApprovals.consume(grant, owner.ref, this.timestamp()),
               ),
           },
@@ -7752,7 +7752,7 @@ export class OpenClawController {
         "recipient" in request ? request.recipient : { id: request.recipientId },
       ]))
     ) {
-      await this.transact((state) => deny(state, "stale_configuration"));
+      await this.transactReadCommitted((state) => deny(state, "stale_configuration"));
       return undefined;
     }
     const authority = this.authorizationAuthority(revision.servicePrincipalId);
@@ -7775,10 +7775,10 @@ export class OpenClawController {
       return undefined;
     }
     if (observed && !observed.decision.allowed) {
-      await this.transact((state) => deny(state, "unauthorized"));
+      await this.transactReadCommitted((state) => deny(state, "unauthorized"));
       return undefined;
     }
-    return this.transact(async (state) => {
+    return this.transactReadCommitted(async (state) => {
       const refuse = async (code: string) => {
         await deny(state, code);
         return undefined;
@@ -14809,14 +14809,36 @@ export class OpenClawController {
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transactWithIsolation(work, false);
+  }
+
+  private async transactReadCommitted<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+  ): Promise<T> {
+    return this.transactWithIsolation(work, true);
+  }
+
+  private async transactWithIsolation<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    readCommitted: boolean,
+  ): Promise<T> {
     const active = this.transactionContext.getStore();
     if (active) {
+      if (readCommitted) {
+        throw new DependencyUnavailableError("Current policy requires an independent transaction.");
+      }
       return work(active);
+    }
+    const transact = readCommitted
+      ? this.state.transactReadCommitted?.bind(this.state)
+      : this.state.transact.bind(this.state);
+    if (!transact) {
+      throw new DependencyUnavailableError("Current-policy transactions are unavailable.");
     }
 
     const rollbacks: (() => Promise<void>)[] = [];
     try {
-      return await this.state.transact(async (state) =>
+      return await transact(async (state) =>
         this.transactionContext.run(state, () =>
           this.mutationRollbacks.run(rollbacks, async () => {
             const existing = await state.installations.getInstallation();

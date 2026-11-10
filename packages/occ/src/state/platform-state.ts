@@ -1222,6 +1222,8 @@ export interface PlatformUnitOfWork extends PlatformReadView {
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
   transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  /** Observe committed changes after acquiring locks, independent of connection defaults. */
+  transactReadCommitted?<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -4613,6 +4615,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
         ),
       ),
     );
+  }
+
+  /** Serialized writers clone the current committed snapshot only after taking their turn. */
+  async transactReadCommitted<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transact(work);
   }
 
   /**
