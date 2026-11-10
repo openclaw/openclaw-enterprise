@@ -107,7 +107,7 @@ test("installed Skipper publishes only verified coverage evidence from the runne
     [
       "--input-type=module",
       "--eval",
-      `import { readFileSync, watch } from "node:fs";
+      `import { readFileSync } from "node:fs";
 import { projectSkipperRunnerReceipt } from ${JSON.stringify(projection.href)};
 projectSkipperRunnerReceipt(JSON.parse(readFileSync(0, "utf8")));`,
     ],
@@ -1077,7 +1077,8 @@ test("original failure", async (t) => {
   const unreadableCode = new Error(canary);
   Object.defineProperties(unreadableCode, { name: { value: "RangeError" }, stack: { get: getter }, code: { get: getter } });
   const opaque = new Proxy(new Error(canary), { get: getter, getOwnPropertyDescriptor: getter });
-  for (const error of [spoof, unreadableName, unreadableCode, opaque]) {
+  const opaquePrototype = Object.setPrototypeOf(new Error(canary), new Proxy({}, { get: getter, getPrototypeOf: getter }));
+  for (const error of [spoof, unreadableName, unreadableCode, opaque, new TypeError(canary), new RangeError(canary), opaquePrototype]) {
     let caught;
     try { await runOpenShellStage(t, "installation", async () => { throw error; }); }
     catch (actual) { caught = actual; }
@@ -1126,7 +1127,7 @@ test("original failure", async (t) => {
     lines.on("line", (line) => {
       if (line.startsWith(label)) {
         failures.push(line.slice(label.length));
-        if (failures.length === 5) {
+        if (failures.length === 8) {
           markLive(true);
         }
       }
@@ -1167,6 +1168,9 @@ test("original failure", async (t) => {
       [
         "Error code=ETIMEDOUT",
         "Error code=ENOENT",
+        "RangeError code=unknown",
+        "unknown code=unknown",
+        "TypeError code=unknown",
         "RangeError code=unknown",
         "unknown code=unknown",
         "AssertionError code=ERR_ASSERTION",
@@ -1537,7 +1541,7 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     await writeFile(
       join(root, "tests/integration/skips.test.mjs"),
       [
-        'import { readFileSync, watch } from "node:fs";',
+        'import { readFileSync } from "node:fs";',
         'import { describe } from "node:test";',
         'import { runInNewContext } from "node:vm";',
         `const filename = ${JSON.stringify(filename)};`,

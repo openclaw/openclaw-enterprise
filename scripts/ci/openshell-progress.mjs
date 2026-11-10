@@ -12,6 +12,11 @@ const failureCategories = new Set([
   "TimeoutError",
   "unknown",
 ]);
+const nativeFailureCategories = new Map([
+  [Error.prototype, "Error"],
+  [TypeError.prototype, "TypeError"],
+  [RangeError.prototype, "RangeError"],
+]);
 const failureCodes = new Set([
   "ERR_ASSERTION",
   "ABORT_ERR",
@@ -94,7 +99,10 @@ export function emitOpenShellStageFailure(stage, error) {
     // Descriptors do not invoke accessors; proxies are not native errors.
     const name = Object.getOwnPropertyDescriptor(error, "name")?.value;
     const ownCode = Object.getOwnPropertyDescriptor(error, "code")?.value;
-    category = failureCategories.has(name) ? name : "Error";
+    category = nativeFailureCategories.get(Object.getPrototypeOf(error)) ?? "unknown";
+    if (failureCategories.has(name)) {
+      category = name;
+    }
     code = failureCodes.has(ownCode) ? ownCode : null;
   }
   const value = openShellProgress({
