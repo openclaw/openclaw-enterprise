@@ -719,6 +719,53 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 	}
 }
 
+func TestDeploymentStatusReportsCurrentAgentBesideRecordedSuccess(t *testing.T) {
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	reason := "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"
+	for _, tc := range []struct {
+		name, agent string
+		active      any
+		redeploy    bool
+	}{
+		{"active", `{"desiredRuntimeState":"running","activeRevisionId":"` + testRevision1ID + `"}`, testRevision1ID, false},
+		{"retired", `{"desiredRuntimeState":"running"}`, nil, true},
+		{"replaced", `{"desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`, testRevision2ID, false},
+		{"no active revision without a reason", `{"desiredRuntimeState":"running"}`, nil, false},
+		{"revision-only reader", `raw:403 {"error":{"code":"FORBIDDEN","message":"Denied."}}`, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"`
+			if tc.redeploy {
+				record += `,"repositoryAccess":{"state":"redeploy-required","code":"` + reason + `","message":"Deploy again."}`
+			}
+			responses := map[string]string{"GET " + path: tc.agent, "GET " + path + "/deployments/" + testRevision1ID: record + "}"}
+			for _, format := range []string{"json", "table"} {
+				out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "-o", format, "agent", "deployment-status", testAgentID, testRevision1ID)
+				if err != nil || !strings.Contains(out, "succeeded") || strings.Contains(out, reason) != tc.redeploy {
+					t.Fatalf("%s: %v: %s", format, err, out)
+				}
+				wantActive, _ := tc.active.(string)
+				if wantActive == "" {
+					wantActive = "none"
+				}
+				readable := tc.name != "revision-only reader"
+				if format == "json" {
+					var result map[string]any
+					if err := json.Unmarshal([]byte(out), &result); err != nil {
+						t.Fatal(err)
+					}
+					current, ok := result["currentAgent"].(map[string]any)
+					if ok != readable || (ok && (current["desiredRuntimeState"] != "running" || current["activeRevisionId"] != tc.active)) {
+						t.Fatalf("current Agent: %#v", current)
+					}
+				} else if strings.Contains(out, "running") != readable || (readable && !strings.Contains(out, wantActive)) {
+					t.Fatalf("table: %s", out)
+				}
+			}
+		})
+	}
+}
+
 func TestDeploymentStatusShowsModelProbeFailureCause(t *testing.T) {
 	// Finding 323: a failed startup model check names its classified cause.
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID

@@ -993,23 +993,27 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			var deploymentID string
+			var number float64
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
 					if errors.Is(err, errNoReadableRevisions) {
 						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
 					}
 					return err
 				}
-				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
 				return err
 			}
-			return app.printDeploymentStatus(deployment)
+			agent, readErr := client.GetAgent(namespace, args[0])
+			resource, _ := agent.(map[string]any)
+			if len(args) == 1 {
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource, readErr)
+			}
+			return app.printDeploymentStatus(deployment, resource)
 		},
 	}
 	stop := &cobra.Command{
@@ -1126,9 +1130,7 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 // defaultDeploymentNotice says which revision deployment-status chose without
 // an ID. Revision lists are permission-filtered, so the latest revision the
 // caller can read may be an old failed one while the active revision is hidden.
-func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
-	agent, err := client.GetAgent(namespace, agentID)
-	resource, _ := agent.(map[string]any)
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64, resource map[string]any, err error) {
 	active, _ := resource["activeRevisionId"].(string)
 	switch {
 	case err != nil:
