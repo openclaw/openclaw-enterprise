@@ -274,22 +274,36 @@ test("gateway installation preserves settled phases, operation outcomes and the 
     assert.equal(installationPhase(invalid), undefined);
   }
   const receipt = collectInstallationPhases();
-  let clock = 0;
-  const observe = observeGatewayInstallation(
-    (row) => {
+  const writes: unknown[] = [];
+  // Validate outside the best-effort writer so diagnostic failures cannot swallow assertions.
+  const acceptWrites = () => {
+    for (const row of writes.splice(0)) {
       const valid = installationPhase(row);
       assert.ok(valid);
       receipt.accept(valid);
-    },
+    }
+  };
+  let clock = 0;
+  const observe = observeGatewayInstallation(
+    (row) => writes.push(row),
     () => clock++,
   );
   const failure = new Error("installation failed");
   const ok = async () => 7;
+  const values = { overrides: ["workspace.enabled=true"] };
+  const gatewayValues = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return values;
+  };
+  const gatewayHelm = async (received: typeof values) => {
+    assert.equal(received, values);
+  };
   const fail = async () => {
     throw failure;
   };
-  await assert.rejects(observe(ok, ok, fail, ok), (error) => error === failure);
-  assert.equal(await observe(ok, ok, ok, ok), 7);
+  await assert.rejects(observe(ok, gatewayValues, fail, ok), (error) => error === failure);
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  acceptWrites();
   assert.deepEqual(receipt.result(), {
     phases: [
       { invocation: 1, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
@@ -300,17 +314,67 @@ test("gateway installation preserves settled phases, operation outcomes and the 
     ],
     truncated: false,
   });
-  for (let n = 0; n < maxInstallationInvocations; n++) {
-    await observe(ok, ok, ok, ok);
+  for (let invocation = 3; invocation <= maxInstallationInvocations; invocation++) {
+    assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
   }
+  acceptWrites();
+  // Overflow still performs installation, but emits only one marker across later invocations.
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.deepEqual(writes, [
+    {
+      kind: "openshell-installation",
+      stage: "workspace-helm",
+      outcome: "entered",
+      invocation: maxInstallationInvocations + 1,
+      offsetMs: 1,
+    },
+  ]);
+  acceptWrites();
+  assert.equal(await observe(ok, gatewayValues, gatewayHelm, ok), 7);
+  assert.equal(writes.length, 0);
   assert.equal(receipt.result().truncated, true);
   assert.equal(receipt.result().phases.length, 3 * maxInstallationInvocations - 1);
+
+  const valuesFailure = new Error("gateway values failed");
+  const failingValues = observeGatewayInstallation(
+    (row) => writes.push(row),
+    () => clock++,
+  );
+  const laterOperations: string[] = [];
+  await assert.rejects(
+    failingValues(
+      ok,
+      async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        throw valuesFailure;
+      },
+      async () => laterOperations.push("gateway-helm"),
+      async () => laterOperations.push("gateway-pod-ready"),
+    ),
+    (error) => error === valuesFailure,
+  );
+  assert.deepEqual(laterOperations, []);
+  const failedReceipt = collectInstallationPhases();
+  for (const row of writes.splice(0)) {
+    const valid = installationPhase(row);
+    assert.ok(valid);
+    failedReceipt.accept(valid);
+  }
+  assert.deepEqual(failedReceipt.result(), {
+    phases: [
+      { invocation: 1, stage: "workspace-helm", enteredMs: 1, outcome: "passed", elapsedMs: 1 },
+    ],
+    truncated: false,
+  });
   const readOnly = openSync(import.meta.filename, "r");
   try {
     for (const sink of [undefined, () => writeSync(readOnly, "diagnostic")]) {
       const install = observeGatewayInstallation(sink);
-      assert.equal(await install(ok, ok, ok, ok), 7);
-      await assert.rejects(install(ok, ok, ok, fail), (error) => error === failure);
+      assert.equal(await install(ok, gatewayValues, gatewayHelm, ok), 7);
+      await assert.rejects(
+        install(ok, gatewayValues, gatewayHelm, fail),
+        (error) => error === failure,
+      );
     }
   } finally {
     closeSync(readOnly);
