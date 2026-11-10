@@ -34,6 +34,7 @@ import {
   type PreparedGitRedemption,
 } from "../repo/github/access/prepared-git-redemption.ts";
 import {
+  observeOnlineGitWithdrawal,
   subtractExpiredOpenShellGit,
   type OpenShellGitContinuity,
   type OpenShellGitExpiryResult,
@@ -1283,8 +1284,18 @@ export class OpenShellGitRuntime {
     }
     const entry = this.states.get(revision.id)?.entry;
     if (entry) {
-      entry.blocked = "repository_expired";
+      entry.blocked =
+        saved.onlineWithdrawalFence === undefined ? "repository_expired" : "withdrawn";
       entry.installed = undefined;
+    }
+    if (saved.onlineWithdrawalFence !== undefined) {
+      const result = await observeOnlineGitWithdrawal(saved, client, owner, signal);
+      if (result !== "withdrawn") {
+        return result;
+      }
+      const disposition = await this.routes.owns(revision.id, saved.onlineWithdrawalFence);
+      signal.throwIfAborted();
+      return disposition === "withdrawn" ? "withdrawn" : "pending";
     }
     return subtractExpiredOpenShellGit(
       this.routes,
