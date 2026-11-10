@@ -7,15 +7,31 @@ import { protectedText, redactedQaTail } from "./qa-secrets.mjs";
 
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {
-  const token = await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  const scratch = scenario === "scratch-volume";
+  // Scratch uses the API-key path exercised by the native scratch workflow.
+  const token = scratch
+    ? undefined
+    : await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
+  const scratchCredential = scratch
+    ? await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential")
+    : undefined;
   const envFile = process.env.OCC_TEST_QA_SANDBOX_ENV;
   assert.ok(envFile, "OCC_TEST_QA_SANDBOX_ENV must select the prepared OpenShell file environment");
   const env = {
     ...process.env,
-    CODEX_ACCESS_TOKEN: token,
+    ...(token === undefined
+      ? {}
+      : { CODEX_ACCESS_TOKEN: token, OCC_TEST_OPENSHELL_HARNESS: "codex" }),
+    ...(scratchCredential === undefined
+      ? {}
+      : {
+          OPENAI_API_KEY: scratchCredential,
+          OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_QA_OPENAI_MODEL,
+          OCC_TEST_OPENSHELL_HARNESS: "codex",
+          OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1",
+        }),
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
-    OCC_TEST_OPENSHELL_HARNESS: "codex",
-    OCC_TEST_OPENSHELL_SCENARIO: scenario,
+    OCC_TEST_OPENSHELL_SCENARIO: scratch ? "full" : scenario,
   };
   // This is a separate test process, not a recursive run inside the matrix worker.
   delete env.NODE_TEST_CONTEXT;
@@ -26,7 +42,9 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     ...(scenario === "plugin-install"
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
       : []),
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    scratch
+      ? "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs"
+      : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
   ];
   let output;
   let failed = false;
@@ -60,14 +78,28 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   const evidence = resolve(artifacts, `${scenario}-runtime.log`);
   await writeFile(evidence, text, { mode: 0o600 });
   assert.equal(failed, false, `OpenShell workflow failed; see ${evidence}`);
-  assert.match(
-    text,
-    scenario === "plugin-install"
-      ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
-      : /ok 1 - OpenShell Agent network policy lifecycle/,
-  );
+  if (scratch) {
+    assert.match(
+      text,
+      /ok 1 - OpenShell mounts the admitted operator scratch PVC through the Agent workflow/,
+    );
+  } else {
+    assert.match(
+      text,
+      scenario === "plugin-install"
+        ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
+        : /ok 1 - OpenShell Agent network policy lifecycle/,
+    );
+  }
   assert.match(text, /# pass 1\b/);
   assert.match(text, /# skipped 0\b/);
+  if (scratch) {
+    return {
+      evidence,
+      outcome:
+        "real admitted scratch and durable workspace writes, with missing and replaced PVC refusal",
+    };
+  }
   return {
     evidence,
     outcome:

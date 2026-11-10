@@ -31,6 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -273,6 +274,7 @@ function normalizeManifest(raw, manifestPath) {
       env: envObject(lane.env, `lanes.${laneName}.env`, issues),
       requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
       optionalEnv: stringArray(lane.optionalEnv, `lanes.${laneName}.optionalEnv`, issues),
+      focusedEnv: stringArray(lane.focusedEnv, `lanes.${laneName}.focusedEnv`, issues),
       fileConcurrency: fileConcurrencyLimit(
         lane.fileConcurrency,
         `lanes.${laneName}.fileConcurrency`,
@@ -1413,7 +1415,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     lane.env,
     prepared.env,
   );
-  for (const name of requiredEnv) {
+  for (const name of openShellRequiredEnv(lane.name, relativePath, requiredEnv, env)) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
@@ -1676,6 +1678,7 @@ function selectLane(manifest, laneName, selectedFile) {
       lane = {
         ...lane,
         files: [selected],
+        optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
     }

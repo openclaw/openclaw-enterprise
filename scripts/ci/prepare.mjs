@@ -22,6 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
+import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
   assertRuntimeArtifactTagAvailable,
   loadRuntimeArtifact,
@@ -897,24 +898,8 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && !isOpenShellLane(name) && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const openShellGatewayFile = [
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-    "tests/integration/openshell-refresh-real.test.ts",
-    "tests/integration/openshell-upstream-real.test.ts",
-    "tests/integration/openshell-credentials-real.test.ts",
-    "tests/integration/openshell-withdrawal-real.test.ts",
-  ].includes(file);
-  const openShellApiKey =
-    isOpenShellLane(name) &&
-    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-      (openShellGatewayFile ||
-        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
-      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
   requireEnv(
-    (prepare.requireEnv ?? []).map((input) =>
-      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
-    ),
+    openShellRequiredEnv(name, file, prepare.requireEnv ?? [], effectiveEnv),
     effectiveEnv,
   );
   if (prepare.nodeBaseImage) {
@@ -3704,6 +3689,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.mjs",
         "tests/integration/openshell-plugin-install-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
         "tests/integration/openshell-refresh-real.test.ts",

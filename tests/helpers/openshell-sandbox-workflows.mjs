@@ -2026,6 +2026,7 @@ async function prepareProductionInstallation(
     controlUiOrigin,
     gatewayManagedMode,
     withOAuthToolSources = true,
+    withScratch = false,
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
@@ -2256,12 +2257,14 @@ async function prepareProductionInstallation(
       ...(keycloak === undefined ? {} : { gatewayTrustPem: keycloak.caPem }),
     },
   );
-  const drivers = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { ...driverEnvironment, OCC_CONFIG_PATH: startupPath },
-    createOpenShellBackend: createSandboxDriver.createBackend,
-    createSandboxDriver,
-  });
+  const loadApiDrivers = () =>
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: startupPath },
+      createOpenShellBackend: createSandboxDriver.createBackend,
+      createSandboxDriver,
+    });
+  const drivers = await loadApiDrivers();
   // Names and kinds only: no credential value reaches the log.
   const tokenSources = () => ({
     compute: {
@@ -2366,25 +2369,29 @@ async function prepareProductionInstallation(
     });
   }
 
-  productionApp = await composeProduction({
-    mode: "production",
-    host: "127.0.0.1",
-    databaseUrl,
-    authSecret,
-    authBaseURL: controllerAuthBaseURL,
-    nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-    drivers,
-    gatewayApiKeyPath,
-  });
-  if (controllerPort !== undefined) {
-    await productionApp.listen({ host: "127.0.0.1", port: controllerPort });
-    controllerUrl = `http://127.0.0.1:${controllerPort}`;
-  }
-  const request = await createAuthenticatedControllerRequest(
-    productionApp,
-    adminCredentials,
-    controllerAuthBaseURL,
-  );
+  let request;
+  const startApi = async (selectedDrivers) => {
+    productionApp = await composeProduction({
+      mode: "production",
+      host: "127.0.0.1",
+      databaseUrl,
+      authSecret,
+      authBaseURL: controllerAuthBaseURL,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+      drivers: selectedDrivers,
+      gatewayApiKeyPath,
+    });
+    if (controllerPort !== undefined) {
+      await productionApp.listen({ host: "127.0.0.1", port: controllerPort });
+      controllerUrl = `http://127.0.0.1:${controllerPort}`;
+    }
+    request = await createAuthenticatedControllerRequest(
+      productionApp,
+      adminCredentials,
+      controllerAuthBaseURL,
+    );
+  };
+  await startApi(drivers);
   const events = [];
   const startWorker = async (diagnosticWorkerDrivers) => {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
@@ -2613,10 +2620,64 @@ async function prepareProductionInstallation(
     assert.equal(toolBinding.status, 201, JSON.stringify(toolBinding.error));
     toolSource.bindingId = toolBinding.data.id;
   }
+  const configureScratch = async (binding) => {
+    configuration.drivers.compute.configuration.runtime.scratchVolumes = [binding];
+    apiConfiguration.drivers.compute.configuration.runtime.scratchVolumes = [binding];
+    await writeFile(startupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
+    await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
+    await productionApp.close();
+    await startApi(await loadApiDrivers());
+  };
+  let scratchBinding;
+  if (withScratch) {
+    // An operator binds existing storage only after the API assigned the Agent ID.
+    // Restart both production compositions, as a real Installation edit requires.
+    await pauseWorker();
+    const claimName = `scratch-${hash(agent.data.id)}`;
+    const claimPath = join(directory, "scratch-pvc.json");
+    await writeFile(
+      claimPath,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "PersistentVolumeClaim",
+        metadata: { name: claimName, namespace: placement },
+        spec: {
+          accessModes: ["ReadWriteOnce"],
+          storageClassName: "local-path",
+          resources: { requests: { storage: "1Gi" } },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await kubectl("create", "-f", claimPath);
+    const claim = await resource("persistentvolumeclaim", claimName, placement);
+    scratchBinding = {
+      namespaceId,
+      agentId: agent.data.id,
+      namespace: placement,
+      claimName,
+      claimUid: claim.metadata.uid,
+    };
+    await configureScratch(scratchBinding);
+  }
   const deployed = await request(
     "POST",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
   );
+  if (withScratch) {
+    // Later operator configuration must not redirect an already admitted revision.
+    // The replacement name deliberately does not exist; this worker must use the
+    // saved claim, not the current Installation selection.
+    configuration.drivers.compute.configuration.runtime.scratchVolumes = [
+      {
+        ...scratchBinding,
+        claimName: `${scratchBinding.claimName}-next`,
+        claimUid: randomUUID(),
+      },
+    ];
+    await writeFile(workerStartupPath, JSON.stringify(configuration), { mode: 0o600 });
+    await resumeWorker();
+  }
   assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   assert.equal(deployed.data.harness.mode, "dedicated");
   assert.equal(deployed.data.harness.id, harnessId);
@@ -2743,6 +2804,11 @@ async function prepareProductionInstallation(
     }
     assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
   }
+  // Read the Agent-owned claim by its independent identity before inspecting the
+  // provider Pod, so a substituted Pod volume cannot define the expected storage.
+  const workspaceClaim = withScratch
+    ? await resource("persistentvolumeclaim", `workspace-${hash(agent.data.id)}`, placement)
+    : undefined;
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
   process.stderr.write(
     "OpenShell integration: provider Harness ready; checking ownership and mounts.\n",
@@ -2750,6 +2816,57 @@ async function prepareProductionInstallation(
   await assertProviderOwnedHarness(placement, deployed.data, sandbox, harnessPod);
   const harnessContainer = harnessPod.spec.containers.find(({ name }) => name === "agent");
   assert.ok(harnessContainer, "the OpenShell Sandbox must provide its Agent container.");
+  const scratchMount = harnessContainer.volumeMounts.find(
+    ({ mountPath }) => mountPath === "/sandbox/scratch",
+  );
+  if (withScratch) {
+    assert.equal(workspaceClaim.metadata.labels["openclaw.dev/agent"], agent.data.id);
+    assert.equal(workspaceClaim.metadata.labels["openclaw.dev/namespace"], namespaceId);
+    assert.notEqual(workspaceClaim.metadata.name, scratchBinding.claimName);
+    const workspaceMount = harnessContainer.volumeMounts.find(
+      ({ mountPath }) => mountPath === "/sandbox/enterprise",
+    );
+    assert.ok(workspaceMount, "the original Agent workspace must remain mounted");
+    // This workflow sends Compute's native mounts directly to OpenShell; the
+    // compatibility bridge's workspace/openshell-home layout is not involved.
+    assert.equal(workspaceMount.subPath, "workspace");
+    assert.notEqual(workspaceMount.readOnly, true);
+    assert.equal(
+      harnessPod.spec.volumes.find(({ name }) => name === workspaceMount.name).persistentVolumeClaim
+        .claimName,
+      workspaceClaim.metadata.name,
+    );
+    assert.ok(scratchMount, "the admitted scratch claim must reach the provider-owned Harness");
+    assert.equal(scratchMount.subPath, "scratch");
+    assert.notEqual(scratchMount.readOnly, true);
+    const volume = harnessPod.spec.volumes.find(({ name }) => name === scratchMount.name);
+    assert.equal(volume.persistentVolumeClaim.claimName, scratchBinding.claimName);
+    assert.equal(
+      (await resource("persistentvolumeclaim", scratchBinding.claimName, placement)).metadata.uid,
+      scratchBinding.claimUid,
+    );
+    const scratchGateways = (await resources("pods", gatewayPlacement)).filter(
+      ({ metadata }) =>
+        metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+        metadata.labels?.["openclaw.dev/agent"] === agent.data.id,
+    );
+    assert.ok(
+      scratchGateways.length > 0,
+      "the running Gateway must be observed before checking scratch exclusion",
+    );
+    for (const pod of scratchGateways) {
+      assert.equal(
+        pod.spec.volumes.some(
+          ({ persistentVolumeClaim }) =>
+            persistentVolumeClaim?.claimName === scratchBinding.claimName,
+        ),
+        false,
+      );
+    }
+  } else {
+    assert.equal(scratchMount, undefined, "default Agents must not gain an operator scratch mount");
+  }
+
   assert.deepEqual(
     harnessContainer.resources,
     configuration.drivers.sandbox.configuration.kubernetes.agentResources,
@@ -2911,6 +3028,19 @@ async function prepareProductionInstallation(
     namespaceId,
     agent: agent.data,
     revision: deployed.data,
+    scratchBinding,
+    workspaceClaim,
+    async deployScratch(binding) {
+      await pauseWorker();
+      await configureScratch(binding);
+      const next = await request(
+        "POST",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
+      );
+      assert.equal(next.status, 202, JSON.stringify(next.error));
+      await resumeWorker();
+      return next.data;
+    },
     harnessPod,
     sandbox,
     gatewayPlacement,
@@ -6396,6 +6526,122 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
   return { result, run, value, exitCode };
 }
 
+async function assertScratchToolAccess(topology) {
+  const nonce = `openshell-scratch-${randomUUID()}`;
+  // The actual Harness tool creates, fsyncs, reads and removes its own bounded
+  // allocation. A successful operator exec alone would not prove tool access.
+  const program = String.raw`
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const crypto = require("node:crypto");
+    const mount = fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n")
+      .find(line => line.split(" ")[4] === "/sandbox/scratch");
+    if (!mount || !mount.split(" ")[5].split(",").includes("rw")) throw Error("scratch mount missing or read-only");
+    const directory = fs.mkdtempSync("/sandbox/scratch/probe-");
+    try {
+      const file = path.join(directory, "data");
+      const data = crypto.randomBytes(16 * 1024 * 1024);
+      const fd = fs.openSync(file, "wx", 0o600);
+      try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      if (!fs.readFileSync(file).equals(data)) throw Error("scratch readback mismatch");
+      const stats = fs.statfsSync(directory, { bigint: true });
+      console.log("SCRATCH_TOTAL=" + stats.bsize * stats.blocks);
+      console.log("SCRATCH_AVAILABLE=" + stats.bsize * stats.bavail);
+    } finally { fs.rmSync(directory, { recursive: true }); }
+    if (fs.existsSync(directory)) throw Error("scratch cleanup failed");
+    console.log("SCRATCH_RESULT=passed");
+    const workspaceDirectory = fs.mkdtempSync("/sandbox/enterprise/scratch-acceptance-");
+    try {
+      const file = path.join(workspaceDirectory, "data");
+      const data = crypto.randomBytes(4096);
+      fs.writeFileSync(file, data, { flag: "wx", mode: 0o600 });
+      if (!fs.readFileSync(file).equals(data)) throw Error("workspace readback mismatch");
+    } finally { fs.rmSync(workspaceDirectory, { recursive: true }); }
+    if (fs.existsSync(workspaceDirectory)) throw Error("workspace cleanup failed");
+    console.log("WORKSPACE_RESULT=passed");
+  `;
+  const probe = await runSandboxProbe(topology, nonce, `set -eu\nnode -e '${program}'\n`);
+  assert.equal(probe.value("SCRATCH_RESULT"), "passed");
+  assert.equal(probe.value("WORKSPACE_RESULT"), "passed");
+  assert.ok(BigInt(probe.value("SCRATCH_TOTAL")) > 0n);
+  assert.ok(BigInt(probe.value("SCRATCH_AVAILABLE")) > 0n);
+  const claim = await resource(
+    "persistentvolumeclaim",
+    topology.scratchBinding.claimName,
+    topology.placement,
+  );
+  assert.equal(claim.metadata.uid, topology.scratchBinding.claimUid);
+}
+
+async function assertScratchClaimRefusals(topology) {
+  const binding = topology.scratchBinding;
+  const missingName = `${binding.claimName}-missing`;
+  assert.equal(
+    (
+      await kubectl(
+        "get",
+        "pvc",
+        missingName,
+        "-n",
+        topology.placement,
+        "--ignore-not-found",
+        "-o",
+        "name",
+      )
+    ).trim(),
+    "",
+  );
+  // A replacement stops its predecessor before Compute checks the PVC. These
+  // are destructive only to this disposable Agent, and do not claim otherwise.
+  for (const [rejected, message] of [
+    [
+      { ...binding, claimName: missingName, claimUid: randomUUID() },
+      "Scratch PVC is missing from the execution Namespace.",
+    ],
+    [
+      { ...binding, claimUid: randomUUID() },
+      "Scratch PVC identity does not match its admitted binding.",
+    ],
+  ]) {
+    const revision = await topology.deployScratch(rejected);
+    // Compute reports the precise refusal while the worker schedules a retry.
+    // A terminal deployment failure requires exhausting retries and is not this proof.
+    const failure = await waitFor(
+      "scratch storage refusal through the worker",
+      () =>
+        topology.workerEvents.find(
+          (event) =>
+            event.event === "worker.compute-prepare-failed" && event.revisionId === revision.id,
+        ),
+      180_000,
+    );
+    assert.equal(failure.code, "KUBERNETES_CONFIGURATION_INVALID");
+    assert.equal(failure.step, "harness_workspace_claim");
+    assert.equal(failure.message, message);
+    assert.equal(
+      (await resources("sandboxes.agents.x-k8s.io", topology.placement)).some(
+        ({ metadata }) => metadata.labels?.["openclaw.dev/revision"] === revision.id,
+      ),
+      false,
+      "the refused claim must not create a Sandbox",
+    );
+    assert.equal(
+      (await resource("persistentvolumeclaim", binding.claimName, topology.placement)).metadata.uid,
+      binding.claimUid,
+    );
+    assert.equal(
+      (
+        await resource(
+          "persistentvolumeclaim",
+          topology.workspaceClaim.metadata.name,
+          topology.placement,
+        )
+      ).metadata.uid,
+      topology.workspaceClaim.metadata.uid,
+    );
+  }
+}
+
 /**
  * Proves the credentialed route from inside the Sandbox and records what the network allowed.
  * The probes run as one script that Codex executes, so each curl is a Sandbox process behind
@@ -8884,7 +9130,16 @@ export function registerGatewayToolPolicyTest() {
 }
 
 export function registerProviderLifecycleTest(workflow) {
-  assert.ok(["policy", "credentials", "withdrawal", "upstream", "refresh"].includes(workflow));
+  if (workflow === "scratch") {
+    assert.equal(
+      selectedScenario,
+      "full",
+      "Scratch validation requires the full scenario selection.",
+    );
+  }
+  assert.ok(
+    ["policy", "credentials", "withdrawal", "upstream", "refresh", "scratch"].includes(workflow),
+  );
   if (selected && workflow !== "policy") {
     assert.equal(selectedHarness, "codex", "This security workflow requires the Codex Harness.");
   }
@@ -8894,6 +9149,7 @@ export function registerProviderLifecycleTest(workflow) {
       "network-policy": "OpenShell Agent network policy lifecycle",
       full: {
         policy: "OpenShell enforces provider delivery and authenticated Codex exposure",
+        scratch: "OpenShell mounts the admitted operator scratch PVC through the Agent workflow",
         credentials: "OpenShell credential replacement preserves isolation",
         withdrawal: "OpenShell credential withdrawal revokes live model access",
         upstream: "OpenShell model and tool upstream outages fail closed",
@@ -8907,7 +9163,8 @@ export function registerProviderLifecycleTest(workflow) {
     async (testContext) => {
       // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
       const policyCase = workflow === "policy" || networkPolicyOnly;
-      const reportFixtureOutcome = policyCase || workflow === "credentials";
+      const reportFixtureOutcome =
+        policyCase || workflow === "credentials" || workflow === "scratch";
       const teardown = boundedTeardown(testContext, {
         label: "OpenShell integration teardown",
         onOutcome: reportFixtureOutcome
@@ -8934,6 +9191,7 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
+            ...(workflow === "scratch" ? { withScratch: true, withOAuthToolSources: false } : {}),
             ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),
@@ -8943,6 +9201,11 @@ export function registerProviderLifecycleTest(workflow) {
           openShellAgentName(topology.agent.id),
         );
         assert.ok(topology.sandbox.metadata.name);
+        if (workflow === "scratch") {
+          await assertScratchToolAccess(topology);
+          await assertScratchClaimRefusals(topology);
+          return;
+        }
         if (selectedHarness === "openclaw") {
           // A native worker exposes held startup failures only until its node enrolls.
           // Confirm Workspace visibility before treating an absent service as withdrawn.

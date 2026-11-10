@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 const scenarioPresets = {
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
+  "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
@@ -32,6 +33,7 @@ export function selectQaMatrix(env = process.env) {
           (name) =>
             ![
               "sandbox-policy",
+              "scratch-volume",
               "plugin-install",
               "openshell-linear-read",
               "codex-search-config",
@@ -72,6 +74,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -82,6 +85,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -94,6 +98,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "sandbox-policy",
+            "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
             "harness-overrides",
@@ -156,6 +161,7 @@ export function selectQaMatrix(env = process.env) {
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const scratchVolume = scenarios.includes("scratch-volume");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   const harnessOverrides = scenarios.includes("harness-overrides");
@@ -177,6 +183,7 @@ export function selectQaMatrix(env = process.env) {
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       sandboxPolicy ||
+      scratchVolume ||
       pluginInstall ||
       linearRead ||
       harnessOverrides,
@@ -194,8 +201,20 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
-    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+  if (scratchVolume) {
+    assert.notEqual(
+      installation,
+      "compose",
+      "Scratch volume proof requires Kubernetes with OpenShell",
+    );
+    for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
+      if (!requiredEnv.includes(key)) {
+        requiredEnv.push(key);
+      }
+    }
+  }
+  if (sandboxPolicy || pluginInstall || scratchVolume) {
+    if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
@@ -225,6 +244,7 @@ export function selectQaMatrix(env = process.env) {
     exclusions,
     oidcAgentChat,
     sandboxPolicy,
+    scratchVolume,
     pluginInstall,
     linearRead,
     harnessOverrides,

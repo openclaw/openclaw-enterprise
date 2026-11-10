@@ -78,6 +78,16 @@ test(
         () => verifyQaSandboxPolicy(artifacts),
       );
     }
+    if (selection.scratchVolume) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "admitted scratch and workspace access with invalid claim refusal",
+        () => verifyQaSandboxPolicy(artifacts, "scratch-volume"),
+        "scratch-volume",
+      );
+    }
     if (selection.pluginInstall) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
