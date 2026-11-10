@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: stevenlee-oai
 ---
 
@@ -19,3 +19,5 @@ Compute supplies those models to the native runtime. Dedicated OpenClaw checks t
 ## Verification
 
 Deploy an Agent with two model IDs on one provider. Check that a new session uses the default, switch to the other model for a turn, and confirm another new session still uses the default. Exercise admission with a model on a different provider, an unselected catalog row and a second model with a conflicting destination. Each should fail before activation.
+
+The [Create Agent form](../../docs/reference/console/create-and-deploy.md) and [Harness model selection](../../docs/reference/harness-execution.md#native-runtime-selection) implement these choices on this branch. Integration covers deployment admission and the credential destination check. A live two-model session switch still needs qualification.

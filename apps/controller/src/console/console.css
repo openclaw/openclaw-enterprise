@@ -4496,6 +4496,17 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .harness-auth-fields > .form-field:has(#provider-api-key) {
   grid-column: 1 / -1;
 }
+.additional-models fieldset {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+}
+.additional-models label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .harness-auth-fields .model-selection .form-field {
   margin-bottom: 0;
 }

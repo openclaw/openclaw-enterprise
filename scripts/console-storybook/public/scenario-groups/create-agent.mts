@@ -2547,6 +2547,22 @@ export const createAgentProvisioningScenarios = {
 } satisfies Record<string, CreateAgentScenario>;
 
 export const createAgentOutcomeScenarios = {
+  createSelectableModels: {
+    group: "Pages/Create Agent",
+    name: "Choose additional session models",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-model", value: "gpt-6-sol" },
+      { selector: ".model-selection details summary", click: true },
+      { selector: 'input[type="checkbox"][value="gpt-6-luna"]', click: true },
+    ],
+    description: "Choose a default model and allow a second model for the same Agent.",
+    steps: [
+      "Change the default to gpt-6-luna. The previous default stays checked under Additional models.",
+      "Remove gpt-6-sol. In Advanced settings, check the provider catalog and the model allowlist.",
+    ],
+  },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
     name: "Switch from Service Accounts to OpenClaw",

@@ -710,6 +710,16 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
   // Selected model, provider, fallback and roster destinations cannot override the shared route.
   for (const change of [
     (configuration) => {
+      // Switching models must not send this key to a second destination.
+      const alternate = "openai/alternate";
+      configuration.agents.defaults.models = { [alternate]: { agentRuntime: { id: "openclaw" } } };
+      configuration.agents.defaults.modelPolicy = { allow: ["openai/model", alternate] };
+      configuration.models.providers.openai.models.push({
+        id: "alternate",
+        baseUrl: "https://other.example.test/v1",
+      });
+    },
+    (configuration) => {
       configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
     },
     (configuration) => {

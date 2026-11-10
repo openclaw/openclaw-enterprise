@@ -201,7 +201,12 @@ The [model policy resolver](../../packages/occ/src/configured-harness.ts) select
 OpenClaw when there is no model candidate or an unambiguous built-in provider.
 OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
 runtime policy. Catalog entries may use the full model reference or the ID after
-the first slash. Each listed provider model must be a selected primary or fallback.
+the first slash. Each provider catalog row must match a primary, fallback or explicit session model.
+To select a session model, list its exact provider/model reference in both
+`agents.defaults.modelPolicy.allow` and `agents.defaults.models` (or both
+settings on an Agent entry). Its Harness and provider must match the primary.
+Dedicated OpenClaw sends these rows to the worker and checks their credential
+destinations. The startup model check uses the primary.
 With no model selected, that refusal names `agents.defaults.model` or an
 `agents.entries` model to set.
 Codex accepts its native `codex` provider, or `openai` with the
@@ -250,21 +255,12 @@ message names the settings to change and, for a runtime, the allowed values `ope
 and `codex`. A draft without a model, or a model without its required runtime, still
 saves; deployment refuses it and names the setting to add:
 `agents.defaults.models["<ref>"].agentRuntime.id` for a missing runtime, and on
-Kubernetes Compute `agents.defaults.model` for a missing model. A missing runtime names a
-setting that keeps the selectable rule: the entry's `agents.entries.<id>.models` policy when
-it lists the model or sets the primary's runtime, or the model's provider catalog entry or
-provider when the primary's runtime comes from there. A missing or conflicting runtime offers
-only values that deployment accepts: `codex` only where Codex accepts the model, and the
-runtime that the other selected models, the listed models, or another policy already select.
-Deployment and Agent provisioning also check the Agent: for a dedicated Agent where the
-Installation does not list dedicated OpenClaw, the refusal offers only `codex` where Codex
-accepts the model. Deployment of an embedded Agent, where the Installation approves Codex only
-for dedicated execution, offers only `openclaw`. Embedded OpenClaw cannot run a
-`codex/<model>` model either, so that refusal says to set `codex` on a dedicated Agent or to
-select another provider's model. For Codex on another provider, the refusal offers only the step that
-the Agent can take: a `codex/<model>` model or `openclaw`. Configuration save can serve any
-Agent, so it offers both values.
-A Preset is checked when a launch creates its Configuration.
+Kubernetes Compute `agents.defaults.model` for a missing model. The refusal identifies the entry policy or catalog setting that needs a runtime.
+All selectable models must use the primary model's runtime. Deployment also checks
+the Agent's execution mode. If Dedicated OpenClaw is unavailable, a Dedicated Agent
+must use a model Codex supports. Embedded OpenClaw requires an OpenClaw-supported
+provider; a `codex/<model>` needs Dedicated Codex. Configuration save can serve
+either mode and may offer alternatives unavailable to a particular Agent.
 
 ## Limits
 

@@ -14,6 +14,14 @@ The [parent flow](../platform-console.md) authorizes the page first; the
 [creation reference](../../reference/console/create-and-deploy.md) owns
 user-visible behavior.
 
+Create Agent writes the main model to `agents.defaults.model`. The additional model checkboxes in
+`apps/controller/src/console/agents/additional-models.mts` update `agents.defaults.modelPolicy.allow`,
+the per-model Harness settings, and the selected provider's catalog. OCC admits those explicit catalog
+choices in `packages/occ/src/configured-harness.ts`. Dedicated OpenClaw uses the same concrete
+choices for the worker catalog and the credential destination check in
+`apps/controller/src/drivers/native-openai-catalog.ts`. Changing the session model leaves the
+revision's primary and automatic fallbacks intact.
+
 ## Entry Points
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
