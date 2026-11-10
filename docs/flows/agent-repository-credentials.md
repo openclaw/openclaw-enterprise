@@ -310,8 +310,10 @@ confirm expired launch identity through fresh Sandbox and main-process readback.
 govern subtraction and succession. Installation and post-detach completion require ready credentials.
 
 Prepared delivery [waits for committed material](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token).
-Read-only grant activation verifies the hook. Authenticated redemption starts issuance.
-The broker rechecks live authority before release.
+Read-only grants require a verified hook. Authenticated redemption starts issuance and
+rechecks live authority before release.
+
+[Shared GitHub issuance](../guides/repository-credentials/openshell-enrollment.md#enable-shared-github-issuance).
 
 Missing standing evidence closes Git. Within five seconds, the worker rechecks model authority, withdrawal, stop and replacement without preparation or activation ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 

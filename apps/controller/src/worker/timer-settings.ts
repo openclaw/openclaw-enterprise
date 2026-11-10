@@ -50,7 +50,10 @@ function timerEnvironment(
  * safe-integer bound.
  */
 export function workerEnvironmentSettings(env: Readonly<Record<string, string | undefined>>) {
+  const sharedIssuance = "OCC_WORKER_GITHUB_SHARED_ISSUANCE_GENERATION";
   return {
+    sharedGitIssuanceGeneration:
+      env[sharedIssuance] === undefined ? undefined : positiveEnvironment(env, sharedIssuance, 0),
     pollIntervalMs: timerEnvironment(env, "OCC_WORKER_POLL_INTERVAL_MS", 250),
     leaseDurationMs: timerEnvironment(env, "OCC_WORKER_LEASE_DURATION_MS", 5_000),
     maxAttempts: positiveEnvironment(env, "OCC_WORKER_MAX_ATTEMPTS", 5),

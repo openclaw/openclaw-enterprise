@@ -2696,6 +2696,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preRequestCredentialApprovals"],
       [77, "preRequestCredentialAssertions"],
+      [78, "preSharedGitHubIssuance"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");

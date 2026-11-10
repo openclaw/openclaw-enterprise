@@ -97,6 +97,9 @@ type FamilyOwner = Readonly<{
   owns?: string;
   /** Lock the authority that can move to a different family before checking active to record an intent. */
   lockIssuance?: string;
+  // A shared family can be live across many Agent lifetimes. Settled historical refusals
+  // remain in PostgreSQL but cannot permanently prevent a later independent mint.
+  omitSettledAttempts?: true;
   driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
 }>;
 
@@ -488,7 +491,8 @@ export class PreparedGitHubPostgres {
               AND admission=$6::jsonb AND usable_until > clock_timestamp()
               AND usable_until < clock_timestamp() + interval '61 minutes'))
             THEN sealed END AS sealed FROM ${attempts} a
-          WHERE source_id=$1`,
+          WHERE source_id=$1
+          ${this.owner.omitSettledAttempts ? `AND (state='committed' OR NOT ${preparedAttemptSettled("a")})` : ""}`,
             [
               key,
               this.issuerAuthority,

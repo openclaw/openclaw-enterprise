@@ -153,6 +153,7 @@ export async function preparedStandingGitPeer(
   options: {
     beforeIssue?: () => Promise<void>;
     prepareGitOnDemand?: boolean;
+    sharedGitIssuanceGeneration?: number;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
@@ -228,6 +229,9 @@ export async function preparedStandingGitPeer(
         startWorker: false,
         gitGrantApprovals: postgresRequestCredentialApprovals,
         prepareGitOnDemand: options.prepareGitOnDemand ?? false,
+        ...(options.sharedGitIssuanceGeneration !== undefined && {
+          sharedGitIssuanceGeneration: options.sharedGitIssuanceGeneration,
+        }),
         repositoryGitCustody: options.driver
           ? selectBundledRepositoryGitCustody(options.driver)
           : { kind: "unavailable" },

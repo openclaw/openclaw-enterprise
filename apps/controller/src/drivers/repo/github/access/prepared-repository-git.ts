@@ -29,6 +29,8 @@ import type { OperationReceipt } from "../../access/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postgres.ts";
+import { SharedPreparedRepositoryGit } from "./shared-prepared-git.ts";
+import type { InstalledTokenVersion } from "../../../../backends/token-service/material.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   allowsPreparedGitGrantRead,
@@ -320,6 +322,12 @@ type LockedSession = {
   authorization: "online-request" | "request-hook-observed" | null;
 };
 type Authorization = LockedSession["authorization"];
+type PrepareApprovedGit = (
+  source: PreparedRepositoryGitSource,
+  deadline: number,
+  signal: AbortSignal,
+) => Promise<void | InstalledTokenVersion>;
+
 type GitGrantDecision =
   | { readonly kind: "approve"; readonly approval: PreparedGitGrantApproval }
   | { readonly kind: "redeem"; readonly grant: RequestCredentialGrant }
@@ -327,6 +335,7 @@ type GitGrantDecision =
       readonly kind: "release";
       readonly grant: RequestCredentialGrant;
       readonly source: PreparedRepositoryGitSource;
+      readonly sharedVersion?: InstalledTokenVersion;
     };
 type GitUse = Pick<
   RepositoryGitSendPermit,
@@ -392,6 +401,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
   private readonly grantApprovals: PreparedGitGrantApprovals | undefined;
+  readonly shared?: SharedPreparedRepositoryGit;
 
   constructor(
     pool: PostgresPool,
@@ -400,6 +410,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     policy: Policy,
     custody: RepositoryGitCustody,
     grantApprovals?: PreparedGitGrantApprovals,
+    sharedOwner?: Readonly<{
+      apiOrigin: string;
+      repositoryBackendId: string;
+      providerInstanceId: string;
+      issuerGeneration: number;
+    }>,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
@@ -431,6 +447,19 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     this.authority = authority;
     this.policy = policy;
     this.grantApprovals = grantApprovals;
+    if (sharedOwner) {
+      if (!driver || !installationRecipient(proxy)) {
+        throw new Error("SHARED_REPOSITORY_GIT_REQUIRES_SELECTED_DRIVER");
+      }
+      this.shared = new SharedPreparedRepositoryGit({
+        pool,
+        custodyKey: key,
+        issuerAuthority: authority,
+        driver,
+        liveSessions: sessionQuery(proxy),
+        ...sharedOwner,
+      });
+    }
   }
 
   /** Background discovery only. Admission and key lookup are not reachable from use().
@@ -478,6 +507,29 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       });
     }
     return sources;
+  }
+
+  /** Recheck the originating session before attaching it to a shared issuance family. */
+  async attachSharedGit(source: PreparedRepositoryGitSource, issuerGeneration: string) {
+    const shared = this.shared;
+    if (!shared) {
+      return undefined;
+    }
+    return this.transaction(async (c) => {
+      const current = await lockLiveSession(
+        c,
+        "live_revision_id",
+        source.session.revisionId,
+        this.proxy,
+      );
+      if (
+        current?.authorization !== "online-request" ||
+        !isDeepStrictEqual(this.policy(current.session), source)
+      ) {
+        return undefined;
+      }
+      return shared.attach(c, source, issuerGeneration);
+    });
   }
 
   async claimGit(source: PreparedRepositoryGitSource, version: string) {
@@ -583,7 +635,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       (input: unknown, scope: "github-installation"): PreparedGitHubInstallationUseRequest;
       (input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
     },
-    prepareApproved?: (source: PreparedRepositoryGitSource) => Promise<void>,
+    prepareApproved?: PrepareApprovedGit,
   ):
     | (ProtectedRepositoryGitAuthority & {
         readonly [preparedGitRedemption]?: PreparedGitRedemption;
@@ -965,7 +1017,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     installed: InstalledGitRoute,
     grant: RequestCredentialGrant,
     signal: AbortSignal,
-    prepareApproved: ((source: PreparedRepositoryGitSource) => Promise<void>) | undefined,
+    prepareApproved: PrepareApprovedGit | undefined,
   ) {
     const startedAt = performance.now();
     let bytes: Buffer | undefined;
@@ -987,11 +1039,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!Number.isFinite(releaseLifetimeMs) || releaseLifetimeMs > 30_000 || !active()) {
         return;
       }
+      let sharedVersion: void | InstalledTokenVersion = undefined;
       if (authorized.needsPreparation) {
         if (!prepareApproved) {
           return;
         }
-        await prepareApproved(authorized.source);
+        sharedVersion = await prepareApproved(authorized.source, deadline, signal);
       }
       if (!active()) {
         return;
@@ -1003,7 +1056,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           signal,
           installed,
           "online-request",
-          { kind: "release", grant, source: authorized.source },
+          {
+            kind: "release",
+            grant,
+            source: authorized.source,
+            ...(sharedVersion && { sharedVersion }),
+          },
         );
         if ("kind" in use || !use.open || !active() || Date.now() >= Date.parse(use.decisionBy)) {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
@@ -1344,15 +1402,22 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         kind: "redeemed",
         source,
         decisionBy,
-        needsPreparation: !(await this.tokens.readWarm(c, source)),
+        needsPreparation: this.shared !== undefined || !(await this.tokens.readWarm(c, source)),
         releaseLifetimeMs: approval.remainingLifetimeMs,
       };
     }
     // Recheck the live grant and recipient after issuance and hold material through the
     // possible-use commit. Static senders still prove their exact preinstalled version.
-    const material = materialWitness
-      ? await this.tokens.current(c, source, materialWitness)
-      : await this.tokens.readWarm(c, source);
+    let material;
+    if (grantDecision?.kind === "release" && this.shared) {
+      material = grantDecision.sharedVersion
+        ? await this.shared.readMember(c, source, grantDecision.sharedVersion)
+        : undefined;
+    } else {
+      material = materialWitness
+        ? await this.tokens.current(c, source, materialWitness)
+        : await this.tokens.readWarm(c, source);
+    }
     if (!material) {
       return fail();
     }

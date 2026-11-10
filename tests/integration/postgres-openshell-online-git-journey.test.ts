@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID, sign } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { buffer } from "node:stream/consumers";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import {
   narrowOnlineGitJourney,
   selectedReadGitJourney,
@@ -29,17 +29,8 @@ type DraftClaim = Pick<
   "request_digest_sha256" | "admission_id" | "attempt_id" | "material_version"
 > & { receipt_id: string; outcome: string };
 
-for (const { name, withdrawWhileIssuing } of [
-  {
-    name: "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
-    withdrawWhileIssuing: false,
-  },
-  {
-    name: "cold Git HTTPS grant refuses token release after withdrawal during issuance",
-    withdrawWhileIssuing: true,
-  },
-]) {
-  test(name, { ...requiresPostgres, timeout: 90_000 }, async (t) => {
+function signedColdGitJourney(shared: boolean, withdrawWhileIssuing = false) {
+  return async (t: TestContext) => {
     await selectedReadGitJourney(
       t,
       import.meta.url,
@@ -237,21 +228,34 @@ for (const { name, withdrawWhileIssuing } of [
         const before = await receipts();
         assert.deepEqual(before, ["advertise-upload-pack", "upload-pack"]);
 
-        // Rotation must still fence a warm token, while maintenance cannot mint its successor.
-        await peer.rotateAppKey();
-        await peer.prepared.maintain();
-        assert.deepEqual(
-          (
-            await pool.query(
-              `SELECT custody FROM occ.prepared_github_attempts
-               WHERE source_id IN (SELECT 'repository-git:' || admission_id
-                 FROM occ.repository_session_attempts WHERE revision_id=$1)`,
-              [revision.id],
-            )
-          ).rows,
-          [{ custody: "retire" }],
-        );
-        assert.equal(peer.gh.issuesOfTokens.length, 1, "rotation does not prewarm a replacement");
+        if (!shared) {
+          // Rotation must still fence a warm token, while maintenance cannot mint its successor.
+          await peer.rotateAppKey();
+          await peer.prepared.maintain();
+          assert.deepEqual(
+            (
+              await pool.query(
+                `SELECT custody FROM occ.prepared_github_attempts
+           WHERE source_id IN (SELECT 'repository-git:' || admission_id
+             FROM occ.repository_session_attempts WHERE revision_id=$1)`,
+                [revision.id],
+              )
+            ).rows,
+            [{ custody: "retire" }],
+          );
+          assert.equal(peer.gh.issuesOfTokens.length, 1, "rotation does not prewarm a replacement");
+        } else {
+          const state = await pool.query<{ family_id: string; custody: string }>(
+            `SELECT m.family_id, a.custody FROM occ.prepared_github_shared_members m
+           JOIN occ.repository_session_attempts s USING (admission_id)
+           JOIN occ.prepared_github_attempts a ON a.source_id=m.family_id
+           WHERE s.revision_id=$1`,
+            [revision.id],
+          );
+          assert.equal(state.rowCount, 1);
+          assert.match(state.rows[0]!.family_id, /^repository-git-shared:[0-9a-f]{64}$/);
+          assert.equal(state.rows[0]!.custody, "current");
+        }
         const pending = await approve(true);
         assert.equal(pending.decision, 1);
         const traffic = peer.originCalls();
@@ -279,10 +283,16 @@ for (const { name, withdrawWhileIssuing } of [
           (
             await pool.query(
               `SELECT custody, sealed IS NULL AS erased FROM occ.prepared_github_attempts
-               WHERE source_id IN (
-                 SELECT 'repository-git:' || admission_id FROM occ.repository_session_attempts
-                 WHERE revision_id=$1
-               )`,
+           WHERE source_id IN (
+             ${
+               shared
+                 ? `SELECT m.family_id FROM occ.prepared_github_shared_members m
+                  JOIN occ.repository_session_attempts s USING (admission_id)
+                  WHERE s.revision_id=$1`
+                 : `SELECT 'repository-git:' || admission_id FROM occ.repository_session_attempts
+                  WHERE revision_id=$1`
+             }
+           )`,
               [revision.id],
             )
           ).rows,
@@ -290,9 +300,30 @@ for (const { name, withdrawWhileIssuing } of [
           "the original worker retires its own material after withdrawal",
         );
       },
+      shared ? true : undefined,
     );
-  });
+  };
 }
+test(
+  "cold Git HTTPS grant mints only on authenticated redemption and refuses withdrawal",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(false),
+);
+test(
+  "cold Git HTTPS grant refuses token release after withdrawal during issuance",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(false, true),
+);
+test(
+  "Git HTTPS redemption reuses a committed shared-family token and denies withdrawal while warm",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true),
+);
+test(
+  "shared Git HTTPS redemption refuses token release after withdrawal during issuance",
+  { ...requiresPostgres, timeout: 90_000 },
+  signedColdGitJourney(true, true),
+);
 
 for (const { name, action, expectedDenial } of [
   {
