@@ -65,11 +65,18 @@ function main(args) {
   }
 
   const issues = [];
+  const imageSelected =
+    mode === "full" || (tests && lanes.some((lane) => lane.startsWith("images-")));
+  const otherSelected =
+    mode === "full" ||
+    (tests && lanes.some((lane) => lane !== fixtureLane && !lane.startsWith("images-")));
   const expected = {
     impact: "success",
     // The suite audit and static checks share a required job in every mode.
     "static-checks": "success",
-    "pr-safe": mode === "docs" ? "skipped" : "success",
+    "pr-safe": otherSelected ? "success" : "skipped",
+    "image-lanes": imageSelected ? "success" : "skipped",
+    "runtime-artifact": imageSelected ? "success" : "skipped",
     "runtime-image-fixture":
       mode === "full" || (mode === "tests" && lanes.includes(fixtureLane)) ? "success" : "skipped",
   };
@@ -90,21 +97,27 @@ function main(args) {
     issues.push("impact output does not match the selected lanes");
   }
 
-  // Preserve failed and missing job states for the existing artifact aggregator.
+  // Matrix job results describe the parent, not each lane's outcome.
   const state = (job) => ({ result: needs[job]?.result ?? "missing" });
   const expanded = {
     impact: state("impact"),
     "static-checks": state("static-checks"),
   };
-  if (mode === "full") {
-    expanded["runtime-image-fixture"] = state("runtime-image-fixture");
-    for (const lane of matrixLanes) {
-      expanded[lane] = state("pr-safe");
+  if (imageSelected) {
+    expanded["runtime-artifact"] = state("runtime-artifact");
+  }
+  const laneJob = (lane) => {
+    if (lane === fixtureLane) {
+      return fixtureLane;
     }
-  } else if (mode === "tests") {
-    // Only selected lanes are expanded; the aggregator requires each one's results.
-    for (const lane of lanes) {
-      expanded[lane] = state(lane === fixtureLane ? fixtureLane : "pr-safe");
+    return lane.startsWith("images-") ? "image-lanes" : "pr-safe";
+  };
+  const selected = mode === "full" ? [...matrixLanes, fixtureLane] : (lanes ?? []);
+  for (const lane of selected) {
+    const job = laneJob(lane);
+    expanded[job] ??= state(job);
+    if (job !== lane) {
+      (expanded[job].lanes ??= []).push(lane);
     }
   }
   writeFileSync(outputPath, JSON.stringify(expanded));

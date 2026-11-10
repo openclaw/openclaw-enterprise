@@ -15,6 +15,12 @@ import {
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
 import {
+  ConnectionStartResponse,
+  SavedConnectionListResponse,
+  StartNamespaceConnectionBody,
+  UsableConnectionTemplatesResponse,
+} from "./connections.ts";
+import {
   ConnectionTemplateListResponse,
   ConnectionTemplateParams,
   ConnectionTemplateResponse,
@@ -32,6 +38,7 @@ import {
 import {
   AgentParams,
   FirstDeploymentIntent,
+  AgentDeploymentBody,
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
@@ -106,6 +113,7 @@ import {
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
+  NamespaceAgentCapabilitiesResponse,
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   AgentResponse,
@@ -688,6 +696,23 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "getNamespaceAgentCapabilities",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agent-capabilities",
+    action: "openclaw.namespaces.agent_capabilities.read",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary:
+      "Report the Installation capabilities that Agent creation in this Namespace needs, for a caller who may create Agents there",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceAgentCapabilitiesResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "getNamespaceSecretPermissions",
     method: "GET",
     path: "/namespaces/:namespaceId/permissions/secrets",
@@ -1044,6 +1069,71 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: SecretParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
+    operationId: "listUsableConnectionTemplates",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connection-templates",
+    action: "openclaw.connection_templates.list_usable",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "List connection templates the caller may connect in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: UsableConnectionTemplatesResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "startNamespaceConnection",
+    method: "POST",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.start",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Start consent for a reusable account in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: StartNamespaceConnectionBody,
+      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+    },
+  },
+  {
+    operationId: "listNamespaceConnections",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.list",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary: "List completed connections the caller can read in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: SavedConnectionListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "disconnectNamespaceConnection",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/connections/:credentialSourceId",
+    action: "openclaw.namespaces.connections.disconnect",
+    iamAction: "delete",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "Disconnect a saved account and retire its OAuth grant",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
       response: { 204: Type.Null(), ...mutationErrors },
     },
   },
@@ -1986,7 +2076,10 @@ export const occApiRoutes = [
       "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
     tags: ["Agents"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { harnessOverrides: Type.Optional(Type.String({ maxLength: 8192 })) },
+        { additionalProperties: false },
+      ),
       params: Type.Object(
         { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
         { additionalProperties: false },
@@ -2013,7 +2106,8 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      response: { 202: AgentRevisionResponse, ...mutationErrors },
+      body: AgentDeploymentBody,
+      response: { 202: AgentRevisionResponse, ...createErrors },
     },
   },
   {

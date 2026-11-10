@@ -120,8 +120,8 @@ test("Preset and revision lists return summaries, not the stored documents", asy
     assert.equal(summary.agentId, agent.id);
   }
   assert.ok(
-    JSON.stringify(listedRevisions.body).length < 5 * 500,
-    "revision summaries stay a few hundred bytes each",
+    JSON.stringify(listedRevisions.body).length < 5 * 1024,
+    "revision summaries include Harness settings without the large native documents",
   );
 
   // The full documents stay on the exact reads, and a summary repeats the exact read's fields.

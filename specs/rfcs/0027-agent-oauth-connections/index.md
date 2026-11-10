@@ -8,10 +8,10 @@ author: mrunalp
 
 - **ID:** RFC-0027
 - **Created:** 2026-10-20
-- **Last updated:** 2026-11-04
+- **Last updated:** 2026-11-05
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
 - **Implementation plan:** [Backend implementation and plan, #3098](https://github.com/openclaw/openclaw-enterprise/pull/3098)
-- **Companion:** [Driver contracts, failure, and verification](contracts.md)
+- **Companion:** [Contracts, failure, and verification](contracts.md)
 - **Related:** [RFC-0016](../0016-sandbox-credential-injection/index.md) and its
   [Credential Refresh companion](../0016-sandbox-credential-injection/credential-refresh.md);
   [RFC-0010 personal access](../0010-agent-access.md#access-contract);
@@ -33,7 +33,7 @@ A Gmail policy allowing only message headers applies to both `gog` and a script
 running in the same Agent execution.
 
 Installation administrators define **connection templates** for the whole
-Installation or for a single Namespace. Presets can reference them. OCE handles client setup, consent,
+Installation or for a single Namespace. Presets can reference them. OCC handles client setup, consent,
 and the authorization-code exchange. For MCP it uses the official TypeScript
 MCP client. After exchange, the OCE Token Service keeps the grant and refreshes
 access tokens in the background. OpenShell presents the prepared token at the
@@ -55,7 +55,7 @@ help: Google's device-code flow does not permit Gmail scopes. Gmail needs the
 browser authorization-code flow, with an OCC callback.
 
 After the code exchange, browser connections use the [RFC-0023 Token Service lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle).
-It separates background refresh from the worker's outbound request.
+An authorized delivery can join renewal for that account within the request deadline.
 
 ## Goals
 
@@ -114,7 +114,7 @@ enforces its grant. Public discovery requests carry no bearer token.
 An administrator registers an OAuth client against a saved template version.
 OCC takes its availability, issuer and client authentication endpoints from that
 version. The administrator supplies the client ID, authentication method and
-any secret. The selected Driver protects the secret. The first registration
+any secret. The Installation’s Secret Driver protects the secret. The first registration
 fills an empty client selection. An administrator chooses whether to switch an
 existing selection. Consent pins the selected client's identity.
 
@@ -129,10 +129,10 @@ The callback URI is derived from the console origin as
 `https://<console-host>/oauth/callback`. The template response shows the exact URI
 for manual registration. OCE includes the same URI in its DCR request.
 
-With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
+With `accountIdentity: oidc`, OCC verifies the provider before it
 accepts the connection template version, and verifies each ID token against it
 ([OIDC verification](contracts.md#oidc-account-identity)). The consent screen
-lists the two extra scopes. When the Driver returns a verified address, OCC stores
+lists the two extra scopes. When the provider confirms the address, OCC stores
 it on the credential source and shows "Connected as alice@example.com" so the
 person can spot a wrong account. Agent access follows the same attachment rules
 whether or not the source has an address.
@@ -203,14 +203,14 @@ Calendar read-only, with the Configuration and instructions that use those tools
 An unknown or unusable connection template fails Agent creation with `400`; the
 Preset stays valid. Deployment requires a ready, authorized binding for each entry.
 
-### Driver contract changes
+### Platform contracts
 
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** exposes browser authorization
-   and OIDC provider verification to OCC. OCC manages client registrations through its Secret Driver. After exchange, the Driver hands the
-   source's grant and first access token to the OCE Token Service for refresh.
+1. **OCC** owns browser authorization, the callback and OIDC verification.
+   It reads client credentials through the Installation’s Secret Driver and
+   hands the grant and first access token to the Token Service after exchange.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender checks the authorized execution, destination and request policy
    before it presents the credential. The same request gets the same decision
@@ -219,9 +219,9 @@ These changes require review of this RFC before implementation. The
    kind, and an optional Namespace context on authorization requests.
 
 Browser connections use the existing `oauth2-refresh-token` source type. For a
-template-created source, the Backend must select the Token Service as its only
-refresh owner and support delivery of prepared access tokens. Manual registration
-keeps its existing Secret-backed path.
+template-created source, OCC records the Token Service as its sole refresh owner.
+The Credential Proxy uses its prepared tokens for authorized requests. Manual
+sources retain their Secret-backed inputs. [Credential lifecycle and issuer ownership](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 ### Console and API flow
 
@@ -229,28 +229,26 @@ keeps its existing Secret-backed path.
 sequenceDiagram
   participant User as Owner browser
   participant API as OCC API and console
-  participant OAuth as OCE browser authorization (Driver)
-  participant Issuer as OAuth issuer
   participant Tokens as OCE Token Service
+  participant Issuer as OAuth issuer
   User->>API: Connect an account in the Namespace
-  API->>OAuth: startBrowserAuthorization
-  OAuth-->>API: authorizationUrl, privateState
-  API-->>User: Consent warning, then popup to authorizationUrl
+  API->>API: Save session, state and PKCE verifier
+  API-->>User: Consent URL with PKCE challenge
   User->>Issuer: Approve the requested access
-  Issuer->>API: GET /oauth/callback with code, state, and optional iss
-  API->>OAuth: completeBrowserAuthorization
-  OAuth->>Issuer: Exchange code with PKCE verifier
+  Issuer-->>User: Redirect to the OCC callback
+  User->>API: GET /oauth/callback with code, state and optional iss
+  API->>API: Validate callback and claim session once
+  API->>Issuer: Exchange code with verifier and current client authentication
   alt Exchange succeeds
-    Issuer-->>OAuth: Access token and refresh grant
-    OAuth->>Tokens: Hand off validated grant and first access token for this source
-    Tokens-->>OAuth: Committed
-    OAuth-->>API: ready
+    Issuer-->>API: Access token and refresh grant
+    API->>Tokens: Save grant and first access token for this source
+    Tokens-->>API: Committed
     API-->>User: Saved account ready to attach
     User->>API: Attach saved account to the selected Agent
-    API-->>User: Agent binding and exact grant recorded
-  else Consent denied, state invalid, or exchange refused
-    OAuth-->>API: failure code
-    API-->>User: Show failure after removing the pending source
+    API-->>User: Agent binding and grant recorded
+  else Issuer refuses the exchange
+    Issuer-->>API: OAuth error
+    API-->>User: Report failure and recovery action
   end
 ```
 
@@ -263,8 +261,7 @@ selection before the redirect and uses the
    `POST /namespaces/:namespaceId/connections` takes the template
    ID, the version shown for consent, and any selected scopes. OCC
    checks template availability and `credential_source:create` in the Namespace, and validates the
-   selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. It stores the PKCE verifier in a temporary,
+   selection. It registers an empty source as `registering` and stores the PKCE verifier in a temporary,
    control-plane-owned row bound to the initiating browser session and returns
    the source ID and `authorizationUrl`.
 2. The console shows the connection template and requested scopes, then opens
@@ -272,7 +269,7 @@ selection before the redirect and uses the
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
-   minutes, and calls `completeBrowserAuthorization` once. The response sets
+   minutes, then claims the session and exchanges the code once. The response sets
    `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
 4. OCC saves the account for its owner in the destination Namespace. **Connect**
@@ -305,9 +302,11 @@ integration, real-cluster, and live-provider outcomes.
 - **Connection settings inside Presets.** A Preset copy is editable by the Agent
   creator, which would let a creator change scopes, endpoints, or the OAuth client.
   It would also copy client secrets into every Namespace that holds the Preset.
-- **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
-  new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
-  and inherits the `issuerRotated` update hazards.
+- **Delegate browser consent to the Credential Refresh Driver.** This would require
+  an Installation to configure a Driver before a user could connect an account.
+  The template and client registration already give OCC the information it
+  needs for consent. The Token Service takes over once OCC obtains the grant.
+- **Store the refresh token as an ordinary OCC Secret.** Each provider rotation would require OCC to replace that Secret and coordinate the update with the saved account. Token Service already owns that operation.
 - **Store OAuth client secrets in a Credential Gateway.** This would require a Gateway before an administrator could configure a template. OCC can hold a private reference in the Installation's existing Secret Driver. The Token Service takes custody when a user connects an account.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Executable-specific consent.** RFC-0023 authenticates the execution. A
@@ -320,7 +319,7 @@ integration, real-cluster, and live-provider outcomes.
 ## References
 
 - [Credential sources](../../../docs/reference/credential-sources.md)
-- [CredentialRefreshDriver contract](../../../docs/reference/drivers/credential-refresh.md)
+- [Current Credential Refresh Driver contract](../../../docs/reference/drivers/credential-refresh.md)
 - [OpenShell Credential Gateway](../../../docs/reference/drivers/openshell-credential-gateway.md)
 - [Console Agent creation](../../../docs/reference/console/create-and-deploy.md)
 - [Per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md)

@@ -1,8 +1,9 @@
 # Authentication
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
-user sessions established through email/password sign-in or an administrator-enrolled
-GitHub, Google or OIDC identity. Programmatic non-Agent automation authenticates with service
+user sessions established through email/password sign-in or an enrolled
+GitHub, Google or OIDC identity. GitHub can use opt-in
+[team enrollment](authentication/team-enrollment.md). Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
 The selected IAM Driver resolves the authenticated account or service identity
@@ -12,7 +13,7 @@ to an explicitly provisioned Principal or ServicePrincipal and owns
 For a sign-in procedure, see
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
 For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) at `/console/` uses these session endpoints. Public signup, OIDC
+The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
 provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
 
@@ -227,23 +228,29 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 
 ## Native admin shared sessions
 
-Agent native admin UI access starts from an ordinary controller browser session.
-With the trusted-operator pilot enabled, the session cookie is scoped to the
-explicit `nativeAdmin.sharedCookieDomain` parent so the console and derived Agent
-hosts share one human session. Service API keys cannot open native admin UI.
-When native admin is disabled, leftover shared-cookie-domain configuration is
-ignored and the host-only `openclaw_occ` cookie remains.
+By default, browser sessions use one shared cookie scope, including when native Agent
+access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
+OCC derives their longest common DNS-label suffix and rejects IP literals,
+missing or unrelated hosts, public suffixes, and malformed DNS names. For
+`console.oce.example.com` and `agents.oce.example.com`, the scope is
+`oce.example.com`. There is no cookie-domain override. Guarded GitHub can instead select the
+[host-only exchange](agent-native-admin.md#host-only-session-exchange): the
+Console cookie stays on its host, and the Agent receives a revocable handle
+bound to the parent session. The exchange creates no account or grant.
 
-The explicit parent domain is validated against the console origin and Agent host
-suffix on DNS-label boundaries. Public suffixes, malformed domains, and outside
-hosts are rejected; OCC never infers a broader parent. Because a domain cookie
-cannot use `__Host-`, the shared session uses prefix `openclaw_occ_shared`
-(`__Secure-openclaw_occ_shared.session_token` on HTTPS). Successful sign-in and
-sign-out clear prior host-only `openclaw_occ` and `openclaw_occ_shared` cookie
-names so browsers never choose between duplicates.
+Every host that receives this domain cookie must be a trusted OCE ingress
+endpoint. Public preview hosts must remain outside it. The cookie uses
+`__Secure-openclaw_occ_shared.session_token`, `Secure`, `HttpOnly`, `Path=/`,
+and the existing SameSite and CSRF protections. Password, OIDC, GitHub and Google
+sign-in share this format in shared-cookie mode. Duplicate session-cookie values are rejected.
 
-Native-host requests authenticate the shared OCE session, resolve the exact
-Agent represented by the requested host, authorize exact Agent `administer`, and
+Sign-out revokes the current session and expires its cookie. OCE does not
+clear obsolete cookie names or scopes. Remove stale OCE cookies in the browser
+if they cause duplicate-cookie refusals. External-provider attempt cookies
+remain host-only.
+
+Native-host requests authenticate the shared OCE session or host-only handle, resolve the exact
+Agent represented by the requested host, authorize exact Agent `operate` or `administer`, and
 validate the selected version and supported native configuration before
 proxying. OCC strips browser cookies, `Authorization`, API and session keys,
 forwarded identity, and native scope headers before forwarding upstream, so the native
@@ -257,14 +264,17 @@ singleton Installation, and stays available with GitHub sign-in enabled. One
 transaction writes the account, Principal, grant, enrollment and an optional
 `"github":{"subject":"<numeric id>"}` identity (`409` if GitHub is off or taken).
 
-An optional `roleId` binds an existing Installation Role (`400` if unknown or
-Namespace-scoped); without one the account has no grants. It cannot create Roles
-or infer grants. Audit records `principalId` and `roleId` or `grant: "none"`.
+An optional `roleId` binds an existing Installation Role (`400` if unknown,
+Namespace-scoped, or a configured `role_config_` Role); without one the account
+has no grants. It cannot create Roles or infer grants. The same transaction adds
+the account to each
+[configured default Group](authorization/default-users.md#group-membership).
+Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
 Creation issues no session.
 
-The only Installation Role is the built-in Installation administrator
-(`role_admin_<uuid>`). No API creates another, and the Namespace policy API
-omits this one. Its Installation-scoped binding grants only
+Apart from configured Roles, the only Installation Role is the built-in
+Installation administrator (`role_admin_<uuid>`). No API creates another, and
+the Namespace policy API omits this one. Its Installation-scoped binding grants only
 `installation:administer` and `installation:read`; see
 [Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
 A representative provisioning body is:

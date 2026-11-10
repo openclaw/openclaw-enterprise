@@ -60,6 +60,11 @@ Check keyboard focus, search, navigation, an open dialog, and empty, loading,
 error, permission-denied, and missing-credential stories. The console stays light
 under either system appearance.
 
+In **Components/Native admin → Available on tablet**, check that the 768px preview
+keeps the Agent name readable beside the visible sidebar. The title uses its own
+row below the back link and actions. Open Agent UI must still open the fixture.
+Compare **Available** at desktop and phone widths to check the surrounding layouts.
+
 The Claw palette, type scale, and surface geometry reference
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),
 particularly `src/styles/base.css`, `layout.css`, and `components.css`.
@@ -186,7 +191,8 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 In **Pages/Settings → Nested Driver values**, expand a Driver and switch between
 **Fields** and **JSON**. Confirm that nesting, arrays, empty values, and redaction
 stay intact and the open groups remain open. Scroll the long page to verify that
-the sidebar and account control reach the bottom. Repeat on a phone and open the
+the account control stays at the viewport bottom. Open its menu at both ends of
+the page, with Debug mode off and on. Repeat on a phone and open the
 navigation drawer; the page must not scroll horizontally.
 
 When changing the Settings Driver access stories, build and serve the preview
@@ -264,8 +270,12 @@ messages and UI markup.
 Open **Pages / Navigation / Debug runtime images**, expand an Agent, and inspect
 the gateway image reference, digest, Enterprise source commit, and upstream
 OpenClaw commit. The sidecar has unknown provenance for both commits.
-Navigate to Namespaces, confirm `debug=true` persists, and repeat in the mobile
-drawer. **Debug metadata unavailable** covers a failed read; ordinary navigation
+Navigate to Namespaces, confirm diagnostics stay enabled, and repeat in the mobile
+drawer. In **Pages / Settings / Account**, turn **Debug mode** on and off.
+**Debug mode enabled** starts with the saved preference enabled; **Browser storage
+unavailable** shows a refused save without enabling diagnostics. Use the live
+Console to verify that the preference survives a reload; each Storybook frame
+starts with its scenario's preference. **Debug metadata unavailable** covers a failed read; ordinary navigation
 stories hide diagnostics. Docker image inspection and the Kubernetes API/worker
 integration suite, not these fixtures, verify Driver behavior.
 

@@ -4,7 +4,11 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
+import {
+  AGENT_CHILD_RESOURCE_KINDS,
+  PERMISSION_ACTIONS,
+  RESOURCE_KINDS,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
@@ -1219,21 +1223,19 @@ test("invalid loaded IAM state fails closed", async () => {
       ...state,
       memberships: [{ ...memberships[0], namespaceId: "namespace-b" }],
     },
+    // An Installation Group may be bound in a Namespace (RFC-0026 Default users); a Namespace
+    // Group bound in another Namespace still fails closed.
     {
       ...state,
-      groups: [{ id: "group-installation", name: "global" }],
-      memberships: [
-        {
-          groupId: "group-installation",
-          principalId: "principal-group-reader",
-        },
-      ],
       bindings: [
         {
           ...bindings[0],
           subjectKind: "group",
-          subjectId: "group-installation",
-          namespaceId: "namespace-a",
+          subjectId: "group-readers-a",
+          namespaceId: "namespace-b",
+          roleId: "role-reader-b",
+          resourceKind: undefined,
+          resourceId: undefined,
         },
       ],
     },
@@ -1596,7 +1598,9 @@ test("identity access coverage counts Agent administer for a delegated read_logs
 });
 
 // The Driver's decisions before it indexed policies: linear scans over a validated state,
-// as on main at 9f620fe48. The seeded differential below holds the indexed Driver to it.
+// as on main at 9f620fe48, plus RFC-0026 parent checks: an exact Agent binding also applies to
+// that Agent's revisions and sandbox policy. The seeded differential below holds the indexed
+// Driver to it.
 const reference = (() => {
   const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
   const optionalNonempty = (value) => value === undefined || nonempty(value);
@@ -1641,6 +1645,10 @@ const reference = (() => {
       "sandbox_policy",
     ].includes(request.resource.kind) ||
       nonempty(request.resource.namespaceId)) &&
+    (request.parentAgentId === undefined ||
+      (nonempty(request.parentAgentId) &&
+        nonempty(request.resource.namespaceId) &&
+        AGENT_CHILD_RESOURCE_KINDS.includes(request.resource.kind))) &&
     PERMISSION_ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind);
 
@@ -1693,7 +1701,10 @@ const reference = (() => {
         ) ||
         (binding.namespaceId !== undefined && binding.namespaceId !== resource.namespaceId) ||
         (binding.resourceKind !== undefined &&
-          (binding.resourceKind !== resource.kind || binding.resourceId !== resource.id)) ||
+          (binding.resourceKind !== resource.kind || binding.resourceId !== resource.id) &&
+          (request.parentAgentId === undefined ||
+            binding.resourceKind !== "agent" ||
+            binding.resourceId !== request.parentAgentId)) ||
         role === undefined ||
         (role.namespaceId !== undefined && role.namespaceId !== resource.namespaceId) ||
         !role.permissions.some(
@@ -1810,7 +1821,9 @@ const reference = (() => {
           permissions: role.permissions.filter(
             (permission) =>
               binding.resourceKind === undefined ||
-              permission.resourceKind === binding.resourceKind,
+              permission.resourceKind === binding.resourceKind ||
+              (binding.resourceKind === "agent" &&
+                AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind)),
           ),
         });
       }
@@ -2040,6 +2053,22 @@ function randomPolicies(seed) {
       request.resource.id = binding.resourceId ?? request.resource.id;
       if (binding.namespaceId !== undefined) {
         request.resource.namespaceId = binding.namespaceId;
+      }
+    }
+    // Some requests name a parent Agent: the Agent of an exact binding, for that binding's
+    // revision or sandbox policy permission, or another Agent, or an invalid parent.
+    if (chance(0.2)) {
+      const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+      const child = role?.permissions.find((permission) =>
+        AGENT_CHILD_RESOURCE_KINDS.includes(permission.resourceKind),
+      );
+      if (binding.resourceKind === "agent" && chance(0.7)) {
+        request.parentAgentId = binding.resourceId;
+        request.resource.kind = child?.resourceKind ?? pick(AGENT_CHILD_RESOURCE_KINDS);
+        request.action = child?.action ?? request.action;
+        request.resource.id = "rev-0";
+      } else {
+        request.parentAgentId = chance(0.1) ? "" : pick(["agt-0", "agt-1"]);
       }
     }
     if (chance(0.01)) {

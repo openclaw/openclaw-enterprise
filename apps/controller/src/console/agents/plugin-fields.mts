@@ -15,6 +15,7 @@ import {
   element,
   button,
   dismissOnBackdrop,
+  jsonObjectDiagnostic,
   mayReturnFocus,
   setText,
   setUnavailable,
@@ -411,13 +412,11 @@ export function createPluginFields({
   }
 
   function selections() {
-    try {
-      const value: unknown = JSON.parse(input.value);
-      // Keep the original object, including Driver-specific and unrecognized fields.
-      return isPluginSelections(value) ? value : null;
-    } catch {
-      return null;
-    }
+    const diagnostic = jsonObjectDiagnostic(input.value);
+    // Keep the original object, including Driver-specific and unrecognized fields.
+    return diagnostic.kind === "valid" && isPluginSelections(diagnostic.value)
+      ? diagnostic.value
+      : null;
   }
 
   function update(change: (values: Selections) => void) {

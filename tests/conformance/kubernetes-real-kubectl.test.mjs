@@ -29,10 +29,11 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
+  assertAllowedCredentialRoute,
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
   modelAtCapacityOutcome,
@@ -689,6 +690,119 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
       ].join("\n  "),
     );
     return true;
+  });
+});
+
+test("an allowed credential route failure captures a safe tail before cleanup", async () => {
+  const order = [];
+  const written = [];
+  const captured = Promise.withResolvers();
+  const probe = { httpStatus: "000", connectStatus: "000", exitCode: 52 };
+  const pending = assertAllowedCredentialRoute({
+    probe,
+    sourceType: "codex-pat",
+    destination: "auth.openai.com:443",
+    capture: () => {
+      order.push("capture");
+      return captured.promise;
+    },
+    write: (text) => {
+      order.push("write");
+      written.push(text);
+    },
+  }).finally(() => order.push("cleanup"));
+  assert.deepEqual(order, ["capture"]);
+  // Producer-shaped stock lines from the retained supervisor trace. Earlier events count too:
+  // this inventory makes no clock or causal claim. Other destinations and arbitrary text do not.
+  const prefix = "2026-11-07T10:02:40.494Z 2026-11-07T10:02:40.491Z OCSF ";
+  const close = (host) =>
+    `${prefix}NET:OPEN [MED] DENIED ${host}:443 [reason:L7 tunnel closed before inspection because policy changed: policy generation is stale [captured_generation:1 current_generation:2]]`;
+  captured.resolve(
+    [
+      `${prefix}CONFIG:DETECTED [INFO] Settings poll: config change detected [old_revision:42 new_revision:42 policy_changed:false provider_env_changed:true]`,
+      close("auth.openai.com"),
+      close("other.example"),
+      `${prefix}NET:OPEN [MED] DENIED auth.openai.com:443 [reason:untrusted TLS synthetic-private-value]`,
+      "synthetic-private-value",
+    ].join("\n"),
+  );
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, "ERR_ASSERTION");
+    assert.equal(error.actual, "000");
+    assert.equal(error.expected, "200");
+    assert.match(
+      error.message,
+      /^a command Codex runs must authenticate at the allowed source endpoint\./u,
+    );
+    return true;
+  });
+  assert.deepEqual(order, ["capture", "write", "cleanup"]);
+  assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+    sourceType: "codex-pat",
+    ...probe,
+    uncorrelatedSupervisorTail: {
+      status: "recognized",
+      providerEnvironmentChanges: 1,
+      selectedDestinationStaleGenerationDenials: 1,
+    },
+  });
+});
+
+test("credential route diagnostics distinguish no match and unavailable without replacing failure", async () => {
+  for (const [capture, expected] of [
+    [
+      async () => "unrecognized synthetic-private-value",
+      {
+        status: "no_match",
+        providerEnvironmentChanges: 0,
+        selectedDestinationStaleGenerationDenials: 0,
+      },
+    ],
+    [
+      async () => {
+        throw new Error("synthetic-private-value");
+      },
+      { status: "unavailable" },
+    ],
+    [() => new Promise(() => {}), { status: "unavailable" }],
+  ]) {
+    const written = [];
+    await assert.rejects(
+      assertAllowedCredentialRoute(
+        {
+          probe: { httpStatus: "000", connectStatus: "synthetic-private-value", exitCode: "52" },
+          sourceType: "synthetic-private-value",
+          destination: "auth.openai.com:443",
+          capture,
+          write: (text) => written.push(text),
+        },
+        { timeoutMs: 25 },
+      ),
+      { code: "ERR_ASSERTION", actual: "000", expected: "200" },
+    );
+    assert.deepEqual(JSON.parse(written[0].slice(written[0].indexOf("{"))), {
+      sourceType: null,
+      httpStatus: "000",
+      connectStatus: null,
+      exitCode: null,
+      uncorrelatedSupervisorTail: expected,
+    });
+  }
+  await assert.rejects(
+    assertAllowedCredentialRoute({
+      probe: { httpStatus: "000" },
+      capture: async () => "",
+      write: () => {
+        throw new Error("output closed");
+      },
+    }),
+    { code: "ERR_ASSERTION", actual: "000", expected: "200" },
+  );
+  // A passing route does not collect logs or write a failure diagnostic.
+  await assertAllowedCredentialRoute({
+    probe: { httpStatus: "200" },
+    capture: () => assert.fail("unexpected capture"),
+    write: () => assert.fail("unexpected output"),
   });
 });
 
@@ -1551,7 +1665,7 @@ test(
     );
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
-      "harness-topology-k3d-real.test.mjs": 6,
+      "harness-topology-k3d-real.test.mjs": 7,
       "harness-topology-k3d-otel-real.test.mjs": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };

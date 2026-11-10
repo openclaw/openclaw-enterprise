@@ -46,7 +46,7 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 
 // Only the trusted staging verifier selects the reviewed historical expectations.
@@ -649,7 +649,7 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
       "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
       environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
-    fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
+    fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/router.js");
     process.stdout.write("native-repository-shell-ready\\n");
     // The proof is complete. The Codex binary, a grandchild that holds this
     // probe's pipes, takes about 5 s to exit after SIGTERM or EOF. This node is
@@ -1187,13 +1187,95 @@ try {
   const request = { cwd: "/tmp", ephemeral: true, approvalPolicy: "on-request", approvalsReviewer: "user" };
   const control = await client.request("thread/start", { ...request, sandbox: "read-only" });
   assert.equal(control.sandbox.type, "readOnly");
-  await assert.rejects(client.request("thread/start", { ...request, permissions: profile }),
-    /thread.start: Codex did not grant the requested :danger-full-access profile/);
+  await assert.rejects(client.request("thread/start", { ...request, permissions: profile }), (error) => {
+    const message = "thread/start: Codex did not grant the requested :danger-full-access profile";
+    assert.equal(error.message, ${historicalCodex} ? message : message +
+      " (comparison=sandbox-readOnly). Check native permission requirements and runtime compatibility.");
+    return true;
+  });
   if (!${historicalCodex}) {
     // Managed read-only requirements also refuse a workspace profile. Check the native
     // response before exposing that silently substituted thread to the Gateway caller.
-    await assert.rejects(client.request("thread/start", { ...request, permissions: ":workspace" }),
-      /thread.start: Codex did not grant the requested permission profile/);
+    for (const [selection, source, selectors] of [
+      [{ permissions: ":workspace" }, "permissions", "single"],
+      [{ config: { default_permissions: ":workspace" } }, "configDefault", "single"],
+      [{ permissions: ":workspace", config: { default_permissions: ":workspace" } }, "permissions", "both-equal"],
+      [{ permissions: ":workspace", config: { default_permissions: ":read-only" } }, "permissions", "both-different"],
+    ]) {
+      await assert.rejects(client.request("thread/start", { ...request, ...selection }), (error) => {
+        // The real managed read-only response has activePermissionProfile: null.
+        // Exact text also excludes arbitrary profile values from the diagnostic.
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile (requestSource=" +
+          source + ", selectors=" + selectors + ", comparison=field-null). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
+        return true;
+      });
+    }
+    // Malformed-peer metadata coverage through the actual bundled client, not native
+    // Codex proof: preserve the real control response except for the omitted field.
+    const peerSource = [
+      'const { createInterface } = require("node:readline");',
+      'const result = JSON.parse(process.argv[1]);',
+      'setTimeout(() => process.exit(1), 10000).unref();',
+      'createInterface({ input: process.stdin }).on("line", (line) => {',
+      '  const request = JSON.parse(line);',
+      '  if (request.id === undefined) return;',
+      '  if (!["initialize", "thread/start", "thread/resume", "thread/fork"].includes(request.method)) process.exit(1);',
+      '  const response = request.method === "initialize"',
+      '    ? { userAgent: "codex-cli/" + process.argv[2], codexHome: "/home/node/.codex" } : result;',
+      '  process.stdout.write(JSON.stringify({ id: request.id, result: response }) + "\\n");',
+      '});',
+    ].join("\n");
+    const { activePermissionProfile: _profile, ...withoutProfile } = control;
+    const startPeer = (result) => Client.start({ transport: "stdio", commandSource: "config",
+      command: process.execPath, args: ["-e", peerSource, JSON.stringify(result), client.getServerVersion()] });
+    const peer = await startPeer(withoutProfile);
+    try {
+      await peer.initialize();
+      await assert.rejects(peer.request("thread/start", { ...request, permissions: ":workspace" },
+        { timeoutMs: 5000 }), (error) => {
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile " +
+          "(requestSource=permissions, selectors=single, comparison=field-absent). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
+        return true;
+      });
+    } finally {
+      await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+    }
+    // Protocol peers exercise the real client's guard, not native permission grants.
+    // Unknown peer values must never appear in diagnostics; valid grants still pass.
+    const { sandbox: _sandbox, ...withoutSandbox } = control;
+    for (const [result, comparison] of [
+      [null, "nonobject-result"],
+      [withoutSandbox, "field-absent"],
+      [{ ...control, sandbox: null }, "field-null"],
+      [{ ...control, sandbox: [] }, "field-not-object"],
+      [{ ...control, sandbox: {} }, "type-not-string"],
+      [{ ...control, sandbox: { type: "private-peer-value" } }, "type-unrecognized"],
+      [{ ...control, sandbox: { type: "workspaceWrite" } }, "sandbox-workspaceWrite"],
+      [{ ...control, sandbox: { type: "externalSandbox" } }, "sandbox-externalSandbox"],
+      [{ ...control, sandbox: { type: "dangerFullAccess" } }, null],
+    ]) {
+      const peer = await startPeer(result);
+      try {
+        await peer.initialize();
+        for (const method of ["thread/start", "thread/resume", "thread/fork"]) {
+          const response = peer.request(method, { ...request, permissions: profile }, { timeoutMs: 5000 });
+          if (comparison === null) {
+            assert.deepEqual(await response, result);
+          } else {
+            await assert.rejects(response, (error) => {
+              assert.equal(error.message, method +
+                ": Codex did not grant the requested :danger-full-access profile (comparison=" +
+                comparison + "). Check native permission requirements and runtime compatibility.");
+              return true;
+            });
+          }
+        }
+      } finally {
+        await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+      }
+    }
   }
 } finally {
   client.close();
@@ -1502,7 +1584,7 @@ const preparation = cp.spawnSync(process.execPath, ["-e", ${JSON.stringify(REPOS
   stdio: "inherit",
 });
 assert.equal(preparation.status, 0, "repository native Git initialization failed");
-assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js"));
+assert.ok(fs.readFileSync("/run/oce/repository-credentials/gitconfig", "utf8").includes("/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js"));
 const brokerCaBundle = fs.readdirSync("/run/oce/repository-credentials/sessions")
   .map((name) => "/run/oce/repository-credentials/sessions/" + name + "/ca-bundle.pem")
   .find((filename) => fs.existsSync(filename));
@@ -1876,7 +1958,7 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {

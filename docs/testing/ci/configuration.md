@@ -71,7 +71,7 @@ image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 | `integration-main`  | Full Integration: k3d OTEL                                                                   | `OPENAI_API_KEY`                                                             | `OCC_TEST_OPENAI_MODEL`, `NODE_BASE_IMAGE`, common runtime images.                                                                                                                                                                                                    |
 | `integration-main`  | Full Integration: Slack Live                                                                 | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN` | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_QA_SLACK_CHANNEL_ID`.                                                                                                                                                                                       |
 | `integration-main`  | Full Integration: OpenShell                                                                  | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`                                       | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
-| `integration-qa-pr` | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`, `OPENAI_API_KEY`                                       | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
+| `integration-qa-pr` | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`, `OPENAI_API_KEY`                                       | `OCC_TEST_QA_CODEX_MODEL` and `OCC_TEST_OPENAI_MODEL`. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                                            |
 | `integration-main`  | Full Integration: Shipped Installation QA Matrix                                             | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`                                       | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`.                                                                                                                                                                                                                |
 
 `NODE_BASE_IMAGE` is a separate variable consumed by selected Full Integration
@@ -79,9 +79,7 @@ jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requiremen
 and defaults differ by lane: follow its linked suite guide. Missing required
 inputs fail selected lanes.
 
-Calendar requires variables `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
-`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`; `OCC_TEST_CODEX_CALENDAR_PROMPT` is
-optional. QA model overrides default to `gpt-6-luna`.
+QA model overrides default to `gpt-6-luna`.
 
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).
 
@@ -100,6 +98,9 @@ For lanes that accept optional Kubernetes runtime images, set both
 `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
 immutable references, or omit both to build from source. Supplying only one fails
 preparation before state or resources are created.
+Preparation also selects the verified Gateway image in the host container engine
+for `OCC_DOCKER_RUNTIME_IMAGE`, used by the loopback Gateway relay. Kubernetes
+selectors use the separately verified references imported into the cluster.
 
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).

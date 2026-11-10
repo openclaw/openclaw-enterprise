@@ -10,6 +10,7 @@ const startupEnvironment = {
   NODE_ENV: "development",
   OCC_HOST: "127.0.0.1",
   OCC_PORT: "8080",
+  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.occ-dev-example.oce.localhost",
   OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
 };
 
@@ -36,16 +37,16 @@ function run(path, env) {
   });
 }
 
-test("development API and both bootstrap modes accept bracketed IPv6 loopback auth origins", () => {
+test("API and bootstrap reject IPv6 origins without a shared HTTPS DNS scope", () => {
   for (const [path, mode] of startupCases) {
     const result = run(path, {
       NODE_ENV: mode,
       OCC_AUTH_BASE_URL: "http://[::1]:3000",
-      // A deliberate invalid secret proves URL admission before database access.
+      // URL refusal precedes the separate secret check and any database access.
       OCC_AUTH_SECRET: "short",
     });
     assert.equal(result.status, 1);
-    assert.equal(diagnostic(result, path).code, "AUTH_SECRET_INVALID");
+    assert.equal(diagnostic(result, path).code, "AUTH_BASE_URL_INVALID");
     assert.doesNotMatch(result.stderr, /OCC_AUTH_SECRET|loopback host|loopback HTTP\(S\) URL/);
   }
 });
@@ -53,6 +54,7 @@ test("development API and both bootstrap modes accept bracketed IPv6 loopback au
 test("development controller accepts reserved localhost subdomains for its browser origin", () => {
   const result = run("apps/controller/src/server.mjs", {
     OCC_AUTH_BASE_URL: "https://console.occ-dev-example.oce.localhost:8443",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.occ-dev-example.oce.localhost",
     OCC_AUTH_SECRET: "short",
   });
   assert.equal(result.status, 1);
@@ -60,7 +62,7 @@ test("development controller accepts reserved localhost subdomains for its brows
   assert.doesNotMatch(result.stderr, /loopback host|AUTH_BASE_URL_INVALID/);
 });
 
-test("development API and bootstrap accept localhost auth origins", () => {
+test("API and bootstrap reject bare localhost browser session origins", () => {
   for (const origin of ["http://localhost:3000", "https://localhost:3000"]) {
     for (const path of ["apps/controller/src/server.mjs", "scripts/bootstrap-installation.mjs"]) {
       const result = run(path, {
@@ -68,9 +70,8 @@ test("development API and bootstrap accept localhost auth origins", () => {
         OCC_AUTH_SECRET: "short",
       });
       assert.equal(result.status, 1);
-      // This later validation proves the real entrypoint admitted the origin,
-      // without connecting to a database or claiming a complete startup.
-      assert.equal(diagnostic(result, path).code, "AUTH_SECRET_INVALID", `${path}: ${origin}`);
+      // Bare localhost has no registrable suffix to share with Agent hosts.
+      assert.equal(diagnostic(result, path).code, "AUTH_BASE_URL_INVALID", `${path}: ${origin}`);
     }
   }
 });

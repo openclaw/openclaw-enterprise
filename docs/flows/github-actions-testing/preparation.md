@@ -8,6 +8,39 @@ Prepare the resources for the selected source commit and test lane. See the [par
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
+The static-checks job in `.github/workflows/ci.yml` also restores the pnpm store
+using `scripts/docs-site/pnpm-lock.yaml`. It alone saves that documentation key,
+after `docs:build` successfully runs Pagefind; installation can succeed even when
+Pagefind's optional native package is missing. `run-ci-lane` restores the same key
+before installing documentation dependencies for baseline part 1 and browser part 1.
+The shared setup action keys each store by OS, architecture, Node.js, pnpm version,
+and lockfile hash. Its existing prefix fallbacks can restore another lockfile's
+store; frozen installation still acquires any missing packages. Root workspace
+cache saves are unchanged.
+
+First Agent Smoke and `run-ci-lane` both use `setup-ci-tools` to restore only yq and k3d downloads outside `PATH`. On Linux,
+`scripts/ci/setup-tools.sh` selects the checked-in platform checksum before any
+execution. `scripts/ci/download-pinned.sh` copies an installed PATH candidate or
+cached bytes to private staging,
+verifies that checksum, then atomically publishes the executable with mode 0755. Missing or corrupt entries
+use the existing pinned downloader; unavailable cache storage or service does not
+fail setup; verified cache hits do not rewrite the cache. PostgreSQL, image and
+Kubernetes profiles share the cache. Keys include OS, architecture and installer
+source. Direct callers can reuse verified installed bytes without a cache.
+
+`scripts/ci/image-pull.ts:pullImage` logs each failed pull attempt before deciding
+whether to retry, including the final attempt. It reports elapsed time, whether
+the command timed out, and up to eight layer states from the captured output tails.
+Only known Docker phases and hexadecimal layer IDs enter this progress summary;
+unmatched output and a leading partial line at the tail cutoff are omitted.
+The First Agent smoke adapter forwards both captured streams to this parser.
+Diagnostic emission is best effort and cannot replace the terminal pull error.
+Docker suppresses numeric progress on non-terminal
+output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
+summary says so. These diagnostics retain reported download and extraction
+activity without changing timeouts, backoff, concurrency, or digest verification.
+They do not establish registry health or explain why an attempt stalled.
+
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
 `scripts/ci/prepare.mjs:validateLaneInputsBeforeSideEffects` requires the optional
@@ -17,7 +50,38 @@ It rejects a partial pair before creating state, so
 build. Omitting both keeps the source-build path; supplying both keeps their
 selected immutable references.
 
+For the four ordinary image lanes, `scripts/ci/runtime-artifact.mjs` verifies the
+selected same-workflow OCI artifact before `scripts/ci/prepare.mjs:buildRuntimeImages`
+loads it under a run-owned tag. The artifact's index, platform manifest and config
+have distinct digests; Docker's image ID is not assumed to be the config digest.
+The loader checks archive integrity, source commit, workflow run and platform,
+then verifies the loaded image. Preparation records the tag before loading so
+failure cleanup can remove it. A selected artifact cannot be combined with an
+alternate OpenClaw source checkout, and loading failure does not fall back to a
+build. The existing runtime environment aliases refer to that tag; packaging's
+controller build and each lane's Envoy or seccomp preparation remain separate.
+The three runtime startup lanes omit Buildx setup when they select this artifact.
+Packaging retains its builder for the controller and image tests; source builds
+without an artifact retain their existing builder.
+
 The preparation CLI records run-owned resources in a private state file before creating them. GitHub Actions passes that file under `RUNNER_TEMP`; it is available to later steps in the same job and is not uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role; the Agent revision worker suite also gives each test a copy of a migrated template (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. The CLI-only installed repository lane is temporarily refused in `validateLaneInputsBeforeSideEffects`, before its input checks and before any state or resource is created, until its remote cleanup is safe; its image and seccomp preparation below is unreachable in this source version. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Preparation failures still enter job cleanup. Cluster cleanup reads k3d inventory before and after deletion, then checks for matching Docker containers, networks, and volumes. An invalid inventory or possible surviving resource retains cleanup state.
+
+`scripts/ci/prepare.mjs:ensurePostgresServer` copies the public
+`migrations/init-local.sql` into a run-owned directory beside the state file. It creates
+that file exclusively with private permissions, then makes the public SQL readable
+by the PostgreSQL container user. The Compose input
+`OPENCLAW_CI_POSTGRES_INIT_SQL` selects the copy; the checkout remains unchanged.
+The absolute directory path is recorded with the server before exclusive creation;
+directory and SQL creation are each confirmed in state before the next step. Compose
+starts only after both confirmations. An existing directory is refused. Failed
+directory creation retires the planned record. If that save fails,
+or a crash interrupts directory creation before confirmation, cleanup preserves any
+directory at that path and retains the state for inspection. Without SQL creation
+confirmation, cleanup removes only an empty confirmed directory; existing contents
+and their state are retained.
+`scripts/ci/cleanup.mjs:cleanupComposePostgres` checks its exact path against the opened state
+file and removes only the SQL file and its empty directory after Compose teardown.
+Unexpected contents or failed teardown retain cleanup state.
 
 For hosted repository QA, `scripts/ci/qa-matrix-credentials.mjs` reads the selected
 reviewed registry file only when a repository scenario is selected. It copies
@@ -45,6 +109,26 @@ fails cleanup. These results do not prove
 the runner accepted a shared-store commit.
 
 For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
+
+`scripts/ci/prepare.mjs:buildFixtureImage` reports separate engine-version and
+fixture-build stages. The engine probe uses the existing image-command
+limit (30 seconds by default); the fixture build has a 30-minute cap to allow slow builds. These are execution limits, not
+expected durations. Both commands also respect the remaining lane deadline less
+the test reserve, recalculated before each command. Without a valid lane deadline,
+the finite command limits still apply. Unsupported timer values are rejected.
+An exhausted budget reports the stage that could not start. On POSIX, timeouts
+terminate the command's owned process group, including local descendants. The
+shared `scripts/ci/cleanup-command.mjs` supervisor anchors the group ID through
+its last signal, including when preparation receives SIGINT cancellation; after
+it exits, preparation sends no further group signals. Windows retains direct-child
+termination. A failed build reports up to eight numbered FROM, RUN or COPY steps
+and their reported completion states from the last 32,768 characters of each captured stream.
+The step summary omits arguments, container output and arbitrary error text. This partial
+summary identifies steps in the fixture Dockerfile; it does not establish the
+current build phase or cause of a stall. The timeout keeps its concise stage error
+and original cause. The owned image tag is recorded before
+building and becomes ready only after success, so failed preparation remains
+available to cleanup.
 
 Preparation checks the storage controller before fixture setup, then restarts it
 after image registration and requires the replacement to become ready before
