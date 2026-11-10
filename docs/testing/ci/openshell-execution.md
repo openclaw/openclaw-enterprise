@@ -164,7 +164,9 @@ classifies public placement errors and projects environment/tunnel states, node
 connection and capability counts, and exact workspace-node matches. The expected
 node comes from the selected revision's Gateway Pod. Failure reads of
 `sessions.describe`, `environments.status` and `node.list` share a five-second
-budget; failed refreshes retain a labeled fallback observation.
+budget. A matching session response is labeled `fresh`. If the refresh fails,
+placement is labeled `fallback` when an earlier observation exists, or `absent`
+otherwise.
 `scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
 booleans and counters again. Raw errors and identifiers do not enter the record.
 Public RPCs do not expose workspace-binding readiness or restoration; a workspace
