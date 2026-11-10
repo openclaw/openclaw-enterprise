@@ -25,7 +25,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
-import type { AgentRecheckHandler } from "./agents/detail.mjs";
+import { isAgentPermissionSummary, type AgentRecheckHandler } from "./agents/detail.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -1613,6 +1613,7 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
+  confirmAgentPermissions = reuseView && !fromNavigation,
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
@@ -1622,6 +1623,7 @@ async function loadPage({
   fromNavigation?: boolean;
   reuseView?: boolean;
   fromRefresh?: boolean;
+  confirmAgentPermissions?: boolean;
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
@@ -2058,6 +2060,8 @@ async function loadPage({
       namespacePath !== null && current.agentId
         ? `${namespacePath}/agents/${encodeURIComponent(current.agentId)}`
         : null;
+    const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
+    const confirmDetailPermissions = confirmAgentPermissions && agentPermissionsPath !== null;
     const itemsPath = collectionPath(current.feature, namespacePath);
     const permissionsRead =
       !scopedNamespaceUnavailable &&
@@ -2147,6 +2151,9 @@ async function loadPage({
             fresh.set(
               path,
               await request(path, {
+                ...(confirmDetailPermissions && path === agentPermissionsPath
+                  ? { expectedStatus: 200 }
+                  : {}),
                 includeMeta: retainedState.metaReads.has(path),
                 ...(mode === undefined ? {} : { installationAdministration: mode }),
               }),
@@ -2169,6 +2176,8 @@ async function loadPage({
       unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
+        // A matching refusal or malformed summary cannot readmit a foreground Agent view.
+        (!confirmDetailPermissions || isAgentPermissionSummary(fresh.get(agentPermissionsPath))) &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(([path, value]) => {
           const refusal = refused.get(path);
@@ -2288,7 +2297,6 @@ async function loadPage({
     };
     mountedViewState = viewState;
     const viewIsCurrent = () => viewState.active !== null && lifetime.isCurrent(viewState.active);
-    const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
     let newestAgentPermissionRead = 0;
     // A read the view redoes when it resumes (rereadOnResume, the Agents list's row
     // deployments) neither keeps the view from being reused while it runs nor, if it fails,
@@ -2690,11 +2698,11 @@ async function loadPage({
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
               agentContext.drafts.clear();
-              showAgentReadFailure(namespaceId, error, receipt);
+              showAgentReadFailure(namespaceId, error, { receipt, confirmAgentPermissions });
             }
           },
         },
-        { agent: firstAgent },
+        { agent: firstAgent, confirmPermissions: confirmDetailPermissions },
       );
       // The load settles with the Agent's page shown, not its placeholder.
       await revealed;
@@ -2794,7 +2802,12 @@ async function loadPage({
       resetReads();
       clearPrivate();
       shell = null;
-      showAdmissionUnavailable(sessionResolved, error, account);
+      showAdmissionUnavailable(
+        sessionResolved,
+        error,
+        account,
+        confirmAgentPermissions && Boolean(current.agentId),
+      );
       return;
     }
     mountedRouteKey = null;
@@ -2906,7 +2919,7 @@ async function loadPage({
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
       // behind a disclosure (finding D770).
       status === 403 ? undefined : "Retry",
-      status === 403 ? undefined : () => void loadPage(),
+      status === 403 ? undefined : () => void loadPage({ confirmAgentPermissions }),
       status === 403 ? null : requestId,
     );
     if (status === 403 && requestId) {
@@ -3005,7 +3018,10 @@ async function locateAgentNamespace(agentId: string, excluded: string | null) {
 function showAgentReadFailure(
   selectedNamespace: string | null,
   error: unknown,
-  receipt?: HTMLElement,
+  {
+    receipt,
+    confirmAgentPermissions = false,
+  }: { receipt?: HTMLElement; confirmAgentPermissions?: boolean } = {},
 ) {
   const { status, requestId } = requestFailure(error);
   resetReads();
@@ -3025,7 +3041,7 @@ function showAgentReadFailure(
       : "The read could not be completed. Retry to check current access and saved state.",
     // A permission refusal offers the header's Refresh, not a Retry that repeats it.
     status === 403 ? undefined : "Retry",
-    status === 403 ? undefined : () => void loadPage(),
+    status === 403 ? undefined : () => void loadPage({ confirmAgentPermissions }),
     receipt ? undefined : requestId,
   );
   if (receipt) {
@@ -3050,7 +3066,7 @@ async function revalidateMountedAgent(current: Route) {
   const owner = sessionOwnerKey(session);
   const selectedNamespace = namespaceId;
   if (!state || !view?.isConnected || !agent || !owner || !key || selectedNamespace === null) {
-    await loadPage();
+    await loadPage({ confirmAgentPermissions: true });
     return;
   }
   const active = lifetime.capture();
@@ -3356,7 +3372,7 @@ async function revalidateMountedAgent(current: Route) {
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
       const account = session;
       clearPrivate();
-      showAdmissionUnavailable(checking !== "session", error, account);
+      showAdmissionUnavailable(checking !== "session", error, account, true);
       return;
     }
     if (
@@ -3419,7 +3435,7 @@ async function revalidateMountedAgent(current: Route) {
     if (isAccessRefusal(status)) {
       drafts.scope(selectedNamespace, agent.id).clear();
     }
-    showAgentReadFailure(selectedNamespace, error);
+    showAgentReadFailure(selectedNamespace, error, { confirmAgentPermissions: true });
   } finally {
     clearTimeout(stillChecking);
     clearStillChecking?.();
@@ -3582,14 +3598,16 @@ function showAdmissionUnavailable(
   sessionChecked: boolean,
   error: unknown,
   account: Session | null,
+  confirmAgentPermissions = false,
 ) {
   const current = route();
+  const retryAdmission = () => void loadPage({ confirmAgentPermissions });
   if (unreachable(error) && account && hasKey(pages, current.feature)) {
     // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
     // check again, and a 401 then still signs the tab out.
     session = account;
     const shell = renderShell(current.feature, true, { recovery: false });
-    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", retryAdmission);
     shell.refresh.disabled = false;
     shell.view.setAttribute("aria-busy", "false");
     const reason = shell.view.querySelector<HTMLParagraphElement>(".state-panel > p")!;
@@ -3600,7 +3618,7 @@ function showAdmissionUnavailable(
     return;
   }
   if (unreachable(error)) {
-    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", retryAdmission);
     return;
   }
   const { status } = requestFailure(error);
@@ -3609,7 +3627,7 @@ function showAdmissionUnavailable(
       "Session unavailable",
       "Could not check your session. Try again.",
       "Retry",
-      () => void loadPage(),
+      retryAdmission,
     );
     return;
   }
@@ -3619,7 +3637,7 @@ function showAdmissionUnavailable(
       ? "Your account has no access to this Installation. Try again or sign out."
       : "Could not check Namespace access. Try again.",
     "Retry",
-    () => void loadPage(),
+    retryAdmission,
     { label: "Sign out", action: () => void logout() },
   );
 }

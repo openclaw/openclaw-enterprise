@@ -177,6 +177,23 @@ const unconfirmedPermissions: Permissions = {
   sandboxPolicyRead: false,
   readLogs: false,
 };
+
+export function isAgentPermissionSummary(answer: unknown): answer is Permissions {
+  const fields = responseFields(answer);
+  const keys = Object.keys(unconfirmedPermissions);
+  const { configurationSecretsOperateDeniedBindings: denied } = fields;
+  return (
+    Object.keys(fields).length === keys.length &&
+    Array.isArray(denied) &&
+    denied.length <= 64 &&
+    denied.every((name) => typeof name === "string" && name.length > 0) &&
+    keys.every(
+      (key) =>
+        key === "configurationSecretsOperateDeniedBindings" || typeof fields[key] === "boolean",
+    )
+  );
+}
+
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
 type RevisionResult = PromiseSettledResult<RevisionPage>;
@@ -573,7 +590,10 @@ function takeLinkedVersionView(key: string) {
 
 export async function renderAgentDetail(
   context: DetailContext,
-  { agent: preloadedAgent }: { agent?: AgentRead | null } = {},
+  {
+    agent: preloadedAgent,
+    confirmPermissions = false,
+  }: { agent?: AgentRead | null; confirmPermissions?: boolean } = {},
 ): Promise<AgentRead | null> {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
@@ -688,19 +708,8 @@ export async function renderAgentDetail(
 
   async function readPermissions(requireConfirmation = false): Promise<Permissions> {
     const answer = await request(`${path}/permissions`, { expectedStatus: 200 });
-    if (requireConfirmation) {
-      const fields = responseFields(answer);
-      const { configurationSecretsOperateDeniedBindings: denied } = fields;
-      if (
-        !Array.isArray(denied) ||
-        !denied.every((name) => typeof name === "string" && name.length > 0) ||
-        Object.keys(unconfirmedPermissions).some(
-          (key) =>
-            key !== "configurationSecretsOperateDeniedBindings" && typeof fields[key] !== "boolean",
-        )
-      ) {
-        throw new Error("Invalid Agent permission response");
-      }
+    if (requireConfirmation && !isAgentPermissionSummary(answer)) {
+      throw new Error("Invalid Agent permission response");
     }
     return answer as Permissions;
   }
@@ -711,13 +720,13 @@ export async function renderAgentDetail(
   const secretsOperateAnswer = secretOperateAnswer(() => request(`${path}/permissions/secrets`));
   const secretsOperateDenied = secretsOperateAnswer.read;
   context.setTitle(agent.name);
-  // A missing summary leaves each control on its usual path, except failed-version
-  // recovery, which waits for a positive answer before offering a draft link.
+  // Ordinary navigation keeps each control's missing-summary behavior. A replacement after
+  // refocus starts with restricted controls unless this view's permission read confirms them.
   let callerPermissions: Permissions | null = null;
   let callerPermissionsSettled = false;
   let foregroundPermissionScope: (() => boolean) | undefined;
-  const callerPermissionsRead: Promise<Permissions | null> = readPermissions()
-    .catch(() => null)
+  const callerPermissionsRead: Promise<Permissions | null> = readPermissions(confirmPermissions)
+    .catch(() => (confirmPermissions ? unconfirmedPermissions : null))
     .then((permissions) =>
       foregroundPermissionScope === undefined
         ? (callerPermissions = permissions)
@@ -739,6 +748,12 @@ export async function renderAgentDetail(
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
+  if (confirmPermissions) {
+    await callerPermissionsRead;
+    if (!context.isCurrent()) {
+      return null;
+    }
+  }
   function retireSaveRead(error: unknown, receipt: string) {
     const { requestId } = requestFailure(error);
     context.onProtectedReadDenied(
@@ -4485,7 +4500,7 @@ export async function renderAgentDetail(
     }
     const foreground = foregroundPermissionScope;
     const scope = foreground?.() ? foreground : undefined;
-    const requireConfirmation = foreground !== undefined;
+    const requireConfirmation = confirmPermissions || foreground !== undefined;
     const superseded = () =>
       foregroundPermissionScope !== foreground ||
       (requireConfirmation && reread < permissionsRereads);

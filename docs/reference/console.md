@@ -92,7 +92,8 @@ the failed attempt's message. No save is sent. After access is restored, use
 **Refresh** to read saved state before retrying.
 
 When you return to an Agent tab, the Console checks access again. Actions such as
-**Delete Agent** need a fresh permission answer. A temporary detail read error
+**Delete Agent** and **Save Configuration** need a fresh permission answer, even
+if the Console has to rebuild the page. A temporary detail read error
 can trigger one automatic retry. If the read still fails, the Console hides
 unconfirmed details and shows a warning. **Retry** checks access again when any
 server retry delay ends. A successful check can restore the view and your place

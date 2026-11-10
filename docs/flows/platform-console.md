@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-10
-last_updated_session: authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6
+last_updated_session: authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1
 ---
 
 # Platform console request flow
@@ -151,15 +151,14 @@ return preserves the view. A cancelled Refresh discards it. Discovery, passwords
 mutations, and pending or failed reads prevent reuse. Read-only POSTs permit reuse.
 
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
-reads. Focus and visibility share the check. Navigation cancels it. A detail error
-hides protected content. A 5xx permits one retry unless a refusal, 429, or retry
-delay takes precedence. The Agent page applies fresh permissions before releasing
-grant-dependent controls. Successful checks restore the view and focus.
-Narrowed read access rebuilds.
+reads. Focus and visibility share the check. Navigation cancels it. Detail errors
+hide protected content. A 5xx permits one retry unless a refusal, 429, or delay
+takes precedence. Narrowed access rebuilds. Both reused and replacement views
+require confirmed Agent permissions for grant-dependent controls.
 
-A persistent detail failure shows a warning with the Agent name from a confirmed
-read. **Retry** starts admission after the latest retry deadline. Session expiry
-opens sign-in. A refusal removes private content.
+Persistent detail errors show a warning with the confirmed Agent name. **Retry**
+starts foreground admission after the latest deadline. Expiry opens sign-in.
+Refusals remove private content.
 
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
@@ -365,6 +364,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
 
 - 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
 

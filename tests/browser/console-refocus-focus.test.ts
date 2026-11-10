@@ -50,7 +50,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -1277,6 +1277,117 @@ for (const recover of [false, true]) {
     );
   });
 }
+
+test("Agent refocus keeps Save gated on a replacement view after a permission outage", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replacement Agent refocus");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisionsUrl = `${agentUrl}/revisions`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const initialVersions = responseTo(page, "GET", revisionsUrl);
+  await login(page, fixture, url);
+  const initial = await initialVersions;
+  assert.equal(initial.status(), 200);
+  assert.deepEqual(
+    (await initial.json()).data.map(({ id }: { id: string }) => id),
+    [active.revision.id, first.revision.id],
+  );
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await save.click({ trial: true });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await tagView(page);
+
+  // The Controller's real version list shrinks, so the shell must rebuild. Only its exact
+  // Agent permission summary probes Delete, whose IAM decision now fails.
+  denyRevisionRead(fixture, namespace, first.revision);
+  const blocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const reads: { url: string; status: number }[] = [];
+  page.on("response", (response) => {
+    const url = response.url();
+    if (response.request().method() === "GET" && [revisionsUrl, permissionsUrl].includes(url)) {
+      reads.push({ url, status: response.status() });
+    }
+  });
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const narrowed = responseTo(page, "GET", revisionsUrl);
+      const failed = responseTo(page, "GET", permissionsUrl);
+      await refocus(page);
+      const versions = await narrowed;
+      assert.equal(versions.status(), 200);
+      assert.deepEqual(
+        (await versions.json()).data.map(({ id }: { id: string }) => id),
+        [active.revision.id],
+      );
+      assert.equal((await failed).status(), 503);
+      await editor.waitFor();
+      await page.locator(settledView).waitFor();
+      await waitForIdleFetches(page);
+    },
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await viewTag(page), null);
+  assert.equal(await page.locator('[data-nav-tag="kept"]').count(), 0, "the old view was retired");
+  assert.deepEqual(reads[0], { url: revisionsUrl, status: 200 });
+  assert.deepEqual(
+    reads.filter(({ url }) => url === revisionsUrl).map(({ status }) => status),
+    [200, 200],
+  );
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503],
+  );
+  assert.equal(await editor.inputValue(), draft);
+  await save.waitFor();
+  const actionableAfterFailure = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await save.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${artifacts}/replacement-save-unavailable.png` });
+  }
+
+  liftRestriction(fixture.policy, blocked);
+  const granted = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await granted;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await save.click({ trial: true });
+  assert.equal(await editor.inputValue(), draft);
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503, 200],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    actionableAfterFailure,
+    false,
+    "a failed replacement permission read must gate Save",
+  );
+});
 
 test("a rate-limited Agent refocus respects the longest delay and waits for explicit Retry", async (t) => {
   const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
