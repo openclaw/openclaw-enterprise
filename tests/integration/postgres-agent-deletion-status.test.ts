@@ -46,6 +46,7 @@ test(
     const selfDeleted = await f.deployAgent("Deletion status self");
     const revoked = await f.deployAgent("Deletion status revoked");
     const legacy = await f.deployAgent("Deletion status legacy");
+    const unavailable = await f.deployAgent("Deletion status IAM unavailable");
     const installation = await f.state.loadInstallation();
     assert.ok(installation);
     const controller = new OpenClawController(installation, { state: f.state });
@@ -140,7 +141,9 @@ test(
           },
           async retireRevision(revision) {
             assert.ok(
-              [agent.id, selfDeleted.agent.id, revoked.agent.id].includes(revision.agentId),
+              [agent.id, selfDeleted.agent.id, revoked.agent.id, unavailable.agent.id].includes(
+                revision.agentId,
+              ),
             );
             await duringRetire.get(revision.agentId)?.();
           },
@@ -304,6 +307,102 @@ test(
       [revoked.agent.id],
     );
     assert.equal(deletions.length, 0);
+
+    // An IAM Driver failure during the finalize recheck rolls the finalizing transaction back and
+    // retries the work as DEPENDENCY_UNAVAILABLE, like the check before teardown. Teardown arms
+    // one throw for the next delete check of this Agent, which is the finalize recheck. The
+    // second teardown is held so the state between the attempts can be read.
+    const workerIAM = (
+      worker as unknown as {
+        iam: { authorize(request: { action: string; resource: { id?: string } }): unknown };
+      }
+    ).iam;
+    const authorize = workerIAM.authorize.bind(workerIAM);
+    let throwRecheck = false;
+    workerIAM.authorize = (request) => {
+      if (
+        throwRecheck &&
+        request.action === "delete" &&
+        request.resource.id === unavailable.agent.id
+      ) {
+        throwRecheck = false;
+        throw new Error("The IAM Driver is unavailable.");
+      }
+      return authorize(request);
+    };
+    let teardowns = 0;
+    const secondTeardown = Promise.withResolvers<void>();
+    const resumeTeardown = Promise.withResolvers<void>();
+    t.after(() => resumeTeardown.resolve());
+    duringRetire.set(unavailable.agent.id, async () => {
+      teardowns += 1;
+      if (teardowns === 1) {
+        throwRecheck = true;
+      } else if (teardowns === 2) {
+        secondTeardown.resolve();
+        await resumeTeardown.promise;
+      }
+    });
+    const retrier = await reader(unavailable);
+    const unavailableWork = `agent:${unavailable.agent.id}:reconcile:deleted`;
+    const agentAudit = (agentId: string) =>
+      f.pool
+        .query(
+          `SELECT action, outcome, details->>'reasonCode' AS reason_code,
+             (details->>'attemptCount')::int AS attempt_count
+           FROM occ.audit_events WHERE resource_kind = 'agent' AND resource_id = $1
+             AND (action = 'reconcile' OR outcome <> 'success'
+               OR details->>'reasonCode' = 'AGENT_DELETED')
+           ORDER BY occurred_at, id`,
+          [agentId],
+        )
+        .then(({ rows }) => rows);
+    const provisioning = () =>
+      f.pool
+        .query("SELECT * FROM occ.agent_provisioning_work WHERE agent_id = $1 ORDER BY work_id", [
+          unavailable.agent.id,
+        ])
+        .then(({ rows }) => rows);
+    const provisioningBefore = await provisioning();
+    await retrier.request();
+    await secondTeardown.promise;
+    assert.equal(throwRecheck, false, "the finalize recheck consumed the armed throw");
+    // The first attempt committed nothing of its finalization and failed nothing permanently.
+    const { rows: between } = await f.pool.query(
+      "SELECT state, attempt_count, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+      [unavailableWork],
+    );
+    assert.deepEqual(between, [{ state: "claimed", attempt_count: 2, reason_code: null }]);
+    assert.deepEqual(await agentAudit(unavailable.agent.id), [
+      {
+        action: "reconcile",
+        outcome: "failure",
+        reason_code: "DEPENDENCY_UNAVAILABLE",
+        attempt_count: 1,
+      },
+    ]);
+    assert.deepEqual(await rechecks(unavailable.agent.id), []);
+    const pending = await f.inject("GET", paths(unavailable).base);
+    assert.equal(pending.statusCode, 200, pending.body);
+    assert.equal(pending.json().data.status, "deleting");
+    assert.deepEqual(await provisioning(), provisioningBefore);
+    resumeTeardown.resolve();
+    assert.deepEqual(
+      await waitFor("the retried deletion to finish", () => expectStatus(retrier, "deleted")),
+      { namespaceId: unavailable.namespace.id, agentId: unavailable.agent.id, status: "deleted" },
+    );
+    assert.equal(teardowns, 2);
+    assert.deepEqual(await rechecks(unavailable.agent.id), [retrier.subjectId]);
+    assert.deepEqual(
+      (await agentAudit(unavailable.agent.id)).map(({ outcome, reason_code }) => [
+        outcome,
+        reason_code,
+      ]),
+      [
+        ["failure", "DEPENDENCY_UNAVAILABLE"],
+        ["success", "AGENT_DELETED"],
+      ],
+    );
 
     // A completion finalized before migration 0077, or by a controller without the recheck,
     // records AGENT_DELETED for its actor but no recheck row. That actor still holds Namespace
