@@ -3,6 +3,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
+import * as sharingRecipientSearch from "./console/sharing-recipient-search.mjs";
 import { renderConsoleThemeShell, type ConsoleTheme } from "./console-theme.ts";
 
 export interface ConsoleAsset {
@@ -111,13 +112,6 @@ const CONSOLE_ASSETS = new Map([
     }),
   ),
   [
-    "/console/sharing-recipient-search.mjs",
-    {
-      path: new URL("../../../packages/contracts/src/sharing-recipient-search.ts", import.meta.url),
-      contentType: "text/javascript; charset=utf-8",
-    },
-  ],
-  [
     "/console/workspace-defaults.mjs",
     {
       path: new URL("../../../packages/contracts/src/workspace-defaults.ts", import.meta.url),
@@ -174,6 +168,12 @@ const CONSOLE_ASSETS = new Map([
     },
   ],
 ]);
+const sharingRecipientSearchPath = "/console/sharing-recipient-search.mjs";
+const sharingRecipientSearchModule = Buffer.from(
+  Object.entries(sharingRecipientSearch)
+    .map(([name, value]) => `export const ${name} = ${JSON.stringify(value)};\n`)
+    .join(""),
+);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",
   "/console/",
@@ -201,8 +201,9 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
 ].join("; ");
 
 /** The public files Storybook gets from the same reader as the controller. */
-export function consoleAssetPaths(): Iterable<string> {
-  return CONSOLE_ASSETS.keys();
+export function* consoleAssetPaths(): Iterable<string> {
+  yield* CONSOLE_ASSETS.keys();
+  yield sharingRecipientSearchPath;
 }
 
 const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
@@ -270,6 +271,14 @@ export async function readConsoleAsset(
       encodedThemes.set(theme, cache);
     }
     return encodedAsset(pathname, asset.body, asset.contentType, acceptEncoding, cache);
+  }
+  if (pathname === sharingRecipientSearchPath) {
+    return encodedAsset(
+      pathname,
+      sharingRecipientSearchModule,
+      "text/javascript; charset=utf-8",
+      acceptEncoding,
+    );
   }
   if (pathname === "/console/default-codex-preset.mjs") {
     const preset = JSON.parse(

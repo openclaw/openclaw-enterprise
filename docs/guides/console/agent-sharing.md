@@ -1,8 +1,8 @@
 # Share an Agent with an existing person
 
 Give an existing person native administration of one Agent from its detail page.
-You need Installation administration and the person's already provisioned
-**Principal ID**; the console does not create or search for accounts. See
+You need Installation administration. Search for an existing person by name or
+email, or enter their exact **Principal ID**. See
 [Agent sharing](../../reference/console/agent-sharing.md) for the exact grants,
 runtime prerequisites, and limits.
 
