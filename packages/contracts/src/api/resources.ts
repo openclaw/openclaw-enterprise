@@ -1107,6 +1107,14 @@ export const InstallationDeploymentInventorySchema = Type.Object(
                 executionMode: AgentSchema.properties.executionMode,
                 activeRevisionId: Type.Optional(RevisionId),
                 deploymentInProgress: Type.Boolean(),
+                repositoryWorkerRestart: Type.Optional(
+                  Type.Union([
+                    Type.Literal("original-worker-required"),
+                    Type.Literal("reverification-supported"),
+                    Type.Literal("not-applicable"),
+                    Type.Literal("unknown"),
+                  ]),
+                ),
               },
               { additionalProperties: false },
             ),

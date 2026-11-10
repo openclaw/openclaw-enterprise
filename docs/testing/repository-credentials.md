@@ -210,6 +210,14 @@ runtime image. Qualification applies only to the exact selected digest set under
 `checkout-images-with-synthetic-model-trust-layer`; it cannot establish qualification
 of a different published image set, even at the same OCE commit.
 
+The controlled model waits for a yielded native command with `write_stdin` on the
+same session, within the existing 170-second chat deadline. It never replays the
+command. Acceptance still requires terminal success, the exact completion marker,
+and the independent native and Git observations. A completion mismatch reports
+only status, exit code, session presence and poll count; raw command output stays
+private. Offline model-adapter cases in `skipper-private-git-origin.test.mjs` check
+the pinned Codex function-tool envelopes; they do not prove installed execution.
+
 Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
 offline checks through the actual aggregate CLI. They do not execute an installed journey.
 

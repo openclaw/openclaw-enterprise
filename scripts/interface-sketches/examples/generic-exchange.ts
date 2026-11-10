@@ -1,7 +1,7 @@
 import type { Diagram } from "../diagram.ts";
 
 export default {
-  title: "02 Who sends a protected request?",
+  title: "Who sends a protected request?",
   subtitle:
     "Generic exchange · OpenClaw Control Plane authorizes · the runtime sender connects to the provider",
   layout: { board: [1180, 640] },
@@ -26,9 +26,9 @@ export default {
       pin: [20, 45, 205, 56],
     },
     {
-      id: "warm",
-      title: "PreparedTokenIssuer",
-      detail: "Eligible prepared token",
+      id: "token",
+      title: "Token Service",
+      detail: "Reuse or prepare a token",
       group: "api",
       pin: [250, 45, 205, 56],
     },
@@ -81,8 +81,8 @@ export default {
     },
     {
       from: "exchange",
-      to: "warm",
-      label: "readWarm",
+      to: "token",
+      label: "resolve",
       kind: "conditional",
       pin: {
         from: "top",
@@ -114,8 +114,8 @@ export default {
         from: "left",
         to: "right",
         via: [
-          [640, 292.5],
-          [640, 407],
+          [668, 292.5],
+          [668, 407],
         ],
         label: [520, 309],
       },
@@ -166,7 +166,7 @@ export default {
     },
   ],
   notes: [
-    "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both material readers.",
-    "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
+    "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both credential lookups.",
+    "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git requests use a separate worker path.",
   ],
 } satisfies Diagram;

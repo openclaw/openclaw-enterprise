@@ -1,15 +1,14 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647
+last_updated_session: authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
-[Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions Codex/OpenClaw through OpenShell.
 
 ## Entry Points
 
@@ -18,8 +17,8 @@ Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: shared `openshell` Backend, Namespace isolation and ready
-  operator-mode Gateway.
+- Assumptions: `openshell` Backend; ready operator-mode Gateway; Namespace isolation
+  [excludes Gateway authority](../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
 
 ## Flow
 
@@ -302,32 +301,27 @@ The Backend reuses clients and retries setup. Cancellation follows
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
 After dispatch it stops local gRPC, but remote mutations may require recovery.
 
-`GetService` separates control/workload addresses. `harnessEndpoint` returns the
-WebSocket origin and `sandboxDataMount.mountPath` (default `/sandbox/enterprise`).
-Native hooks use `harnessHome` (`0700`). Invalid/changed exposure fails closed.
+`GetService` separates control/workload addresses. `harnessEndpoint` returns the WebSocket
+origin and `sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native hooks
+use `harnessHome` (`0700`). Invalid or changed exposure fails closed.
 
-`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` checks the exact
-Codex Harness exposure with
-`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexReadinessStatus`.
-After bearer-authenticated initialization, the Driver reads `configRequirements/read`.
-A policy that excludes the required sandbox mode, named profile or human reviewer
-fails preparation or activation with `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`. Missing
-or malformed replies stay `starting`. An explicit null requirements result means
-the server reports no managed requirements. OCE bounds the requirements reply to
-1 MiB and other replies/notifications to 16 KiB combined. Each message and the
-exchange, including earlier initialization/notifications, have a 1 MiB +
-16 KiB cap. A complete, correlated, usable requirements reply above 1 MiB yields
-`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` only within the remaining budget;
-otherwise readiness stays pending.
+`apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` calls
+`apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceCodexReadinessStatus`
+on the exact Harness exposure. After bearer-authenticated initialization it reads
+`configRequirements/read`. Denial fails preparation or activation with
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`. The worker records fixed categories in
+`worker.completed.failure`, including when candidate stop defers. Missing or malformed
+replies stay `starting`. Null requirements mean no managed policy. The requirements
+reply has a 1 MiB limit. Other replies and notifications share 16 KiB. Each message
+and the exchange have a 1 MiB + 16 KiB cap. Complete, correlated, usable requirements
+above 1 MiB yield `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` within that cap.
 
-For `credential_source`/`codex_pat`, the same connection then requests
-`getAuthStatus` with `includeToken:false` and `refreshToken:false`. Only
-`personalAccessToken`, null `authToken` and `requiresOpenaiAuth:true` report
-`serving`; other results stay `starting`. These checks do not start a thread,
-change managed policy, or prove inference. The Gateway still checks the grant
-on real threads. Native OpenClaw retains the authenticated WebSocket handshake.
-Unavailable WebSockets permit held-failure reads; timeouts yield transient
-`SANDBOX_GATEWAY_UNAVAILABLE`.
+For `credential_source`/`codex_pat`, that connection then sends `getAuthStatus`
+with `includeToken:false` and `refreshToken:false`. Serving requires
+`personalAccessToken`, null `authToken` and `requiresOpenaiAuth:true`. Other
+answers stay `starting`. The Gateway checks grants on real threads. Native
+OpenClaw uses the authenticated WebSocket handshake. Unavailable WebSockets permit
+held-failure reads. Timeouts yield transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 
 Provider files use reported absolute paths. Gateway failure blocks readiness.
 Providers survive uncertain creates; cleanup deletes their Sandbox first.
@@ -432,6 +426,10 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
+
+- 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
 

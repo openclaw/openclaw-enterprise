@@ -1,9 +1,9 @@
 # Upgrade production images
 
-Upgrade Kubernetes Compute Helm installations using the release checkout's
+Upgrade [Kubernetes Compute releases](production-installation.md) using
 `scripts/upgrade-production-images` and matching [OCC CLI](../cli.md#connect-to-your-installation).
-See [production installation](production-installation.md) and
-[production Agents](production-agents.md).
+[Preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+lack the required chart-owned initializer.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline; take backups required by the [upgrade checklist](upgrade-checklist.md).
@@ -20,7 +20,7 @@ runtime image and redeploys every running Agent concurrently. Upgrades stop the
 API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-Keep the unchanged checkout exclusive and evidence/baselines outside the chart.
+Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
 
 Configure endpoint and TLS settings in the selected kubeconfig.
@@ -35,7 +35,7 @@ For the experimental two-cluster profile, first
 ## Prepare the release
 
 For retained conversations, send a unique nonsecret marker through the approved
-interface; privately record its Agent and location.
+interface; record its Agent and location privately.
 
 Prepare:
 
@@ -46,7 +46,7 @@ Prepare:
   root to check the chart and live Collector configuration;
 - the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
   [release binary](../cli.md#connect-to-your-installation) or build it with
-  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The CLI reads deployment inventory and deploys Agents;
+  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. It reads inventory and deploys Agents;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
@@ -61,9 +61,8 @@ Prepare:
   from the release checkout and restart the Collector, even for image-only
   releases. Helm leaves the Secret as is. The helper stops before mutation if
   its `collector.yaml` or `kubernetes.yaml` differs;
-- PostgreSQL backups for controller migrations that can require data
-  restoration, and Agent-volume backups for runtime releases that can require
-  runtime data restoration.
+- PostgreSQL backups for controller migrations and Agent-volume backups for
+  runtime releases that can require data restoration.
 
 Repository-enabled releases require both `--controller-image` and
 `--broker-image`, even when you retain the current digest. Stage the exact operator-trusted
@@ -79,21 +78,19 @@ Active, desired-running Agents with a selected revision and no pending deploymen
 also require Agent `deploy` and selected-revision `read`. Runtime upgrades additionally
 require Configuration and replacement-revision `read`.
 
-Review runtime drafts; deployments snapshot them.
+Review runtime drafts; deployments snapshot them. Every upgrade needs the serving
+API’s inventory endpoint. Controller-only upgrades also read retained revisions
+with `occ agent revision`, requiring saved Harness settings and an accepted
+[repository restart disposition](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments refuse retention, including on the first upgrade from an
+older controller. Stop and settle affected Agents under an authorized interruption,
+or plan normal runtime replacement. Missing or denied inventory is not an empty
+fleet. A changed pre-stop inventory requires new preparation. Git continuity still
+requires the [upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
-Every upgrade needs the serving API’s inventory endpoint; controller-only upgrades
-also need exact revision reads for retained running Agents.
-
-Controller-only upgrades read each active revision with `occ agent revision`,
-refusing missing or unreadable Harness settings before stopping OCC. Plan an
-authorized replacement, or stop and settle the Agent before upgrading, then deploy
-reviewed drafts. Git session continuity still requires the
-[upgrade checklist](upgrade-checklist.md#apply-the-release-in-dependency-order).
-
-For OpenShell, a controller change to the generated Harness command requires a
-fresh Agent revision. Existing Sandboxes require the same launch specification;
-a controller-only upgrade cannot reuse them with a changed command. Plan an
-authorized redeployment from reviewed drafts, even if the runtime image is unchanged.
+For OpenShell, changed Harness commands require fresh Agent revisions: existing
+Sandboxes require the original launch specification. Plan an authorized redeployment
+from reviewed drafts, even with an unchanged runtime image.
 
 If a controller-only release changes Pod specs, the new worker restarts affected
 Agent Pods once on the same image. A broker restart recreates
@@ -182,8 +179,7 @@ at these paths for recovery.
 
 ### Apply other Installation changes
 
-An upgrade keeps your Installation YAML. A candidate that changes any setting
-other than these Plugin Driver changes stops the helper with `candidate
+Unsupported candidate settings stop the helper with `candidate
 Installation changes a protected setting`. Apply other changes, such as newly
 recommended resource values, separately with
 [apply other Installation changes](production-installation-changes.md).
@@ -219,16 +215,20 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, and startup in temporary API/worker Jobs.
-Their controller-owned Pods retain chart security and NetworkPolicy labels.
-Unconfirmed Job or child cleanup blocks Secret/policy removal and the upgrade.
+Helm's server dry run, then startup and migration compatibility in temporary Jobs.
+The migration Job uses the candidate controller, initializer's migrator credential/CA, and `scripts/migrate-production.mjs --check`. Recognized pending history
+is allowed; migrations are not applied. The Helm hook rechecks history; separate
+migrations require completion with `--require-current`.
+
+Pods retain chart security and NetworkPolicy labels. Unconfirmed Job or child
+cleanup blocks Secret/policy removal and upgrade.
 
 With an immutable Installation Secret, keep the live configuration or
 [stage an immutable successor](immutable-installation-upgrade.md) before preflight.
 
 After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
-omit `--preflight-only` and use the unused `"$UPGRADE_EVIDENCE"`. Live checks
-repeat. Retain writer and draft freezes through recovery.
+omit `--preflight-only` and use unused `"$UPGRADE_EVIDENCE"`. Checks repeat.
+Keep writer and draft freezes through recovery.
 
 Time both interruptions on an isolated, populated installation using separate
 endpoints, the same command, a [protected baseline](upgrade-baseline.md), and
@@ -279,10 +279,10 @@ This samples readiness, not routing, model or channel availability. A final-chec
 the upgraded control plane without `completed`; follow
 [recovery](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade).
 
-If the startup preflight fails, the old release keeps serving. Inspect the
-API and worker preflight logs in the evidence directory. After a cleanup warning
-or interruption, preserve the evidence and lock and follow
-[preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
+Initial preflight failure leaves writers serving; inspect `preflight-<api|worker|migration>.log`.
+Failed resume prevents further shutdown; writers may already be stopped. Inspect
+current `migration-preflight-resume.*` evidence. Preserve evidence and lock;
+follow [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
 The helper stops both writers before updating protected inputs or replacing changed mutable Secret data.
 Helm migrates or [verifies a separate database deployment](separate-database-upgrade.md), bootstraps, and restores Deployments.

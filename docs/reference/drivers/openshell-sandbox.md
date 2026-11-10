@@ -60,9 +60,9 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
 | `process`    | OpenShell runs the workload with the UID and GID selected by its driver.                      |
 
-The Driver requires `hard_requirement` for Landlock filesystem enforcement. Omit
-`policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
-including `best_effort`, fails Installation startup. Hosts lacking these Landlock operations fail launch.
+Landlock enforcement requires `policy.landlockCompatibility` omitted or
+`hard_requirement`; other values, including `best_effort`, fail Installation
+startup. Hosts lacking these Landlock operations fail launch.
 
 There is no `exec` facet. Command-level authorization and per-tool sandbox
 creation are deferred; `exec` runs inside the selected Harness sandbox.
@@ -153,33 +153,30 @@ not satisfy the per-Agent production requirement below.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+For protected, dedicated Codex repository execution, list each approved
+`policy.networkPolicies` rule in `policy.codexArtifactRuleNames`. Omission grants
+no artifact access.
 
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
-explicit skip and deprecated termination modes are refused. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+Rules require bundled Codex executable paths, exact DNS hosts, port 443,
+`protocol: rest`, `enforcement: enforce`, and `access: read_only`. Omit `tls`
+for verified inspection. Wildcards, numeric addresses, GitHub repository hosts,
+reserved names, and credential or provider fields are refused. For the
+registry-only Node exception, see [Enable protected npm reads](../../guides/deploy/local-sandbox-network-policy.md#enable-protected-npm-reads).
 
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
+Admission freezes only the selected rules with empty Agent additions. Prepare
+a new revision to change them. Protected Agents cannot apply changes live.
 
 ### Gateway readiness and workspace
 
-Optional readiness observes an OCC-namespace Service and Pods; paired Gateways normally use a Backend `endpoint`. It requires positive `timeoutMs` and `pollIntervalMs` at most `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
+Optional readiness observes an OCC-namespace Service/Pods; paired Gateways normally use Backend `endpoint`. Require positive `timeoutMs` and `pollIntervalMs` ≤ `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
 
-Install OpenShell's Gateway separately. Required `gateway.workspaceMode` accepts `operator` or `managed`; `managed` fails before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
+Install the Gateway separately. Set required `gateway.workspaceMode` and its Kubernetes driver's `workspaceMode` to `operator`; `managed` fails before mutations/calls. Match its namespace selector to `operatorNamespaceLabels`. Include `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by` in `allowed_pod_labels` or receive `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names match pre-provisioned namespaces: `oce-` plus a 15-character digest (19 characters maximum).
 
-The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs one Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose). Agent Sandbox runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once into trusted Installation configuration. The Driver applies it before each OCC Namespace's Workspace creation, without per-Namespace Helm releases.
+The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs a Gateway without workspace resources in `oce-system` (Kubernetes-only) or `openshell-system` (Compose), and Agent Sandbox in `agent-sandbox-system`. The launcher renders `openshell-workspace` into trusted Installation configuration once; the Driver applies it before Workspace creation without per-Namespace Helm releases.
 
-Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires explicit opt-in. The Compose-backed OpenShell profile permits unauthenticated Gateway access. Control-plane RPCs and Harness traffic share one port. NetworkPolicies cannot give Agent Gateways service-only authority. Use this profile only in owned disposable development clusters.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication; static inference requires opt-in. Compose permits unauthenticated Gateway access. Control-plane RPCs and Harness traffic share a port; NetworkPolicies cannot give Agent Gateways service-only authority. Use only owned disposable development clusters.
 
-`gateway.operatorWorkspaceResources` takes the workspace chart's ServiceAccount, Role, RoleBinding, and NetworkPolicy manifests; `gateway.networkPolicyResources` takes namespaced provider networking manifests. In `operator` mode, `ensureNamespace` server-side applies both to the Compute-owned namespace with OCC ownership metadata; `preprovisionedNamespace` only compares them. Startup rejects Secrets, NetworkPolicy ingress `_from` (use `from`), and fields the Kubernetes client drops or changes (misspelled selector keys, LimitRange `default`). Neither list permits OpenShell credentials or cluster-scoped objects.
+`gateway.operatorWorkspaceResources` accepts workspace ServiceAccount, Role, RoleBinding and NetworkPolicy manifests; `gateway.networkPolicyResources` accepts namespaced provider networking manifests. Operator `ensureNamespace` applies both server-side to the Compute-owned namespace with OCC ownership metadata; `preprovisionedNamespace` only compares. Startup rejects Secrets, NetworkPolicy ingress `_from` (use `from`), and fields the Kubernetes client drops or changes (misspelled selector keys, LimitRange `default`). Neither list permits OpenShell credentials or cluster-scoped objects.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -211,21 +208,21 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 
 <a id="codex-permission-profile"></a>
 
-Codex requires policy allowing `:danger-full-access` and `user` review.
-Readiness refusal produces `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`.
-Oversized replies produce `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`;
-[read limits](../../flows/openshell-sandbox-provisioning.md) distinguish incomplete evidence.
+Codex requires `danger-full-access` mode, the `:danger-full-access` profile,
+and `user` review. Readiness refusal produces
+`RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE` with fixed
+[worker diagnostic categories](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
+The [read limits](../../flows/openshell-sandbox-provisioning.md) distinguish
+`RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE` from incomplete evidence.
 OpenShell isolates all login modes and blocks restricted profiles' nested bubblewrap
-namespaces. The Gateway rejects constrained threads;
-see [troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
-Native OpenClaw disables inner isolation. Its hook sets
-`agents.defaults.workspace` and any
-`agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
-which the Gateway, file transfer, and node address; admission refuses a roster
-that makes another Agent the default. Native workers have separate
-workspaces but share the Sandbox's user, filesystem, process, and network
-boundary. OpenShell isolates each Agent revision from other workloads, not mutually
-untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
+namespaces. The Gateway rejects constrained threads.
+
+Native OpenClaw disables inner isolation. Its hook sets `agents.defaults.workspace`
+and any `agents.entries.main.workspace` to `sandboxDataMount.mountPath` for the Gateway,
+file transfer, and node. Admission requires `main` as the default Agent. Native workers
+use separate workspaces and share the Sandbox user, filesystem, process, and network.
+OpenShell isolates Agent revisions from other workloads. Sessions within one Agent
+share that boundary. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 session releases its slot; idle workers are not retired automatically.
 
@@ -235,14 +232,26 @@ create-time app-server exposure.
 
 ## Kubernetes and admission requirements
 
-OpenShell requires an operator-installed RuntimeClass or equivalent admission
-exemption for its trusted privileged components. Because Pod Security Admission
-exempts the whole Pod, a fail-closed policy must restrict it to digest-pinned
-OpenShell images, expected ServiceAccounts, Namespaces, labels, and capabilities.
+OpenShell's trusted privileged components require an operator-installed RuntimeClass
+or equivalent admission exemption. Pod Security Admission exempts the whole Pod;
+a fail-closed policy must restrict it to digest-pinned OpenShell images, expected
+ServiceAccounts, Namespaces, labels, and capabilities.
 
-Do not grant wildcard tenant permissions. The Driver uses the Kubernetes Compute
-client. Controller and worker need Compute access, namespace-scoped policy apply,
-and Gateway readiness, without Sandbox custom-resource permission.
+### Gateway Kubernetes authority
+
+Stock OpenShell v0.1.6 operator mode
+[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-driver-kubernetes/src/driver.rs#L5264-L5383).
+Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templates,
+literal values and Secret references, without granting Secret payload access.
+
+The [stock chart](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/deploy/helm/openshell/templates/clusterrole.yaml#L66-L99)
+also permits cluster-wide Sandbox/Pod mutations. Review rendered RBAC.
+Namespace labels/NetworkPolicies do not limit this authority.
+OCE does not support upstream's namespaced `shared` mode.
+
+OCE controller/worker grants remain separate: Compute access, namespace-scoped
+policy apply and Gateway readiness, without Sandbox custom-resource permission.
+Do not grant wildcard tenant permissions.
 
 Kubernetes Compute retains default-deny policies. In the development profile,
 provider transport grants the Agent Gateway egress only to the configured
@@ -250,14 +259,13 @@ shared OpenShell peer and port and omits direct Harness ingress. Broad namespace
 allows can bypass this boundary. Production must instead select the separate
 service port required by the qualification contract below.
 
-Compute passes the provider-fenced network profile (`provider-fenced-v1`) to the
-provider Harness template; the provider must retain it on the resulting Pod.
-It admits no Compute DNS, model, or authentication egress; OpenShell's workload
-fence governs those decisions. The policy proxy opens node connections from
+Compute passes `provider-fenced-v1` to the provider Harness template; retain it
+on the Pod. This profile admits no Compute DNS, model or authentication egress;
+OpenShell's workload fence governs those decisions. The policy proxy opens node connections from
 OpenShell supervisor Pods, which carry no `openclaw.dev` labels; on one cluster,
 each Agent Gateway admits only its own Sandbox's supervisor
-(`openshell.ai/sandbox-id`). The separately installed OpenShell gateway needs
-its own scoped DNS/API policies. Redeploy an existing Agent to apply the profile
+(`openshell.ai/sandbox-id`). The OpenShell Gateway also needs
+scoped DNS/API policies. Redeploy an existing Agent to apply the profile
 and this scoping. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 

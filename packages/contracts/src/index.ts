@@ -1,6 +1,9 @@
 import type { Static } from "typebox";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
-import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
+import type {
+  ComputeAgentProvisioningCapabilities,
+  RepositoryWorkerRestartDisposition,
+} from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
@@ -1094,6 +1097,7 @@ export interface InstallationDeploymentInventoryAgent {
   readonly executionMode: HarnessExecutionMode;
   readonly activeRevisionId?: string;
   readonly deploymentInProgress: boolean;
+  readonly repositoryWorkerRestart?: RepositoryWorkerRestartDisposition;
 }
 
 export interface InstallationDeploymentInventoryNamespace {
@@ -1513,6 +1517,7 @@ export type {
   ChannelCredentialReader,
 } from "./drivers/channel/index.ts";
 export type {
+  RepositoryWorkerRestartDisposition,
   ComputeDriver,
   ComputeRevisionContext,
   WorkloadLaunchContext,

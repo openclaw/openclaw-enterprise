@@ -4,7 +4,11 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
+import { modelProviderBaseUrl, savedModelProvider } from "../compute/model-provider.ts";
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
+
+const NPM_REGISTRY_HOST = "registry.npmjs.org";
+const NODE_BINARY = "/usr/local/bin/node";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
 const CODEX_BINARIES = new Set([
@@ -78,12 +82,16 @@ function literalArtifactHost(value: unknown): boolean {
 }
 
 /** Validate the complete closed wire form, including data rehydrated from persistence. */
-function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
+function qualifiedMap(
+  value: unknown,
+  revision?: Readonly<AgentRevision>,
+): Readonly<OpenClawConfigurationDocument> {
   const map = asRecord(value);
   if (!map) {
     refuse();
   }
-  for (const [name, value] of Object.entries(map)) {
+  const registryBinaries = new Set<"node" | "codex">();
+  const entries = Object.entries(map).map(([name, value]) => {
     if (!ruleName(name)) {
       refuse();
     }
@@ -97,12 +105,17 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
     ) {
       refuse();
     }
+    const nodeRegistry =
+      rule.binaries.length === 1 && asRecord(rule.binaries[0])?.path === NODE_BINARY;
+    if (nodeRegistry && rule.endpoints.length !== 1) {
+      refuse();
+    }
     const paths = new Set<string>();
     for (const value of rule.binaries) {
       const binary = exactKeys(value, ["path"]);
       if (
         typeof binary.path !== "string" ||
-        !CODEX_BINARIES.has(binary.path) ||
+        (!nodeRegistry && !CODEX_BINARIES.has(binary.path)) ||
         paths.has(binary.path)
       ) {
         refuse();
@@ -110,12 +123,13 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
       paths.add(binary.path);
     }
     const hosts = new Set<string>();
-    for (const value of rule.endpoints) {
+    const endpoints = Array.from(rule.endpoints, (value: unknown) => {
       // Stock 0.1.6 REST uses verified auto TLS inspection when tls is omitted;
       // explicit terminate is unsupported, and skip would remove inspection.
       const endpoint = exactKeys(value, ["host", "ports", "protocol", "enforcement", "access"]);
       if (
         !literalArtifactHost(endpoint.host) ||
+        (nodeRegistry && endpoint.host !== NPM_REGISTRY_HOST) ||
         hosts.has(endpoint.host as string) ||
         !Array.isArray(endpoint.ports) ||
         endpoint.ports.length !== 1 ||
@@ -127,9 +141,30 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
         refuse();
       }
       hosts.add(endpoint.host as string);
-    }
+      if (endpoint.host === NPM_REGISTRY_HOST) {
+        registryBinaries.add(nodeRegistry ? "node" : "codex");
+      }
+      // npm encodes the slash in scoped package names. Derive the supplier's
+      // endpoint-wide opt-in from the frozen declaration during policy compilation.
+      return revision && nodeRegistry ? { ...endpoint, allow_encoded_slash: true } : endpoint;
+    });
+    return [name, { ...rule, endpoints }];
+  });
+  // The supplier rejects conflicting request parsing settings at a shared host and port.
+  if (
+    registryBinaries.has("node") &&
+    (registryBinaries.has("codex") || registryIsModelEndpoint(revision))
+  ) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/policy/codexArtifactRuleNames",
+        code: "INVALID_VALUE",
+        message:
+          "The Node registry rule cannot share its endpoint with Codex artifact or model traffic.",
+      },
+    ]);
   }
-  return immutableCopy(map as OpenClawConfigurationDocument);
+  return immutableCopy(Object.fromEntries(entries) as OpenClawConfigurationDocument);
 }
 
 /** Sandbox selects only explicitly declared Installation rules; ambient defaults stay outside. */
@@ -178,5 +213,18 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  return qualifiedMap(snapshot.defaults, revision);
+}
+
+function registryIsModelEndpoint(revision?: Readonly<AgentRevision>): boolean {
+  if (revision?.egressPlan?.harnessCredentialSource?.loginMode !== "api_key") {
+    return false;
+  }
+  const endpoint = new URL(
+    modelProviderBaseUrl(savedModelProvider(revision.harness.configuration)),
+  );
+  return (
+    endpoint.hostname.replace(/\.$/, "") === NPM_REGISTRY_HOST &&
+    (endpoint.port === "" || endpoint.port === "443")
+  );
 }

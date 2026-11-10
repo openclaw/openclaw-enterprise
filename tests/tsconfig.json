@@ -53,6 +53,7 @@
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
     "helpers/codex-preparation-caller.ts",
+    "helpers/codex-gateway-supervisor.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",

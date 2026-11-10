@@ -4098,10 +4098,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           context.signal,
         );
         context.signal.throwIfAborted();
-        if (status === "permission-refused") {
+        if (typeof status === "object") {
           throw new ActivationFailedError(
             "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
             "The Codex Harness reports managed permission requirements incompatible with activation.",
+            status.permissionDenials,
           );
         }
         if (status === "requirements-too-large") {

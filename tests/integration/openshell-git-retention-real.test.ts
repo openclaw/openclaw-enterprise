@@ -36,7 +36,7 @@ test(
   async (t) => {
     // This owns a real Helm installation, PostgreSQL and authenticated stock Gateway.
     // The only controlled upstream is a private Git server and its App token issuer.
-    const fixture = await createOpenShellGitInstallation(t);
+    const fixture = await createOpenShellGitInstallation(t, { allowNpmRegistry: true });
     const {
       namespace,
       modelSource,
@@ -151,6 +151,28 @@ test(
       connections: afterGit.connections,
       requests: afterGit.requests,
     });
+    // A fresh cache forces real packument reads from the same protected Sandbox
+    // that just used its prepared Git credential. npm encodes the scoped slash.
+    const registry = await execute(target, [
+      "sh",
+      "-ceu",
+      `cache=$(mktemp -d)
+trap 'rm -rf "$cache"' EXIT
+cd "$cache"
+for package in 'typescript@5.9.3' '@types/node@24.0.0'; do
+  /usr/local/bin/node /usr/local/bin/npm view "$package" version --json \
+    --registry=https://registry.npmjs.org --cache="$cache" --userconfig="$cache/npmrc" \
+    --fetch-retries=0 --fetch-timeout=15000
+done`,
+    ]);
+    assert.deepEqual(
+      registry.stdout
+        .toString("utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+      ["5.9.3", "24.0.0"],
+    );
     await verifyModelTurn("before-expiry");
     assert.ok(Date.now() < deadlineWallMs, "initial model turn must finish before Git expires");
 

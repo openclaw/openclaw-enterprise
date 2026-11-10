@@ -1,4 +1,8 @@
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  gatewayEndpointRewritesIpv4,
+  type CodexPermissionDenial,
+} from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -321,12 +325,17 @@ export async function serviceWebSocketHandshake(
   )) as boolean;
 }
 
-export type OpenShellCodexReadiness =
-  "unavailable" | "starting" | "serving" | "permission-refused" | "requirements-too-large";
+interface CodexPermissionRefusal {
+  readonly state: "permission-refused";
+  readonly permissionDenials: readonly CodexPermissionDenial[];
+}
 
-function codexPermissionReadiness(
-  requirements: unknown,
-): "starting" | "serving" | "permission-refused" {
+type CodexPermissionReadiness = "starting" | "serving" | CodexPermissionRefusal;
+
+export type OpenShellCodexReadiness =
+  CodexPermissionReadiness | "unavailable" | "requirements-too-large";
+
+function codexPermissionReadiness(requirements: unknown): CodexPermissionReadiness {
   if (requirements === null) {
     return "serving";
   }
@@ -357,14 +366,19 @@ function codexPermissionReadiness(
     return "starting";
   }
   // The named profile and the effective sandbox mode have separate requirements.
-  if (
-    (Array.isArray(modes) && !modes.includes("danger-full-access")) ||
-    (profiles !== undefined && profiles[":danger-full-access"] !== true) ||
-    (Array.isArray(reviewers) && !reviewers.includes("user"))
-  ) {
-    return "permission-refused";
+  const permissionDenials: CodexPermissionDenial[] = [];
+  if (Array.isArray(modes) && !modes.includes("danger-full-access")) {
+    permissionDenials.push("sandbox-mode-denied");
   }
-  return "serving";
+  if (profiles !== undefined && profiles[":danger-full-access"] !== true) {
+    permissionDenials.push("named-profile-denied");
+  }
+  if (Array.isArray(reviewers) && !reviewers.includes("user")) {
+    permissionDenials.push("reviewer-denied");
+  }
+  return permissionDenials.length === 0
+    ? "serving"
+    : { state: "permission-refused", permissionDenials };
 }
 
 /** Check the serving process's policy and, for provider-managed PATs, its current authentication. */
