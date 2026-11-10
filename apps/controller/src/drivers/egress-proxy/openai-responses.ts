@@ -228,6 +228,43 @@ const reasoning = optionalFields({
 });
 
 const metadataText: Validator = (value) => typeof value === "string" && value.length <= 8192;
+const gitRemoteUrls: Validator = (value) => {
+  const remotes = Object.entries(asRecord(value) ?? {});
+  return (
+    remotes.length >= 1 &&
+    remotes.length <= 16 &&
+    remotes.every(
+      ([remote, url]) =>
+        /^[a-z0-9_.-]{1,256}$/iu.test(remote) &&
+        typeof url === "string" &&
+        url.length <= 2048 &&
+        ((/^https:\/\/[a-z0-9.-]+(?::[0-9]{1,5})?\/[a-z0-9._~/-]+$/iu.test(url) &&
+          URL.canParse(url)) ||
+          /^git@[a-zA-Z0-9.-]+:[a-zA-Z0-9._~/-]+$/u.test(url)),
+    )
+  );
+};
+const gitWorkspace = optionalFields({
+  latest_git_commit_hash: (value) =>
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value),
+  has_changes: bool,
+  associated_remote_urls: gitRemoteUrls,
+});
+const gitWorkspaces: Validator = (value) => {
+  const roots = Object.entries(asRecord(value) ?? {});
+  const workspace = roots[0];
+  if (roots.length !== 1 || workspace === undefined) {
+    return false;
+  }
+  const [root, metadata] = workspace;
+  return (
+    root.startsWith("/") &&
+    root.length <= 4096 &&
+    !/[\p{Cc}]/u.test(root) &&
+    Object.keys(asRecord(metadata) ?? {}).length > 0 &&
+    gitWorkspace(metadata)
+  );
+};
 // These are telemetry fields emitted by the selected client, never OCC identities or grants.
 const clientMetadata = optionalFields({
   mcp_attribution: (value) => {
@@ -284,6 +321,7 @@ const clientMetadata = optionalFields({
         history_ingest_requested: bool,
         model: metadataText,
         reasoning_effort: reasoningEffort,
+        workspaces: gitWorkspaces,
       })(parseUnambiguousJson(String(value)));
     } catch {
       return false;

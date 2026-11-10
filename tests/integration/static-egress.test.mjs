@@ -1407,18 +1407,35 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   );
   // The packaged client's public HTTPS startup request includes this passive attribution.
   inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
+  const metadataKey = "x-codex-turn-metadata";
+  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
+  const repositoryRoot = "/workspace/repository";
+  // Native Codex emits the repository root as the map key after Git enrichment.
+  const workspace = {
+    latest_git_commit_hash: "88b3fec3620046a73b2d57bd80bc78cce7f4804c",
+    has_changes: false,
+    associated_remote_urls: {
+      origin: "https://example.invalid/owner/repository.git",
+      mirror: "git@example.invalid:owner/repository.git",
+    },
+  };
+  inline.request.client_metadata[metadataKey] = JSON.stringify({
+    ...turnMetadata,
+    workspaces: { [repositoryRoot]: workspace },
+  });
   const captured = f.capture(inline.request);
   captured.request.headers.push(
     ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
   );
   const { ready } = await f.resolve(captured);
-  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
+  assert.ok(ready, "native Git metadata and inline tools resolve through the installed provider");
   assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
   f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
   const protectedReply = await f.protect(captured, await f.send(captured, ready));
   assert.equal(protectedReply.response_complete, true);
   assert.equal(protectedReply.body.toString(), body);
   assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  assert.equal(f.providerRequests.at(-1).authorization, "Bearer synthetic-key-initial");
 
   // Inline declarations cannot expand the admitted local-tool grant or let
   // client metadata select authority. Refuse before another Secret read/send.
@@ -1461,8 +1478,54 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       metadata.reasoning_effort = "unrecognized";
       request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
     },
+    ...[
+      null,
+      [],
+      {},
+      { relative: workspace },
+      { ["/".repeat(4097)]: workspace },
+      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
+      { [repositoryRoot]: [] },
+      { [repositoryRoot]: {} },
+      { [repositoryRoot]: { ...workspace, namespace_id: f.namespace.id } },
+      { [repositoryRoot]: { ...workspace, latest_git_commit_hash: "1234" } },
+      { [repositoryRoot]: { ...workspace, has_changes: "false" } },
+      ...[
+        [],
+        {},
+        { origin: "https://fixture-user@example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repository.git?query=value" },
+        { origin: "https://example.invalid/owner/repository.git#fragment" },
+        { origin: "ssh://git@example.invalid/owner/repository.git" },
+        { origin: "fixture-user@example.invalid:owner/repository.git" },
+        { origin: "git:synthetic-password@example.invalid:owner/repository.git" },
+        { origin: "helper::git@example.invalid:owner/repository.git" },
+        { origin: "https://example.invalid/" + "a".repeat(2048) },
+        Object.fromEntries(
+          Array.from({ length: 17 }, (_, index) => [
+            "remote-" + index,
+            workspace.associated_remote_urls.origin,
+          ]),
+        ),
+      ].map((associated_remote_urls) => ({
+        [repositoryRoot]: { ...workspace, associated_remote_urls },
+      })),
+    ].map((workspaces) => (request) => {
+      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
+    }),
+    (request) => {
+      request.client_metadata[metadataKey] =
+        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
+    },
+    (request) => {
+      request.client_metadata[metadataKey] =
+        " ".repeat(8192) + request.client_metadata[metadataKey];
+    },
     (request) => {
       request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.model = "model-outside-the-inference-grant";
     },
     (request) => {
       request.text.format = {

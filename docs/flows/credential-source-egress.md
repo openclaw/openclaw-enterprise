@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-10
-last_updated_session: authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9
+last_updated_session: authoring-run/734c21e4-4d60-477a-bd0a-b307427da70d
 ---
 
 # Protected credential request flow
@@ -268,7 +268,8 @@ request/stream retries and never repeats a timed-out protected probe.
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
-Inline developer tools keep the local-tool restrictions.
+Inline developer tools keep the local-tool restrictions. Optional Codex Git
+workspace metadata passes the same closed request check and grants no authority.
 
 ### 6. Reduce the live credential policy
 
@@ -330,6 +331,8 @@ and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-10 07:01: Admit bounded Codex Git workspace metadata on Responses requests. (authoring-run/734c21e4-4d60-477a-bd0a-b307427da70d - 194e20fc69f913ba81662832f817c33302ded33c)
 
 - 2026-11-10 02:54: Link the separate online model request flow. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - a6ebd816924d1669911a07e09ecdebc3d8b3176e)
 
