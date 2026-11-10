@@ -39,7 +39,7 @@
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.ts",
-    "tests/conformance/runtime-logs-sandbox.test.mjs",
+    "tests/conformance/runtime-logs-sandbox.test.ts",
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
@@ -260,7 +260,7 @@
       "path": "tests/conformance/runtime-logs-content.test.mjs"
     },
     {
-      "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
+      "path": "tests/conformance/runtime-logs-sandbox.test.ts"
     },
     {
       "path": "tests/conformance/runtime-logs-replay.test.ts"

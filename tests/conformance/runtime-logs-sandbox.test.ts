@@ -47,7 +47,7 @@ import {
   createRuntimeLogComputeDriver,
   createRuntimeLogFixture,
   operateGrants,
-} from "../helpers/runtime-logs.mjs";
+} from "../helpers/runtime-logs.ts";
 
 const SANDBOX_NAMESPACE = "tenant-logs";
 const SANDBOX_ID = "7c0e5d4a-1b2c-4d3e-8f90-a1b2c3d4e5f6";
