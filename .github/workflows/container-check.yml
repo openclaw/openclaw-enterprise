@@ -304,7 +304,7 @@ jobs:
         with:
           name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/oci
-      - name: Verify the exact runtime build and every OCI blob
+      - name: Verify the runtime build and referenced OCI blobs
         id: verified
         run: node scripts/ci/container-release.mjs verify-build "$RUNNER_TEMP/oci"
       - name: Install existing smoke test prerequisites

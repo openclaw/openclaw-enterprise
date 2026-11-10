@@ -194,7 +194,7 @@ Final image checks require `@openclaw/proc-safe/reaper` to return true from
 Fresh native runners execute `.github/workflows/container-check.yml:jobs.runtime-smoke`.
 `container-release.mjs:runtimeBuild` binds `build.json` (`native: false`) to source,
 workflow, run/attempt, CI, base, platform and digest. Receivers verify that identity
-and all OCI blobs, rejecting preexisting `platform.json`.
+and referenced OCI blobs, rejecting preexisting `platform.json`.
 `built-runtime-*` cannot qualify for publication. Controllers retain one-job build/smoke.
 
 `scripts/ci/container-release.mjs:smoke` requires the selected native architecture.
@@ -218,8 +218,9 @@ with matching configs and digests. Assembly needs no registry access.
 
 `scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports the verified image into
 disposable k3d. It reuses the Images and Packaging lane's Codex seccomp derivation
-and sandbox probes, passing profile and ownership state to Docker tests. Cleanup
-removes the owned cluster and temporary image after success, failure or interruption.
+and sandbox probes, passing profile and ownership state to Docker tests. Smoke
+cleans up on exit. After command interruption, the workflow attempts cleanup if
+the runner remains available; runner loss can prevent cleanup.
 
 ### 3. Seal and enter publication
 
