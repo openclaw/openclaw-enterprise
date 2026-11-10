@@ -369,10 +369,17 @@ test(
     });
     // Only the transport changes for a loopback test process. Every RPC reaches the actual
     // gateway; Namespace setup, Workspace creation, and results come from shipped Drivers.
-    const loadDrivers = async () =>
-      (await loadInstallationConfiguration({
+    const apiStartupPath = join(directory, "api-installation.json");
+    const loadDrivers = async (forApi = false) => {
+      if (forApi) {
+        const apiConfiguration = structuredClone(configuration);
+        apiConfiguration.drivers.secret.configuration.authentication =
+          identity.apiIdentity.authentication;
+        await writeFile(apiStartupPath, JSON.stringify(apiConfiguration), { mode: 0o600 });
+      }
+      return (await loadInstallationConfiguration({
         mode: "production",
-        environment,
+        environment: { ...environment, OCC_CONFIG_PATH: forApi ? apiStartupPath : startupPath },
         createOpenShellBackend(definition) {
           const client = new OpenShellGateway(definition.configuration);
           return {
@@ -404,7 +411,8 @@ test(
           };
         },
       }))!;
-    const drivers = await loadDrivers();
+    };
+    const drivers = await loadDrivers(true);
     const startApi = (selectedDrivers: typeof drivers) =>
       composeProduction({
         mode: "production",
@@ -494,6 +502,16 @@ test(
         placement,
         `--clusterrole=${identity.tenantRole}`,
         `--serviceaccount=${platformNamespace}:${identity.account}`,
+      );
+      // Match the supported API/worker split: canonical model Secrets use the API identity.
+      await fixture.kubectl(
+        "create",
+        "rolebinding",
+        "namespace-lifecycle-api-secrets",
+        "--namespace",
+        placement,
+        `--clusterrole=${identity.apiSecretRole}`,
+        `--serviceaccount=${platformNamespace}:${identity.apiIdentity.account}`,
       );
       return placement;
     };
@@ -594,11 +612,12 @@ test(
       const source = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
         name: "model-source",
         type: "openai",
-        role: "model",
-        configuration: { base_url: modelBaseUrl },
+        config: { authorized_base_url: modelBaseUrl },
         secrets: { api_key: modelSecret.data.ref },
       });
-      assert.equal(source.status, 201);
+      assert.equal(source.status, 201, JSON.stringify(source.error));
+      assert.deepEqual(source.data.status, { state: "ready" });
+      assert.equal(JSON.stringify(source).includes(env.OPENAI_API_KEY!), false);
       const base = createHarnessConfiguration(
         "openclaw",
         env.OCC_TEST_OPENAI_MODEL!.replace(/^openai\//u, ""),
@@ -626,17 +645,46 @@ test(
           controlUi: { enabled: true, allowedOrigins: ["http://127.0.0.1"] },
         },
       };
+      const agentConfiguration = await request(
+        "POST",
+        `/namespaces/${namespaceId}/configurations`,
+        {
+          kind: "agent",
+          values: native,
+        },
+      );
+      assert.equal(agentConfiguration.status, 201, JSON.stringify(agentConfiguration.error));
       const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
         name: "namespace-lifecycle-agent",
+        configurationId: agentConfiguration.data.id,
         executionMode: "dedicated",
-        harness: "openclaw",
-        credentialSources: { model: source.data.id },
-        configuration: native,
+        harnessAuth: { method: "credential_source", sourceId: source.data.id },
+        credentialSources: [{ sourceId: source.data.id }],
       });
       assert.equal(agent.status, 201, JSON.stringify(agent.error));
       const path = `/namespaces/${namespaceId}/agents/${agent.data.id}`;
+      const credentials = await request("POST", `${path}/runtime-credentials`, {});
+      assert.equal(credentials.status, 200, JSON.stringify(credentials.error));
+      assert.equal(credentials.data.transportConfigured, true);
+      // The normal Agent principal needs permission on its exact source, not on the Secret.
+      const role = await request("POST", `/namespaces/${namespaceId}/iam/roles`, {
+        name: "Exact model source operate",
+        permissions: [{ action: "operate", resourceKind: "credential_source" }],
+      });
+      assert.equal(role.status, 201, JSON.stringify(role.error));
+      const binding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: agent.data.servicePrincipalId,
+        roleId: role.data.id,
+        resourceKind: "credential_source",
+        resourceId: source.data.id,
+      });
+      assert.equal(binding.status, 201, JSON.stringify(binding.error));
       const deployed = await request("POST", `${path}/deploy`);
       assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+      assert.equal(deployed.data.harness.mode, "dedicated");
+      assert.equal(deployed.data.harness.id, "openclaw");
+      assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
       await waitForOpenShellRevisionActivation(fixture.waitFor, {
         request,
         agentPath: path,
@@ -787,7 +835,7 @@ test(
     Object.assign(configuration, { iam: accessPolicy });
     await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
     await app.close();
-    app = await startApi(await loadDrivers());
+    app = await startApi(await loadDrivers(true));
     request = await createAuthenticatedControllerRequest(app, credentials, authBaseURL);
     const queuedActor = {
       email: "queued-actor@example.test",
@@ -802,7 +850,7 @@ test(
     accessPolicy.roleBindings = [];
     await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
     await app.close();
-    app = await startApi(await loadDrivers());
+    app = await startApi(await loadDrivers(true));
     request = await createAuthenticatedControllerRequest(app, credentials, authBaseURL);
     worker = startWorker(await loadDrivers());
     await worker.start();
