@@ -34,6 +34,7 @@
     "conformance/kubernetes-runtime-log-fixture.ts",
     "conformance/kubernetes-teardown-cases.ts",
     "integration/postgres-agent-provisioning-fixture.ts",
+    "integration/postgres-agent-provisioning-transport-fixture.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
