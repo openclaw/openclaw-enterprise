@@ -136,8 +136,12 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
       );
       assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg");
-      assert.equal(args.includes("--cache-to"), false);
     }
+    assert.equal(
+      calls.some(({ args }) => args.includes("--cache-to")),
+      false,
+      "preparation must not export a cache, including in a separate build",
+    );
     assert.equal(
       calls.some(({ args }) => args[0] === "build"),
       false,
