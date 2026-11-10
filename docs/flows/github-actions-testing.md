@@ -37,10 +37,11 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Main push or approved dispatch"] --> P["Source and environment preflight"]
-  P -->|docs only| D["Finish without execution lock"]
+  C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
+  P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
-  V --> E["Protected test jobs"]
+  V -->|scheduled recheck skips admission| D
+  V -->|eligible| E["Protected test jobs"]
   V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
