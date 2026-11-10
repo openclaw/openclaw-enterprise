@@ -69,6 +69,13 @@ makes an existing Sandbox differ from its expected specification causes the
 driver to refuse that Sandbox. The operator deploys a new revision to apply
 new values. An Agent revision does not store a copy of this resource setting.
 
+The same binding can select an optional `runtimeClassName`. The operator
+creates the RuntimeClass, including any node selector and toleration. Compute
+and OpenShell use the selected class for the workspace-preparation Pod and the
+Agent Sandbox workload. Other Agents use the installation RuntimeClass. This
+setting does not change supervisor placement. The existing preparation and
+Sandbox specification checks still apply.
+
 ## Rationale
 
 A separate claim lets operators choose node-local storage and keep large
@@ -98,7 +105,8 @@ on node replacement.
   The existing ephemeral-storage values and separate supervisor sizing remain
   in effect. Verify duplicate and invalid entries, request/limit comparisons
   after inheritance, and refusal when an existing Sandbox has a different
-  specification.
+  specification. An optional RuntimeClass is applied to preparation and the
+  target Sandbox. Verify the default class for an unmatched Agent.
 
 ## Delivery and verification
 
