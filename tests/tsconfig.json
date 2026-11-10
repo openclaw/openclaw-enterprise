@@ -36,6 +36,7 @@
     "integration/occ-api-injected-fixture.ts",
     "integration/postgres-agent-provisioning-fixture.ts",
     "integration/postgres-agent-provisioning-transport-fixture.ts",
+    "integration/sandbox-workspace-gateway-fixture.ts",
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
