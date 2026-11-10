@@ -634,6 +634,7 @@
       "expectedTests": [
         "connected response evidence survives cleanup without retaining untrusted fields",
         "connected response evidence preserves uncertainty after decoding and transport failures",
+        "connected response headers cannot retain known credentials as request IDs",
         "connected database selection rejects missing, remote and redirected observers before effects",
         "connected receipt observation preserves proto3 zero and uint64 precision",
         "connected failed-turn observation rejects partial text without a completed message",

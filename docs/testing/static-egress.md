@@ -328,11 +328,12 @@ checks that the synthetic provider credential is absent from the ordinary Agent
 and running Codex process environments, observed responses, bounded logs,
 diagnostics, audit, Pod specs and ConfigMaps.
 
-Retain `.build/egress-connected/runtime-<uuid>/`. Its `apiOperations` preserves each
-attempt's operation ID, phase, HTTP status, allowlisted error code (`UNKNOWN`
-otherwise), and canonical request ID through cleanup. Records exclude bodies,
-messages and other headers. Undecodable or interrupted responses remain `unknown`
-despite observed headers. `lastApi` identifies the latest attempt.
+Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
+IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
+canonical request IDs checked for known credentials. Bodies, messages and other
+headers are excluded. Interrupted or undecodable responses remain `unknown`.
+Cleanup preserves earlier entries and requires its own successful checkpoint.
+`lastApi` identifies the latest attempt.
 The deployed checkpoint identifies the public owner capability of the source selected
 by the admitted Harness, while sender evidence independently shows protected sends.
 

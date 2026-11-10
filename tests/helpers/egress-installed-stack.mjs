@@ -99,12 +99,14 @@ export async function createRunEvidence(t, setup, progress) {
   let writing = Promise.resolve();
   const saveLedger = () => {
     const snapshot = JSON.stringify(ledger, null, 2) + "\n";
-    writing = writing.then(async () => {
+    const write = writing.then(async () => {
       const pending = join(directory, "observations.pending.json");
       await writeFile(pending, snapshot, { mode: 0o600 });
       await rename(pending, join(directory, "observations.json"));
     });
-    return writing;
+    // A caller observes its own failure; a later checkpoint can still attempt its write.
+    writing = write.catch(() => {});
+    return write;
   };
   const checkpoint = async (phase, details = {}, privateDetails = {}) => {
     progress.stage = phase;
@@ -145,7 +147,7 @@ export async function createRunEvidence(t, setup, progress) {
     const operation = {
       operationId: randomUUID(),
       method,
-      phase: progress.stage ?? "unclassified",
+      phase: cleanup ? "cleanup" : (progress.stage ?? "unclassified"),
       outcome: "unknown",
       status: null,
       code: null,
@@ -164,7 +166,16 @@ export async function createRunEvidence(t, setup, progress) {
           : AbortSignal.any([t.signal, AbortSignal.timeout(20_000)]),
       );
       operation.status = response.status;
-      operation.requestId = canonicalRequestId(response.headers.get("x-request-id"));
+      const requestId = canonicalRequestId(response.headers.get("x-request-id"));
+      if (requestId !== null) {
+        excludesCredentials(requestId, "controller request ID");
+        assert.equal(
+          requestId.includes(controller.serviceKey),
+          false,
+          "controller request ID leaked its service key",
+        );
+      }
+      operation.requestId = requestId;
       const raw = await response.text();
       excludesCredentials(raw, "controller response");
       assert.equal(

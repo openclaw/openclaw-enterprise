@@ -419,6 +419,7 @@ test("connected response evidence survives cleanup without retaining untrusted f
   );
   t.after(() => rm(evidence.directory, { recursive: true, force: true }));
   const route = `/namespaces/ns_${randomUUID()}/agents/agt_${randomUUID()}`;
+  let firstFailure;
   for (selected of cases) {
     // A real HTTP rejection is recorded before the caller's expected-status assertion.
     // Later cleanup must not erase its correlation ID or retain arbitrary response material.
@@ -433,7 +434,7 @@ test("connected response evidence survives cleanup without retaining untrusted f
       code: selected.expectedCode,
       requestId: selected.expectedId,
     };
-    progress.stage = "cleanup";
+    firstFailure ??= expected;
     await evidence.request("DELETE", route, undefined, true);
     const raw = await readFile(evidence.directory + "/observations.json", "utf8");
     const saved = JSON.parse(raw);
@@ -450,16 +451,27 @@ test("connected response evidence survives cleanup without retaining untrusted f
     assert.equal(raw.includes(serviceKey), false);
     assert.equal(raw.includes(route), false);
   }
+  const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.deepEqual(
+    saved.apiOperations.find(({ operationId }) => operationId === firstFailure.operationId),
+    firstFailure,
+    "the first failed POST must survive the entire cleanup sequence",
+  );
 });
 
 test("connected response evidence preserves uncertainty after decoding and transport failures", async (t) => {
   const requestId = `req_${randomUUID()}`;
   const sentinel = `private-diagnostic-${randomUUID()}`;
   let fault;
+  const received = [];
   const port = await listen(
     t,
     createServer(async (request, response) => {
+      received.push(request.method);
       if (request.method === "DELETE") {
+        const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+        assert.equal(saved.lastApi.method, "DELETE");
+        assert.equal(saved.lastApi.outcome, "unknown", "cleanup must checkpoint before dispatch");
         response.writeHead(204).end();
       } else if (fault === "disconnected") {
         request.socket.destroy();
@@ -508,6 +520,52 @@ test("connected response evidence preserves uncertainty after decoding and trans
   const saved = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
   assert.equal(saved.lastApi.outcome, "unknown");
   assert.equal(saved.lastApi.status, null, "the durable pre-dispatch record must survive");
+  const failedPostId = saved.lastApi.operationId;
+  const beforeCleanup = [...received];
+  await assert.rejects(evidence.request("DELETE", route, undefined, true), { code: "EISDIR" });
+  assert.deepEqual(received, beforeCleanup, "a failed checkpoint must prevent dispatch");
+  // Repair only the fixture's filesystem obstruction. The next independent cleanup
+  // gets a new checkpoint; the failed POST must never be sent again.
+  await rm(evidence.directory + "/observations.pending.json", { recursive: true });
+  await evidence.request("DELETE", route, undefined, true);
+  assert.deepEqual(received, [...beforeCleanup, "DELETE"]);
+  const recovered = JSON.parse(await readFile(evidence.directory + "/observations.json", "utf8"));
+  assert.equal(
+    recovered.apiOperations.find(({ operationId }) => operationId === failedPostId).outcome,
+    "unknown",
+  );
+});
+
+test("connected response headers cannot retain known credentials as request IDs", async (t) => {
+  // A malformed but accepted runner key can fit inside the canonical ID shape.
+  // Generate both values locally; no real credential or controller is involved.
+  const serviceKey = randomUUID();
+  const protectedValue = randomUUID();
+  let reflected;
+  const port = await listen(
+    t,
+    createServer((_request, response) => {
+      response.writeHead(204, { "x-request-id": `req_${reflected}` }).end();
+    }),
+  );
+  const evidence = await createRunEvidence(
+    t,
+    {
+      input: { images: {} },
+      controller: { apiOrigin: `http://127.0.0.1:${port}`, serviceKey },
+    },
+    { stage: "request" },
+  );
+  t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+  evidence.protect(protectedValue);
+  for (reflected of [serviceKey, protectedValue]) {
+    await assert.rejects(evidence.request("GET", "/installation"), { code: "ERR_ASSERTION" });
+    const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+    const saved = JSON.parse(raw);
+    assert.equal(raw.includes(reflected), false);
+    assert.equal(saved.lastApi.requestId, null);
+    assert.equal(saved.lastApi.outcome, "unknown");
+  }
 });
 
 test("connected database selection rejects missing, remote and redirected observers before effects", () => {
