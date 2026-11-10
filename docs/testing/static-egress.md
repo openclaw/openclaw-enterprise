@@ -311,9 +311,9 @@ The test creates resources through public APIs, deploys through the real worker,
 reads its persisted installation, and checks the authenticated supplier receipt.
 It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
 explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes seventeen requests: one
-normal startup probe, fifteen measured Codex sends (including six hostile
-responses and recovery), and one managed request from an ordinary sibling.
+`authorityScope: "execution"`. The origin observes the startup probe, measured
+Codex sends (including hostile responses and recovery), and a managed request
+from an ordinary sibling.
 For that sibling and the direct TCP probe, the operator uses the supplier's
 authenticated [workload launch path](./protected-repository-custody.md) so both
 inherit the installed connection mediation. Kubernetes exec remains suitable for
@@ -328,10 +328,12 @@ checks that the synthetic provider credential is absent from the ordinary Agent
 and running Codex process environments, observed responses, bounded logs,
 diagnostics, audit, Pod specs and ConfigMaps.
 
-Retain `.build/egress-connected/runtime-<uuid>/` for atomic phase checkpoints, resource
-IDs and bounded observations, without raw requests or credentials. Each controller
-attempt starts with an operation ID and unknown outcome. A response does not establish
-the effect. Failures retain the phase and source location.
+Retain `.build/egress-connected/runtime-<uuid>/`. `apiOperations` records operation
+IDs, phases, HTTP statuses, allowlisted error codes (`UNKNOWN` otherwise), and
+canonical request IDs checked for known credentials. Bodies, messages and other
+headers are excluded. Interrupted or undecodable responses remain `unknown`.
+Cleanup preserves earlier entries and requires its own successful checkpoint.
+`lastApi` identifies the latest attempt.
 The deployed checkpoint identifies the public owner capability of the source selected
 by the admitted Harness, while sender evidence independently shows protected sends.
 

@@ -340,11 +340,11 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
+export function createOpenShellGitInstallation(t, options = {}) {
+  return ownFirstAgentWork(t)(installOpenShellGit(t, options));
 }
 
-async function installOpenShellGit(t, witnessIssuedGit) {
+async function installOpenShellGit(t, { witnessIssuedGit = false, allowNpmRegistry = false }) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -682,6 +682,23 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   sandbox.configuration.policy.networkPolicies = networkPolicies.filter(
     (rule) => rule !== sourceControl[0],
   );
+  if (allowNpmRegistry) {
+    const policy = sandbox.configuration.policy;
+    policy.networkPolicies.push({
+      name: "node-packages",
+      binaries: [{ path: "/usr/local/bin/node" }],
+      endpoints: [
+        {
+          host: "registry.npmjs.org",
+          ports: [443],
+          protocol: "rest",
+          enforcement: "enforce",
+          access: "read_only",
+        },
+      ],
+    });
+    policy.codexArtifactRuleNames = [...(policy.codexArtifactRuleNames ?? []), "node-packages"];
+  }
   installation.backend.push({
     id: "repository-backend",
     type: "github",

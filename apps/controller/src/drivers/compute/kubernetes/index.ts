@@ -24,7 +24,11 @@ import {
   openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
 } from "../../openai-endpoint.ts";
-import { compareResourceQuantities, isResourceQuantity } from "./resource-quantities.ts";
+import {
+  compareResourceQuantities,
+  hasIntegerQuotaPrecision,
+  isResourceQuantity,
+} from "./resource-quantities.ts";
 import {
   asRecord,
   hasControlCharacter,
@@ -103,6 +107,7 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
+  RepositoryWorkerRestartDisposition,
   ProxyRevisionContext,
   SelectedDriverRegistration,
   ConfigurationValidationOptions,
@@ -1796,6 +1801,34 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string, path?:
 // quota resource.
 const STANDARD_QUOTA_RESOURCE =
   /^(?:(?:requests\.|limits\.)?(?:cpu|memory|ephemeral-storage)|requests\.storage|(?:requests\.)?hugepages-.+|pods|services|services\.nodeports|services\.loadbalancers|replicationcontrollers|resourcequotas|secrets|configmaps|persistentvolumeclaims)$/;
+
+// Kubernetes core/helper IsIntegerResourceName: the standard object counts and
+// extended resources, excluding requests.* and the native kubernetes.io/ namespace.
+const INTEGER_QUOTA_RESOURCES = new Set([
+  "pods",
+  "services",
+  "services.nodeports",
+  "services.loadbalancers",
+  "replicationcontrollers",
+  "resourcequotas",
+  "secrets",
+  "configmaps",
+  "persistentvolumeclaims",
+]);
+
+// An admitted qualified resource key has exactly one slash. Anchor that full
+// shape while retaining Kubernetes's native namespace suffix, not a URL rule.
+const NATIVE_QUOTA_RESOURCE = /^[^/]*kubernetes\.io\/[^/]+$/;
+
+function isIntegerQuotaResource(key: string): boolean {
+  return (
+    INTEGER_QUOTA_RESOURCES.has(key) ||
+    (key.includes("/") &&
+      !NATIVE_QUOTA_RESOURCE.test(key) &&
+      !key.startsWith("requests.") &&
+      isKubernetesQualifiedName(`requests.${key}`))
+  );
+}
 
 // A label key (also a ResourceQuota resource name) as the API server checks it: a qualified
 // name, an optional DNS subdomain prefix and a name of at most 63 characters.
@@ -3706,6 +3739,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (!isResourceQuantity(value) || (compareResourceQuantities(value, "0") ?? 0) < 0) {
           throw configurationConstraintFailure(
             `Namespace quota resource ${key} must be a non-negative Kubernetes quantity string, such as 4 or 8Gi.`,
+            "/resources/namespace/quota",
+          );
+        }
+        if (isIntegerQuotaResource(key) && !hasIntegerQuotaPrecision(value)) {
+          throw configurationConstraintFailure(
+            `Namespace quota resource ${key} must satisfy Kubernetes integer precision; use a whole count such as 4.`,
             "/resources/namespace/quota",
           );
         }
@@ -6325,6 +6364,37 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return "validated";
   }
 
+  async repositoryWorkerRestartDisposition(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition> {
+    if (
+      signal.aborted ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      return "unknown";
+    }
+    try {
+      return await withComputeAbortSignal(signal, async () => {
+        if (revision.repositoryCredentials === undefined) {
+          if (
+            revision.egressPlan?.repositoryGit !== undefined ||
+            revision.egressPlan?.repositoryGitAuthorization !== undefined
+          ) {
+            return "unknown";
+          }
+          const namespace = await this.ownedRepositoryNamespace(revision);
+          return namespace !== undefined && !signal.aborted ? "not-applicable" : "unknown";
+        }
+        const owned = await this.repositoryAccessContext(revision, signal);
+        return owned?.access.repositoryWorkerRestartDisposition?.(owned.context) ?? "unknown";
+      });
+    } catch {
+      return "unknown";
+    }
+  }
+
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
     const owned = await this.repositoryAccessContext(revision, signal);
     return owned?.access.verifyExecution(owned.context);
@@ -6372,12 +6442,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.egressPlan) {
       this.validateExecutionAdmission(revision, "stored");
     }
-    const { name, external } = await this.resolveNamespace(revision.namespaceId);
-    const namespace = await this.getNamespace(name);
-    if (!namespace) {
+    const name = await this.ownedRepositoryNamespace(revision);
+    if (name === undefined) {
       return;
     }
-    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
     const context = await this.sandboxNamespaceContext(
       this.sandboxNamespaceForRevision(revision, name),
       name,
@@ -6386,6 +6454,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       access,
       context: { ...context, revision, signal: AbortSignal.any([context.signal, signal]) },
     };
+  }
+
+  /** Existing placement and ownership are prerequisites even when no Git grant is present. */
+  private async ownedRepositoryNamespace(revision: Readonly<AgentRevision>) {
+    const { name, external } = await this.resolveNamespace(revision.namespaceId);
+    const namespace = await this.getNamespace(name);
+    if (!namespace) {
+      return;
+    }
+    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+    return name;
   }
 
   async prepareRevision(

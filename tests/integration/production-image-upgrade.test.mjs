@@ -309,7 +309,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -332,7 +332,9 @@ printf '600\\n'
   await writeCommand(
     bin,
     "helm",
-    `if [[ "$*" == *'get values'* ]]; then
+    `if [[ "$1" == status ]]; then
+  printf '%s\\n' '{"name":"oce","namespace":"openclaw-system","info":{"status":"deployed"},"version":1}'
+elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == "template" ]]; then
   exit 47
@@ -365,7 +367,7 @@ esac
     "yq",
     `if [[ "$*" == *OCE_UPGRADE_ATTEMPT* ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec yq -o=json "$@"
-elif [[ "$1" == -p=yaml && "\${!#}" == - ]]; then
+elif [[ "$1" == -r || ( "$1" == -p=yaml && "\${!#}" == - ) ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec yq "$@"
 fi
 case "$*" in
@@ -610,8 +612,8 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
-  // The startup preflight reads each controller container's image and Installation
-  // mount from the rendered chart; this stand-in renders only those fields.
+  // Preflight reads controller images, Installation mounts and the initializer's
+  // migration identity from the chart. Render those inputs for this protocol fixture.
   // Accepted upgrades retain their submitted values and advance the revision;
   // server dry-runs must leave both unchanged.
   await writeCommand(
@@ -626,7 +628,7 @@ if [[ "$1" == status ]]; then
   if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
     state="$CURRENT_HELM_STATE"
   fi
-  printf '{"info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
+  printf '{"name":"oce","namespace":"openclaw-system","info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
@@ -637,6 +639,7 @@ elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
   printf '%s\\n' "$((revision + 1))" >"$revision_file"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
+  printf -- '---\\n%s\\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"oce-initialization","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"serviceAccountName":"openclaw-enterprise-initialization","initContainers":[{"name":"migration","image":"'"$OBSERVED_CONTROLLER_IMAGE"'"}]}}}}'
 fi
 `,
     { interpreter: "bash" },
@@ -738,7 +741,9 @@ if (args.includes("create")) {
   }
   delete state[name];
 } else if (args.includes("logs")) {
-  result = "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+  result = value("--container") === "migration"
+    ? JSON.stringify({ event: "migration.checked", history: "completed" }) + "\\n"
+    : "agent-drafts-accepted\\ninstallation-startup-ready\\n";
 } else if (args.includes("pods")) {
   const uid = value("--selector").slice("batch.kubernetes.io/controller-uid=".length);
   result = { items: Object.values(state).filter((object) =>
@@ -771,6 +776,12 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
+  *' get deployment/openclaw-enterprise-'*)
+    for arg in "$@"; do
+      case "$arg" in deployment/openclaw-enterprise-*) component=\${arg##*-} ;; esac
+    done
+    printf '{"metadata":{"uid":"fixture-%s","resourceVersion":"1","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":1}}\\n' "$component" "$component"
+    ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
@@ -783,7 +794,7 @@ esac
     "occ",
     `printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
-  *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
+  *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false,"repositoryWorkerRestart":"reverification-supported"}]}]}' ;;
   *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
   *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
@@ -823,8 +834,16 @@ esac
         JSON.parse(await readFile(join(evidence, "current-helm-status.json"), "utf8")).info.status,
         state,
       );
+      const commands = await readFile(commandLog, "utf8");
+      const statusReads = commands.split("\n").filter((line) => line.startsWith("helm status "));
+      assert.equal(statusReads.length, 2, "one preparation read and one live reread");
+      assert.ok(statusReads.every((line) => line.endsWith(" --output json")));
       assert.match(
-        await readFile(commandLog, "utf8"),
+        await readFile(join(evidence, "before-helm-status.txt"), "utf8"),
+        /NAME: oce\nNAMESPACE: openclaw-system\nSTATUS: deployed\nREVISION: 1\n$/u,
+      );
+      assert.match(
+        commands,
         /helm status [^\n]* --output json\n$/u,
         "no values, Secret, or mutating command may follow the refused current status",
       );

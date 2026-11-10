@@ -119,6 +119,17 @@ async function observedGitRoute(
   f.entry.authorization = resolve(revision);
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
+  // A separate API process can identify the admitted finite held launch before the
+  // original worker stops. Its empty cache neither makes the launch safe nor requires adoption.
+  const assessor = new OpenShellGitRuntime(f.runtime.configuration, resolve);
+  const beforeAssessment = structuredClone(f.calls);
+  const routeBeforeAssessment = structuredClone(f.store.rows);
+  assert.equal(
+    await assessor.repositoryWorkerRestartDisposition(revision, AbortSignal.timeout(2_000)),
+    "original-worker-required",
+  );
+  assert.deepEqual(f.calls, beforeAssessment);
+  assert.deepEqual(f.store.rows, routeBeforeAssessment);
   const preview = new ObservedHookPreview(
     f.sandbox.workspace,
     f.entry.bindingId,

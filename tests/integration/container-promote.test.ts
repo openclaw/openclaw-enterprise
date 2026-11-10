@@ -5,7 +5,7 @@ import {
   validateHubRepository,
   validatePublicationRun,
   validateReceipt,
-} from "../../scripts/ci/container-promote.mjs";
+} from "../../scripts/ci/container-promote.ts";
 import { repository, publishWorkflow } from "../../scripts/ci/container-release.mjs";
 
 const sourceSha = "a".repeat(40);
@@ -35,8 +35,10 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
   }));
   validateReceipt(receipt, env);
   // Each rejection names the guard that must refuse it, so removing any one guard fails.
-  const runtime = (patch) => [receipt[0], { ...receipt[1], ...patch }];
-  const prepared = (key) => ({ message: new RegExp(`^Prepared image ${key} does not match`) });
+  const runtime = (patch: Record<string, unknown>) => [receipt[0], { ...receipt[1], ...patch }];
+  const prepared = (key: string) => ({
+    message: new RegExp(`^Prepared image ${key} does not match`),
+  });
   for (const [changed, changedEnv, guard] of [
     [{}, env, { name: "AssertionError", actual: false, expected: true }],
     [[receipt[1], receipt[0]], env, { operator: "deepStrictEqual" }],
@@ -53,7 +55,7 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     [runtime({ nodeBaseImage: "docker.io/library/node:24" }), env, prepared("nodeBaseImage")],
     [runtime({ tag: "latest" }), env, { actual: "latest", expected: `sha-${sourceSha}` }],
     [runtime({ destination: receipt[0].destination }), env, { operator: "notStrictEqual" }],
-  ]) {
+  ] as const) {
     assert.throws(() => validateReceipt(changed, changedEnv), guard);
   }
   const workflow = { id: 789, path: publishWorkflow, state: "active" };
@@ -98,7 +100,7 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     [{ ...run, event: "pull_request" }, workflow, env, { actual: "pull_request" }],
     [{ ...run, status: "in_progress" }, workflow, env, { actual: "in_progress" }],
     [{ ...run, conclusion: "failure" }, workflow, env, { actual: "failure", expected: "success" }],
-  ]) {
+  ] as const) {
     assert.throws(() => validatePublicationRun(changedRun, changedWorkflow, changedEnv), guard);
   }
 });
@@ -117,7 +119,7 @@ test("Docker Hub promotion requires an exact pre-existing private repository", (
     [{ is_private: undefined }, notPrivate],
     [{ namespace: "other" }, { actual: "other", expected: "example" }],
     [{ name: "other" }, { actual: "other", expected: "enterprise-controller" }],
-  ]) {
+  ] as const) {
     assert.throws(() => validateHubRepository({ ...repo, ...patch }, image), guard);
   }
   for (const invalid of [

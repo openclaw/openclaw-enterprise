@@ -165,7 +165,7 @@ jobs:
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-4vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-2vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-2vcpu-ubuntu-2404"},
@@ -389,6 +389,9 @@ jobs:
     uses: ./.github/workflows/ci-runtime-artifact.yml
 
   image-lanes:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.title }}
     needs: [impact, runtime-artifact]
     if: ${{ (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && needs.impact.outputs.has-images == 'true' }}
@@ -450,6 +453,9 @@ jobs:
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
   first-agent-smoke:
+    permissions:
+      contents: read
+      actions: read
     name: First Agent Smoke
     needs: [impact, runtime-artifact]
     if: ${{ needs.impact.outputs.mode == 'full' }}
@@ -517,6 +523,9 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.runtime-artifact.outputs.run-id }}
           path: ${{ runner.temp }}/runtime-artifact
           merge-multiple: true
       - name: Build checkout images
