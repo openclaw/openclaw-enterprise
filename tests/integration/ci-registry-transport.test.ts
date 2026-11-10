@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { symlink } from "node:fs/promises";
-import { join } from "node:path";
 import test from "node:test";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("image lanes reuse compatible skopeo when package installation is unavailable", async (t) => {
   const bin = await temporaryDirectory(t, "ci-registry-transport-");
-  await symlink("/usr/bin/timeout", join(bin, "timeout"));
+  await writeCommand(bin, "timeout", 'shift 2\nexec "$@"');
   await writeCommand(bin, "skopeo", '[ "$1" = --version ] && echo "skopeo version $VERSION"');
   await writeCommand(bin, "sudo", "exit 42");
 
