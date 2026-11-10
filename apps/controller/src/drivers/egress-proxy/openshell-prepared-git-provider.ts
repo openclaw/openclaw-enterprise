@@ -39,6 +39,7 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
     readonly endpoint: string;
     readonly audience: string;
     readonly repository: string;
+    readonly allowPush?: true;
   };
 };
 
@@ -250,7 +251,16 @@ export class OpenShellPreparedGitProvider {
           git.origin,
           api.origin,
           this.scope.binaries,
-          ...(grant ? [[grant.endpoint, grant.audience, grant.repository]] : []),
+          ...(grant
+            ? [
+                [
+                  grant.endpoint,
+                  grant.audience,
+                  grant.repository,
+                  ...(grant.allowPush ? ["write"] : []),
+                ],
+              ]
+            : []),
         ]),
       )
       .digest("hex")
@@ -302,6 +312,9 @@ export class OpenShellPreparedGitProvider {
               rules: [
                 { allow: { method: "GET", path: grantPath + "/info/refs" } },
                 { allow: { method: "POST", path: grantPath + "/git-upload-pack" } },
+                ...(grant?.allowPush
+                  ? [{ allow: { method: "POST", path: grantPath + "/git-receive-pack" } }]
+                  : []),
                 // The held launcher proves that the mandatory middleware denies this
                 // path before OpenShell obtains a token or dispatches the request.
                 {

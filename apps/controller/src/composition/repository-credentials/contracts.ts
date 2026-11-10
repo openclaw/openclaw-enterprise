@@ -27,7 +27,7 @@ export interface RepositoryTransportBinding {
   /** Supply existing API storage for read-only assessment; never start the sender. */
   connectRestartObservation?(pool: PostgresPool): void;
   /** The paired sender can redeem without a preinstalled repository credential. */
-  readonly prepareGitOnDemand?: true;
+  readonly prepareGitOnDemand?: true | "selected-repository-write";
   bind(
     authority: ProtectedRepositoryGitAuthority,
     pool: PostgresPool,

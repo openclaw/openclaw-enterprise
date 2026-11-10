@@ -13,7 +13,7 @@ export const preparedGitRedemption = Symbol("preparedGitRedemption");
 export type PreparedGitGrantApprovals = typeof postgresRequestCredentialApprovals;
 
 export type PreparedGitGrantRequest = PreparedGitHubRepositoryUseRequest & {
-  readonly operation: "advertise-upload-pack" | "upload-pack";
+  readonly operation: GitGrantOperation;
 };
 
 export type PreparedGitGrantBinding = Omit<
@@ -21,15 +21,39 @@ export type PreparedGitGrantBinding = Omit<
   "value" | "preparationAttemptId" | "materialVersion"
 >;
 
-export function allowsPreparedGitGrantRead(scope: {
+type GitGrantOperation =
+  "advertise-upload-pack" | "upload-pack" | "advertise-receive-pack" | "receive-pack";
+
+type GitGrantScope = {
   readonly repositories: readonly unknown[];
   readonly permissions: Readonly<Record<string, string>>;
-}): boolean {
+};
+
+function exactScope(scope: GitGrantScope, contents: "read" | "write"): boolean {
   return (
     scope.repositories.length === 1 &&
     Object.keys(scope.permissions).length === 2 &&
-    scope.permissions.contents === "read" &&
+    scope.permissions.contents === contents &&
     scope.permissions.metadata === "read"
+  );
+}
+
+export function allowsPreparedGitGrantRead(scope: GitGrantScope): boolean {
+  return exactScope(scope, "read");
+}
+
+export function allowsPreparedGitGrantWrite(scope: GitGrantScope): boolean {
+  return exactScope(scope, "write");
+}
+
+export function gitGrantOperationAllowed(
+  operation: PreparedGitHubRepositoryUseRequest["operation"] | "create-draft-pull",
+  allowPush: boolean,
+): operation is GitGrantOperation {
+  return (
+    operation === "advertise-upload-pack" ||
+    operation === "upload-pack" ||
+    (allowPush && (operation === "advertise-receive-pack" || operation === "receive-pack"))
   );
 }
 

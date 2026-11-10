@@ -32,6 +32,8 @@ import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postg
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   allowsPreparedGitGrantRead,
+  allowsPreparedGitGrantWrite,
+  gitGrantOperationAllowed,
   preparedGitRedemption,
   type PreparedGitGrantApproval,
   type PreparedGitGrantApprovals,
@@ -863,7 +865,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           (wide && grant.profile !== scope) ||
           (wide && !installationRecipient(this.proxy)) ||
           (!includeValue &&
-            (grant.profile !== "github-repository" || !allowsPreparedGitGrantRead(grant)))
+            (grant.profile !== "github-repository" ||
+              (!allowsPreparedGitGrantRead(grant) && !allowsPreparedGitGrantWrite(grant))))
         ) {
           return unprepared;
         }
@@ -1171,8 +1174,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grantDecision &&
       (!installed?.route ||
         grant.profile !== "github-repository" ||
-        !allowsPreparedGitGrantRead(grant) ||
-        (q.operation !== "advertise-upload-pack" && q.operation !== "upload-pack"))
+        (!allowsPreparedGitGrantRead(grant) && !allowsPreparedGitGrantWrite(grant)) ||
+        !gitGrantOperationAllowed(q.operation, allowsPreparedGitGrantWrite(grant)))
     ) {
       return fail();
     }

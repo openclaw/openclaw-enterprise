@@ -165,11 +165,17 @@ that the workload passed installation checks or can answer a model turn.
 
 ## Redeem a prepared Git token with a Gateway assertion
 
-An installation can enable `repository.openShell.grantRedemption` for one
-selected read-only `github-repository` grant. Use matching Gateway and
+By default, `repository.openShell.grantRedemption` serves one selected
+read-only `github-repository` grant. Use matching Gateway and
 supervisor builds that support provider assertions and dynamic Git HTTP Basic
-injection. The held Agent still requires a current prepared token before release.
-The Gateway provider stores no copy of that token.
+injection. The Worker obtains the token on first authorized redemption. The
+Gateway provider stores no copy of that token.
+
+Set `repository.openShell.grantRedemptionProfile: selected-repository-write` to
+enable ordinary Git push for one separately approved selected repository.
+That grant needs exactly `contents: write` and `metadata: read`. Read grants stay
+read-only. GitHub enforces branch protection. GitHub API requests remain outside
+this profile.
 
 Configure the Worker’s HTTPS `/token` listener on a port separate from its
 middleware authority. Set `assertionSource: openshell_gateway`, the exact
@@ -182,8 +188,8 @@ the Gateway. Use the existing [supervisor TLS requirements](../../reference/repo
 The middleware first approves the inspected operation. The proxy presents a
 separate signed assertion to redeem that approval. The Worker rechecks the
 same recipient, grant and material before release, then OpenShell injects the
-token into the authorized Git HTTPS request. This profile disables token
-caching. Installed candidate qualification remains pending.
+token into the authorized Git HTTPS request. OpenShell does not cache the
+redeemed token. Installed candidate qualification remains pending.
 
 ## Verify the installed path
 
