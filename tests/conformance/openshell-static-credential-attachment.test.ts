@@ -116,6 +116,10 @@ test("startup composes both OpenShell members from one Backend for static source
   const runtimeProviders = new Map<string, OpenShellProviderResponse>();
   const observed: { sandbox?: OpenShellSandboxResponse } = {};
   let revoked = false;
+  let policyVersion = 1;
+  let activePolicyVersion = 1;
+  let sourcePolicy: Readonly<Record<string, unknown>>;
+  let startupReleases = 0;
   // Model only Backend storage and transport responses; the real Drivers choose,
   // authorize, reconcile, and withdraw the attachment. No provider is contacted.
   const unexpected = (): never => {
@@ -129,7 +133,26 @@ test("startup composes both OpenShell members from one Backend for static source
     getServiceUrl: unexpected,
     deleteService: unexpected,
     deleteSandbox: unexpected,
-    execSandbox: unexpected,
+    async execSandbox(request) {
+      assert.equal(request.sandbox, observed.sandbox?.name);
+      assert.equal(activePolicyVersion, 2);
+      startupReleases++;
+      return 0;
+    },
+    async getPolicyStatus() {
+      return {
+        version: policyVersion,
+        activeVersion: activePolicyVersion,
+        state:
+          activePolicyVersion === policyVersion ? "POLICY_STATUS_LOADED" : "POLICY_STATUS_PENDING",
+        policy: sourcePolicy,
+      };
+    },
+    async updatePolicy(request) {
+      assert.equal(request.expectedResourceVersion, observed.sandbox?.resourceVersion);
+      sourcePolicy = structuredClone(request.policy);
+      policyVersion++;
+    },
     getServiceDocument: unexpected,
     postServiceDocument: unexpected,
     listProviderProfiles: unexpected,
@@ -173,8 +196,10 @@ test("startup composes both OpenShell members from one Backend for static source
     },
     async createSandbox(request) {
       calls.push(["createSandbox", structuredClone(request)]);
+      sourcePolicy = structuredClone(request.spec.policy);
       observed.sandbox = {
         ...request,
+        resourceVersion: "1",
         id: "sandbox-1",
         phase: "SANDBOX_PHASE_READY",
         serviceUrls: { "": "http://10.43.0.50:8080" },
@@ -534,8 +559,22 @@ test("startup composes both OpenShell members from one Backend for static source
       throw new Error(`unexpected legacy Gateway callback: ${method}`);
     };
   }
+  supervisorVisible = false;
+  await assert.rejects(driver.prepareRevision(revision, context), /per-Sandbox supervisor Pod/);
+  supervisorVisible = true;
+  delegateHostname = true;
+  await assert.rejects(driver.prepareRevision(revision, context), /validated destination IP/);
+  assert.equal(policyVersion, 1);
+  assert.equal(startupReleases, 0);
+  delegateHostname = false;
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  assert.equal(policyVersion, 2);
+  // Saving an update is not the supervisor's acknowledgement of that policy.
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  assert.equal(startupReleases, 0);
+  activePolicyVersion = policyVersion;
   assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  assert.equal(startupReleases, 1);
   const workspace = openShellWorkspaceName({ ...tenant, status: "ready", name: namespace });
   assert.ok(observed.sandbox, "preparation creates the real Sandbox request");
   const sandbox = observed.sandbox;
@@ -566,12 +605,6 @@ test("startup composes both OpenShell members from one Backend for static source
       },
     ],
   });
-  supervisorVisible = false;
-  await assert.rejects(driver.prepareRevision(revision, context), /per-Sandbox supervisor Pod/);
-  supervisorVisible = true;
-  delegateHostname = true;
-  await assert.rejects(driver.prepareRevision(revision, context), /validated destination IP/);
-  delegateHostname = false;
   const originalUid = modelService.metadata.uid;
   modelService.metadata.uid = randomUUID();
   await assert.rejects(
@@ -579,6 +612,11 @@ test("startup composes both OpenShell members from one Backend for static source
     /private inference peer is unavailable or changed/,
   );
   modelService.metadata.uid = originalUid;
+  const initial = sandbox.spec?.policy as { network_policies: Record<string, unknown> };
+  assert.equal(sandbox.spec?.restart_policy, "SANDBOX_RESTART_POLICY_NEVER");
+  const { ["oce-private-inference-hold"]: hold, ...released } = initial.network_policies;
+  assert.ok(hold);
+  assert.deepEqual(sourcePolicy!, { ...initial, network_policies: released });
   const providers = sandbox.spec?.providers;
   assert.ok(Array.isArray(providers));
   assert.deepEqual(

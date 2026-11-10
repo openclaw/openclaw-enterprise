@@ -15,7 +15,9 @@ import {
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
-import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { inferenceKeyDestination, type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { savedModelProvider } from "../compute/model-provider.ts";
+import { randomUUID } from "node:crypto";
 import {
   requireConfiguration,
   SandboxNetworkPolicyConfiguration,
@@ -1300,12 +1302,54 @@ function relocatedWorkspaceMountPath(mount: {
   )}`;
 }
 
+const PRIVATE_INFERENCE_HOLD = "oce-private-inference-hold";
+const PRIVATE_INFERENCE_READY = "/tmp/.oce-private-inference-ready";
+
+// The source and its placeholder are present at startup. This fail-closed L7 denial spans
+// every binary and matching endpoint, including the source-generated provider profile.
+function privateInferenceHold(revision: Readonly<AgentRevision>) {
+  const peer = revision.harness.privateInferencePeer;
+  if (!peer || revision.egressPlan) {
+    return undefined;
+  }
+  const provider = savedModelProvider(revision.harness.configuration);
+  if (!provider)
+    throw new OpenShellSandboxConfigurationFailure(
+      "The private inference revision has no admitted model endpoint.",
+    );
+  const { host, port, method, path } = inferenceKeyDestination(provider.baseUrl, provider.protocol);
+  return {
+    name: PRIVATE_INFERENCE_HOLD,
+    binaries: [{ path: "/**" }],
+    endpoints: [
+      {
+        host,
+        ports: [port],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        allowed_ips: [peer.address],
+        rules: [{ allow: { method, path } }],
+        deny_rules: [{ method, path }],
+      },
+    ],
+  };
+}
+
+function privateInferenceReleasedPolicy(policy: Readonly<Record<string, unknown>>) {
+  const networks = asRecord(policy.network_policies);
+  if (!networks)
+    throw new OpenShellSandboxConfigurationFailure("The private inference policy is missing.");
+  const { [PRIVATE_INFERENCE_HOLD]: _hold, ...released } = networks;
+  return { ...policy, network_policies: released };
+}
+
 function sandboxCommand(
   command: readonly string[],
   links: readonly OpenShellWorkspaceLink[],
   native: boolean,
   loginMode: HarnessWorkloadRequirements["loginMode"],
   workspaceSetup: HarnessWorkloadRequirements["workspaceSetup"],
+  holdPrivateInference: boolean,
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1322,7 +1366,12 @@ function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  // /tmp is private to this Sandbox incarnation. Compute first verifies the actual sender
+  // and observes the exact released policy as LOADED, before waking either native Harness.
+  const privateWait = holdPrivateInference
+    ? `{const pause=new Int32Array(new SharedArrayBuffer(4));while(!require("node:fs").existsSync(${JSON.stringify(PRIVATE_INFERENCE_READY)})) Atomics.wait(pause,0,0,250); }\n`
+    : "";
+  const prelude = `${privateWait}${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
   const composed = [
     ...command.slice(0, loaderIndex),
     prelude + loader,
@@ -2200,6 +2249,14 @@ function sandboxSpec(
     assertNoManagedMcpRouteOverlap(defaults, install);
     assertNoManagedMcpRouteOverlap(additions, install);
   }
+  const hold = privateInferenceHold(revision);
+  if (
+    hold &&
+    (Object.hasOwn(defaults, PRIVATE_INFERENCE_HOLD) ||
+      Object.hasOwn(additions, PRIVATE_INFERENCE_HOLD))
+  ) {
+    throw new OpenShellSandboxConfigurationFailure("The private inference hold rule is reserved.");
+  }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
   const volumeMounts = workspace.mounts;
@@ -2266,6 +2323,7 @@ function sandboxSpec(
         // A protected execution keeps the exact policy and model attachment verified before provisioning.
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
+        ...(hold && { [PRIVATE_INFERENCE_HOLD]: hold }),
         ...plugin?.networks,
         ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
@@ -2280,8 +2338,10 @@ function sandboxSpec(
       revision.harness.id === "openclaw",
       requirements.loginMode,
       requirements.workspaceSetup,
+      hold !== undefined,
     ),
-    restart_policy: SANDBOX_RESTART_POLICY,
+    // A native generation replacement would inherit the already released policy.
+    restart_policy: hold ? "SANDBOX_RESTART_POLICY_NEVER" : SANDBOX_RESTART_POLICY,
   };
 }
 
@@ -2851,6 +2911,12 @@ function verifyExistingSandbox(
   request: OpenShellSandboxCreateRequest,
 ): void {
   if (
+    (Object.hasOwn(
+      asRecord(asRecord(request.spec.policy)?.network_policies) ?? {},
+      PRIVATE_INFERENCE_HOLD,
+    ) &&
+      existing.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER" &&
+      existing.spec?.restart_policy !== 1) ||
     existing.name !== request.name ||
     existing.workspace !== request.workspace ||
     !exactStringMap(existing.labels, request.labels) ||
@@ -4500,8 +4566,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
+    const verifiedBase =
+      privateInferenceHold(context.revision) &&
+      !Object.hasOwn(asRecord(status.policy.network_policies) ?? {}, PRIVATE_INFERENCE_HOLD)
+        ? privateInferenceReleasedPolicy(baseline)
+        : baseline;
+    const candidate = openShellPolicyCandidate(verifiedBase, snapshot);
     const matches = sameOpenShellPolicy(status.policy, candidate);
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
@@ -4515,6 +4586,87 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       state,
       matches,
     };
+  }
+
+  async releasePrivateInference(context: SandboxHarnessContext): Promise<boolean> {
+    const expected = privateInferenceHold(context.revision);
+    if (!expected)
+      throw new OpenShellSandboxConfigurationFailure(
+        "The revision has no ordinary private inference hold.",
+      );
+    const { client, request, sandbox } = await this.policyTarget(context);
+    const baseline = asRecord(sandbox.spec?.policy);
+    if (
+      !baseline ||
+      !sameOpenShellPolicy(
+        asRecord(baseline.network_policies)?.[PRIVATE_INFERENCE_HOLD],
+        expected,
+      ) ||
+      (sandbox.spec?.restart_policy !== "SANDBOX_RESTART_POLICY_NEVER" &&
+        sandbox.spec?.restart_policy !== 1) ||
+      !client.getPolicyStatus ||
+      !client.updatePolicy
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell must create the Sandbox with the admitted private hold and support observed policy updates.",
+      );
+    }
+    const status = await client.getPolicyStatus(request, context.signal);
+    if (status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED") {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The private inference policy failed to load.",
+      );
+    }
+    if (status.state !== "POLICY_STATUS_LOADED" || status.activeVersion !== status.version) {
+      return false;
+    }
+    const rules = asRecord(status.policy.network_policies);
+    if (!rules)
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell did not report the loaded private inference policy.",
+      );
+    if (Object.hasOwn(rules, PRIVATE_INFERENCE_HOLD)) {
+      if (!sameOpenShellPolicy(rules[PRIVATE_INFERENCE_HOLD], expected)) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "The loaded private inference hold differs from the admitted rule.",
+        );
+      }
+      await client.updatePolicy(
+        {
+          ...request,
+          policy: privateInferenceReleasedPolicy(status.policy),
+          expectedResourceVersion: sandbox.resourceVersion!,
+          requestId: randomUUID(),
+        },
+        context.signal,
+      );
+      return false;
+    }
+    if (status.version <= 1) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell did not commit an update releasing this private inference Sandbox.",
+      );
+    }
+    const result = await client.execSandbox(
+      {
+        workspace: request.workspace,
+        sandbox: request.sandbox,
+        command: [
+          "/usr/local/bin/node",
+          "-e",
+          `const fs=require("node:fs"); const f=fs.openSync(${JSON.stringify(PRIVATE_INFERENCE_READY)},fs.constants.O_CREAT|fs.constants.O_NOFOLLOW|fs.constants.O_WRONLY,0o600); fs.closeSync(f);`,
+        ],
+        environment: {},
+        stdin: "",
+        timeoutSeconds: 10,
+      },
+      context.signal,
+    );
+    if (result !== 0)
+      throw new OpenShellSandboxConfigurationFailure(
+        "OpenShell could not release the verified private inference Harness.",
+      );
+    return true;
   }
 
   async applyNetworkPolicy(
@@ -4550,7 +4702,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    let verifiedBase = baseline;
+    if (privateInferenceHold(context.revision)) {
+      if (!client.getPolicyStatus)
+        throw new OpenShellSandboxConfigurationFailure(
+          "Private inference requires observed policy updates.",
+        );
+      const status = await client.getPolicyStatus(request, context.signal);
+      if (!Object.hasOwn(asRecord(status.policy.network_policies) ?? {}, PRIVATE_INFERENCE_HOLD)) {
+        verifiedBase = privateInferenceReleasedPolicy(baseline);
+      }
+    }
+    const candidate = openShellPolicyCandidate(verifiedBase, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);

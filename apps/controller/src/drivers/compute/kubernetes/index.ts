@@ -7421,6 +7421,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ) {
           return incomplete();
         }
+        if (revision.harness.privateInferencePeer && !egressContext) {
+          if (!sandboxDriver.releasePrivateInference)
+            throw new ConfigurationFailure(
+              "OpenShell cannot release the admitted private inference policy.",
+            );
+          if (!(await sandboxDriver.releasePrivateInference(harnessContext))) return incomplete();
+        }
         let heldForRepositoryGitMaterial = false;
         if (egressContext !== undefined) {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
