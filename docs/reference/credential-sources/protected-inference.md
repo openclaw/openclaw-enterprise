@@ -98,8 +98,17 @@ declarations use the same local-tool restrictions; they do not authorize hosted 
 Local function parameter schemas accept `encrypted: true` only on a string schema.
 This annotation does not itself encrypt data. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
-`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
-Unknown request fields remain refused. In streamed Responses envelopes, tool echoes may contain null descriptions,
+`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. It can also include
+`workspaces` with one absolute Git root. The workspace can report a full SHA-1
+or SHA-256 commit hash, a Boolean `has_changes`, and up to 16 Git remote URLs.
+The proxy accepts HTTPS URLs without user info and SCP-style URLs with the
+literal `git` transport user. Both forms use plain ASCII repository paths and
+omit queries and fragments. The separate optional
+`client_metadata["mcp_attribution"]` JSON string accepts exactly
+`{"status":"none"}`. These fields carry telemetry and grant no authority.
+The proxy refuses unknown request fields.
+
+In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
 the same type and local-tool restrictions. Namespace descriptions remain text. The optional
 `image` response object accepts only `context_compression: "enabled" | "disabled"`,
