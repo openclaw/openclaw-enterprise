@@ -79,8 +79,10 @@ machine route must remove browser delegation headers. An unlabelled Pod must
 not connect directly to either Envoy or the native Gateway.
 
 To test credential lookup failure, the case removes only the active revision's
-delegation Secret. OCC status and native proxy requests must return 503 without
-recreating the Secret or using machine access. A `finally` block restores its
+delegation Secret. The availability API must return `503 DEPENDENCY_UNAVAILABLE`;
+the Agent host must return its [generic `403 FORBIDDEN` refusal](../reference/agent-native-admin.md#authorization-and-availability),
+without recreating the Secret or using machine access. The same signed-in health
+request must succeed before removal and after recovery. A `finally` block restores its
 original ownership metadata, immutability and credential bytes. Reconnection
 must resolve the same native profile. These probes pass credentials on stdin;
 their results contain no credential values. They do not modify model Secrets.
