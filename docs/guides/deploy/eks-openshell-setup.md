@@ -94,6 +94,16 @@ kubectl get nodes -L oce-role
 kubectl get storageclass encrypted-gp3
 ```
 
+If either node group lacks Ready workers, ask the infrastructure owner to inspect
+that group's health issues and provisioning events using
+[AWS's node troubleshooting guide](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html).
+An offered instance type does not guarantee launch capacity:
+[`InsufficientInstanceCapacity`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/troubleshooting-launch.html#troubleshooting-launch-capacity)
+means AWS cannot currently fulfill the launch. Keep retries and rollback in the
+owning infrastructure workflow. After a failed replacement, verify the previous
+group's health, template and scaling, and cleanup of attempted resources before
+retrying. Preserve the volume-zone constraints above.
+
 Confirm the account and role, then test Kubernetes TLS from the operator host. Successive connections through shared NAT can use different public IP addresses. For a public API allowlist change, authorize only the exact stable egress addresses or CIDRs listed for that host in the authoritative NAT inventory. A single observed IP address cannot establish or justify a broader prefix. Preserve existing allowlist entries, public and private endpoint settings, and AWS and Kubernetes authentication.
 
 ### Refresh API network policies after the node groups join

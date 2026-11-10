@@ -1,42 +1,134 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  Clock,
+  DriverCustody,
+  RenewalRef,
+  RequestHead,
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type {
+  CredentialServiceOwner,
+  ExchangeSender,
+} from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
-import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
+import {
+  type AlternateFixtureFactory,
+  type AlternateFixtureOptions,
+  createAlternateFixtureFactory,
+  requireFixtureDriver,
+} from "../fixtures/repository-credentials/alternate-shape.ts";
+import {
+  requestHead,
+  serviceConfigurationData,
+} from "../fixtures/repository-credentials/builders.mjs";
 
-const config = () => ({
-  sessionPolicy: {
-    maximumDurationSeconds: 172800,
-    defaultProfile: "git-write",
-    allowedProfiles: ["git-write"],
-  },
-  limits: {
-    sessions: 16,
-    providerQueue: 64,
-    credentialSlotsPerSession: 2,
-    accessTokenBytes: 16384,
-    renewalBytesPerSession: 16384,
-    providerActionMs: 30000,
-    credentialMarginMs: 60000,
-    exchanges: 32,
-    exchangesPerSession: 4,
-    exchangeMs: 300000,
-    maxExchangeMs: 300000,
-  },
-});
-const head = (clock) =>
-  requestHead("GET", "/team/nested/project", {}, { receivedMonoMs: clock.monotonicNow() });
-const tick = () => new Promise((resolve) => setImmediate(resolve));
-const send = async (_request, context) =>
+const config = () => {
+  const selected = {
+    sessionPolicy: {
+      maximumDurationSeconds: 172800,
+      defaultProfile: "git-write",
+      allowedProfiles: ["git-write"],
+    },
+    limits: {
+      sessions: 16,
+      providerQueue: 64,
+      credentialSlotsPerSession: 2,
+      accessTokenBytes: 16384,
+      renewalBytesPerSession: 16384,
+      providerActionMs: 30000,
+      credentialMarginMs: 60000,
+      exchanges: 32,
+      exchangesPerSession: 4,
+      exchangeMs: 300000,
+      maxExchangeMs: 300000,
+    },
+  };
+  const validated = validateServiceConfig(serviceConfigurationData(selected));
+  return {
+    ...validated,
+    sessionPolicy: selected.sessionPolicy,
+    limits: { ...validated.limits, ...selected.limits },
+  };
+};
+const head = (clock: Clock): RequestHead => {
+  const result = requestHead(
+    "GET",
+    "/team/nested/project",
+    {},
+    { receivedMonoMs: clock.monotonicNow() },
+  );
+  assert.equal(result.contentEncoding, "identity");
+  assert.equal(result.framing.kind, "none");
+  return { ...result, contentEncoding: "identity", framing: { ...result.framing, kind: "none" } };
+};
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+const send: ExchangeSender = async (_request, context) =>
   context.gate.dispatch(
     () => {},
     () => ({ kind: "completed", status: 200 }),
   );
 
-function setup(options = {}) {
+type FixtureEvent = { kind: string; sessionId: string; attemptId?: string };
+function isFixtureEvent(value: unknown): value is FixtureEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof value.kind === "string" &&
+    "sessionId" in value &&
+    typeof value.sessionId === "string" &&
+    (!("attemptId" in value) || typeof value.attemptId === "string")
+  );
+}
+function isObservation(value: unknown): value is { kind: string; attemptId?: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof value.kind === "string" &&
+    (!("attemptId" in value) || typeof value.attemptId === "string")
+  );
+}
+function fixtureEvents(factory: AlternateFixtureFactory): FixtureEvent[] {
+  return factory.events.map((value) => {
+    assert.ok(isFixtureEvent(value));
+    return value;
+  });
+}
+function requireStatus(service: CredentialServiceOwner, sessionId: string) {
+  const result = service.status(sessionId);
+  assert.ok(result);
+  return result;
+}
+
+function exchangeRef(result: ReturnType<CredentialServiceOwner["reserve"]>) {
+  assert.ok(!("kind" in result));
+  return result;
+}
+function denial(result: ReturnType<CredentialServiceOwner["reserve"]>) {
+  assert.ok("kind" in result);
+  return result;
+}
+
+type Retained = {
+  custody: DriverCustody;
+  first: RenewalRef;
+  second: RenewalRef;
+  renewals: RenewalRef[];
+  read: Promise<string>;
+  bytes?: Uint8Array;
+};
+const unexpected = () => {
+  throw new Error("unexpected backend operation");
+};
+
+function setup(
+  options: Pick<AlternateFixtureOptions, "operationMs" | "lifetimeMs" | "controls"> = {},
+) {
   const clock = createControlledClock(1700000000000);
-  const factory = createAlternateDriverFactory({
+  const factory = createAlternateFixtureFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
@@ -52,24 +144,24 @@ function setup(options = {}) {
     opened,
     configuration,
     exchange: (signal = new AbortController().signal) =>
-      service.reserve(opened.bearer, head(clock), signal),
+      exchangeRef(service.reserve(opened.bearer, head(clock), signal)),
   };
 }
 
-function constructionFailure(kind) {
+function constructionFailure(kind: "factory throw" | "invalid binding" | "binding mismatch") {
   const clock = createControlledClock(1700000000000);
-  const factory = createAlternateDriverFactory({
+  const factory = createAlternateFixtureFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
   });
-  const release = Promise.withResolvers();
-  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
   const configuration = config();
   configuration.limits.sessions = 1;
   configuration.limits.credentialSlotsPerSession = 3;
   let fail = true;
-  let retained;
+  let retained: Retained | undefined;
   const service = createCredentialService({
     config: configuration,
     clock,
@@ -83,6 +175,7 @@ function constructionFailure(kind) {
         const first = custody.retainRenewal(Buffer.from("construction-renewal"));
         const second = custody.retainRenewal(Buffer.from("second-renewal"));
         const read = custody.withRenewal(first, async (bytes) => {
+          assert.ok(retained);
           retained.bytes = bytes;
           entered.resolve();
           await release.promise;
@@ -106,6 +199,14 @@ function constructionFailure(kind) {
         const binding = factory.resolve("git-write").binding;
         return {
           binding: { ...binding, grantId: kind === "invalid binding" ? "" : "different-grant" },
+          replacement: "overlap",
+          cleanup: "revocable",
+          acquire: unexpected,
+          retire: unexpected,
+          finalize: unexpected,
+          settle: unexpected,
+          plan: unexpected,
+          prepareAuthentication: unexpected,
         };
       },
     },
@@ -115,7 +216,14 @@ function constructionFailure(kind) {
     service,
     entered: entered.promise,
     release: () => release.resolve(),
-    retained: () => retained,
+    retained() {
+      assert.ok(retained);
+      return retained;
+    },
+    bytes() {
+      assert.ok(retained?.bytes);
+      return retained.bytes;
+    },
     admitNext: () => {
       fail = false;
     },
@@ -123,9 +231,8 @@ function constructionFailure(kind) {
       release.resolve();
       await retained?.read;
       if (retained) {
-        await Promise.allSettled(
-          retained.renewals.map((ref) => retained.custody.disposeRenewal(ref)),
-        );
+        const { custody, renewals } = retained;
+        await Promise.allSettled(renewals.map((ref) => custody.disposeRenewal(ref)));
       }
       await tick();
     },
@@ -136,12 +243,12 @@ for (const [kind, error] of [
   ["factory throw", /factory-failed/],
   ["invalid binding", /INVALID_BINDING/],
   ["binding mismatch", /DRIVER_BINDING_MISMATCH/],
-]) {
+] as const) {
   test(`failed construction owns renewal cleanup through shutdown after ${kind}`, async (t) => {
     const fixture = constructionFailure(kind);
     const { service, clock } = fixture;
     t.after(fixture.cleanup);
-    assert.throws(() => service.open({ durationSeconds: 3600 }), error);
+    assert.throws(() => service.open({ durationSeconds: 3600, profile: undefined }), error);
     const { custody, first, second, read } = fixture.retained();
     // Failure seals every handle before open returns, including handles behind
     // a blocked callback. The already admitted callback keeps its scoped copy.
@@ -156,21 +263,24 @@ for (const [kind, error] of [
     );
     await Promise.all(refusedReads);
     await fixture.entered;
-    assert.equal(Buffer.from(fixture.retained().bytes).toString(), "construction-renewal");
-    assert.throws(() => service.open({ durationSeconds: 3600 }), /SESSION_CAPACITY/);
+    assert.equal(Buffer.from(fixture.bytes()).toString(), "construction-renewal");
+    assert.throws(
+      () => service.open({ durationSeconds: 3600, profile: undefined }),
+      /SESSION_CAPACITY/,
+    );
 
     const shutdown = service.shutdown(50);
     await clock.advance(50);
     const pending = await shutdown;
     assert.equal(pending.graceExpired, true);
     assert.equal(pending.pendingAuxiliary, 1);
-    assert.equal(Buffer.from(fixture.retained().bytes).toString(), "construction-renewal");
+    assert.equal(Buffer.from(fixture.bytes()).toString(), "construction-renewal");
 
     const draining = service.shutdown(50);
     fixture.release();
     assert.equal(await read, kind === "invalid binding" ? "failed" : "read");
     await tick();
-    assert.ok(fixture.retained().bytes.every((value) => value === 0));
+    assert.ok(fixture.bytes().every((value) => value === 0));
     await assert.rejects(custody.disposeRenewal(first), /FOREIGN_RENEWAL/);
     await assert.rejects(custody.disposeRenewal(second), /FOREIGN_RENEWAL/);
     const drained = await draining;
@@ -189,19 +299,25 @@ test("failed construction releases session capacity only after renewal callbacks
     await fixture.cleanup();
     await service.shutdown(50);
   });
-  assert.throws(() => service.open({ durationSeconds: 3600 }), /factory-failed/);
+  assert.throws(
+    () => service.open({ durationSeconds: 3600, profile: undefined }),
+    /factory-failed/,
+  );
   await fixture.entered;
   fixture.admitNext();
-  assert.throws(() => service.open({ durationSeconds: 3600 }), /SESSION_CAPACITY/);
+  assert.throws(
+    () => service.open({ durationSeconds: 3600, profile: undefined }),
+    /SESSION_CAPACITY/,
+  );
   fixture.release();
   await fixture.retained().read;
   await tick();
-  const opened = service.open({ durationSeconds: 3600 });
+  const opened = service.open({ durationSeconds: 3600, profile: undefined });
   const exchange = service.reserve(opened.bearer, head(clock), new AbortController().signal);
-  assert.equal((await service.execute(exchange, send)).kind, "completed");
+  assert.equal((await service.execute(exchangeRef(exchange), send)).kind, "completed");
   service.close(opened.session.sessionId);
   await tick();
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
   assert.equal(clock.pendingTimers(), 0);
 });
 
@@ -212,23 +328,23 @@ test("immutable session binding, digest-only public status and original exchange
   configuration.sessionPolicy.allowedProfiles.push("broader");
   assert.throws(() => service.open({ durationSeconds: 1, profile: "broader" }), /INVALID_PROFILE/);
   assert.equal(
-    service.reserve("x".repeat(43), head(clock), new AbortController().signal).kind,
+    denial(service.reserve("x".repeat(43), head(clock), new AbortController().signal)).kind,
     "denied",
   );
   const ref = exchange();
   assert.throws(() => service.plan({ ...ref }), /FOREIGN_EXCHANGE/);
   assert.equal((await service.execute(ref, send)).kind, "completed");
   assert.equal(
-    JSON.stringify(service.status(opened.session.sessionId)).includes(opened.bearer),
+    JSON.stringify(requireStatus(service, opened.session.sessionId)).includes(opened.bearer),
     false,
   );
   service.close(opened.session.sessionId);
   assert.equal(
-    service.reserve(opened.bearer, head(clock), new AbortController().signal).kind,
+    denial(service.reserve(opened.bearer, head(clock), new AbortController().signal)).kind,
     "denied",
   );
   await tick();
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
   assert.equal(clock.pendingTimers(), 0);
 });
 
@@ -237,7 +353,7 @@ test("unchanged bearer replaces expired access after hour 13 while retaining ren
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
   await clock.advance(13 * 3600000);
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
   for (let index = 0; index < 5; index++) {
     await clock.advance(100000);
     assert.equal((await service.execute(exchange(), send)).kind, "completed");
@@ -245,8 +361,8 @@ test("unchanged bearer replaces expired access after hour 13 while retaining ren
   await clock.advance(100000);
   service.close(opened.session.sessionId);
   await tick();
-  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 1);
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("concurrent misses coalesce and cancellation of one waiter preserves another", async () => {
@@ -257,16 +373,16 @@ test("concurrent misses coalesce and cancellation of one waiter preserves anothe
   abort.abort();
   assert.equal((await first).kind, "not-dispatched");
   assert.equal((await second).kind, "completed");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
   service.close(opened.session.sessionId);
   await tick();
 });
 
 test("last-waiter cancellation refuses later requests until original acquisition settlement", async (t) => {
   const { service, factory, opened, configuration, exchange } = setup();
-  const settlement = Promise.withResolvers();
-  const acquired = Promise.withResolvers();
-  const driver = factory.drivers[0];
+  const settlement = Promise.withResolvers<void>();
+  const acquired = Promise.withResolvers<void>();
+  const driver = requireFixtureDriver(factory.drivers[0]);
   const settle = driver.settle.bind(driver);
   // Delay only settlement of the fixture's real captured outcome. The service
   // still owns the original attempt, custody reservation and cleanup.
@@ -294,7 +410,7 @@ test("last-waiter cancellation refuses later requests until original acquisition
   // unsettled provider action, and each refusal must return exchange capacity.
   for (let index = 0; index < configuration.limits.exchangesPerSession * 2; index++) {
     const ref = exchange();
-    assert.notEqual(ref.kind, "denied");
+    assert.ok(!("kind" in ref));
     const outcome = await Promise.race([
       service.execute(ref, send),
       tick().then(() => ({ kind: "pending" })),
@@ -305,25 +421,25 @@ test("last-waiter cancellation refuses later requests until original acquisition
       "an aborted acquisition must refuse new waiters before settlement",
     );
   }
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(factory.events.filter((event) => event.kind === "authentication").length, 0);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "authentication").length, 0);
 
   // Local closure cannot release the captured credential or finalize its
   // session while the original acquisition owner remains unsettled.
   service.close(opened.session.sessionId);
   await tick();
-  const pending = service.status(opened.session.sessionId);
+  const pending = requireStatus(service, opened.session.sessionId);
   assert.equal(pending.state, "CLOSED");
   assert.equal(pending.cleanup.pending, 1);
   assert.equal(pending.cleanup.auxiliaryPending, true);
-  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 0);
-  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 0);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 0);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 0);
   settlement.resolve();
   await tick();
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
-  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 1);
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("a backward wall clock does not extend access or task authority", async () => {
@@ -331,11 +447,11 @@ test("a backward wall clock does not extend access or task authority", async () 
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
   await clock.advance(100000, -3600000);
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
   await clock.advance(86400000, -86400000);
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
   assert.equal(
-    service.reserve(opened.bearer, head(clock), new AbortController().signal).kind,
+    denial(service.reserve(opened.bearer, head(clock), new AbortController().signal)).kind,
     "denied",
   );
 });
@@ -348,24 +464,18 @@ test("a forward wall clock past the deadline closes the session before its timer
   await clock.advance(1000, 86_401_000);
   // A refusal log record cannot name the expired session either (finding 2429).
   assert.equal(service.identify(opened.bearer), undefined);
-  const refused = service.reserve(opened.bearer, head(clock), new AbortController().signal);
+  const refused = denial(service.reserve(opened.bearer, head(clock), new AbortController().signal));
   assert.deepEqual(
     { kind: refused.kind, status: refused.status, code: refused.code },
     { kind: "denied", status: 401, code: "session-unavailable" },
   );
-  assert.equal(service.status(opened.session.sessionId).state, "CLOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "CLOSED");
 });
 
 test("final dispatch rejects closure after asynchronous authentication and joins live I/O", async () => {
   const { service, opened, exchange } = setup();
-  let ready;
-  let continueSend;
-  const entered = new Promise((resolve) => {
-    ready = resolve;
-  });
-  const blocked = new Promise((resolve) => {
-    continueSend = resolve;
-  });
+  const { promise: entered, resolve: ready } = Promise.withResolvers<void>();
+  const { promise: blocked, resolve: continueSend } = Promise.withResolvers<void>();
   let openedTransport = false;
   const work = service.execute(exchange(), async (_request, context) => {
     ready();
@@ -380,26 +490,26 @@ test("final dispatch rejects closure after asynchronous authentication and joins
   });
   await entered;
   service.close(opened.session.sessionId);
-  assert.equal(service.status(opened.session.sessionId).state, "CLOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "CLOSED");
   assert.equal((await work).kind, "not-dispatched");
   continueSend();
   await tick();
   assert.equal(openedTransport, false);
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("acquisition timeout retains late capture and original settlement until cleanup after close", async (t) => {
-  let release;
-  const lateCapture = new Promise((resolve) => {
-    release = resolve;
-  });
-  const observations = [];
+  const { promise: lateCapture, resolve: release } = Promise.withResolvers<void>();
+  const observations: { kind: string; attemptId?: string }[] = [];
   const { clock, service, opened, factory, exchange, configuration } = setup({
     operationMs: 60000,
     controls: {
       lateCapture,
       waitForAcquisitionAbort: true,
-      observe: (event) => observations.push(event),
+      observe: (event: unknown) => {
+        assert.ok(isObservation(event));
+        observations.push(event);
+      },
     },
   });
   t.after(async () => {
@@ -408,7 +518,7 @@ test("acquisition timeout retains late capture and original settlement until cle
     await tick();
   });
   let sends = 0;
-  const sender = async (...args) => {
+  const sender: ExchangeSender = async (...args) => {
     sends++;
     return send(...args);
   };
@@ -418,7 +528,7 @@ test("acquisition timeout retains late capture and original settlement until cle
     return outcome;
   });
   await tick();
-  const acquisition = factory.events.find((event) => event.kind === "rotate");
+  const acquisition = fixtureEvents(factory).find((event) => event.kind === "rotate");
   assert.ok(acquisition);
   // The provider remains outstanding until the production action timer fires;
   // the exchange budget is longer, so its own deadline cannot cause this refusal.
@@ -430,7 +540,7 @@ test("acquisition timeout retains late capture and original settlement until cle
   );
   await clock.advance(1);
   assert.equal((await work).kind, "not-dispatched");
-  const pending = service.status(opened.session.sessionId);
+  const pending = requireStatus(service, opened.session.sessionId);
   assert.equal(pending.cleanup.pending, 1);
   assert.equal(pending.cleanup.uncertain, 1);
   assert.equal(pending.activeUses, 0);
@@ -443,9 +553,9 @@ test("acquisition timeout retains late capture and original settlement until cle
     false,
   );
   assert.equal((await service.execute(exchange(), send)).kind, "not-dispatched");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
   service.close(opened.session.sessionId);
-  assert.equal(service.status(opened.session.sessionId).state, "CLOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "CLOSED");
   release();
   await tick();
   assert.deepEqual(
@@ -458,31 +568,25 @@ test("acquisition timeout retains late capture and original settlement until cle
     ),
   );
   assert.equal(sends, 0, "late material is cleanup-only and never reaches the sender");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("scope refusal cleans the independently captured credential", async () => {
   const { service, opened, factory, exchange } = setup({ controls: { rejectScope: true } });
   assert.equal((await service.execute(exchange(), send)).kind, "not-dispatched");
   await tick();
-  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
   service.close(opened.session.sessionId);
   await tick();
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("drain-before replacement waits for an active exchange before rotating", async () => {
   const { clock, service, opened, factory, exchange } = setup({ lifetimeMs: 61000 });
-  let release;
-  const active = new Promise((resolve) => {
-    release = resolve;
-  });
-  let entered;
-  const sent = new Promise((resolve) => {
-    entered = resolve;
-  });
+  const { promise: active, resolve: release } = Promise.withResolvers<void>();
+  const { promise: sent, resolve: entered } = Promise.withResolvers<void>();
   const first = service.execute(exchange(), async (_request, context) => {
     context.gate.track(active);
     return context.gate.dispatch(release, () => {
@@ -497,11 +601,11 @@ test("drain-before replacement waits for an active exchange before rotating", as
   await clock.advance(400);
   const next = service.execute(exchange(), send);
   await tick();
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
   release();
   await first;
   assert.equal((await next).kind, "completed");
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
   service.close(opened.session.sessionId);
   await tick();
 });
@@ -516,17 +620,14 @@ test("insufficient full exchange validity refuses once and retires the captured 
   assert.equal(result.kind, "not-dispatched");
   assert.equal(sends, 0);
   await tick();
-  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
   service.close(opened.session.sessionId);
   await tick();
 });
 
 test("finite shutdown reports an unsettled late callback without inventing disposal", async () => {
-  let release;
-  const lateCapture = new Promise((resolve) => {
-    release = resolve;
-  });
+  const { promise: lateCapture, resolve: release } = Promise.withResolvers<void>();
   const { service, clock, opened, exchange } = setup({ controls: { lateCapture } });
   await service.execute(exchange(), send);
   const shutdown = service.shutdown(50);
@@ -536,10 +637,10 @@ test("finite shutdown reports an unsettled late callback without inventing dispo
   assert.equal(summary.pendingActions, 1);
   assert.equal(summary.pendingCredentials, 1);
   assert.equal(summary.pendingAuxiliary, 1);
-  assert.equal(service.status(opened.session.sessionId).state, "CLOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "CLOSED");
   release();
   await tick();
-  assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
+  assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
 test("closing one session preserves another session and prevents replay after dispatch", async () => {
@@ -560,7 +661,7 @@ test("closing one session preserves another session and prevents replay after di
   service.close(opened.session.sessionId);
   await tick();
   const otherRef = service.reserve(other.bearer, head(clock), new AbortController().signal);
-  assert.equal((await service.execute(otherRef, send)).kind, "completed");
+  assert.equal((await service.execute(exchangeRef(otherRef), send)).kind, "completed");
   service.close(other.session.sessionId);
   await tick();
 });
@@ -583,7 +684,7 @@ for (const scenario of [
 ]) {
   test(`saturated cleanup queue drains every session and renewal after ${scenario.name}`, async (t) => {
     const clock = createControlledClock(1700000000000);
-    const factory = createAlternateDriverFactory({
+    const factory = createAlternateFixtureFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: "https://gateway.example.test",
       clock,
@@ -598,18 +699,18 @@ for (const scenario of [
     if (scenario.acquireFirst) {
       for (const session of sessions) {
         const exchange = service.reserve(session.bearer, head(clock), new AbortController().signal);
-        assert.equal((await service.execute(exchange, send)).kind, "completed");
+        assert.equal((await service.execute(exchangeRef(exchange), send)).kind, "completed");
         await tick();
       }
     }
     // Hold the first real outcome's settlement so one running action and one
     // queued action exhaust capacity while the other sessions remain eligible.
-    const settlement = Promise.withResolvers();
+    const settlement = Promise.withResolvers<void>();
     t.after(async () => {
       settlement.resolve();
       await tick();
     });
-    const firstDriver = factory.drivers[0];
+    const firstDriver = requireFixtureDriver(factory.drivers[0]);
     const settle = firstDriver.settle.bind(firstDriver);
     firstDriver.settle = async (original) => {
       await settle(original);
@@ -623,9 +724,12 @@ for (const scenario of [
     await tick();
     await clock.advance(1);
     await tick();
-    assert.equal(factory.events.filter((event) => event.kind === scenario.queuedAction).length, 1);
+    assert.equal(
+      fixtureEvents(factory).filter((event) => event.kind === scenario.queuedAction).length,
+      1,
+    );
     for (const session of sessions) {
-      const status = service.status(session.session.sessionId);
+      const status = requireStatus(service, session.session.sessionId);
       assert.equal(status.state, "CLOSED");
       assert.equal(status.cleanup.uncertain, 0);
     }
@@ -633,14 +737,15 @@ for (const scenario of [
     await tick();
     for (const session of sessions) {
       const id = session.session.sessionId;
-      const status = service.status(id);
+      const status = requireStatus(service, id);
       assert.equal(status.state, "DISPOSED");
       assert.equal(status.cleanup.auxiliaryPending, false);
       assert.equal(status.cleanup.pending, 0);
       assert.equal(status.cleanup.uncertain, 0);
       for (const kind of scenario.expectedCleanup) {
         assert.equal(
-          factory.events.filter((event) => event.kind === kind && event.sessionId === id).length,
+          fixtureEvents(factory).filter((event) => event.kind === kind && event.sessionId === id)
+            .length,
           1,
         );
       }
@@ -657,7 +762,7 @@ for (const scenario of [
     await tick();
     assert.equal(clock.pendingTimers(), 0);
     for (const session of replacements) {
-      assert.equal(service.status(session.session.sessionId).state, "DISPOSED");
+      assert.equal(requireStatus(service, session.session.sessionId).state, "DISPOSED");
     }
   });
 }

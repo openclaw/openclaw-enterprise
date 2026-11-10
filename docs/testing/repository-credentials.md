@@ -22,7 +22,7 @@ node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs 
   tests/conformance/repository-credentials-backend-conformance.test.mjs
 node --test tests/integration/repository-credentials-git.test.mjs \
   tests/integration/repository-credentials-native-paths.test.mjs \
-  tests/integration/repository-credentials-service-loss.test.mjs
+  tests/integration/repository-credentials-service-loss.test.ts
 ```
 
 The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
