@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -251,9 +251,9 @@ unmatched-callback counters for requests that prove no attempt ownership.
 
 ## Acceptance Criteria
 
-All criteria are proposed and unverified. Extend real controller/PostgreSQL tests
-and the existing installed OIDC Agent workflow; fixtures alone do not establish
-provider reauthentication or Agent chat.
+The [delivery record](../plans/0033-oidc-account-linking.md#verification) records
+implemented checks, real-provider proof, and remaining verification. Fixtures alone
+do not establish provider reauthentication or Agent chat.
 
 - **AC-1 — Existing owner:** With linking enabled, manually create a default-user
   account, an Installation and Agent, and grant only the intended Agent access.
@@ -292,12 +292,12 @@ provider reauthentication or Agent chat.
 The [implementation plan](../plans/0033-oidc-account-linking.md) covers configuration/profile/Helm parity, schema and transaction changes,
 HTTP/OpenAPI contracts, Console integration, and AC-1 through AC-6. Update the
 current authentication reference, OIDC guide, authentication flow, database/API
-cheat sheets, and testing guide with implementation. No current reference is
-changed to claim that this proposal is already supported.
+cheat sheets, and testing guide with implementation. The implemented contract is recorded in the
+[current account-linking reference](../../docs/reference/authentication/account-linking.md).
 
-Maintainers must review the new account-owner attachment authority and the
-provider reauthentication requirement before implementation. This draft records
-neither approval nor implementation evidence.
+The user authorized implementation after RFC submission. Maintainer review of
+the new account-owner attachment authority and provider reauthentication
+requirement remains separate from implementation and verification.
 
 ## Rationale and alternatives
 
