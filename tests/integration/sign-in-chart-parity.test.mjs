@@ -1668,7 +1668,7 @@ test(
   },
 );
 
-test("chart and API refuse retired native admin session modes", tooling, async () => {
+test("chart and API use shared sessions for OIDC native admin", tooling, async () => {
   const values = {
     ...oidcUpgradeValues(recoveryUserId),
     "agentNativeAdmin.domain": "agents.oce.example.internal",
@@ -1681,25 +1681,6 @@ test("chart and API refuse retired native admin session modes", tooling, async (
     const settings = signInSettings(deploymentEnv(defaults, "api"));
     assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, undefined);
     assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
-    const shared = await renderChart({
-      ...selected,
-      "agentNativeAdmin.sessionMode": "shared-cookie",
-    });
-    assert.deepEqual(signInSettings(deploymentEnv(shared, "api")), settings);
     await startsUp(resolveSecrets(settings), `shared OIDC native admin ${enabled}`);
-
-    for (const sessionMode of ["host-only-exchange", "unknown", ""]) {
-      assert.match(
-        await chartRefusal({ ...selected, "agentNativeAdmin.sessionMode": sessionMode }),
-        /agentNativeAdmin\.sessionMode is no longer configurable; review the shared browser cookie domain/,
-      );
-      assert.equal(
-        await startupCode({
-          ...resolveSecrets(settings),
-          OCC_AGENT_NATIVE_ADMIN_SESSION_MODE: sessionMode,
-        }),
-        "AGENT_NATIVE_ADMIN_SESSION_MODE_REMOVED",
-      );
-    }
   }
 });

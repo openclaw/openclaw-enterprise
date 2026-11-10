@@ -125,24 +125,6 @@ Kubernetes Compute renders baseline gateway trust from Installation settings.
 Native admin availability still checks the explicit Agent policy below; keep
 its matching identity fields and opt-in settings in the saved Configuration.
 
-## Upgrade from host-only exchange
-
-OCE no longer accepts `host-only-exchange`. The chart, installation profile,
-and API reject a retained setting rather than widen the cookie scope
-automatically. Leaving native browser access disabled does not change this
-session boundary.
-
-Before upgrading, [review the derived cookie domain](../../reference/authentication.md#native-admin-shared-sessions)
-and confirm that every host receiving that cookie is a trusted OCE ingress
-endpoint. If shared sessions are not acceptable, do not proceed with the
-upgrade. Otherwise, remove `agentNativeAdmin.sessionMode` from Helm overrides,
-`controlPlane.agentNativeAdminSessionMode` from any installation profile input,
-and `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` from any custom API environment.
-When reusing Helm release values, check that the old override is not carried
-forward; the release's effective values must omit it. An old explicit
-`shared-cookie` value is still accepted and does not change scope. Users must
-sign in again after changing from host-only to shared sessions.
-
 ## Configure each Agent
 
 For a new Agent, use **Enable browser chat** on Create Agent. Use the procedure below for existing Agents after the API feature and wildcard route are enabled. Native browser availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:

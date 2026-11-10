@@ -1140,7 +1140,6 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
-      "agentNativeAdminSessionMode",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1488,14 +1487,6 @@ function buildRendered(profile, parsed, diagnostics) {
   if (!externalSignIn && controlPlane.passwordSignIn !== undefined) {
     diagnostics.errors.push(
       "controlPlane.passwordSignIn requires controlPlane.google or controlPlane.oidc.",
-    );
-  }
-  if (
-    Object.hasOwn(controlPlane, "agentNativeAdminSessionMode") &&
-    controlPlane.agentNativeAdminSessionMode !== "shared-cookie"
-  ) {
-    diagnostics.errors.push(
-      "controlPlane.agentNativeAdminSessionMode is no longer configurable; review the shared browser cookie domain before removing this setting.",
     );
   }
   const agentNativeAdminDomain = asString(

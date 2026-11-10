@@ -245,8 +245,6 @@ A prepared repository App key that cannot sign stops the worker with
   that is relative, names a directory, or cannot be written.
 - **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** Google does not support
   native access. OIDC supports shared cookies.
-- **`AGENT_NATIVE_ADMIN_SESSION_MODE_REMOVED` at startup:** The API rejected a
-  retired browser session mode. [Review the cookie scope before upgrading](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;

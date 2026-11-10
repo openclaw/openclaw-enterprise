@@ -233,8 +233,7 @@ access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
 OCC derives their longest common DNS-label suffix and rejects IP literals,
 missing or unrelated hosts, public suffixes, and malformed DNS names. For
 `console.oce.example.com` and `agents.oce.example.com`, the scope is
-`oce.example.com`. There is no cookie-domain override. Former host-only exchange
-deployments must [review the shared scope before upgrading](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
+`oce.example.com`. There is no cookie-domain override.
 
 Every host that receives this domain cookie must be a trusted OCE ingress
 endpoint. Public preview hosts must remain outside it. The cookie uses

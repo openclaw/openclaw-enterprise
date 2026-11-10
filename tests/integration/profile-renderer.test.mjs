@@ -3020,7 +3020,7 @@ test("profile transport Secret prefixes agree with controller startup admission"
   }
 });
 
-test("profiles reject retired native admin session modes without changing shared scope", async () => {
+test("OIDC profiles emit native admin settings for shared sessions", async () => {
   const input = externalSignInInput({
     google: undefined,
     oidc: {
@@ -3033,24 +3033,10 @@ test("profiles reject retired native admin session modes without changing shared
     authBaseUrl: "https://console.example.com",
     agentNativeAdminDomain: "agents.example.com",
   });
-  for (const controlPlane of [
-    input.controlPlane,
-    { ...input.controlPlane, agentNativeAdminSessionMode: "shared-cookie" },
-  ]) {
-    const output = await render("openclaw", { ...input, controlPlane });
-    assert.equal(output.summary.ok, true);
-    assert.deepEqual(loadYaml(output.values).agentNativeAdmin, {
-      enabled: true,
-      domain: "agents.example.com",
-    });
-  }
-  for (const agentNativeAdminSessionMode of ["host-only-exchange", "unknown", "", null]) {
-    await assert.rejects(
-      render("openclaw", {
-        ...input,
-        controlPlane: { ...input.controlPlane, agentNativeAdminSessionMode },
-      }),
-      /controlPlane\.agentNativeAdminSessionMode is no longer configurable; review the shared browser cookie domain/,
-    );
-  }
+  const output = await render("openclaw", input);
+  assert.equal(output.summary.ok, true);
+  assert.deepEqual(loadYaml(output.values).agentNativeAdmin, {
+    enabled: true,
+    domain: "agents.example.com",
+  });
 });

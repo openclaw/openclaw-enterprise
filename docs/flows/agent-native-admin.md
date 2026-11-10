@@ -173,11 +173,6 @@ and public suffixes. This applies even when native access is disabled and uses
 `__Secure-openclaw_occ_shared.session_token`.
 Sign-out revokes the current session and expires its shared cookie. There is no obsolete-cookie cleanup. See the [session contract](../reference/authentication.md#native-admin-shared-sessions).
 
-`apps/controller/src/api-startup.mjs:configuration` rejects a legacy non-shared
-session mode before constructing auth or native admin. Helm and the profile
-renderer also reject it without generating a replacement configuration.
-Operators must [review the new cookie scope before upgrading](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
-
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
@@ -286,7 +281,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
-- 2026-11-10 17:33: Retire the host-only exchange deployment setting and refuse legacy non-shared configurations before startup. (authoring-run/ee831f01-accb-4420-bc71-6678c0843d90 - c6541831756ae40d0485d16d8f0ffeab9851372d)
+- 2026-11-10 17:33: Remove the host-only exchange deployment setting. (authoring-run/ee831f01-accb-4420-bc71-6678c0843d90 - c6541831756ae40d0485d16d8f0ffeab9851372d)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

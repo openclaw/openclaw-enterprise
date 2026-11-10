@@ -193,10 +193,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
-{{- /* Accept the old explicit shared default without changing its scope. Never silently convert the narrower mode. */ -}}
-{{- if and (hasKey .Values.agentNativeAdmin "sessionMode") (not (has .Values.agentNativeAdmin.sessionMode (list "shared-cookie"))) -}}
-{{- fail "agentNativeAdmin.sessionMode is no longer configurable; review the shared browser cookie domain before removing this setting" -}}
-{{- end -}}
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}

@@ -180,7 +180,6 @@ device state, plugins, or other persistent gateway data.
 - Helm requires HTTPS and an Agent DNS suffix even when native access is disabled. Native access also requires private gateway routing.
 - Auth setup rejects missing or incompatible Console and Agent DNS hosts, public-suffix cookie scope, and short auth secrets. The removed `sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN` inputs are rejected, including empty values.
 - Native access setup rejects invalid enablement, origins, or transport prerequisites. A missing `OCC_GATEWAY_API_KEY_PATH` reports `GATEWAY_API_KEY_UNAVAILABLE`.
-- Former host-only exchange settings fail validation. See [upgrade from host-only exchange](../guides/deploy/native-admin.md#upgrade-from-host-only-exchange).
 - See [availability statuses](#authorization-and-availability). With a selected version and derived origin, unsupported native configuration, gateway routing or an unclean Compute endpoint returns `unsupported`.
 - The console hides native access for disabled and denied states and explains stopped, unsupported, or unavailable states. When available, **Open chat** or **Open Agent UI** opens the Agent in a new tab.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.

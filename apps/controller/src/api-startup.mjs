@@ -68,9 +68,6 @@ function startupFailureCode(error) {
   ) {
     return "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED";
   }
-  if (/OCC_AGENT_NATIVE_ADMIN_SESSION_MODE/.test(message)) {
-    return "AGENT_NATIVE_ADMIN_SESSION_MODE_REMOVED";
-  }
   if (/OCC_AGENT_NATIVE_ADMIN|Native admin UI access|Native admin Agent domain/.test(message)) {
     return "AGENT_NATIVE_ADMIN_INVALID";
   }
@@ -237,15 +234,6 @@ function configuration(env) {
     }
   }
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
-  // Do not turn an old host-only deployment into a shared-cookie deployment on upgrade.
-  if (
-    Object.hasOwn(env, "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE") &&
-    env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE !== "shared-cookie"
-  ) {
-    throw new Error(
-      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE is no longer configurable; review the shared browser cookie domain before removing this setting.",
-    );
-  }
   const nativeAdmin = { enabled: nativeAdminEnabled, domain: nativeAdminDomain };
 
   const configuredAuthBaseURL = requiredEnvironment(env, "OCC_AUTH_BASE_URL");
