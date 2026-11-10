@@ -240,7 +240,12 @@ Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 response-only null local-tool metadata and the optional effective image policy.
 Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
 joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
-refuse. Function arguments parse once as bounded JSON. The
+refuse. Reasoning summary parts open only at the next index. A summary delta for an
+unopened or skipped index withholds the response. Reasoning text has no part event,
+so its next content index opens on the first delta, and a later gap still withholds
+the response. Each index is scanned on its own, so selected material split across
+one part is withheld when another part's delta arrives between the halves.
+Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin already received the credential.
 

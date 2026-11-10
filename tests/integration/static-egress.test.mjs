@@ -711,6 +711,117 @@ function responseChecks(f) {
   };
 }
 
+test("shipped exchange withholds material split across one reasoning part", async (t) => {
+  const f = await staticEgressFixture(t);
+  const [prefix, suffix] = splitText(selectedMaterial);
+  const part = (index, text = "") => ({
+    type: "response.reasoning_summary_part.added",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    part: { type: "summary_text", text },
+  });
+  const summaryDelta = (index, text) => ({
+    type: "response.reasoning_summary_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    delta: text,
+  });
+  const textDelta = (index, text) => ({
+    type: "response.reasoning_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    delta: text,
+  });
+  const stream = (inner, doneSummary) => {
+    let sequence = 0;
+    const numbered = (event) => ({ sequence_number: sequence++, ...event });
+    const reasoning = { type: "reasoning", id: "rs_exchange", summary: [] };
+    const response = (status) => ({
+      id: "resp_reasoning_exchange",
+      object: "response",
+      model: wire.request.model,
+      created_at: 1791985502,
+      status,
+      output: status === "completed" ? [{ type: "reasoning", summary: doneSummary }] : [],
+    });
+    return [
+      numbered({ type: "response.created", response: response("in_progress") }),
+      numbered({ type: "response.output_item.added", output_index: 0, item: reasoning }),
+      ...inner.map((event) => numbered(event)),
+      numbered({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { ...reasoning, summary: doneSummary },
+      }),
+      numbered({ type: "response.completed", response: response("completed") }),
+    ];
+  };
+  const redacted = [
+    { type: "summary_text", text: "redacted" },
+    { type: "summary_text", text: "aside" },
+  ];
+  const cases = [
+    {
+      label: "harmless-summary",
+      blocked: false,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, "hello "),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, "world"),
+        ],
+        [
+          { type: "summary_text", text: "hello world" },
+          { type: "summary_text", text: "aside" },
+        ],
+      ),
+    },
+    {
+      label: "withheld-summary",
+      blocked: true,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, prefix),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, suffix),
+        ],
+        redacted,
+      ),
+    },
+    {
+      label: "withheld-reasoning-text",
+      blocked: true,
+      events: stream([textDelta(0, prefix), textDelta(1, "aside"), textDelta(0, suffix)], redacted),
+    },
+  ];
+  for (const entry of cases) {
+    const rawBody = encode(entry.events);
+    const result = await f.exchangeResponse(
+      { status: 200, contentType: "text/event-stream", rawBody },
+      wire.request,
+    );
+    const released = result.blocked ? 0 : Buffer.byteLength(result.body ?? "");
+    console.log(
+      `exchange ${entry.label}: ${result.blocked ? "withheld" : "delivered"} released_bytes=${released}`,
+    );
+    if (entry.blocked) {
+      assert.equal(result.blocked, true, entry.label);
+      assert.equal(released, 0, entry.label);
+    } else {
+      assert.equal(result.response_complete, true, entry.label);
+      assert.equal(result.body?.toString(), rawBody, entry.label);
+      assert.equal(released, Buffer.byteLength(rawBody), entry.label);
+    }
+  }
+});
+
 test("Responses output text assembled across parts and messages cannot reveal selected material", async (t) => {
   const f = await staticEgressFixture(t);
   const check = responseChecks(f);
