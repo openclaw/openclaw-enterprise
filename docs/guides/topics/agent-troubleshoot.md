@@ -124,17 +124,23 @@ workspace intact. See [writable runtime state](../../reference/drivers/openshell
 
 ## Verify runtime health after deployment
 
-The console's **Deployment** tab shows persisted status; it has no live
-gateway-health or chat view. **Current version** means the control plane selected
-that version. It can be a version whose deployment failed, for example when an
-embedded replacement's model check rejected its key after it replaced the
-previous version; see
-[the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
-That selection cannot tell you whether the model still accepts
-the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
-or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
-Check for an actual answer from the configured model, not just a selected
-version or successful file read.
+The console's **Deployment** tab shows persisted status, with no live gateway-health
+or chat view. **Current version** identifies the control plane's selection, even
+[after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment):
+an embedded replacement can reject its key during the model check after replacing
+its predecessor. Selection does not establish credential validity or model responses.
+[Verify the Agent's model response](../operate/model-verification.md) or ask an
+operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
+Require an answer from the configured model; a successful file read is insufficient.
+
+## Check workload capacity
+
+For Kubernetes, compare configured requests/limits, admitted Agent Pod limits
+and enclosing cgroup constraints with the infrastructure owner. Sandbox-visible host totals
+do not establish usable CPU/memory; an unlimited visible cgroup does not rule
+out hidden limits. Unreadable outer limits remain unknown until verified through
+authorized infrastructure tooling. OCE runtime descriptions and diagnostics do
+not measure effective capacity.
 
 ## An embedded Gateway reports an unverifiable state owner
 
