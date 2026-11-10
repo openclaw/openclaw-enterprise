@@ -50,6 +50,14 @@ async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function writeSingleLaneManifest(root, lane, files, groups) {
+  return writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { [lane]: { files } },
+    groups: groups,
+  });
+}
+
 function runnerEnv(env = {}) {
   const baseEnv = { ...process.env };
   delete baseEnv.NODE_ENV;
@@ -126,10 +134,8 @@ test("installed Skipper failure summary reads the actual runner result without e
         );
       }
       await writeFile(join(root, path), lines.join("\n"));
-      await writeJson(join(root, "manifest.json"), {
-        version: 1,
-        lanes: { installed: { files: [{ path, expectedTests: [name] }] } },
-        groups: { ci: ["installed"] },
+      await writeSingleLaneManifest(root, "installed", [{ path, expectedTests: [name] }], {
+        ci: ["installed"],
       });
       const result = run(root, [
         "run",
@@ -675,11 +681,7 @@ test(
     const second = "second.test.mjs";
     const files = [first, second].map((path) => ({ path }));
     await writePrepare(root);
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: { sample: { files } },
-      groups: {},
-    });
+    await writeSingleLaneManifest(root, "sample", files, {});
     await writeFile(
       join(root, first),
       'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
@@ -738,11 +740,12 @@ test("run records a sanitized file failure after all reported cases pass", async
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { failure: { files: [{ path: "tests/integration/file-failure.test.mjs" }] } },
-    groups: { ci: ["failure"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "failure",
+    [{ path: "tests/integration/file-failure.test.mjs" }],
+    { ci: ["failure"] },
+  );
 
   const result = run(root, laneArgs(root, "failure", "state/file-failure.jsonl", resultsPath));
   const artifact = await readFile(resultsPath, "utf8");
@@ -898,21 +901,18 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      dispositions: {
-        files: [
-          {
-            path: "tests/integration/dispositions.test.mjs",
-          },
-        ],
+  await writeSingleLaneManifest(
+    root,
+    "dispositions",
+    [
+      {
+        path: "tests/integration/dispositions.test.mjs",
       },
-    },
-    groups: {
+    ],
+    {
       ci: ["dispositions"],
     },
-  });
+  );
 
   const result = run(root, laneArgs(root, "dispositions", "state/dispositions.jsonl", resultsPath));
 
@@ -1090,16 +1090,8 @@ test("run records timeout cancellation without leaking child output", async (t) 
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      timeout: {
-        files: [{ path: "tests/integration/timeout.test.mjs" }],
-      },
-    },
-    groups: {
-      ci: ["timeout"],
-    },
+  await writeSingleLaneManifest(root, "timeout", [{ path: "tests/integration/timeout.test.mjs" }], {
+    ci: ["timeout"],
   });
 
   const result = run(root, laneArgs(root, "timeout", "state/timeout.jsonl", resultsPath), {
@@ -1188,10 +1180,8 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: { orphan: { files: [{ path: "tests/integration/orphan.test.mjs" }] } },
-      groups: { ci: ["orphan"] },
+    await writeSingleLaneManifest(root, "orphan", [{ path: "tests/integration/orphan.test.mjs" }], {
+      ci: ["orphan"],
     });
     let pids;
     // Never leave the fixture's processes behind, whatever the outcome: only the exact
@@ -1262,11 +1252,12 @@ test(
         "",
       ].join("\n"),
     );
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: { leftover: { files: [{ path: "tests/integration/leftover.test.mjs" }] } },
-      groups: { ci: ["leftover"] },
-    });
+    await writeSingleLaneManifest(
+      root,
+      "leftover",
+      [{ path: "tests/integration/leftover.test.mjs" }],
+      { ci: ["leftover"] },
+    );
     let pids;
     t.after(() => {
       const pid = pids?.grandchild;
@@ -1338,10 +1329,8 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
           "",
         ].join("\n"),
       );
-      await writeJson(join(root, "manifest.json"), {
-        version: 1,
-        lanes: { hang: { files: [{ path: "tests/integration/hang.test.mjs" }] } },
-        groups: { ci: ["hang"] },
+      await writeSingleLaneManifest(root, "hang", [{ path: "tests/integration/hang.test.mjs" }], {
+        ci: ["hang"],
       });
 
       // Detached, so the signal reaches only run-tests.mjs, never this test's group.
@@ -2327,17 +2316,14 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      redacted: {
-        files: [{ path: "tests/integration/redacted.test.mjs" }],
-      },
-    },
-    groups: {
+  await writeSingleLaneManifest(
+    root,
+    "redacted",
+    [{ path: "tests/integration/redacted.test.mjs" }],
+    {
       ci: ["redacted"],
     },
-  });
+  );
 
   const result = run(root, laneArgs(root, "redacted", "state/redacted.jsonl", resultsPath), {
     // Public runner metadata stays readable; the runner strips OCC_TEST_* from
@@ -2779,11 +2765,7 @@ test("run names DOMException and empty-message failures", async (t) => {
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { errors: { files: [{ path: file }] } },
-    groups: { ci: ["errors"] },
-  });
+  await writeSingleLaneManifest(root, "errors", [{ path: file }], { ci: ["errors"] });
 
   const result = run(root, laneArgs(root, "errors", "state/errors.jsonl", resultsPath));
   assert.equal(result.status, 1);
@@ -3440,10 +3422,8 @@ test("policy probe diagnostics preserve first-match failure and omit model conte
       "});",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { policy: { files: [{ path: "tests/integration/policy.test.mjs" }] } },
-    groups: { ci: ["policy"] },
+  await writeSingleLaneManifest(root, "policy", [{ path: "tests/integration/policy.test.mjs" }], {
+    ci: ["policy"],
   });
   const result = run(root, laneArgs(root, "policy", statePath, resultsPath));
   assert.equal(result.status, 1);
@@ -3579,18 +3559,12 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     join(root, "tests/integration/quiet.test.mjs"),
     'import test from "node:test";\ntest("quiet", () => { console.log("passing output"); });\n',
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      details: {
-        files: [
-          { path: "tests/integration/details.test.mjs" },
-          { path: "tests/integration/quiet.test.mjs" },
-        ],
-      },
-    },
-    groups: { ci: ["details"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "details",
+    [{ path: "tests/integration/details.test.mjs" }, { path: "tests/integration/quiet.test.mjs" }],
+    { ci: ["details"] },
+  );
 
   const result = run(root, laneArgs(root, "details", statePath, resultsPath));
 
@@ -3721,11 +3695,12 @@ test("run retains redacted Skill exercise and restoration failures within its me
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { restoration: { files: [{ path: "tests/integration/restoration.test.mjs" }] } },
-    groups: { ci: ["restoration"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "restoration",
+    [{ path: "tests/integration/restoration.test.mjs" }],
+    { ci: ["restoration"] },
+  );
 
   // Run the real helper through Node's serialization, the unchanged reporter, and both outputs.
   const result = run(root, laneArgs(root, "restoration", statePath, resultsPath));
@@ -3959,11 +3934,12 @@ for (const { name, stage, detail, output, logs, drift, observation, read, outcom
 }
 `,
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { conversation: { files: [{ path: "tests/integration/conversation.test.mjs" }] } },
-    groups: { ci: ["conversation"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "conversation",
+    [{ path: "tests/integration/conversation.test.mjs" }],
+    { ci: ["conversation"] },
+  );
   const result = run(root, laneArgs(root, "conversation", statePath, resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const summaryText = await readFile(resultsPath, "utf8");
@@ -4222,10 +4198,8 @@ waitingTest("run records a timeout that came before any test started", async (t)
     join(root, "tests/integration/stuck.test.mjs"),
     'import test from "node:test";\nawait new Promise((resolve) => setTimeout(resolve, 30_000));\ntest("never registered", () => {});\n',
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { stuck: { files: [{ path: "tests/integration/stuck.test.mjs" }] } },
-    groups: { ci: ["stuck"] },
+  await writeSingleLaneManifest(root, "stuck", [{ path: "tests/integration/stuck.test.mjs" }], {
+    ci: ["stuck"],
   });
 
   const result = await runAsync(
@@ -4288,18 +4262,15 @@ waitingTest(
         "",
       ].join("\n"),
     );
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: {
-        deadline: {
-          files: [
-            { path: "tests/integration/teardown.test.mjs" },
-            { path: "tests/integration/later.test.mjs" },
-          ],
-        },
-      },
-      groups: { ci: ["deadline"] },
-    });
+    await writeSingleLaneManifest(
+      root,
+      "deadline",
+      [
+        { path: "tests/integration/teardown.test.mjs" },
+        { path: "tests/integration/later.test.mjs" },
+      ],
+      { ci: ["deadline"] },
+    );
 
     // The runner's clock stops a second in until the file hangs in its teardown, so the deadline
     // comes at least two seconds after that, however long the host takes to get there.
@@ -4376,10 +4347,8 @@ waitingTest("run starts no file with under a second left before the lane deadlin
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { near: { files: [{ path: "tests/integration/late.test.mjs" }] } },
-    groups: { ci: ["near"] },
+  await writeSingleLaneManifest(root, "near", [{ path: "tests/integration/late.test.mjs" }], {
+    ci: ["near"],
   });
 
   const result = await runAsync(
@@ -4424,10 +4393,8 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { hook: { files: [{ path: "tests/integration/hook.test.mjs" }] } },
-    groups: { ci: ["hook"] },
+  await writeSingleLaneManifest(root, "hook", [{ path: "tests/integration/hook.test.mjs" }], {
+    ci: ["hook"],
   });
 
   // The runner's clock stands still from the start until "passes" is done and the hook has
@@ -4483,18 +4450,12 @@ waitingTest(
         'import test from "node:test";\ntest("runs", () => {});\n',
       );
     }
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: {
-        prepare: {
-          files: [
-            { path: "tests/integration/hung.test.mjs" },
-            { path: "tests/integration/later.test.mjs" },
-          ],
-        },
-      },
-      groups: { ci: ["prepare"] },
-    });
+    await writeSingleLaneManifest(
+      root,
+      "prepare",
+      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
+      { ci: ["prepare"] },
+    );
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.
@@ -4626,18 +4587,12 @@ waitingTest(
         'import test from "node:test";\ntest("runs", () => {});\n',
       );
     }
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: {
-        cleanup: {
-          files: [
-            { path: "tests/integration/hung.test.mjs" },
-            { path: "tests/integration/later.test.mjs" },
-          ],
-        },
-      },
-      groups: { ci: ["cleanup"] },
-    });
+    await writeSingleLaneManifest(
+      root,
+      "cleanup",
+      [{ path: "tests/integration/hung.test.mjs" }, { path: "tests/integration/later.test.mjs" }],
+      { ci: ["cleanup"] },
+    );
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
@@ -4807,18 +4762,12 @@ test("run records a preparation failure's redacted message in the diagnostics re
       'import test from "node:test";\ntest("runs", () => {});\n',
     );
   }
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      prepare: {
-        files: [
-          { path: "tests/integration/broken.test.mjs" },
-          { path: "tests/integration/fine.test.mjs" },
-        ],
-      },
-    },
-    groups: { ci: ["prepare"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "prepare",
+    [{ path: "tests/integration/broken.test.mjs" }, { path: "tests/integration/fine.test.mjs" }],
+    { ci: ["prepare"] },
+  );
 
   const result = run(root, laneArgs(root, "prepare", statePath, resultsPath));
 
@@ -5691,22 +5640,19 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   const sha = currentSha();
   const file = "tests/integration/model.test.mjs";
   const name = "real model case";
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      "docker-model": {
-        files: [
-          {
-            path: file,
-            expectedTests: [name],
-          },
-        ],
+  await writeSingleLaneManifest(
+    root,
+    "docker-model",
+    [
+      {
+        path: file,
+        expectedTests: [name],
       },
-    },
-    groups: {
+    ],
+    {
       runtime: ["docker-model"],
     },
-  });
+  );
   await writeJson(join(root, "results/docker-model.json"), {
     version: 1,
     command: "run",
@@ -5895,17 +5841,14 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
 test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      baseline: {
-        files: [{ path: "tests/integration/baseline.test.mjs" }],
-      },
-    },
-    groups: {
+  await writeSingleLaneManifest(
+    root,
+    "baseline",
+    [{ path: "tests/integration/baseline.test.mjs" }],
+    {
       ci: ["baseline"],
     },
-  });
+  );
   await writeJson(join(root, "results/baseline.json"), {
     version: 1,
     command: "run",
@@ -6170,11 +6113,7 @@ test("a failed local setup reports only paired outcomes", async (t) => {
 });
 `,
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { measure: { files: [{ path: testPath }] } },
-    groups: { ci: ["measure"] },
-  });
+  await writeSingleLaneManifest(root, "measure", [{ path: testPath }], { ci: ["measure"] });
   const result = run(root, laneArgs(root, "measure", "state/runtime-outcomes.jsonl", resultsPath));
   assert.equal(result.status, 1, result.stderr);
   const artifact = await readFile(resultsPath, "utf8");
@@ -6361,11 +6300,7 @@ test("reject ambiguous or non-failure startup records", async (t) => {
 });
 `,
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { intake: { files: [{ path }] } },
-    groups: { ci: ["intake"] },
-  });
+  await writeSingleLaneManifest(root, "intake", [{ path }], { ci: ["intake"] });
   const results = join(root, "results/intake.json");
   const result = run(root, laneArgs(root, "intake", "state/intake.jsonl", results));
   assert.equal(result.status, 0, result.stderr + result.stdout);
@@ -7288,11 +7223,12 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: { measure: { files: [{ path: "tests/integration/measurements.test.mjs" }] } },
-    groups: { ci: ["measure"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "measure",
+    [{ path: "tests/integration/measurements.test.mjs" }],
+    { ci: ["measure"] },
+  );
 
   const result = run(root, laneArgs(root, "measure", "state/measurements.jsonl", resultsPath));
   const artifact = await readFile(resultsPath, "utf8");
@@ -7660,18 +7596,15 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       'import test from "node:test";\ntest("runs", () => {});\n',
     );
   }
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      cancel: {
-        files: [
-          { path: "tests/integration/plain.test.mjs" },
-          { path: "tests/integration/cancelled.test.mjs" },
-        ],
-      },
-    },
-    groups: { ci: ["cancel"] },
-  });
+  await writeSingleLaneManifest(
+    root,
+    "cancel",
+    [
+      { path: "tests/integration/plain.test.mjs" },
+      { path: "tests/integration/cancelled.test.mjs" },
+    ],
+    { ci: ["cancel"] },
+  );
 
   // A parent process stands in for the step's shell: it waits for the runner until the second
   // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a
@@ -7863,11 +7796,12 @@ for (const scenario of [
 ]) {
   test(`run retains safe preparation ${scenario.name} diagnostics without starting tests`, async (t) => {
     const root = await fixture(t);
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: { preparation: { files: [{ path: "tests/integration/unstarted.test.mjs" }] } },
-      groups: { ci: ["preparation"] },
-    });
+    await writeSingleLaneManifest(
+      root,
+      "preparation",
+      [{ path: "tests/integration/unstarted.test.mjs" }],
+      { ci: ["preparation"] },
+    );
     await writeFile(
       join(root, "tests/integration/unstarted.test.mjs"),
       'import { writeFileSync } from "node:fs"; writeFileSync(new URL("../../started", import.meta.url), "started");\n',
