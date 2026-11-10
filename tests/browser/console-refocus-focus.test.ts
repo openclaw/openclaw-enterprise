@@ -1168,29 +1168,159 @@ test("persistent refocus failure leaves a local warning and Retry checks fresh a
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
-test("a rate-limited Agent refocus waits for explicit Retry", async (t) => {
-  const { fixture, page, editor, requests, readCount, agentPath } = await openRefocusDraft(t);
+for (const recover of [false, true]) {
+  test(`Agent refocus keeps Delete gated ${recover ? "after a recovered 5xx" : "after healthy reads"}`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, agentPath } =
+      await openRefocusDraft(t);
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    const actionable = (control: Locator) =>
+      control.click({ trial: true, timeout: 600 }).then(
+        () => true,
+        () => false,
+      );
+    await remove.click({ trial: true });
+    await save.click({ trial: true });
+
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    const revisionsUrl = `${fixture.origin}${agentPath}/revisions`;
+    const revisionStatuses: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === revisionsUrl && response.request().method() === "GET") {
+        revisionStatuses.push(response.status());
+      }
+    });
+    const transient = recover
+      ? await holdRequests(t, page, revisionsUrl, {
+          once: true,
+          method: "GET",
+          fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+        })
+      : null;
+    const allowed = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const allowedInBrowser = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    if (transient) {
+      await transient.requested;
+      transient.release();
+    }
+    const allowedByServer = await allowed.requested;
+    assert.ok(allowedByServer);
+    assert.equal(allowedByServer.status(), 200);
+    assert.equal((await allowedByServer.json()).data.delete, true);
+    const pendingActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    allowed.release();
+    assert.equal((await allowedInBrowser).status(), 200);
+    await waitForIdleFetches(page);
+    assert.deepEqual(revisionStatuses, recover ? [500, 200] : [200]);
+    await remove.click({ trial: true });
+
+    const failure = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      fulfill: proxyErrorResponse(503),
+    });
+    const failed = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    assert.equal((await failed).status(), 503);
+    await waitForIdleFetches(page);
+    const failedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await hasFocus(editor), true);
+    assert.deepEqual(
+      await editor.evaluate((node: HTMLTextAreaElement) => [
+        node.selectionStart,
+        node.selectionEnd,
+      ]),
+      [3, 7],
+    );
+
+    const granted = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    assert.equal((await granted).status(), 200);
+    await remove.click({ trial: true });
+    restrict(fixture.policy, "delete", "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
+    const denied = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    const revoked = await denied;
+    assert.equal(revoked.status(), 200);
+    assert.equal((await revoked.json()).data.delete, false);
+    await waitForIdleFetches(page);
+    const revokedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(
+      { pendingActionable, failedActionable, revokedActionable },
+      {
+        pendingActionable: { delete: false, save: false },
+        failedActionable: { delete: false, save: false },
+        revokedActionable: { delete: false, save: true },
+      },
+    );
+  });
+}
+
+test("a rate-limited Agent refocus respects the longest delay and waits for explicit Retry", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
   const path = `${agentPath}/revisions`;
   const url = fixture.origin + path;
+  const configurationUrl = fixture.origin + configurationPath;
   await page.clock.install();
-  const throttle = await holdRequests(t, page, url, {
+  const unavailable = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(503), headers: { "retry-after": "1" } },
+  });
+  const throttle = await holdRequests(t, page, configurationUrl, {
     once: true,
     method: "GET",
     fulfill: { ...proxyErrorResponse(429), headers: { "retry-after": "60" } },
   });
-  const limited = responseTo(page, "GET", url);
+  const unavailableResponse = responseTo(page, "GET", url);
+  const limited = responseTo(page, "GET", configurationUrl);
   await refocus(page);
-  await throttle.requested;
+  await Promise.all([unavailable.requested, throttle.requested]);
+  unavailable.release();
   throttle.release();
+  assert.equal((await unavailableResponse).status(), 503);
   assert.equal((await limited).status(), 429);
   const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
   const retry = warning.getByRole("button", { name: "Retry", exact: true });
   await warning.waitFor();
   assert.equal(await retry.isEnabled(), false);
   assert.equal(await editor.count(), 0);
-  await page.clock.fastForward(60_000);
+  await page.clock.fastForward(2_000);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isEnabled(), false, "the longer Configuration delay still applies");
+  await page.clock.fastForward(57_000);
+  assert.equal(await retry.isEnabled(), false, "Retry stays disabled just before the deadline");
+  await page.clock.fastForward(1_000);
   assert.equal(await retry.isEnabled(), true);
-  assert.equal(readCount(path), 1, "the server delay does not schedule another read");
+  assert.equal(readCount(path), 1, "the server delay does not schedule another revision read");
+  assert.equal(
+    readCount(configurationPath),
+    1,
+    "the server delay does not schedule another Configuration read",
+  );
   const admitted = responseTo(page, "GET", url);
   await retry.click();
   assert.equal((await admitted).status(), 200);

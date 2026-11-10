@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-10
-last_updated_session: authoring-run/376a5ba9-f37d-4a9f-a8bc-a2359d2cd7c9
+last_updated_session: authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6
 ---
 
 # Platform console request flow
@@ -137,29 +137,29 @@ Disabling Debug mode stops new reads. See the
 ### 2. Resolve the session before private reads
 
 `agents/collection.mts:renderAgentList` focuses the Agent link on plain row clicks.
+Interactive targets, modified clicks, and selected text retain their behavior.
 
-`loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
-shows **Loading agent details…** and **Back to Agents**, then reveals the Agent
-after access checks. Back cancels once. Refocus waits for opening. Other Agent
-routes preserve the page or show loading after 400 ms. Other first visits and
-Refresh wait 250 ms. Visible loading lasts at least 300 ms.
+`loadPage` starts with `GET /api/auth/session`. Opening an Agent shows **Loading
+agent details…** and **Back to Agents**. Back cancels once. Refocus waits. Loading
+delays are 400 ms for other Agent routes and 250 ms for other visits or Refresh.
+A visible loading page stays for 300 ms or longer.
 
 Return and refocus hold the view inert. **Still checking…** appears after one
-second. The Console retains up to 16 views by route, Namespace, and session.
-Matching user and reads restore DOM, handlers, drafts, and debug disclosures.
-Changed reads, new Namespaces, and Refresh rebuild. Pending or failed reads,
-passwords, and mutations prevent reuse. Discovery state is excluded. Read-only
-POSTs permit reuse.
+second. Up to 16 views retain drafts and disclosures by route, Namespace, and
+session. Changed reads, newly readable Namespaces, and Refresh rebuild. A cancelled
+return preserves the view. A cancelled Refresh discards it. Discovery, passwords,
+mutations, and pending or failed reads prevent reuse. Read-only POSTs permit reuse.
 
-`console.mts:revalidateMountedAgent` checks the session, Namespace, Agent, and
-selected details. Focus and visibility events share the check. A failed detail
-read hides protected content. A 5xx without a retry delay allows one more set
-of detail GETs. Navigation cancels the check. Success restores the view and
-focus. Narrowed access triggers a rebuild from fresh reads.
+`console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
+reads. Focus and visibility share the check. Navigation cancels it. A detail error
+hides protected content. A 5xx permits one retry unless a refusal, 429, or retry
+delay takes precedence. The Agent page applies fresh permissions before releasing
+grant-dependent controls. Successful checks restore the view and focus.
+Narrowed read access rebuilds.
 
-If the check still fails, the Agent header names a freshly checked Agent.
-**Retry** in the warning starts admission again. Session expiry opens sign-in.
-A refusal removes private content.
+A persistent detail failure shows a warning with the Agent name from a confirmed
+read. **Retry** starts admission after the latest retry deadline. Session expiry
+opens sign-in. A refusal removes private content.
 
 `api-client.mts:createApiClient` preserves abort and socket failures through
 response bodies without replay.
@@ -172,7 +172,7 @@ cell. Pending or failed reads resume. Search cancels reads for rows it hides
 (`collection.mts:retireHidden`). A row shown again reads once.
 
 A changed user or session key clears private state. A missing session opens login.
-Failed reads offer Retry. See [sign-in and return](platform-console/sign-in-return.md).
+See [sign-in and return](platform-console/sign-in-return.md) for recovery.
 
 After authentication, `GET /namespaces` keeps the URL selection or picks the
 first ready and readable Namespace. Unreadable IDs stay unavailable.
@@ -366,7 +366,7 @@ gateway startup and file availability.
 
 ## Changelog
 
-- 2026-11-10 18:56: Retry a temporary Agent detail read on tab return and show a warning if it still fails. (authoring-run/376a5ba9-f37d-4a9f-a8bc-a2359d2cd7c9 - 7aaab5047253612d942ea931052d69376fd9cbfa)
+- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
 
 - 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 

@@ -91,11 +91,12 @@ channel Secret save is denied, the Console clears the binding controls and keeps
 the failed attempt's message. No save is sent. After access is restored, use
 **Refresh** to read saved state before retrying.
 
-When you return to an Agent tab, the Console checks access again and retries a
-temporary server error once. If the check still fails, the Agent page shows a
-warning and hides details it could not check. Select **Retry** to check access
-again. If the saved data still matches, the Console restores the view and your
-place in it.
+When you return to an Agent tab, the Console checks access again. Actions such as
+**Delete Agent** need a fresh permission answer. A temporary detail read error
+can trigger one automatic retry. If the read still fails, the Console hides
+unconfirmed details and shows a warning. **Retry** checks access again when any
+server retry delay ends. A successful check can restore the view and your place
+in it.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.

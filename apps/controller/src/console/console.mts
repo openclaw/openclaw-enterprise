@@ -4,12 +4,7 @@ import type {
   Namespace,
   NamespaceCallerPermissionsResponse,
 } from "@openclaw-enterprise/contracts";
-import type {
-  AgentRecheck,
-  ConsolePageContext,
-  LeaveGuard,
-  TabNavigation,
-} from "./page-context.mjs";
+import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
@@ -30,6 +25,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
+import type { AgentRecheckHandler } from "./agents/detail.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -108,7 +104,7 @@ interface MountedView {
   readablePaths: Set<string>;
   administrationReads: Map<string, AdministrationMode>;
   administrationEnded: Set<() => void>;
-  rechecked: Set<(recheck: AgentRecheck) => void>;
+  rechecked: Set<AgentRecheckHandler>;
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
   revalidators: Set<() => Promise<unknown>>;
@@ -2292,15 +2288,25 @@ async function loadPage({
     };
     mountedViewState = viewState;
     const viewIsCurrent = () => viewState.active !== null && lifetime.isCurrent(viewState.active);
+    const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
+    let newestAgentPermissionRead = 0;
     // A read the view redoes when it resumes (rereadOnResume, the Agents list's row
     // deployments) neither keeps the view from being reused while it runs nor, if it fails,
     // afterwards (finding 1663). Leaving aborts it, and its section rereads it on resume.
     const viewRequest: ConsolePageContext["request"] = async (path, options = {}) => {
+      const read = (options.method ?? "GET") === "GET";
+      const permissionRead =
+        read && path === agentPermissionsPath ? ++newestAgentPermissionRead : null;
+      const requestLifetime = lifetime.capture();
+      // A stale summary must not become the signature Back uses to readmit retained controls.
+      const canRecord = () =>
+        permissionRead === null ||
+        (permissionRead === newestAgentPermissionRead && lifetime.isCurrent(requestLifetime));
       const counted = !options.rereadOnResume;
       if (counted) {
         viewState.pending += 1;
       }
-      if ((options.method ?? "GET") !== "GET" && !options.readOnly) {
+      if (!read && !options.readOnly) {
         viewState.reusable = false;
         viewState.mutations += 1;
         retainedViews.clear();
@@ -2316,7 +2322,7 @@ async function loadPage({
         const result = await request(path, options);
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
-        if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
+        if (read && options.revalidate !== false && canRecord()) {
           viewState.readablePaths.add(path);
           recordRead(readSignature(result, options.includeMeta));
           if (options.includeMeta) {
@@ -2327,7 +2333,10 @@ async function loadPage({
       } catch (error) {
         // A refused or missing read the view shows as its answer keeps the view reusable; live
         // reads leave theirs to their section's own return check (finding 1553).
-        if ((options.method ?? "GET") === "GET" && settledRefusal(error)) {
+        if (read && settledRefusal(error)) {
+          if (!canRecord()) {
+            throw error;
+          }
           // Content a later poll was refused may still be on screen: a return rebuilds it.
           const prior = viewState.reads.get(path);
           if (prior !== undefined && prior !== refusedRead(error.status)) {
@@ -2464,7 +2473,6 @@ async function loadPage({
         return () => viewState.revalidators.delete(check);
       },
       onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
-      onRechecked: (handler) => viewState.rechecked.add(handler),
       recheckAdministration,
       onExpired: () => {
         if (viewIsCurrent()) {
@@ -2678,6 +2686,7 @@ async function loadPage({
           ...agentContext,
           namespaceId: selectedNamespace,
           agentId: current.agentId,
+          onRechecked: (handler) => viewState.rechecked.add(handler),
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
               agentContext.drafts.clear();
@@ -3098,7 +3107,9 @@ async function revalidateMountedAgent(current: Route) {
   if (pageActions) {
     pageActions.inert = true;
   }
-  let agentAdmitted = false;
+  const mountedTitle = heading.textContent;
+  let admittedAgentName: string | undefined;
+  let identityConcealed = false;
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
@@ -3111,12 +3122,22 @@ async function revalidateMountedAgent(current: Route) {
     if (diagnostics) {
       diagnostics.hidden = true;
     }
-    if (!agentAdmitted) {
+    if (admittedAgentName === undefined) {
+      identityConcealed = true;
       heading.textContent = "Agent details";
       if (agentIdentity) {
         agentIdentity.hidden = true;
       }
     }
+  };
+  let retryNotBefore = 0;
+  const detailFailure = (error: unknown): never => {
+    concealDetails();
+    const { retryAfterSeconds } = requestFailure(error);
+    if (retryAfterSeconds !== undefined) {
+      retryNotBefore = Math.max(retryNotBefore, performance.now() + retryAfterSeconds * 1000);
+    }
+    throw error;
   };
   let checked = false;
   let clearStillChecking: (() => void) | undefined;
@@ -3163,7 +3184,7 @@ async function revalidateMountedAgent(current: Route) {
     shellUI.updateNamespaces(namespaces);
     const readDetails = async () => {
       const readStartedAt = performance.now();
-      const freshAgent = await request(path);
+      const freshAgent = await request(path).catch(detailFailure);
       if (!isCurrent()) {
         return;
       }
@@ -3177,14 +3198,8 @@ async function revalidateMountedAgent(current: Route) {
       ) {
         throw new Error("Invalid Agent response");
       }
-      agentAdmitted = true;
-      if (heading.textContent !== name) {
-        heading.textContent = name;
-      }
-      if (agentIdentity) {
-        agentIdentity.hidden = false;
-      }
-      const rechecked = { agent: freshAgent, readStartedAt, reload: false };
+      admittedAgentName = name;
+      const rechecked = { agent: freshAgent, readStartedAt, isCurrent, reload: false };
       if (
         configurationId !== agent.configurationId ||
         (configurationReadError !== undefined &&
@@ -3222,10 +3237,7 @@ async function revalidateMountedAgent(current: Route) {
             }
             return { data, meta };
           })
-          .catch((error: unknown) => {
-            concealDetails();
-            throw error;
-          });
+          .catch(detailFailure);
         // A version this page showed as unreadable has nothing on screen to scrub: its read would
         // only be refused and audited again on every refocus, and the refusal would replace the
         // page (finding D799). The page proved it on load as the version's own view does: a settled
@@ -3251,17 +3263,19 @@ async function revalidateMountedAgent(current: Route) {
               if (selected === "draft" && requestFailure(error).status === 403 && refusalSettled) {
                 return;
               }
-              concealDetails();
-              throw error;
+              detailFailure(error);
             }),
         ]);
         if (versionResult.status === "rejected" || snapshotResult.status === "rejected") {
           const errors = [versionResult, snapshotResult].flatMap((result) =>
             result.status === "rejected" ? [result.reason as unknown] : [],
           );
-          // A concurrent refusal or rate limit takes precedence over a retryable failure.
+          // A refusal or throttled read governs the batch regardless of result order.
           throw (
+            errors.find((error) => requestFailure(error).status === 401) ??
             errors.find((error) => isAccessRefusal(requestFailure(error).status)) ??
+            errors.find((error) => requestFailure(error).status === 429) ??
+            errors.find((error) => requestFailure(error).retryAfterSeconds !== undefined) ??
             errors.find((error) => !retryableAgentRecheck(error)) ??
             errors[0]
           );
@@ -3307,7 +3321,7 @@ async function revalidateMountedAgent(current: Route) {
       rechecked = await readDetails();
     } catch (error) {
       concealDetails();
-      if (!isCurrent() || !retryableAgentRecheck(error)) {
+      if (!isCurrent() || retryNotBefore !== 0 || !retryableAgentRecheck(error)) {
         throw error;
       }
       // One more set of detail GETs for this foreground check. Navigation aborts it.
@@ -3326,9 +3340,7 @@ async function revalidateMountedAgent(current: Route) {
       restoreFocus(true);
       return;
     }
-    for (const handler of state.rechecked) {
-      handler(rechecked);
-    }
+    await Promise.all(Array.from(state.rechecked, (handler) => handler(rechecked)));
     checked = true;
   } catch (error) {
     if (!isCurrent() || responseFields(error).name === "AbortError") {
@@ -3351,9 +3363,16 @@ async function revalidateMountedAgent(current: Route) {
       unreachable(error) ||
       status === 408 ||
       status === 429 ||
-      (status !== undefined && status >= 500)
+      (status !== undefined && status >= 500) ||
+      (!isAccessRefusal(status) && retryNotBefore !== 0)
     ) {
-      const { requestId, retryAfterSeconds } = requestFailure(error);
+      const { requestId } = requestFailure(error);
+      if (admittedAgentName !== undefined) {
+        heading.textContent = admittedAgentName;
+        if (agentIdentity) {
+          agentIdentity.hidden = false;
+        }
+      }
       const retry = button("Retry", () => {
         if (!resumePending && warning.isConnected && routeKey(route()) === key) {
           trackResume(loadPage({ reuseView: true }).then(() => restoreFocus(true)));
@@ -3365,18 +3384,21 @@ async function revalidateMountedAgent(current: Route) {
         statusBlock(
           "warning",
           "Could not check Agent details",
-          status === 429 || retryAfterSeconds
+          status === 429 || retryNotBefore > performance.now()
             ? "Wait before retrying. Details are hidden until access is checked."
             : "Retry to check access and show details.",
           [retry, requestId ? requestIdDisclosure(requestId) : null],
           { className: "agent-recheck-warning", role: "status" },
         ),
       );
-      if (retryAfterSeconds !== undefined) {
+      const delay = retryNotBefore - performance.now();
+      if (delay > 0) {
         retry.disabled = true;
         setTimeout(() => {
-          retry.disabled = false;
-        }, retryAfterSeconds * 1000);
+          if (warning.isConnected && routeKey(route()) === key) {
+            retry.disabled = false;
+          }
+        }, Math.ceil(delay));
       }
       // Retain the editor in memory only. A Retry goes through normal page admission.
       resetReads({ retainView: true, keepShell: true });
@@ -3403,6 +3425,12 @@ async function revalidateMountedAgent(current: Route) {
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (checked && isCurrent()) {
+      if (identityConcealed) {
+        heading.textContent = mountedTitle;
+        if (agentIdentity) {
+          agentIdentity.hidden = false;
+        }
+      }
       view.style.removeProperty("opacity");
       view.inert = false;
       if (pageActions) {
