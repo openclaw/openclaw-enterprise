@@ -90,16 +90,30 @@ function hasOnlyKeys(value: unknown, keys: readonly string[]): value is Resource
   );
 }
 
+function validResponseMeta(envelope: Resource): boolean {
+  const meta = envelope.meta;
+  return (
+    hasOnlyKeys(meta, ["requestId"]) &&
+    typeof meta.requestId === "string" &&
+    new RegExp(`^req_${uuidV4}$`, "u").test(meta.requestId)
+  );
+}
+
+function validSuccessEnvelope(result: ApiResult): boolean {
+  return (
+    hasOnlyKeys(result.envelope, ["data", "meta"]) &&
+    result.data !== undefined &&
+    validResponseMeta(result.envelope)
+  );
+}
+
 function validErrorEnvelope(
   result: ApiResult,
 ): result is ApiResult & { error: { code: string; message: string } } {
   const { error, envelope } = result;
-  const meta = isRecord(envelope) ? envelope.meta : undefined;
   if (
     !hasOnlyKeys(envelope, ["error", "meta"]) ||
-    !hasOnlyKeys(meta, ["requestId"]) ||
-    typeof meta.requestId !== "string" ||
-    !new RegExp(`^req_${uuidV4}$`, "u").test(meta.requestId) ||
+    !validResponseMeta(envelope) ||
     !hasOnlyKeys(error, ["code", "message", "details", "remainingResources"]) ||
     typeof error.code !== "string" ||
     !boundedString(error.message, 1, 256)
@@ -487,6 +501,16 @@ export function createOccApi({
         `${method} ${path.slice(0, 240)}: HTTP ${result.status} returned no data envelope. ${recoverOcc}`,
       );
     }
+    if (
+      result.status >= 200 &&
+      result.status < 300 &&
+      result.status !== 204 &&
+      !validSuccessEnvelope(result)
+    ) {
+      throw new InvalidMigrationDataError(
+        `${method} ${path.slice(0, 240)}: HTTP ${result.status} returned an invalid success envelope. ${recoverOcc}`,
+      );
+    }
     if (method === "DELETE" && result.status === 202) {
       responseId(
         requireRecord(result.data, `${method} ${path}: invalid OCC response data`, recoverOcc),
@@ -631,13 +655,31 @@ export async function exportTenants(
       const workspaceFiles: Record<string, string> = {};
       const unreadWorkspaceFiles = [];
       for (const name of WORKSPACE_FILE_NAMES) {
-        const file = await api.call("GET", `${base}/agents/${agent.id}/workspace/files/${name}`);
-        const content = isRecord(file.data) ? file.data.content : undefined;
-        if (file.status === 200 && typeof content === "string") {
-          workspaceFiles[name] = content;
-        } else if (file.status !== 404) {
-          const error = isRecord(file.error) ? file.error : undefined;
-          unreadWorkspaceFiles.push(`${name} (HTTP ${file.status} ${error?.code ?? ""})`.trim());
+        const path = `${base}/agents/${agent.id}/workspace/files/${name}`;
+        const file = await api.call("GET", path);
+        const data = file.data;
+        const isWellFormed = (
+          String.prototype as unknown as { isWellFormed: (this: string) => boolean }
+        ).isWellFormed;
+        if (
+          file.status === 200 &&
+          validSuccessEnvelope(file) &&
+          hasOnlyKeys(data, ["name", "content"]) &&
+          data.name === name &&
+          typeof data.content === "string" &&
+          isWellFormed.call(data.content) &&
+          !data.content.includes("\0") &&
+          Buffer.byteLength(data.content, "utf8") <= 16 * 1024
+        ) {
+          workspaceFiles[name] = data.content;
+        } else if (!(
+          file.status === 404 &&
+          definitiveRefusal(file, "GET", path) &&
+          file.error.code === "NOT_FOUND"
+        )) {
+          // Only a verified missing-file response proves absence. Unknown responses
+          // remain unread, so discard still requires an explicit recovery decision.
+          unreadWorkspaceFiles.push(`${name} (HTTP ${file.status})`);
         }
       }
       if (unreadWorkspaceFiles.length > 0) {

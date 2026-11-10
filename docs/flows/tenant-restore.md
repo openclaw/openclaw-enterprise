@@ -49,7 +49,8 @@ graph TD
 
 `scripts/split-layout-tenants.ts:importTenants`
 
-Collection reads must return an array in `data`. A successful HTTP status with
+Successful responses require the OCC `data` and request metadata envelope without
+an `error` field. Collection reads must return an array in `data`. A successful HTTP status with
 a non-array collection stops the import at that read; it is not an empty
 Namespace inventory. The error reports a bounded request path, not response content.
 Keep the original bundle and map, if present. Correct the OCC endpoint and
@@ -58,6 +59,9 @@ also applies to export and discard; do not blindly retry a partially completed
 operation. Exact resource reads with unreadable saved settings and bundles missing
 required restoration fields are refused. Credential sources need a type; Roles
 need permissions. OCC still validates the submitted configuration and grants.
+Workspace export accepts only the requested file's validated response. Only a
+verified OCC `404 NOT_FOUND` means absent; all other unreadable responses remain
+recorded so discard requires the explicit unread-workspace override.
 Discard validates every collection and deletion ID against its route format
 before its first DELETE, preserving opaque IAM identifiers. Invalid private JSON is reported by input
 name without quoting its contents.
@@ -143,3 +147,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 - 2026-10-29 18:49: State that reported access bindings are reported again on every rerun. (authoring-run/afb2c16f-3c1e-4c3e-997c-7980211797c2 - 2de02b7f99)
 - 2026-10-29 18:02: Report access bindings that require manual recovery and distinguish omitted Agent revision bindings. (authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4 - ce529eed9989d495816d222fa6b383d18e0a5281)
 - 2026-10-28 22:27: Record tenant restore ordering and remap Preset authentication after service-account IDs exist. (authoring-run/a5ca040d-695b-43c5-b18c-d6b1938aa6c5 - 478e0cfcda4849e519a3224f5d05b2a4fb6a5bca)
+
+- 2026-11-10 17:32: Validate successful OCC envelopes and preserve unverified workspace reads as unread. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - 9fac3e11786d23b9ebb73cf2eece61a0257157dc)

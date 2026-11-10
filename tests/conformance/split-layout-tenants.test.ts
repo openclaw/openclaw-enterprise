@@ -684,7 +684,10 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     },
     {
       status: 202,
-      body: { data: { id: seeded.agent.id, namespaceId: saved.ids[seeded.namespace.id] } },
+      body: {
+        data: { id: seeded.agent.id, namespaceId: saved.ids[seeded.namespace.id] },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
       diagnostic: "invalid OCC response id: invalid resource ID.",
     },
     {
@@ -696,6 +699,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
           agentId: seeded.agent.id,
           revision: 1,
         },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
       },
       diagnostic: "returned resource identity does not match the request.",
     },
@@ -735,7 +739,12 @@ test("export command reports an invalid Namespace response without writing a bun
   const requests: [string | undefined, string | undefined, string | string[] | undefined][] = [];
   const server = createServer((request, response) => {
     requests.push([request.method, request.url, request.headers["x-api-key"]]);
-    response.writeHead(200, { "content-type": "application/json" }).end('{"data":[null]}');
+    response.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        data: [null],
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      }),
+    );
   });
   await listen(t, server);
   const address = server.address();
@@ -895,8 +904,24 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
     [
       "missing-id",
       201,
-      '{"data":{}}',
+      (body: string) => JSON.stringify({ ...object(JSON.parse(body) as unknown), data: {} }),
       "invalid OCC response data; expected a nonempty string in id.",
+    ],
+    [
+      "mixed-success-error",
+      201,
+      (body: string) =>
+        JSON.stringify({
+          ...object(JSON.parse(body) as unknown),
+          error: { code: "FORBIDDEN", message: "Access denied." },
+        }),
+      "HTTP 201 returned an invalid success envelope.",
+    ],
+    [
+      "success-without-request-id",
+      201,
+      (body: string) => JSON.stringify({ data: object(JSON.parse(body) as unknown).data }),
+      "HTTP 201 returned an invalid success envelope.",
     ],
     ["gateway-error", 502, "null", "ambiguous HTTP 502 response."],
     ["unexpected-success", 204, "", "ambiguous HTTP 204 response."],
@@ -1278,6 +1303,61 @@ test("discard refuses a stale bundle or one missing workspace files, before dele
     discard(),
     /lacks workspace files of team-a\/a1; deploy those Agents and export again/u,
   );
+  // Damage only the workspace HTTP response. Neither an unverified 404 nor
+  // mixed success/error data proves that the source files can be discarded.
+  for (const damage of ["unverified-404", "mixed-success", "wrong-file-name", "verified-404"]) {
+    let deletes = 0;
+    const api = createOccApi({
+      baseUrl: "https://console.oce.localhost",
+      async fetchImpl(url, init) {
+        if (init.method === "DELETE") {
+          deletes += 1;
+        }
+        const response = await asAdministrator(fixture)(url, init);
+        if (!new URL(url).pathname.includes("/workspace/files/")) {
+          return response;
+        }
+        const envelope = object((await response.json()) as unknown);
+        assert.notEqual(response.status, 200);
+        if (damage === "verified-404") {
+          // Use OCC's actual missing-Agent envelope at this transport boundary;
+          // this exercises response handling, not an installed workspace read.
+          const missingUrl = url.replace(
+            seeded.agent.id,
+            "agt_ffffffff-ffff-4fff-8fff-ffffffffffff",
+          );
+          const missing = await asAdministrator(fixture)(missingUrl, init);
+          assert.equal(missing.status, 404);
+          return missing;
+        }
+        if (damage === "unverified-404") {
+          return Response.json(
+            { error: { code: "NOT_FOUND", message: "Not found." } },
+            { status: 404 },
+          );
+        }
+        if (damage === "wrong-file-name") {
+          return Response.json(
+            { meta: envelope.meta, data: { name: "wrong-file", content: "untrusted file" } },
+            { status: 200 },
+          );
+        }
+        return Response.json({ ...envelope, data: { content: "untrusted file" } }, { status: 200 });
+      },
+    });
+    const damaged = await exportTenants(api);
+    const agent = damaged.namespaces.find(({ name }) => name === "team-a")?.agents[0];
+    assert.deepEqual(agent?.workspaceFiles, {});
+    assert.equal(agent?.unreadWorkspaceFiles.length, damage === "verified-404" ? 0 : 4);
+    if (damage === "verified-404") {
+      continue;
+    }
+    await assert.rejects(
+      discardTenants(api, damaged, { sleep: noSleep, intervalMs: 0 }),
+      /lacks workspace files/u,
+    );
+    assert.equal(deletes, 0);
+  }
   await created(fixture, `/namespaces/${seeded.namespace.id}/secrets`, {
     name: "late",
     value: "x",

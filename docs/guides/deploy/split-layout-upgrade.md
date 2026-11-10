@@ -189,7 +189,7 @@ Configurations, workspace files, transcripts and Secret values.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
    and new ID. If a write's response has an unexpected status, resource identity,
-   or error envelope, reconcile that write before resuming; it may already have committed. Failed or deleting Namespaces require
+   or success/error envelope, reconcile that write before resuming; it may already have committed. Failed or deleting Namespaces require
    lifecycle recovery, not another RoleBinding wait. Exit `4` lists what needs a
    hand: Agents whose deploy failed, such as a service-account Agent without an
    issued credential, and access bindings it could not re-create. The ID map does
