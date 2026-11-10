@@ -4,6 +4,10 @@ import {
   SignInRateLimited,
   keyedAdmission,
   passwordFailureAdmission,
+  type PasswordFailureAdmissionOptions,
+  type PasswordSignInAdmission,
+  type PasswordSignInAttempt,
+  type PasswordSignInLimited,
 } from "../../apps/controller/src/auth/admission.ts";
 
 class WrongPassword extends Error {}
@@ -17,7 +21,9 @@ const slow = {
   evaluating: 16,
 };
 
-function admission(overrides = {}) {
+function admission(
+  overrides: Partial<PasswordFailureAdmissionOptions> & { administrators?: readonly string[] } = {},
+) {
   const administrators = new Set(overrides.administrators ?? []);
   return passwordFailureAdmission({
     perAddress: 4,
@@ -29,10 +35,10 @@ function admission(overrides = {}) {
   });
 }
 
-const wrong = () => Promise.reject(new WrongPassword("wrong"));
+const wrong = () => Promise.reject<never>(new WrongPassword("wrong"));
 const right = () => Promise.resolve("signed-in");
 
-async function outcome(promise) {
+async function outcome<T>(promise: Promise<T>) {
   try {
     return { value: await promise };
   } catch (error) {
@@ -40,7 +46,11 @@ async function outcome(promise) {
   }
 }
 
-async function status(limiter, attempt, work = wrong) {
+async function status(
+  limiter: PasswordSignInAdmission,
+  attempt: PasswordSignInAttempt,
+  work: () => Promise<string> = wrong,
+) {
   const { value, error } = await outcome(limiter.admit(attempt, work));
   if (error === undefined) {
     return value === "signed-in" ? 200 : value;
@@ -156,34 +166,34 @@ test("an administrator is slowed, never refused, and slow guesses are bounded", 
 });
 
 // One macrotask turn: every promise chain that needs no timer or I/O has settled by then.
-const turn = () => new Promise((resolve) => setImmediate(resolve));
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 test("refusals take the growing floor whether or not the email administers", async () => {
   // Floors end only when the test ends them, so the order of events shows that a refusal
   // waits for its whole floor and answers as soon as it ends, at any machine speed.
-  const floors = [];
+  const floors: { floorMs: number; end: () => void }[] = [];
   const limiter = admission({
     administrators: ["admin@example.test"],
     slow: {
       ...slow,
       waitFloor: (floorMs) =>
-        new Promise((resolve) => floors.push({ floorMs, end: () => resolve() })),
+        new Promise<void>((resolve) => floors.push({ floorMs, end: resolve })),
     },
   });
   const client = "203.0.113.9";
   for (let index = 0; index < 4; index += 1) {
     assert.equal(await status(limiter, { clientAddress: client, email: `f-${index}@x.test` }), 401);
   }
-  assert.deepEqual(floors, []);
+  assert.equal(floors.length, 0);
   const expected = [20, 40, 80, 80];
   const emails = ["member@x.test", "admin@example.test", "missing@x.test", "admin@example.test"];
   for (const [index, email] of emails.entries()) {
-    let answer;
+    let answer: unknown;
     const refusal = status(limiter, { clientAddress: client, email }).then(
       (code) => {
         answer = code;
       },
-      (error) => {
+      (error: unknown) => {
         answer = error;
       },
     );
@@ -194,7 +204,9 @@ test("refusals take the growing floor whether or not the email administers", asy
       `refusal ${index} waits one floor of ${expected[index]} ms`,
     );
     assert.equal(answer, undefined, `refusal ${index} answered before its floor ended`);
-    floors[index].end();
+    const floor = floors[index];
+    assert.ok(floor);
+    floor.end();
     await turn();
     assert.equal(answer, 429, `refusal ${index} kept waiting after its floor ended`);
     await refusal;
@@ -220,13 +232,13 @@ test("Retry-After counts down to the end of the spent window", async () => {
 });
 
 test("slow attempts beyond the global occupancy are refused, an administrator's included", async () => {
-  const floors = [];
+  const floors: (() => void)[] = [];
   const limiter = admission({
     administrators: ["a@example.test", "b@example.test"],
     slow: {
       ...slow,
       occupancy: 1,
-      waitFloor: () => new Promise((resolve) => floors.push(resolve)),
+      waitFloor: () => new Promise<void>((resolve) => floors.push(resolve)),
     },
   });
   for (const email of ["a@example.test", "b@example.test"]) {
@@ -238,7 +250,7 @@ test("slow attempts beyond the global occupancy are refused, an administrator's 
   const held = status(limiter, { email: "a@example.test" }, right);
   await turn();
   assert.equal(floors.length, 1);
-  let answer;
+  let answer: Awaited<ReturnType<typeof status>>;
   const refused = status(limiter, { email: "b@example.test" }, right).then((code) => {
     answer = code;
   });
@@ -246,10 +258,14 @@ test("slow attempts beyond the global occupancy are refused, an administrator's 
   // The second waits out its own floor and is refused without a password check.
   assert.equal(floors.length, 2);
   assert.equal(answer, undefined);
-  floors[1]();
+  const secondFloor = floors[1];
+  assert.ok(secondFloor);
+  secondFloor();
   await refused;
   assert.equal(answer, 429);
-  floors[0]();
+  const firstFloor = floors[0];
+  assert.ok(firstFloor);
+  firstFloor();
   assert.equal(await held, 200);
 });
 
@@ -271,17 +287,14 @@ test("a failing administrator lookup surfaces as a dependency error", async () =
 test("concurrent guesses beyond a budget never reach the password check", async () => {
   const limiter = admission();
   let checks = 0;
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
   // Every check waits until all guesses are in, so none has failed yet when the next arrives.
   const guess = async () => {
     checks += 1;
     await held;
     throw new WrongPassword("wrong");
   };
-  const flood = (count, attempt) =>
+  const flood = (count: number, attempt: (index: number) => PasswordSignInAttempt) =>
     Array.from({ length: count }, (_, index) => status(limiter, attempt(index), guess));
   // Email budget 3: six guesses at one email from distinct addresses.
   const byEmail = flood(6, (index) => ({ clientAddress: `203.0.113.${index}`, email: "a@x.test" }));
@@ -294,7 +307,7 @@ test("concurrent guesses beyond a budget never reach the password check", async 
   await turn();
   assert.equal(checks, 3 + 4);
   release();
-  const counts = (codes) => [
+  const counts = (codes: Awaited<ReturnType<typeof status>>[]) => [
     codes.filter((c) => c === 401).length,
     codes.filter((c) => c === 429).length,
   ];
@@ -331,19 +344,22 @@ test("a success resets the email's failures but not the address's", async () => 
 });
 
 test("entering the slow lane reports once per lane per window, with hashed keys", async () => {
-  const reports = [];
+  const reports: PasswordSignInLimited[] = [];
   const limiter = admission({ onLimited: (limited) => reports.push(limited) });
   const email = "victim@example.test";
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await status(limiter, { email }), 401);
   }
-  assert.deepEqual(reports, []);
+  assert.equal(reports.length, 0);
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await status(limiter, { email }), 429);
   }
   assert.equal(reports.length, 1);
-  assert.equal(reports[0].lane, "email");
-  assert.match(reports[0].key, /^email:[a-f0-9]{64}$/);
+  const emailReport = reports[0];
+  assert.ok(emailReport);
+  assert.equal(emailReport.lane, "email");
+  assert.ok(typeof emailReport.key === "string");
+  assert.match(emailReport.key, /^email:[a-f0-9]{64}$/);
 
   const clientAddress = "203.0.113.77";
   for (let index = 0; index < 4; index += 1) {
@@ -353,15 +369,18 @@ test("entering the slow lane reports once per lane per window, with hashed keys"
     assert.equal(await status(limiter, { clientAddress, email: `b-${index}@example.test` }), 429);
   }
   assert.equal(reports.length, 2);
-  assert.equal(reports[1].lane, "address");
-  assert.match(reports[1].key, /^ip:[a-f0-9]{64}$/);
+  const addressReport = reports[1];
+  assert.ok(addressReport);
+  assert.equal(addressReport.lane, "address");
+  assert.ok(typeof addressReport.key === "string");
+  assert.match(addressReport.key, /^ip:[a-f0-9]{64}$/);
   const serialized = JSON.stringify(reports);
   assert.equal(serialized.includes("victim"), false);
   assert.equal(serialized.includes("203.0.113"), false);
 });
 
 test("a full table reports the untracked lane once, and a failing reporter changes nothing", async () => {
-  const reports = [];
+  const reports: PasswordSignInLimited[] = [];
   const limiter = admission({
     tableCapacity: 2,
     onLimited: (limited) => {
@@ -463,15 +482,12 @@ test("a total request window refuses key churn without evicting spent key budget
   await limiter.admit(["existing"], work);
   await limiter.admit(["other"], work);
   for (let index = 0; index < 4097; index += 1) {
-    await assert.rejects(
-      limiter.admit([`churn-${index}`], work),
-      (error) => error.statusCode === 429,
-    );
+    await assert.rejects(limiter.admit([`churn-${index}`], work), { statusCode: 429 });
   }
   assert.equal(calls, 3);
   clock = 60_001;
   // The total window has reset, but the existing key's later window has not.
-  await assert.rejects(limiter.admit(["existing"], work), (error) => error.statusCode === 429);
+  await assert.rejects(limiter.admit(["existing"], work), { statusCode: 429 });
   assert.equal(await limiter.admit(["fresh"], work), "read");
   clock = 90_001;
   assert.equal(await limiter.admit(["existing"], work), "read");
@@ -481,40 +497,37 @@ test("a new request window preserves active slots and failure releases capacity"
   let clock = 0;
   t.mock.method(performance, "now", () => clock);
   const limiter = keyedAdmission({ perMinute: 3, concurrent: 1 }, { perMinute: 2, concurrent: 1 });
-  const release = Promise.withResolvers();
+  const release = Promise.withResolvers<void>();
   const pending = limiter.admit(["held"], async () => {
     await release.promise;
     throw new Error("read failed");
   });
   const rejected = assert.rejects(pending, /read failed/);
   clock = 60_001;
-  await assert.rejects(limiter.admit(["other"], right), (error) => error.statusCode === 429);
+  await assert.rejects(limiter.admit(["other"], right), { statusCode: 429 });
   release.resolve();
   await rejected;
   assert.equal(await limiter.admit(["other"], right), "signed-in");
   assert.equal(await limiter.admit(["last"], right), "signed-in");
-  await assert.rejects(limiter.admit(["excess"], right), (error) => error.statusCode === 429);
+  await assert.rejects(limiter.admit(["excess"], right), { statusCode: 429 });
 });
 
 test("full read slots refuse key churn without evicting a spent entry", async (t) => {
   t.mock.method(performance, "now", () => 0);
   const limiter = keyedAdmission({ perMinute: 1, concurrent: 1 }, { perMinute: 10, concurrent: 1 });
   await limiter.admit(["spent"], right);
-  const release = Promise.withResolvers();
+  const release = Promise.withResolvers<string>();
   const pending = limiter.admit(["held"], () => release.promise);
   try {
     for (let index = 0; index < 4097; index += 1) {
-      await assert.rejects(
-        limiter.admit([`waiting-${index}`], right),
-        (error) => error.statusCode === 429,
-      );
+      await assert.rejects(limiter.admit([`waiting-${index}`], right), { statusCode: 429 });
     }
   } finally {
     release.resolve("settled");
     await pending;
   }
   // Rejected work must not reset another browser's budget when the held read settles.
-  await assert.rejects(limiter.admit(["spent"], right), (error) => error.statusCode === 429);
+  await assert.rejects(limiter.admit(["spent"], right), { statusCode: 429 });
   assert.equal(await limiter.admit(["fresh"], right), "signed-in");
 });
 

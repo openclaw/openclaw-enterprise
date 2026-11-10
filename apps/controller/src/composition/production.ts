@@ -231,6 +231,7 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
+        namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined

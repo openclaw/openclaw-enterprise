@@ -3305,7 +3305,9 @@ test("a status refresh keeps Download disabled while a download is pending", asy
 });
 
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
-  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
+  const computeDriver = createRuntimeLogComputeDriver({
+    sandboxNamespaceName: () => "tenant-console",
+  });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
   const sandbox = createProviderSandboxDriver();
   const sandboxState: { lines: SandboxLogLine[]; error: Error | undefined } = sandbox.state;

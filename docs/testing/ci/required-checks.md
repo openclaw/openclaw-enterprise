@@ -26,6 +26,10 @@ test-only pull requests select affected lanes, including TypeScript test checks.
 Other changes run the ordinary lane matrix. Failed main-push CI also prevents release workflows
 that require successful CI for that source.
 
+Documentation-only changes include regular, non-executable `.png` illustrations
+under `specs/rfcs/`. Images elsewhere and other image extensions still select full
+CI. Mixing an RFC image with runtime or tooling changes also selects full CI.
+
 ## Scenarios
 
 `pr-safe` runs the selected matrix jobs below; `runtime-image-fixture` runs

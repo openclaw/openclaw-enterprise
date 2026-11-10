@@ -4152,7 +4152,6 @@ test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact opera
   gatewayClient.workspaces.get(context.namespace.name).phase = "WORKSPACE_PHASE_TERMINATING";
   await driver.cleanup(context);
   assert.equal(gatewayClient.workspaces.has(context.namespace.name), false);
-  assert.deepEqual(gatewayClient.calls.at(-1), ["deleteWorkspace", context.namespace.name]);
 });
 
 test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
@@ -4181,6 +4180,7 @@ test("OpenShell operator mode owns workspace chart resources around the Workspac
   assert.deepEqual(events, [
     ["gateway", "getWorkspace", context.namespace.name],
     ["gateway", "deleteWorkspace", context.namespace.name],
+    ["gateway", "getWorkspace", context.namespace.name],
     ["kubernetes", "delete", "ServiceAccount", "openshell-sandbox", context.namespace.name],
   ]);
 });
@@ -4338,14 +4338,19 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     await assert.rejects(openShellDriver(gatewayClient).cleanup(context), keeps(missing));
   }
 
-  // Through Compute: the Kubernetes steps before the Sandbox Driver are stubbed, so the
-  // Namespace result comes from Compute's own classification of what the Sandbox Driver threw.
+  // Contract classification only: Kubernetes I/O is stubbed. Real provider setup is covered
+  // by the separate Namespace bootstrap integration, not by these refusal responses.
+  const { sandboxNamespaceLifecycleBinding } =
+    await import("../../apps/controller/src/composition/namespace-lifecycle.ts");
+  const { reconcileNamespaceLifecycle } =
+    await import("../../packages/occ/src/namespace-lifecycle.ts");
   const tenant = namespaceContext().namespace;
   const placement = { name: tenant.name, plane: "execution" };
   const compute = (gatewayClient) => {
+    const sandbox = openShellDriver(gatewayClient);
     const driver = new KubernetesComputeDriver(
       conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
-      { sandboxDriver: openShellDriver(gatewayClient) },
+      { sandboxDriver: sandbox },
     );
     const observed = {
       metadata: { name: tenant.name, uid: "namespace-uid", labels: {}, annotations: {} },
@@ -4360,7 +4365,8 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       prepareNamespaceInfrastructure: async () => {},
       ensureGatewayNamespace: async () => true,
     });
-    return driver;
+    const binding = sandboxNamespaceLifecycleBinding(driver, sandbox);
+    return { driver, participants: [{ id: sandbox.id, hooks: binding.hooks }] };
   };
   // A refused identity fails at once. A refusal Compute cannot classify stays retryable, with a
   // fixed reason and no "HTTP status 9" or "HTTP status 8": a rate limit clears by itself.
@@ -4371,22 +4377,43 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     ["RESOURCE_EXHAUSTED", "retryable", "Namespace preparation failed."],
   ]) {
     const gatewayClient = failing("createWorkspace", grpcError(name, "workspace:create"));
-    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
-      namespaceId: tenant.id,
-      namespaceReady: false,
-      failure,
-      reason,
-    });
+    const selected = compute(gatewayClient);
+    assert.deepEqual(
+      await reconcileNamespaceLifecycle(
+        selected.driver,
+        selected.participants,
+        tenant,
+        "ready",
+        new AbortController().signal,
+        () => {},
+      ),
+      {
+        namespaceId: tenant.id,
+        namespaceReady: false,
+        failure,
+        reason,
+      },
+    );
   }
   // Namespace deletion fails at once too, and keeps the Kubernetes namespace.
   const expired = grpcError("UNAUTHENTICATED", "token expired");
   const deleting = compute(failing("deleteWorkspace", expired, tenant));
-  deleting.deleteGatewayNamespace = async () => assert.fail("cleanup must fail first");
-  assert.deepEqual(await deleting.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: false,
-    failure: "permanent",
-  });
+  deleting.driver.deleteGatewayNamespace = async () => assert.fail("cleanup must fail first");
+  assert.deepEqual(
+    await reconcileNamespaceLifecycle(
+      deleting.driver,
+      deleting.participants,
+      { ...tenant, status: "deleting" },
+      "deleted",
+      new AbortController().signal,
+      () => {},
+    ),
+    {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: "permanent",
+    },
+  );
 });
 
 test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
@@ -7651,11 +7678,11 @@ test(
       extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
     });
     const originalGetWorkspace = gateway.getWorkspace;
-    gateway.getWorkspace = async (name) => ({
-      ...(await originalGetWorkspace(name)),
-      name,
-      id: "workspace-id",
-    });
+    gateway.getWorkspace = async (name) => {
+      const workspace = await originalGetWorkspace(name);
+      // Preserve absence after deletion; adding fixture identity must not resurrect a Workspace.
+      return workspace === undefined ? undefined : { ...workspace, name, id: "workspace-id" };
+    };
     const originalImportProfile = gateway.importProviderProfile;
     gateway.importProviderProfile = async (workspace, profile) => {
       await originalImportProfile(workspace, profile);
@@ -7846,6 +7873,11 @@ test(
       { message: /[Rr]epository credentials require/ },
     );
     const { context, revision, requirements } = runtimeSandboxFixture(protectedGit.sandboxDriver);
+    // Revision execution starts in an existing, owned Workspace. Its deletion must remain observable.
+    gateway.workspaces.set(openShellWorkspaceName(context.namespace), {
+      ...ownedWorkspace(openShellWorkspaceName(context.namespace), context.namespace.id),
+      id: "workspace-id",
+    });
     const auth = {
       method: "credential_source",
       sourceId: "cs_test",
@@ -8440,3 +8472,117 @@ test(
     );
   },
 );
+
+test("managed Namespace cleanup removes unreachable owned gateways but preserves provider refusals", async () => {
+  const { OpenShellGatewayUnavailableError } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts");
+  for (const scenario of ["no-ready-pod", "transport-unavailable", "provider-denied"]) {
+    const namespace = {
+      id: "ns_cleanup",
+      name: "cleanup-test",
+      status: "deleting",
+      createdAt: "2026-11-10T00:00:00Z",
+    };
+    const serviceName = "openshell-gateway";
+    const manifests = [
+      {
+        apiVersion: "v1",
+        kind: "Service",
+        metadata: { name: serviceName },
+        spec: { selector: { app: "gateway" }, ports: [{ port: 50051 }] },
+      },
+      {
+        apiVersion: "apps/v1",
+        kind: "Deployment",
+        metadata: { name: serviceName },
+        spec: {
+          selector: { matchLabels: { app: "gateway" } },
+          template: {
+            metadata: { labels: { app: "gateway" } },
+            spec: { containers: [{ name: "gateway", image: "gateway:fixture" }] },
+          },
+        },
+      },
+    ];
+    const objects = new Map(
+      [
+        ...manifests,
+        { apiVersion: "v1", kind: "Secret", metadata: { name: `${serviceName}-jwt-keys` } },
+      ].map((resource) => {
+        const observed = {
+          ...resource,
+          metadata: {
+            ...resource.metadata,
+            namespace: namespace.name,
+            uid: `${resource.kind}-uid`,
+            resourceVersion: "1",
+            labels: {
+              "openclaw.dev/namespace": namespace.id,
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-gateway": "true",
+            },
+            annotations: { "openclaw.dev/namespace-id": namespace.id },
+          },
+        };
+        return [`${resource.kind}/${resource.metadata.name}`, observed];
+      }),
+    );
+    const client = Object.create(KubernetesObjectApi.prototype);
+    client.read = async (resource) => {
+      if (resource.kind === "Namespace") {
+        return { metadata: { name: namespace.name } };
+      }
+      const observed = objects.get(`${resource.kind}/${resource.metadata.name}`);
+      if (observed === undefined) {
+        throw Object.assign(new Error("not found"), { code: 404 });
+      }
+      return observed;
+    };
+    client.list = async () => ({
+      items:
+        scenario === "no-ready-pod"
+          ? []
+          : [{ status: { conditions: [{ type: "Ready", status: "True" }] } }],
+    });
+    client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, _propagation, options) => {
+      const key = `${resource.kind}/${resource.metadata.name}`;
+      assert.equal(options.preconditions.uid, objects.get(key).metadata.uid);
+      objects.delete(key);
+    };
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.gateway.readiness = {
+      serviceName,
+      podSelector: { app: "gateway" },
+      timeoutMs: 10,
+    };
+    configuration.gateway.namespaceGatewayResources = manifests;
+    let workspaceReads = 0;
+    const driver = openShellDriver(
+      {
+        async getWorkspace() {
+          workspaceReads += 1;
+          assert.notEqual(scenario, "no-ready-pod", "Do not send RPCs to an absent backend.");
+          if (scenario === "provider-denied") {
+            throw Object.assign(new Error("permission denied"), {
+              code: 7,
+              details: "permission denied",
+            });
+          }
+          throw new OpenShellGatewayUnavailableError("unreachable gateway", 14);
+        },
+      },
+      configuration,
+    );
+    const context = { namespace, kubernetes: client, signal: new AbortController().signal };
+    if (scenario === "provider-denied") {
+      await assert.rejects(driver.cleanup(context), { name: "SandboxNamespaceRefusedError" });
+      assert.equal(objects.size, 3, "Provider refusal preserves all owned resources.");
+    } else {
+      // Deletion is observed on a later pass, as with the Kubernetes API.
+      await assert.rejects(driver.cleanup(context), { name: "SandboxNamespacePendingError" });
+      assert.equal(objects.size, 0);
+      await driver.cleanup(context);
+    }
+    assert.equal(workspaceReads, scenario === "no-ready-pod" ? 0 : 1);
+  }
+});

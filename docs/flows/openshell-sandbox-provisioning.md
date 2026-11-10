@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-10
-last_updated_session: authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660
+last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -24,12 +24,15 @@ Kubernetes Compute provisions Codex/OpenClaw through OpenShell.
 
 ```mermaid
 graph TD
-  A["<b>Reconcile Agent revision</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
+  %%{init: {"flowchart": {"htmlLabels": true}}}%%
+  A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
   B --> C{"<b>Workspace mode</b><br/>Installation setting"}
   C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
   C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
-  D --> E["<b>Own Workspace</b><br/>Create or adopt"]
-  E --> F["<b>Derive Harness</b><br/>Compute requirements"]
+  D --> G0["<b>Ensure configured gateway</b><br/>Owned resources and health"]
+  G0 --> E["<b>Own Workspace</b><br/>Create or adopt"]
+  E --> A0["<b>Namespace ready</b><br/>Deployment permitted"]
+  A0 --> F["<b>Derive Harness</b><br/>Compute requirements"]
   F --> K0["<b>Start Agent Gateway</b><br/>Fail-closed transport"]
   K0 --> Y0{"<b>Node setup</b><br/>Material exists?"}
   Y0 -- "no" --> R0["<b>Retry preparation</b><br/>No provider or Sandbox"]
@@ -56,7 +59,10 @@ graph TD
   R1 --> Y
   Y -- "yes" --> S{"<b>Attachment status</b><br/>All ready?"}
   S -- "failed, withheld, revoked" --> R
-  S -- "ready" --> P1["<b>Publish revision</b><br/>Commit active selection"]
+  S -- "ready" --> NG{"<b>Native OpenClaw?</b>"}
+  NG -- "yes" --> NR["<b>Confirm Gateway</b><br/>Node binding and rollout"]
+  NG -- "no" --> P1["<b>Publish revision</b><br/>Commit active selection"]
+  NR --> P1
   P1 --> Z{"<b>Activate Harness</b>"}
   Z -- "Codex" --> C2{"<b>Recheck Codex readiness</b><br/>Before replacing Gateway"}
   C2 -- "refused" --> R2["<b>Fail deployment</b><br/>Published selection retained"]
@@ -70,15 +76,16 @@ graph TD
   L --> N["<b>Delete Sandbox</b><br/>Version cleanup"]
   U --> N
   N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
-  O --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
+  O --> P0["<b>Delete owned gateway</b><br/>Operator resources retained"]
+  P0 --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F,D1 state
-  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U operation
-  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2 gate
+  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U,NR operation
+  class C,C1,C2,G,S,V,Y,Y0,Z,W0,D2,NG gate
   class X,R,R0,R2,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -147,13 +154,11 @@ status reads return stored work.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
+`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle`,
+`apps/controller/src/composition/namespace-lifecycle.ts:sandboxNamespaceLifecycleBinding`
 
-Compute establishes quota, limits and baseline NetworkPolicies before
-`SandboxDriver.ensureNamespace`. Managed mode rejects before Kubernetes/Gateway
-use. Operator mode checks optional local readiness, applies namespace labels,
-workspace resources and provider NetworkPolicies, then checks health.
-Development uses the central Gateway.
+OCC invokes Sandbox after Compute isolation, with resolved placement and cancellation. `openshell-namespace-gateway.ts:reconcileNamespaceGateway` prepares
+configured gateways; operator-mode setup verifies health and owns the Workspace.
 
 `apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw endpoints,
 including bracketed IPv6, unchanged to gRPC. HTTP retains explicit port 80;
@@ -374,7 +379,9 @@ retires interrupted preparers without a Sandbox, refusing foreign/replaced resou
 Namespace `cleanup` verifies Workspace ownership, removes owned runtime/Git
 providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
 resources/NetworkPolicies in reverse order. Lost responses retry terminating
-Workspaces. Compute deletes the Kubernetes namespace only after cleanup succeeds.
+Workspaces. Managed gateways with no ready Pod or an unavailable transport proceed
+to owned-resource cleanup; provider and authorization refusals still block it.
+Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 ### 6. Withdraw Git without retiring the execution
 
@@ -427,6 +434,10 @@ model execution.
 
 ## Changelog
 
+- 2026-11-10 20:33: Wait for the native Gateway node binding and rollout before readiness. (authoring-run/01a1b316-df53-7fc0-b967-6e23527300dc - 5b7ee9438050)
+
+- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
+
 - 2026-11-10 12:45: Record fixed Codex permission denial categories in worker diagnostics. (authoring-run/bc23cb27-0cf1-40d2-9361-93726c5de660 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
 
 - 2026-11-10 12:22: Clarify Gateway authority. (authoring-run/64da6dd5-9c32-4858-b176-ff11e8c8ae92 - 3c5686897dcb09293562aa30d1a2cecaacc71353)
@@ -434,17 +445,5 @@ model execution.
 - 2026-11-10 05:13: Bound complete Codex requirements separately and distinguish post-publication refusal. (authoring-run/7e421486-330f-4f04-b3b8-2b00f30f5647 - 1b3382ad62844cc821c9b004870d86f4814d0b39)
 
 - 2026-11-10 00:45: Check Codex permission requirements before reporting Harness readiness. (authoring-run/2e07121e-8d92-484b-921e-c6c9f179bc00 - c4094c2f34c912b581b9c26d2edea91d3a0ebfd4)
-
-- 2026-11-08 12:06: Bound archive retries. (authoring-run/0ff5cd21-1ead-46fb-bb5f-9f578872634a - 4566d20b8ef66a3268e27bceac946765ecd5d336)
-
-- 2026-11-08 06:54: Trace serving-process PAT readiness. (authoring-run/cc85b8e8-41ee-4b88-9807-456c25e0fa77 - 12582b2da6c58b020cff462d6d8ecfe2bbedde8a)
-
-- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
-
-- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
-
-- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
-
-- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

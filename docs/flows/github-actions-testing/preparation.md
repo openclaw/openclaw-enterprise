@@ -13,7 +13,6 @@ Pagefind builds; installation can omit its optional native package.
 `run-ci-lane` restores that store for baseline part 1 and browser part 1.
 Keys include OS, architecture, Node.js, pnpm and lockfile hash. Prefix fallbacks
 can restore other lockfiles; frozen installation acquires missing packages.
-Root workspace cache saves are unchanged.
 
 First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
@@ -43,7 +42,7 @@ Diagnostic emission is best effort and cannot replace the terminal pull error.
 Docker suppresses numeric progress on non-terminal
 output, so these states provide partial evidence, not the current transfer phase. If no progress matches, the
 summary says so. These diagnostics do not change timeouts, backoff, concurrency, or digest verification.
-They do not establish registry health or explain why an attempt stalled.
+They do not establish registry health or stall causes.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
@@ -53,13 +52,14 @@ Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` builds the
 runtime when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
-Gateway Routing, Slack Live, and Production TUI restore read-only BuildKit caches through
-`scripts/ci/prepare.mjs:imageBuildArgs`, preserving build budgets and test reserves.
-`scripts/ci/prepare.mjs:imageCacheObservation` reports numeric counts per phase,
-excluding raw output (`image-cache`; OpenShell: `first-agent-image-cache`).
-Step counts deduplicate IDs. `observesImageCache` enables plain progress, including
-alternate source builds. Import lines do not prove hits;
-loads may reuse probe work.
+`scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
+`k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`, including whole lanes;
+whole OpenShell lanes share one stack build. Tests inherit builder and epoch,
+never cache credentials; installers still build source.
+`imageCacheObservation` reports counts for Gateway Routing, Slack Live, Production
+TUI and OpenShell (`image-cache`; OpenShell: `first-agent-image-cache`), including
+alternate sources. Step counts deduplicate IDs; imports count lines.
+Imports do not prove hits; loads may reuse probe work.
 
 The four ordinary image lanes, First Agent Smoke, and Full Integration's Docker
 Model Runtime use REST lookup by repository, producer run ID and artifact ID.
