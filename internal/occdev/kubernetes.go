@@ -641,7 +641,26 @@ func openShellSandboxCallbackPolicies(s *developmentState) []any {
 			targets = append(targets, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
 		}
 		spec["egress"] = []any{map[string]any{"to": targets, "ports": []any{map[string]any{"protocol": "TCP", "port": s.openShellExternal.port}}}}
-		return []any{callback}
+		// The compute driver's harness egress policy uses a pod-selector peer from the
+		// providerHarness labels, but the external bridge Service is selectorless and has
+		// no pods, so that peer matches nothing and the workspace's default-deny blocks
+		// the agent gateway's harness connection. Admit the gateway pods' egress to the
+		// external gateway's translated endpoint addresses directly: most CNIs (including
+		// k3d's kube-router) evaluate NetworkPolicy after the Service ClusterIP is
+		// DNAT'd to the Endpoints, so the ipBlock must carry the endpoint addresses,
+		// not the bridge's ClusterIP.
+		harness := map[string]any{
+			"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+			"metadata": map[string]string{"name": "allow-openshell-harness-egress"},
+			"spec": map[string]any{
+				"podSelector": map[string]any{"matchLabels": map[string]string{
+					"openclaw.dev/workload-role": "gateway",
+				}},
+				"policyTypes": []string{"Egress"},
+				"egress":      []any{map[string]any{"to": targets, "ports": []any{map[string]any{"protocol": "TCP", "port": s.openShellExternal.port}}}},
+			},
+		}
+		return []any{callback, harness}
 	}
 	gatewayNamespace := openShellGatewayNamespace
 	if s.DeploymentMode == "k3d" {
