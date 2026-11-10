@@ -129,11 +129,12 @@ emits one workspace-entry marker that sets `truncated` if received; later
 invocations still run but emit no installation records. These intervals do not
 establish model execution or whole-file success.
 
-Before cleanup, failed Sandbox stages write an `OpenShell stage failure` record
-in the test output. The [stage helper](../../../tests/helpers/openshell-stage.mjs)
-includes only a recognized error category/code and an available repository-relative
-source location. Unknown fields are `null` or `unknown`; messages, assertion values,
-and raw stacks are excluded. Final test results still wait for cleanup.
+When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.mjs)
+emits an `openshell-stage-failure` record before fixture cleanup. The CI runner
+shows its fixed category/code and workflow owner in the live log; direct Node
+runs show the structured progress record. The workflow owner is not the throw
+site. Messages, assertion values, stack text and property getters are excluded.
+Stage timings stop before diagnostics. Final test results still wait for cleanup.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
