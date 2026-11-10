@@ -895,8 +895,29 @@ async function withRecord<T>(
           cause: error,
         });
       }
-      await privateOwned(lockPath);
-      const pid = Number(await readFile(lockPath, "utf8"));
+      const priorLock = await open(
+        lockPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      ).catch((openError: unknown) => {
+        if (errorCode(openError) === "ELOOP") {
+          throw new Error(`${lockPath} must be private and owned by the current user.`, {
+            cause: openError,
+          });
+        }
+        throw openError;
+      });
+      let pid: number;
+      try {
+        const info = await priorLock.stat();
+        if (!info.isFile() || info.uid !== process.geteuid?.() || (info.mode & 0o077) !== 0) {
+          throw new Error(`${lockPath} must be private and owned by the current user.`, {
+            cause: error,
+          });
+        }
+        pid = Number(await priorLock.readFile("utf8"));
+      } finally {
+        await priorLock.close();
+      }
       if (!Number.isSafeInteger(pid) || pid <= 0) {
         throw new Error(`An interrupted first-agent lock requires inspection: ${lockPath}`, {
           cause: error,
