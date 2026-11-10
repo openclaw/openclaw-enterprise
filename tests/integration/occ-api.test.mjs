@@ -4570,11 +4570,11 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
-test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
-  const fixture = await createInjectedFixture({
+async function bootstrapChatGptBackend(backendId) {
+  const controller = await configuredController({
     backends: [
       {
-        id: "openai",
+        id: backendId,
         type: "chatgpt",
         configuration: {
           workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -4583,12 +4583,15 @@ test("Agent Backend API preserves nullable drafts and immutable revision associa
         drivers: { service_account: "chatgpt-service-accounts" },
       },
     ],
-    backendSummaries: [{ id: "openai", type: "chatgpt" }],
+    backendSummaries: [{ id: backendId, type: "chatgpt" }],
   });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
+  return controller;
+}
+
+test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
+  const controller = await bootstrapChatGptBackend("openai");
+  const { fixture } = controller;
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);
   assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
@@ -4661,24 +4664,7 @@ test("Installation Backend IDs and Agent backendId share the API schema's charac
   // 200 code points (395 UTF-16 units) with interior whitespace: the API schema accepts it,
   // so OCC must accept it as configuration and the state store must save it.
   const id = `open\u00a0${"😀".repeat(195)}`;
-  const fixture = await createInjectedFixture({
-    backends: [
-      {
-        id,
-        type: "chatgpt",
-        configuration: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          apiKeyPath: "/unused-in-api-contract-test",
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
-      },
-    ],
-    backendSummaries: [{ id, type: "chatgpt" }],
-  });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
+  const controller = await bootstrapChatGptBackend(id);
   const namespace = await createNamespace(controller, "backend-id-rule");
   const configuration = await createConfiguration(controller, namespace.id);
   const collection = `/namespaces/${namespace.id}/agents`;
@@ -4706,10 +4692,7 @@ test("Installation Backend IDs and Agent backendId share the API schema's charac
 });
 
 test("Names follow the Backend ID text rule, so C1 controls are refused", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
   await bootstrap(controller);
   // 200 code points (400 UTF-16 units) with an interior NBSP is a valid Name.
   const namespace = await createNamespace(controller, `name\u00a0${"😀".repeat(195)}`);
