@@ -9627,24 +9627,27 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
+async function plaintextGatewayAdmissionFixture(nativeCompute, bootstrapLabel, namespaceSlug) {
+  // The API/state fixture owns lifecycle and credentials; the actual selected
+  // Driver owns admission. No worker or remote backend is dispatched here.
+  const computeDriver = createProvisioningCapableComputeDriver();
+  computeDriver.validateGatewaySettings = (configuration) =>
+    nativeCompute.validateGatewaySettings?.(configuration);
+  const controller = await configuredController({ computeDriver });
+  const { fixture } = controller;
+  await bootstrap(controller, bootstrapLabel);
+  const namespace = await createNamespace(controller, namespaceSlug);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  return { fixture, controller, namespace };
+}
+
 test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Codex approval ${kind}`);
-      const namespace = await createNamespace(controller, `codex-approval-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Codex approval ${kind}`,
+        `codex-approval-${kind}`,
       );
       const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
@@ -9712,21 +9715,10 @@ test("deployment refuses a Codex approval policy the Gateway refuses across Comp
 test("deployment refuses native listener TLS before admitting a revision across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Native HTTP ${kind}`);
-      const namespace = await createNamespace(controller, `native-http-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
+      const { fixture, controller, namespace } = await plaintextGatewayAdmissionFixture(
+        nativeCompute,
+        `Native HTTP ${kind}`,
+        `native-http-${kind}`,
       );
       for (const [name, tls, expectedStatus] of [
         ["enabled", { enabled: true, certPath: "/owned/cert.pem" }, 409],
