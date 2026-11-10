@@ -15,6 +15,11 @@ profile; a failed strict admission does not select this path automatically.
 
 ## Prepare the trusted request path
 
+Use [native IAM](../../reference/drivers/iam.md#native-iam-behavior) backed by
+this Installation's OCC state. This profile rejects external IAM and custom
+authorization overrides at source creation/update, Agent admission and request
+authorization. Existing strict profiles keep their IAM behavior.
+
 Select matching Sandbox and Credential Proxy capabilities with Kubernetes
 Compute. Keep the Credential Gateway selected for source metadata ownership.
 The model key is resolved through Credential Proxy; this path creates no Gateway

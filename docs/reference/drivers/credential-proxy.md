@@ -83,11 +83,11 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Source creation with `authorization: "online-request"` selects an offered
-request-authorization provider. Eligible static sources default to strict admission;
-updates retain their original provider ID and generation. The bundled provider is
-`openai-online-request`, generation 1. It admits one dedicated Codex HTTPS
-Responses route with an explicit model and no provider-hosted tools.
+Explicit `authorization: "online-request"` selects an offered provider; eligible
+static sources otherwise use strict admission. Updates retain provider ID/generation.
+This profile requires native IAM backed by the same OCC state. Bundled
+`openai-online-request`, generation 1, admits one dedicated Codex HTTPS Responses
+route with an explicit model and no provider-hosted tools.
 
 `ProxyPlan.authorization` preserves that selection. Admission version 8 covers
 the model route; version 9 combines it with independently authorized mandatory
@@ -294,8 +294,8 @@ final Secret read releases policy locks but retains capacity until it settles.
 
 Online approvals retain recipient/request IDs after consumption or redemption
 expiry until the verified adapter's replay horizon, at most one hour from
-admission. Their durable global/per-recipient quotas are separate from strict
-ID maps; there is no combined replica-wide operation cap.
+admission. Database time governs retention, admission and redemption. Quota
+contention refuses; strict ID maps and operation caps remain per process.
 
 Strict ID defaults allow about 270 requests/s per process and 68 per Sandbox
 (`requestIds / 30` and `sandboxRequestIds / 30`). A refusal before exchange capture

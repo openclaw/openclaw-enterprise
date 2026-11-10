@@ -40,6 +40,7 @@ export async function requestCredentialFixture(
   } = {},
 ) {
   let owner!: InstalledDriver;
+  let principalId!: string;
   let state!: PlatformStateStore;
   let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
   let live: EgressInstallation | undefined;
@@ -64,6 +65,7 @@ export async function requestCredentialFixture(
       });
       state = app.state;
       pool = app.pool;
+      principalId = app.principal.id;
       return app;
     },
     async admitSource({
@@ -283,6 +285,7 @@ export async function requestCredentialFixture(
     credentialProxyCapacity = configuration.credentialProxyCapacity,
     authorize?: ControllerOptions["authorize"],
     pool = f.pool,
+    now?: ControllerOptions["now"],
   ) => {
     const capacity = resolveCredentialProxyCapacity(
       { ...credentialProxyCapacity },
@@ -293,6 +296,7 @@ export async function requestCredentialFixture(
     const restarted = new OpenClawController(f.controller.installation, {
       state: restartedState,
       ...(authorize && { authorize }),
+      ...(now && { now }),
       driverConfigurations: options.driverConfigurations,
       credentialProxyCapacity: capacity.capacity,
     });
@@ -320,6 +324,34 @@ export async function requestCredentialFixture(
     request,
     grant,
     restartController,
+    principalId,
+    pauseNextApprovalCommit() {
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const policyState = state;
+      assert.ok(policyState instanceof PostgresPlatformState);
+      const original = policyState.transactReadCommitted.bind(policyState);
+      let pending = true;
+      policyState.transactReadCommitted = (work) =>
+        original((unit) =>
+          work({
+            ...unit,
+            requestCredentialApprovals: {
+              ...unit.requestCredentialApprovals,
+              async insert(...args) {
+                const inserted = await unit.requestCredentialApprovals.insert(...args);
+                if (pending && inserted) {
+                  pending = false;
+                  reached.resolve();
+                  await release.promise;
+                }
+                return inserted;
+              },
+            },
+          }),
+        );
+      return { reached: reached.promise, release: release.resolve };
+    },
     pauseFinalPolicyLock() {
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

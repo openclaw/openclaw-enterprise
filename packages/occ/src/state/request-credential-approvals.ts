@@ -55,23 +55,28 @@ export function postgresRequestCredentialApprovals(
   client: PostgresQueryClient,
 ): RequestCredentialApprovalRepository {
   return {
-    async insert(approval, now, limits) {
-      // Serialize admission counts across API replicas on this transaction connection.
-      // Callers already hold policy locks; no policy locks are acquired after this quota lock.
+    async insert(approval, _now, limits) {
+      // Never wait for quota capacity while retaining the caller's policy locks.
+      // The database clock owns both shared retention and eligibility across replicas.
       // Refuse snapshot isolation: its counts could miss a preceding lock holder's insertion.
-      await client.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+      const lock = await client.query(
+        "SELECT pg_try_advisory_xact_lock(1868785008, 0) AS acquired",
+      );
+      if ((lock.rows[0] as { acquired?: boolean } | undefined)?.acquired !== true) {
+        return false;
+      }
       await client.query(
-        "DELETE FROM occ.request_credential_approvals WHERE replay_until_at <= $1",
-        [now],
+        "DELETE FROM occ.request_credential_approvals WHERE replay_until_at <= clock_timestamp()",
       );
       const result = await client.query(
         `INSERT INTO occ.request_credential_approvals
           (recipient_id, request_id, binding_id, namespace_id, agent_id, revision_id, policy_digest, driver_ref, expires_at, replay_until_at)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz, $11::timestamptz
-         WHERE $9::timestamptz > $10::timestamptz
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::timestamptz, $10::timestamptz
+         WHERE $9::timestamptz > clock_timestamp()
+           AND $10::timestamptz <= clock_timestamp() + interval '1 hour'
            AND current_setting('transaction_isolation') = 'read committed'
-           AND (SELECT count(*) FROM occ.request_credential_approvals) < $12
-           AND (SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id = $1) < $13
+           AND (SELECT count(*) FROM occ.request_credential_approvals) < $11
+           AND (SELECT count(*) FROM occ.request_credential_approvals WHERE recipient_id = $1) < $12
          ON CONFLICT DO NOTHING`,
         [
           approval.recipientId,
@@ -83,7 +88,6 @@ export function postgresRequestCredentialApprovals(
           approval.policyDigest,
           JSON.stringify(approval.driver),
           approval.deadlineAt,
-          now,
           approval.replayUntilAt,
           limits.requestIds,
           limits.sandboxRequestIds,
@@ -91,13 +95,13 @@ export function postgresRequestCredentialApprovals(
       );
       return result.rowCount === 1;
     },
-    async consume(grant, driver, now) {
+    async consume(grant, driver, _now) {
       // Redemption expiry does not remove the authenticated request correlation.
       const { rows } = await client.query(
         `UPDATE occ.request_credential_approvals SET consumed = true
-         WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3 AND NOT consumed AND driver_ref = $4::jsonb AND expires_at > $5
+         WHERE recipient_id = $1 AND request_id = $2 AND binding_id = $3 AND NOT consumed AND driver_ref = $4::jsonb AND expires_at > clock_timestamp()
          RETURNING namespace_id, agent_id, revision_id, policy_digest, expires_at, replay_until_at`,
-        [grant.recipientId, grant.requestId, grant.bindingId, JSON.stringify(driver), now],
+        [grant.recipientId, grant.requestId, grant.bindingId, JSON.stringify(driver)],
       );
       const row = rows[0] as
         | {

@@ -1201,16 +1201,12 @@ test(
     assert.equal(restored.status, 201, JSON.stringify(restored.body));
     const withdrawn = request();
     assert.equal(await exchange.authorizeRequestCredential(withdrawn, signal), "credential");
-    // An external IAM response can stall independently of OCC policy. It must not
-    // hold Namespace locks that prevent an operator from withdrawing the source.
-    const iamReached = Promise.withResolvers<void>();
-    const iamRelease = Promise.withResolvers<void>();
-    t.after(() => iamRelease.resolve());
+    // A native approval cannot cross into an authority whose decision is not fenced
+    // by this State. Reject before invoking that external dependency or reading material.
+    let externalCalls = 0;
     const externalController = fixture.restartController(undefined, async (authorization) => {
-      const decision = await externalController.selectedDriver("iam").authorize(authorization);
-      iamReached.resolve();
-      await iamRelease.promise;
-      return decision;
+      externalCalls += 1;
+      return externalController.selectedDriver("iam").authorize(authorization);
     });
     const externalExchange = externalController.createCredentialProxy({
       async verify() {
@@ -1223,26 +1219,77 @@ test(
         return false;
       },
     });
-    const pendingExternal = externalExchange.authorizeRequestCredential(request(), signal);
-    await iamReached.promise;
-    const withdrawalRequest = f.request(
+    const unsupported = request();
+    assert.equal(await exchange.authorizeRequestCredential(unsupported, signal), "credential");
+    const beforeUnsupported = f.secretReads;
+    const unsupportedApproval = await externalExchange.authorizeRequestCredential(
+      request(),
+      signal,
+    );
+    const unsupportedMaterial = await externalExchange.resolveRequestCredential(
+      grant(unsupported),
+      signal,
+    );
+    const unsupportedObserved = {
+      approved: unsupportedApproval !== undefined,
+      released: unsupportedMaterial !== undefined,
+      externalCalls,
+      secretReads: f.secretReads - beforeUnsupported,
+    };
+
+    // Cancellation after the real INSERT must roll it back, not leave a row that a
+    // subsequent authenticated redemption could still consume.
+    const canceledInput = request();
+    const canceledCall = new AbortController();
+    const inserted = fixture.pauseNextApprovalCommit();
+    t.after(() => inserted.release());
+    const canceling = exchange.authorizeRequestCredential(canceledInput, canceledCall.signal);
+    await inserted.reached;
+    canceledCall.abort();
+    inserted.release();
+    assert.equal(await canceling, undefined);
+    const canceledRows = await f.pool.query(
+      "SELECT count(*)::int AS count FROM occ.request_credential_approvals WHERE recipient_id=$1 AND request_id=$2",
+      [canceledInput.recipient.id, canceledInput.requestId],
+    );
+    const canceledMaterial = await exchange.resolveRequestCredential(grant(canceledInput), signal);
+    assert.deepEqual(
+      {
+        unsupportedObserved,
+        canceledRows: canceledRows.rows[0].count,
+        canceledReleased: canceledMaterial !== undefined,
+      },
+      {
+        unsupportedObserved: { approved: false, released: false, externalCalls: 0, secretReads: 0 },
+        canceledRows: 0,
+        canceledReleased: false,
+      },
+    );
+    // Admission also refuses the profile before resolving source material. Ordinary
+    // administrator authorization is separate from model-request authorization above.
+    const beforeAdmission = f.secretReads;
+    await assert.rejects(
+      externalController.createCredentialSource(fixture.principalId, {
+        namespaceId: f.namespace.id,
+        name: "unsupported-online-authority",
+        type: "openai",
+        authorization: "online-request",
+        config: { authorized_base_url: `${revision.egressPlan!.routes[0]!.origin}/v1` },
+        secrets: { api_key: f.secret.ref },
+      }),
+      /native IAM Driver/,
+    );
+    assert.equal(f.secretReads, beforeAdmission);
+    assert.equal(await exchange.authorizeRequestCredential(canceledInput, signal), "credential");
+    assert.equal(
+      (await exchange.resolveRequestCredential(grant(canceledInput), signal))?.value,
+      "synthetic-key-after-cancel",
+    );
+    const withdrawal = await f.request(
       "POST",
       `/namespaces/${f.namespace.id}/agents/${f.agent.id}/credential-sources/${f.source.id}/withdraw`,
     );
-    let completedWhileIamPending: boolean;
-    try {
-      completedWhileIamPending = await Promise.race([
-        withdrawalRequest.then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000)),
-      ]);
-    } finally {
-      iamRelease.resolve();
-    }
-    const delayedDecision = await pendingExternal;
-    const withdrawal = await withdrawalRequest;
     assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
-    assert.equal(completedWhileIamPending, true, "external IAM must not block source withdrawal");
-    assert.equal(delayedDecision, undefined, "late IAM allow cannot revive withdrawn authority");
     assert.equal(await exchange.resolveRequestCredential(grant(withdrawn), signal), undefined);
     assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
     const audit = await f.pool.query(
@@ -1397,6 +1444,91 @@ test(
       await releasing,
       undefined,
       "final authorization must observe grant withdrawal committed after its first database read",
+    );
+
+    // A contending global quota must not hold the policy locks needed for source withdrawal.
+    const quotaOwner = await b.f.pool.connect();
+    const contended = b.request();
+    const bApi = b.restartController().createCredentialProxy(transport);
+    const bReads = b.f.secretReads;
+    try {
+      await quotaOwner.query("BEGIN");
+      await quotaOwner.query("SELECT pg_advisory_xact_lock(1868785008, 0)");
+      const attempt = bApi.authorizeRequestCredential(contended, AbortSignal.timeout(100));
+      const outcome = await Promise.race([
+        attempt,
+        new Promise<string>((resolve) => setTimeout(() => resolve("quota wait"), 500)),
+      ]);
+      assert.equal(
+        outcome,
+        undefined,
+        "quota contention must fail without waiting on policy locks",
+      );
+      const withdrawalRequest = b.f.request(
+        "POST",
+        `/namespaces/${b.f.namespace.id}/agents/${b.f.agent.id}/credential-sources/${b.f.source.id}/withdraw`,
+      );
+      const withdrawal = await Promise.race([
+        withdrawalRequest,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 500)),
+      ]);
+      assert.ok(withdrawal, "quota contention must not delay source withdrawal");
+      assert.equal(withdrawal.status, 202, JSON.stringify(withdrawal.body));
+      assert.equal(await bApi.resolveRequestCredential(b.grant(contended), signal), undefined);
+      assert.equal(b.f.secretReads, bReads);
+    } finally {
+      await quotaOwner.query("ROLLBACK");
+      quotaOwner.release();
+    }
+
+    // Local identity clocks can disagree. A fast replica must not delete a correlation
+    // that is still eligible at the database, and a slow one cannot recreate it after expiry.
+    const slowApi = a
+      .restartController(undefined, undefined, a.f.pool, () => new Date(Date.now() - 2_000))
+      .createCredentialProxy(transport);
+    const fastApi = a
+      .restartController(undefined, undefined, a.f.pool, () => new Date(Date.now() + 2_000))
+      .createCredentialProxy(transport);
+    const ordinaryApi = a.restartController().createCredentialProxy(transport);
+    const databaseNow = (
+      await a.f.pool.query("SELECT clock_timestamp() AS time")
+    ).rows[0].time.getTime();
+    const skewed = {
+      ...a.request(),
+      deadlineAt: new Date(databaseNow + 1_000).toISOString(),
+      replayUntilAt: new Date(databaseNow + 1_500).toISOString(),
+    };
+    assert.equal(await slowApi.authorizeRequestCredential(skewed, signal), "credential");
+    assert.equal(
+      (await ordinaryApi.resolveRequestCredential(a.grant(skewed), signal))?.value,
+      "synthetic-key-initial",
+    );
+    const fastRequest = {
+      ...a.request(),
+      deadlineAt: new Date(databaseNow + 10_000).toISOString(),
+      replayUntilAt: new Date(databaseNow + 20_000).toISOString(),
+    };
+    assert.equal(await fastApi.authorizeRequestCredential(fastRequest, signal), "credential");
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal),
+      undefined,
+      "fast replica pruning must preserve a still-valid consumed correlation",
+    );
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, databaseNow + 1_550 - Date.now())),
+    );
+    assert.equal(
+      await slowApi.authorizeRequestCredential(skewed, signal),
+      undefined,
+      "the database rejects an expired correlation even when the replica clock lags",
+    );
+    assert.equal(
+      await ordinaryApi.authorizeRequestCredential(
+        { ...a.request(), requestId: skewed.requestId },
+        signal,
+      ),
+      "credential",
+      "fresh authentication can reuse the ID after the database retention horizon",
     );
   },
 );

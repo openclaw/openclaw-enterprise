@@ -7691,6 +7691,14 @@ export class OpenClawController {
     return { ...material, materialId: secret.backendRef.uid };
   }
 
+  private requestCredentialAuthority(): IAMDriver | undefined {
+    const authority = this.selectedDriver("iam");
+    return !this.authorization &&
+      NativeIAMDriver.usesStateForAuthorization(authority, authority.authorize, this.state)
+      ? authority
+      : undefined;
+  }
+
   /** Verify the installed recipient before entering a fresh, short policy transaction. */
   private async checkRequestCredential(
     owner: InstalledDriver,
@@ -7739,6 +7747,12 @@ export class OpenClawController {
     const sourceId = route.binding.source.source.id;
     const deny = (state: PlatformUnitOfWork, code: string) =>
       this.denyRequestCredential(state, request, revision, sourceId, code);
+    const authority = this.requestCredentialAuthority();
+    if (!authority) {
+      await this.transactReadCommitted((state) => deny(state, "unsupported_authority"));
+      return undefined;
+    }
+    const authorize = authority.authorize;
     const verifyRequestInstallation = credentials.verifyRequestInstallation;
     if (
       !(await Reflect.apply(verifyRequestInstallation, credentials, [
@@ -7753,29 +7767,6 @@ export class OpenClawController {
       ]))
     ) {
       await this.transactReadCommitted((state) => deny(state, "stale_configuration"));
-      return undefined;
-    }
-    const authority = this.authorizationAuthority(revision.servicePrincipalId);
-    const authorize = authority.authorize;
-    const decide = () =>
-      this.authorizationDecision(
-        revision.servicePrincipalId,
-        "operate",
-        { kind: "credential_source", namespaceId, id: sourceId },
-        authority,
-        authorize,
-      );
-    // Only the native policy reader participates in this State's transaction. External
-    // decisions must settle before acquiring locks needed by withdrawal and rotation.
-    const native =
-      !this.authorization &&
-      NativeIAMDriver.usesStateForAuthorization(authority, authorize, this.state);
-    const observed = native ? undefined : await decide();
-    if (signal.aborted) {
-      return undefined;
-    }
-    if (observed && !observed.decision.allowed) {
-      await this.transactReadCommitted((state) => deny(state, "unauthorized"));
       return undefined;
     }
     return this.transactReadCommitted(async (state) => {
@@ -7903,7 +7894,13 @@ export class OpenClawController {
       ) {
         return refuse("stale_configuration");
       }
-      const { decision } = observed ?? (await decide());
+      const { decision } = await this.authorizationDecision(
+        revision.servicePrincipalId,
+        "operate",
+        { kind: "credential_source", namespaceId, id: sourceId },
+        authority,
+        authorize,
+      );
       if (!decision.allowed) {
         return refuse("unauthorized");
       }
@@ -7943,9 +7940,8 @@ export class OpenClawController {
       ) {
         return refuse("stale_configuration");
       }
-      if (
-        "http" in request &&
-        !(await state.requestCredentialApprovals.insert(
+      if ("http" in request) {
+        const inserted = await state.requestCredentialApprovals.insert(
           {
             recipientId: request.recipient.id,
             requestId: request.requestId,
@@ -7958,9 +7954,15 @@ export class OpenClawController {
           },
           this.timestamp(),
           this.credentialProxyCapacity,
-        ))
-      ) {
-        return refuse("stale_configuration");
+        );
+        // A canceled admission must roll back its correlation, not merely hide the
+        // result while committing a row that a subsequent token request can redeem.
+        if (signal.aborted || Date.parse(request.deadlineAt) <= this.clock().getTime()) {
+          throw new DependencyUnavailableError("Request credential authorization expired.");
+        }
+        if (!inserted) {
+          return refuse("stale_configuration");
+        }
       }
       return selected;
     });
@@ -8542,6 +8544,11 @@ export class OpenClawController {
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     if (provider.authorization === "online-request") {
+      if (!this.requestCredentialAuthority()) {
+        throw new ResourceStateConflictError(
+          "Online request credentials require the native IAM Driver for this Installation.",
+        );
+      }
       const requestCredentials = this.selectedDriver("credential_proxy").requestTimeCredentials;
       if (!requestCredentials) {
         throw new DependencyUnavailableError(
@@ -8686,6 +8693,11 @@ export class OpenClawController {
       );
     }
     if (online) {
+      if (!this.requestCredentialAuthority()) {
+        throw new ResourceStateConflictError(
+          "Online request credentials require the native IAM Driver for this Installation.",
+        );
+      }
       if (
         !driver.requestTimeCredentials ||
         sources.some((source) => source.egress?.adoption !== "live")

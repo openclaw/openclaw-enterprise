@@ -56,7 +56,11 @@ response for OCC inspection or authorize an exact upstream dispatch.
 requested authorization profile. Updates retain the exact provider ID and
 generation. The bundled adapter registers `openai-online-request`, generation 1,
 separately from the strict provider. `admitProxyPlan` rejects mixed profiles and
-records `authorization: "online-request"`. Admission version 8 covers the model
+records `authorization: "online-request"`. `requestCredentialAuthority` uses
+`NativeIAMDriver.usesStateForAuthorization` to require the native policy reader
+for this OCC state, without a custom authorization override. Source creation and
+update reject unsupported authority before reading Secret material; Agent
+admission applies the same restriction. Admission version 8 covers the model
 route; version 9 also requires independently authorized mandatory Git delivery.
 `packages/contracts/src/drivers/credential-proxy/index.ts:assertExecutionAdmission`
 refuses policy reduction for this profile. Binding removal may stop or redeploy
@@ -93,7 +97,9 @@ Gateway-signed supervisor identity, reads the installed binding, and passes the
 captured method, target, headers and body to OCC. Malformed binding configuration
 is denied. `packages/occ/src/index.ts:checkRequestCredential` verifies the current
 recipient, installation, revision, source, route, provider and IAM permission,
-then classifies the actual request against the admitted model grant. It calls
+then classifies the actual request against the admitted model grant. It rejects
+unsupported IAM with `unsupported_authority` before live recipient verification
+or Secret lookup; it never calls an external IAM provider on this path. It calls
 `requestTimeCredentials.verifyRequestInstallation` with the persisted installation
 and authenticated recipient. The bundled
 `apps/controller/src/drivers/egress-proxy/openshell.ts:verifyRequestInstallation`
@@ -113,7 +119,13 @@ admission. OpenShell uses the authenticated extension identity's expiry.
 `packages/occ/src/state/request-credential-approvals.ts` retains consumed or
 expired approvals until that horizon, so redemption expiry cannot permit
 reapproval of the same recipient/request ID. Its global and per-recipient ID
-quotas are durable and shared across API replicas. Online approval consumption
+quotas are durable and shared across API replicas. A nonblocking transaction
+advisory lock serializes quota admission; contention refuses instead of waiting
+while holding policy locks. PostgreSQL's `clock_timestamp()` governs pruning,
+admission deadlines, the one-hour replay limit and redemption expiry; replica
+clocks cannot shorten shared retention. The in-memory store uses its single-state
+clock. A canceled or expired operation detected after insertion rolls back the
+approval. Online approval consumption
 and policy checks explicitly use State's `transactReadCommitted`, regardless of
 the connection pool's default isolation. PostgreSQL starts `READ COMMITTED`
 transactions so policy reads and quota counts observe committed changes after
@@ -195,6 +207,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-10 03:38: Restrict online requests to native IAM and trace nonblocking quotas with database-owned time. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - e0072b4a)
 
 - 2026-11-10 03:32: Document explicit current-policy transactions independently of pool isolation defaults. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - 19dccca3aef8702fcfb048198368a563ce359401)
 

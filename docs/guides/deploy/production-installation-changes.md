@@ -24,16 +24,30 @@ investigation, not switching this configuration change back to migration mode.
 
 ## Change a mutable Installation Secret
 
-Run the setup once for each reviewed change. If
-`/secure/occ/installation.yaml.before` already exists, preserve it and reconcile
-the previous change before continuing. During recovery, use that original backup;
-do not repeat the backup command after editing `installation.yaml`.
+Run the setup once for each reviewed change. Preserve the original Installation
+and matching Helm values together. If either `.before` file already exists,
+reconcile the previous change before continuing. During recovery, use those
+original backups; do not repeat setup after editing either file.
+
+```bash
+set -euo pipefail
+umask 077
+test ! -e /secure/occ/installation.yaml.before
+test ! -e /secure/occ/values.yaml.before
+cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
+cp /secure/occ/values.yaml /secure/occ/values.yaml.before
+```
+
+Edit `installation.yaml` and its matching settings in `values.yaml`, then review
+both diffs. Keep images, database connection, platform authentication and the
+Installation Secret name/key unchanged. For example, a model listener change
+must keep the Installation and Helm listener settings aligned.
+
+Apply the reviewed pair:
 
 ```bash
 set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
-cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
-# Edit /secure/occ/installation.yaml and review the diff, then:
 OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)"
@@ -74,10 +88,23 @@ The patch replaces only the Installation key and keeps the Secret's
 `kubectl apply`: if its last applied configuration carries that annotation,
 apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
-afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file, recompute its checksum, then rerun the Secret patch, values update and
-`helm upgrade` commands. The
-edited files are the baseline for the next upgrade.
+afterward; deploy an Agent to apply them to it.
+
+To undo, restore both original files, including the paired listener, peer-policy
+and bundle-mount settings:
+
+```bash
+set -euo pipefail
+cp /secure/occ/installation.yaml.before /secure/occ/installation.yaml
+cp /secure/occ/values.yaml.before /secure/occ/values.yaml
+```
+
+Rerun the **Apply the reviewed pair** block above. It recomputes the restored
+Installation's checksum, patches the Secret and sets
+`database.upgradeMigration: separate` before the same-image Helm upgrade. Do not rerun setup or restore only
+one file. Check API and worker readiness after recovery; this restores
+configuration, not database schema. The accepted pair becomes the baseline for
+the next upgrade.
 
 ## Change an immutable Installation Secret
 
