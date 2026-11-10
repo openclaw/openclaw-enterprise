@@ -28,7 +28,7 @@
     "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.mjs",
     "tests/integration/openshell-plugin-source-reader.test.ts",
-    "tests/integration/runtime-credentials-api.test.mjs",
+    "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
@@ -51,7 +51,7 @@
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
     "tests/docs/generated-api-reference.test.mjs",
-    "tests/integration/service-api-keys.test.mjs",
+    "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.mjs",
     "tests/conformance/workspace-files-configuration.test.mjs",
     "tests/integration/common-logging.test.mjs",
@@ -455,13 +455,13 @@
       "path": "tests/integration/dependency-unavailable-log.test.mjs"
     },
     {
-      "path": "tests/integration/runtime-credentials-api.test.mjs"
+      "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
       "path": "tests/integration/secret-driver-startup.test.mjs"
     },
     {
-      "path": "tests/integration/service-api-keys.test.mjs"
+      "path": "tests/integration/service-api-keys.test.ts"
     },
     {
       "path": "tests/integration/startup-ipv6-loopback.test.mjs"
