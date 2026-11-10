@@ -3590,6 +3590,44 @@ test("a nonaccepted Helm submission retries the same successor after checked his
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
 });
 
+test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  const f = await fixture(t, { controllerOnly: true, candidates: true });
+  const path = join(f.directory, "candidate-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  values.database = { ...values.database, upgradeMigration: "separate" };
+  await writeFile(path, JSON.stringify(values));
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    (error) => error.code === 3 && /separate database deployment/.test(error.stderr),
+  );
+  const stopped = await f.state();
+  assert.deepEqual([stopped.api, stopped.worker], [0, 0]);
+  assert.equal(stopped.helmSubmissions ?? 0, 0);
+  assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  // A replacement with the same labels and replica count does not own this handoff.
+  const stateFile = join(f.directory, "state.json");
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      ...stopped,
+      deploymentIdentities: {
+        ...stopped.deploymentIdentities,
+        worker: { uid: "replacement-worker" },
+      },
+    }),
+  );
+  await assert.rejects(
+    f.run("--resume", "--migration-history-checked"),
+    /worker Deployment changed/,
+  );
+  assert.equal((await f.state()).helmSubmissions ?? 0, 0);
+  await writeFile(stateFile, JSON.stringify(stopped));
+  await f.run("--resume", "--migration-history-checked");
+  assert.equal((await f.state()).helmSubmissions, 1);
+});
+
 test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
   const f = await fixture(t);
   // A preexisting worker configuration must not cause an avoidable API outage.
