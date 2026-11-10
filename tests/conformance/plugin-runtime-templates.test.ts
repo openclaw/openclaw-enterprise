@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+import {
+  PLUGIN_RUNTIME_TRANSLATOR_SOURCE,
+  type pluginRuntimeTranslator,
+} from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 
-const translator = vm.runInNewContext(`(${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})()`);
+const translatorMethods = [
+  "codexSearchPlan",
+  "codexReadParamsFromSearch",
+  "codexRuntimeArtifact",
+  "codexOpenClawConfiguration",
+] as const;
+type SerializedTranslator = Pick<
+  typeof pluginRuntimeTranslator,
+  (typeof translatorMethods)[number]
+>;
+
+function assertRecord(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+}
+
+function assertSerializedTranslator(value: unknown): asserts value is SerializedTranslator {
+  assertRecord(value);
+  for (const method of translatorMethods) {
+    assert.equal(typeof value[method], "function");
+  }
+}
+
+function normalizeVmValue(value: unknown): unknown {
+  const parsed: unknown = JSON.parse(JSON.stringify(value));
+  return parsed;
+}
+
+const translator: unknown = vm.runInNewContext(`(${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})()`);
+assertSerializedTranslator(translator);
 
 const nativeId = "fixture@openai-curated-remote";
 const selections = {
@@ -44,7 +75,9 @@ const templates = [
 
 test("selected plugin search requires exact identity and the admitted marketplace", () => {
   const pluginId = `codex-plugin:${nativeId}`;
-  assert.equal(translator.codexSearchPlan(selections)[0].params.searchTerm, "fixture");
+  const [search] = translator.codexSearchPlan(selections);
+  assert.ok(search);
+  assert.equal(search.params.searchTerm, "fixture");
   // Search can return fuzzy matches and entries from other marketplaces. Neither
   // may redirect installation away from the Agent's admitted selection.
   for (const result of [
@@ -60,6 +93,7 @@ test("selected plugin search requires exact identity and the admitted marketplac
     data: [{ marketplaceName: "openai-curated-remote", plugin: detail.plugin.summary }],
     nextCursor: null,
   });
+  assert.ok(params);
   assert.equal(params.pluginName, "fixture");
   assert.equal(params.remoteMarketplaceName, "openai-curated-remote");
 });
@@ -70,7 +104,8 @@ test("serialized Agent startup ignores template metadata and configures only con
     const artifact = translator.codexRuntimeArtifact(selections, [
       { plugin: { ...detail.plugin, appTemplates } },
     ]);
-    assert.deepEqual(JSON.parse(JSON.stringify(artifact.configuration.apps)), {
+    assertRecord(artifact.configuration);
+    assert.deepEqual(normalizeVmValue(artifact.configuration.apps), {
       _default: { enabled: false },
       concrete_app: {
         enabled: true,
@@ -78,7 +113,7 @@ test("serialized Agent startup ignores template metadata and configures only con
         approvals_reviewer: "user",
       },
     });
-    assert.deepEqual(JSON.parse(JSON.stringify(artifact.installs)), [
+    assert.deepEqual(normalizeVmValue(artifact.installs), [
       {
         pluginId: `codex-plugin:${nativeId}`,
         nativeId,
@@ -98,7 +133,11 @@ test("serialized Agent startup carries repository broker policy into bridge conf
     },
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(overlay.plugins.entries.codex.config)), {
+  assert.ok(overlay);
+  assertRecord(overlay.plugins);
+  assertRecord(overlay.plugins.entries);
+  assertRecord(overlay.plugins.entries.codex);
+  assert.deepEqual(normalizeVmValue(overlay.plugins.entries.codex.config), {
     appServer: {
       networkProxy: {
         enabled: true,

@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import test, { type TestContext } from "node:test";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const generator = fileURLToPath(new URL("../../scripts/update-contributors.ts", import.meta.url));
 const initialReadme = "before\n<!-- contributors:start -->\n<!-- contributors:end -->\nafter\n";
@@ -17,7 +17,15 @@ const corrections = {
   },
 };
 
-function run(t, scenario, { readme = initialReadme, correctionData = corrections } = {}) {
+function run(
+  t: TestContext,
+  scenario:
+    "normal" | "gh-error" | "branch-changed" | "invalid-pages" | "graphql-error" | "readme-changed",
+  {
+    readme = initialReadme,
+    correctionData = corrections,
+  }: { readme?: string; correctionData?: Record<string, unknown> } = {},
+) {
   const directory = temporaryDirectorySync(t, "contributors-");
   mkdirSync(join(directory, "scripts"));
   mkdirSync(join(directory, "bin"));

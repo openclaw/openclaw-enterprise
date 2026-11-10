@@ -15,11 +15,17 @@ const preflight = "Dispatch Preflight";
 const aggregate = "Full Integration Aggregate";
 const admittedStep = "Confirm full admission marker";
 const exercisedStep = "Confirm full coverage marker";
-const fullOnlyJobs = new Set(["Shared Runtime Image", "Reuse successful same-SHA CI"]);
+const executionPrefix = "Execute / ";
+const fullOnlyJobs = new Set([
+  "Shared Runtime Image",
+  "Shared Runtime Image / Build ordinary CI runtime",
+  "Reuse successful same-SHA CI",
+]);
 const nonSuiteJobs = new Set([
   preflight,
   aggregate,
   "Approve manual integration",
+  "Reject missing or inconsistent selection",
   "Reuse successful same-SHA CI",
 ]);
 
@@ -132,9 +138,24 @@ async function attemptJobs(read: ReadGithub, marker: Marker): Promise<Json[]> {
   return jobs;
 }
 
+function executionJobName(job: Json): string {
+  const name = String(job.name);
+  return name.startsWith(executionPrefix) ? name.slice(executionPrefix.length) : name;
+}
+
 function requireMarkerStep(jobs: Json[], jobName: string, stepName: string): number {
-  const matches = jobs.filter((job) => job.name === jobName);
-  requireValid(matches.length === 1);
+  const legacy = jobs.filter((job) => job.name === jobName);
+  const execution = jobs.filter((job) => job.name === executionPrefix + jobName);
+  requireValid(legacy.length <= 1 && execution.length <= 1);
+  if (execution.length === 1 && legacy.length === 1) {
+    // The outer dispatcher has a same-named preflight but never writes receipts.
+    requireValid(
+      jobName === preflight &&
+        Array.isArray(legacy[0]?.steps) &&
+        !legacy[0].steps.map(record).some((step) => step.name === stepName),
+    );
+  }
+  const matches = execution.length ? execution : legacy;
   const [job] = matches;
   requireValid(matches.length === 1 && job?.status === "completed" && Array.isArray(job.steps));
   const steps = job.steps.map(record).filter((step) => step.name === stepName);
@@ -213,7 +234,7 @@ async function readUnmarkedClock(
       String(run.status),
     );
     if (event === "workflow_dispatch") {
-      const fullOnly = jobs.filter((job) => fullOnlyJobs.has(String(job.name)));
+      const fullOnly = jobs.filter((job) => fullOnlyJobs.has(executionJobName(job)));
       requireValid(fullOnly.length <= fullOnlyJobs.size);
       if (!fullOnly.some((job) => job.conclusion !== "skipped")) {
         // An unapproved request has no started preflight. While an approved
@@ -224,7 +245,7 @@ async function readUnmarkedClock(
           fullOnly.length === 0 &&
           jobs.some(
             (job) =>
-              job.name === preflight &&
+              executionJobName(job) === preflight &&
               job.started_at != null &&
               (job.status !== "completed" || job.conclusion === "success"),
           )
@@ -251,7 +272,7 @@ async function readUnmarkedClock(
     }
     const occupied = jobs.filter(
       (job) =>
-        !nonSuiteJobs.has(String(job.name)) &&
+        !nonSuiteJobs.has(executionJobName(job)) &&
         job.conclusion !== "skipped" &&
         job.started_at != null,
     );
@@ -297,7 +318,7 @@ async function readPrevious(read: ReadGithub, currentRunId: number): Promise<Pre
     const suiteStartTimes = jobs
       .filter(
         (job) =>
-          !nonSuiteJobs.has(String(job.name)) &&
+          !nonSuiteJobs.has(executionJobName(job)) &&
           job.conclusion !== "skipped" &&
           job.started_at != null,
       )

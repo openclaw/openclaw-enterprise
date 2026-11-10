@@ -197,6 +197,10 @@ export const DeploySecretOperateDenied = {
   ...story("deploySecretOperateDenied"),
   name: "Deployment needs Secret operate",
 };
+export const DeploySecretOperateGrantedOnRefocus = {
+  ...story("deploySecretOperateGrantedOnRefocus", { openInNewTab: true }),
+  name: "Deployment regains Secret operate on refocus",
+};
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
 export const DeployHoldsNavigation = {
   ...story("deployHoldsNavigation"),

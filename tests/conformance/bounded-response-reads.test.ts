@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
@@ -22,15 +23,48 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
-const { fetch: undiciFetch } = controllerRequire("undici");
-const sdk = controllerRequire("@kubernetes/client-node");
+const undici: unknown = controllerRequire("undici");
+assert.ok(typeof undici === "object" && undici !== null && "fetch" in undici);
+assert.equal(typeof undici.fetch, "function");
+const undiciFetch = undici.fetch as typeof fetch;
 
-function scratch(t) {
+const sdkMembers = [
+  "KubeConfig",
+  "Observable",
+  "CoreV1Api",
+  "createConfiguration",
+  "ServerConfiguration",
+] as const;
+type KubernetesSdk = Pick<
+  Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"],
+  (typeof sdkMembers)[number]
+>;
+type CancellationMiddleware = NonNullable<
+  NonNullable<Parameters<KubernetesSdk["createConfiguration"]>[0]>["middleware"]
+>[number];
+function isKubernetesSdk(value: unknown): value is KubernetesSdk {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    sdkMembers.every((name) => typeof Reflect.get(value, name) === "function")
+  );
+}
+const sdkModule: unknown = controllerRequire("@kubernetes/client-node");
+assert.ok(isKubernetesSdk(sdkModule));
+const sdk = sdkModule;
+
+function scratch(t: TestContext) {
   return temporaryDirectory(t, "occ-bounded-");
 }
 
 /** Sends `bytes` of body after `status` (200 by default) and never ends the response. */
-async function holdingServer(t, listenOn, bytes, contentType, status = 200) {
+async function holdingServer(
+  t: TestContext,
+  listenOn: number | string,
+  bytes: number,
+  contentType: string,
+  status = 200,
+) {
   const server = createServer((request, response) => {
     request.resume();
     response.on("error", () => {});
@@ -48,24 +82,43 @@ async function holdingServer(t, listenOn, bytes, contentType, status = 200) {
     };
     pump();
   });
-  await new Promise((resolve) =>
+  await new Promise<void>((resolve) =>
     typeof listenOn === "number"
       ? server.listen(listenOn, "127.0.0.1", resolve)
       : server.listen(listenOn, resolve),
   );
   t.after(async () => {
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
   return server;
 }
 
+function serverPort(server: Server): number {
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  return address.port;
+}
+
+async function listenPort(t: TestContext, server: Server): Promise<number> {
+  const port: unknown = await listen(t, server);
+  assert.ok(typeof port === "number");
+  return port;
+}
+
+function errorProperty(error: unknown, property: string): unknown {
+  return typeof error === "object" && error !== null ? Reflect.get(error, property) : undefined;
+}
+
 /** Settles within `ms`, or reports that it is still pending. */
-function settled(promise, ms) {
+function settled<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ value?: T; error?: unknown; pending?: boolean }> {
   return Promise.race([
     promise.then(
       (value) => ({ value }),
-      (error) => ({ error }),
+      (error: unknown) => ({ error }),
     ),
     delay(ms, undefined, { ref: false }).then(() => ({ pending: true })),
   ]);
@@ -77,7 +130,7 @@ test("an oversized receipt reply rejects instead of hanging (finding 1328)", asy
   const client = new RepositoryReceiptClient(join(dir, "control.sock"), "generation-1");
   const outcome = await settled(client.status("session-1"), 3_000);
   assert.equal(outcome.pending, undefined, "the receipt call settles");
-  assert.equal(outcome.error?.message, "RECEIPT_UNAVAILABLE");
+  assert.equal(errorProperty(outcome.error, "message"), "RECEIPT_UNAVAILABLE");
 });
 
 test("an oversized control reply rejects instead of hanging (finding 1328)", async (t) => {
@@ -89,7 +142,8 @@ test("an oversized control reply rejects instead of hanging (finding 1328)", asy
     3_000,
   );
   assert.equal(outcome.pending, undefined, "the control call settles");
-  assert.match(outcome.error?.message ?? "", /^control-request-failed admission=/);
+  const message = errorProperty(outcome.error, "message");
+  assert.match(typeof message === "string" ? message : "", /^control-request-failed admission=/);
 });
 
 test("SSH executor drops output past its limit while the child ignores SIGTERM (finding 1330)", async (t) => {
@@ -129,9 +183,9 @@ process.stdout.write(outcome);
 test("Slack stops reading a response past its size limit (finding 1329)", async (t) => {
   // Over the 8,000,000-byte read limit; well under the request's eight-second timeout.
   const server = await holdingServer(t, 0, 16 * 1024 * 1024, "application/json");
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `http://127.0.0.1:${serverPort(server)}`;
   const driver = new SlackChannelDriver((url, options) =>
-    undiciFetch(new URL(new URL(url).pathname, origin), options),
+    undiciFetch(new URL(new URL(url instanceof Request ? url.url : url).pathname, origin), options),
   );
   const started = performance.now();
   const outcome = await settled(
@@ -139,14 +193,25 @@ test("Slack stops reading a response past its size limit (finding 1329)", async 
     5_000,
   );
   assert.equal(outcome.pending, undefined, "the lookup settles");
-  assert.equal(outcome.error?.reason, "invalid_response");
+  assert.equal(errorProperty(outcome.error, "reason"), "invalid_response");
   assert.ok(performance.now() - started < 4_000, "rejected at the limit, not the timeout");
 });
 
-function statusReadback(port) {
-  const driver = new KubernetesComputeDriver(
-    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
-  );
+function statusReadback(port: number) {
+  const options = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+    runtime: undefined,
+  });
+  assert.equal(options.authentication.mode, "kubeconfig");
+  assert.equal(options.servicePrincipalCredentials.mode, "disabled");
+  const driver = new KubernetesComputeDriver({
+    ...options,
+    authentication: { ...options.authentication, mode: options.authentication.mode },
+    servicePrincipalCredentials: {
+      ...options.servicePrincipalCredentials,
+      mode: options.servicePrincipalCredentials.mode,
+    },
+  });
   const kubeConfig = new sdk.KubeConfig();
   kubeConfig.loadFromOptions({
     // Plain HTTP needs skipTLSVerify in client-node; production requires verified HTTPS.
@@ -156,7 +221,7 @@ function statusReadback(port) {
     currentContext: "loopback",
   });
   // The production client's cancellation middleware (drivers/kubernetes/client.ts).
-  const cancellation = {
+  const cancellation: CancellationMiddleware = {
     pre(request) {
       const signal = currentComputeAbortSignal();
       if (signal !== undefined) {
@@ -175,15 +240,24 @@ function statusReadback(port) {
       middleware: [cancellation],
     }),
   );
-  driver.apiClients = Promise.resolve({ core });
-  driver.revisionPods = async () => [
-    {
-      metadata: { name: "agent-pod", uid: "agent-uid" },
-      status: { phase: "Running", podIP: "10.42.0.7" },
-    },
-  ];
-  return driver.privateStatusReadback(
-    { harness: { mode: "shared" } },
+  Object.assign(driver, {
+    apiClients: Promise.resolve({ core } satisfies Pick<
+      Awaited<NonNullable<KubernetesComputeDriver["apiClients"]>>,
+      "core"
+    >),
+    revisionPods: async () =>
+      [
+        {
+          metadata: { name: "agent-pod", uid: "agent-uid" },
+          status: { phase: "Running", podIP: "10.42.0.7" },
+        },
+      ] satisfies Awaited<ReturnType<KubernetesComputeDriver["revisionPods"]>>,
+  });
+  // This readback only inspects the harness mode from the revision.
+  return driver["privateStatusReadback"](
+    { harness: { mode: "shared" } } as Parameters<
+      KubernetesComputeDriver["privateStatusReadback"]
+    >[0],
     { name: "tenant", plane: "control" },
     "agent",
     "/openclaw/runtime/status",
@@ -195,9 +269,12 @@ for (const status of [200, 299]) {
   test(`runtime status readback stops reading a ${status} past its size limit (finding 1327)`, async (t) => {
     const server = await holdingServer(t, 0, 1024 * 1024, "text/plain", status);
     const started = performance.now();
-    const outcome = await settled(statusReadback(server.address().port), 8_000);
+    const outcome = await settled(statusReadback(serverPort(server)), 8_000);
     assert.equal(outcome.pending, undefined, "the readback settles");
-    assert.equal(outcome.error?.message, "Runtime status returned oversized data.");
+    assert.equal(
+      errorProperty(outcome.error, "message"),
+      "Runtime status returned oversized data.",
+    );
     assert.ok(performance.now() - started < 5_000, "rejected at the limit, not the deadline");
   });
 }
@@ -206,7 +283,7 @@ for (const status of [404, 503]) {
   test(`an oversized ${status} from the status port still reads as not serving (finding 1339)`, async (t) => {
     const server = await holdingServer(t, 0, 1024 * 1024, "text/plain", status);
     const started = performance.now();
-    const outcome = await settled(statusReadback(server.address().port), 8_000);
+    const outcome = await settled(statusReadback(serverPort(server)), 8_000);
     assert.equal(outcome.pending, undefined, "the readback settles");
     assert.equal(outcome.error, undefined);
     assert.equal(outcome.value, undefined);
@@ -221,7 +298,7 @@ for (const status of [200, 299]) {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
     });
-    assert.deepEqual(await statusReadback(await listen(t, server)), {
+    assert.deepEqual(await statusReadback(await listenPort(t, server)), {
       status: { revisionId: "revision-1", container: "agent" },
       podUid: "agent-uid",
       containerId: undefined,
@@ -232,14 +309,14 @@ for (const status of [200, 299]) {
 test("runtime status readback refuses a redirect even on a client built elsewhere (finding 1347)", async (t) => {
   // statusReadback's client keeps client-node's default HTTP library, which follows
   // redirects: the status read must bring its own instead of relying on the shared clients.
-  const requests = [];
+  const requests: (string | undefined)[] = [];
   const server = createServer((request, response) => {
     requests.push(request.url);
     response.writeHead(302, { location: "../../../../../../../api/v1/namespaces/x/secrets/y" });
     response.end();
   });
-  const outcome = await settled(statusReadback(await listen(t, server)), 8_000);
-  assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
+  const outcome = await settled(statusReadback(await listenPort(t, server)), 8_000);
+  assert.equal(errorProperty(outcome.error, "message"), "Runtime status answered with a redirect.");
   assert.equal(requests.length, 1);
 });
 
@@ -248,9 +325,12 @@ test("runtime status readback refuses a redirect even on a client built elsewher
 for (const status of [300, 399]) {
   test(`runtime status readback settles a ${status} as a redirect without reading its body`, async (t) => {
     const server = await holdingServer(t, 0, 1, "text/plain", status);
-    const outcome = await settled(statusReadback(server.address().port), 4_000);
+    const outcome = await settled(statusReadback(serverPort(server)), 4_000);
     assert.equal(outcome.pending, undefined, "the readback settles");
-    assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
+    assert.equal(
+      errorProperty(outcome.error, "message"),
+      "Runtime status answered with a redirect.",
+    );
   });
 }
 
@@ -260,7 +340,7 @@ test("runtime status readback reports a 400 as the client's error, not a redirec
     response.writeHead(400, { "content-type": "application/json" });
     response.end("{}");
   });
-  const refused = await settled(statusReadback(await listen(t, server)), 8_000);
+  const refused = await settled(statusReadback(await listenPort(t, server)), 8_000);
   assert.equal(refused.pending, undefined, "the readback settles");
-  assert.equal(refused.error?.code, 400);
+  assert.equal(errorProperty(refused.error, "code"), 400);
 });

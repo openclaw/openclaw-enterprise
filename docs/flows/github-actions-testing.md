@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-10
-last_updated_session: authoring-run/b99ad0c3-5ba1-40a6-8719-e0216a7c49a8
+last_updated_session: authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961
 ---
 
 # GitHub Actions testing flow
@@ -15,6 +15,7 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
 - `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration-execution.yml:jobs`: same-source revalidation and execution.
 
 ## Flow
 
@@ -36,11 +37,14 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Integration dispatch or exact cutover push"] --> P["Source and environment preflight"]
-  P -->|eligible source and environment| E["Protected test jobs"]
-  P -->|all or dev-up-k3d| U["Credential-free installation job"]
+  C["Main push or approved dispatch"] --> P["Source and environment preflight"]
+  P -->|docs only| D["Finish without execution lock"]
+  P -->|eligible| V["Acquire execution lock and revalidate"]
+  V --> E["Protected test jobs"]
+  V -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
+  V -->|missing protection| X
   E --> T["Owned preparation, tests, cleanup and aggregation"]
 ```
 
@@ -51,6 +55,7 @@ graph TD
 ### 1. Select one source commit and coverage group
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
+`.github/workflows/full-integration-execution.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
 
@@ -86,12 +91,12 @@ evidence is reported as unavailable.
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
 Full Integration checks out `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
-checks current main, previous run timing and exact execution evidence. Approved
-manual dispatches retain dispatcher, team and environment checks.
-
-Automatic runs share a queue. Manual approval waits separately. Slack Live
-serializes channel/app access. Installation and installed Skipper Git serialize
-per branch. Retry through a new [approved dispatch](../testing/ci/configuration.md#environments).
+checks the current main commit, cadence and exact execution receipts before the
+automatic execution queue. The reusable workflow rechecks after acquiring the
+queue. Manual dispatch retains dispatcher, team and environment checks and a
+separate execution queue. Slack Live serializes channel/app access. Installation
+and installed Skipper Git serialize per branch. Retry through a new
+[approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.
@@ -170,6 +175,10 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
+For placement and proof observations available after a native first-Agent proof
+failure, see
+[interpret timing and proof](../testing/ci/openshell-execution.md#interpret-timing-and-proof).
+
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
 <a id="4-clean-up-and-publish-the-bounded-result" class="anchor-alias"></a>
@@ -204,17 +213,6 @@ prevent retention.
 
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
-
-`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
-classifies public placement errors and projects environment/tunnel states, node
-connection and capability counts, and exact workspace-node matches. The expected
-node comes from the selected revision's Gateway Pod. Failure reads use
-`sessions.describe`, `environments.status` and `node.list` share a five-second
-budget; failed refreshes retain a labeled fallback observation.
-`reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
-booleans and counters again. Raw errors and identifiers do not enter the record.
-Public RPCs do not expose workspace-binding readiness or restoration; a workspace
-reference does not prove either state.
 
 Per-file cleanup releases its database; job cleanup removes owned resources. Deleting the
 owned k3d cluster removes Collector RBAC and Namespace. Logging cleanup removes its Docker
@@ -266,6 +264,10 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 17:37: Admit eligible Full Integration work before acquiring its execution lock. (authoring-run/9f72faf1-4740-48d3-8519-5d38e749b961 - c6541831756ae40d0485d16d8f0ffeab9851372d)
+
+- 2026-11-10 16:48: Consolidate native proof diagnostics and clarify observation limits. (authoring-run/62ff26b1-e2b9-4035-a938-e86a07a423b7 - faf4426fba16f164353970c5eaebd4b6b41b60f4)
 
 - 2026-11-10 16:26: Reconcile installation receipts and cleanup coverage. (authoring-run/b99ad0c3-5ba1-40a6-8719-e0216a7c49a8 - 9641a352044b81f1f00afc40870ba54cccdefa75)
 
