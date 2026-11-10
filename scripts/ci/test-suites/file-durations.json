@@ -310,7 +310,7 @@
     "tests/integration/postgres-worker-stale-claim.test.mjs": 7700,
     "tests/integration/postgres-workspace-setup.test.mjs": 500,
     "tests/integration/precompiled-route-compilers.test.mjs": 3900,
-    "tests/integration/presets-controller.test.mjs": 2600,
+    "tests/integration/presets-controller.test.ts": 2600,
     "tests/integration/production-controller-security.test.mjs": 1000,
     "tests/integration/production-healthcheck.test.mjs": 200,
     "tests/integration/production-image-qualification.test.mjs": 1900,
