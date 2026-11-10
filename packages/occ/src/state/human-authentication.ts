@@ -60,6 +60,21 @@ export interface HumanAuthenticationProof {
   readonly passwordHash?: string;
 }
 
+type LinkOwnerProof = Pick<
+  HumanAuthenticationProof,
+  "userId" | "principalId" | "methodId" | "version" | "methodVersion"
+>;
+
+function storedLinkOwner(link: Row): LinkOwnerProof {
+  return {
+    userId: link.owner_user_id as string,
+    principalId: link.owner_principal_id as string,
+    methodId: link.owner_method_id as string,
+    version: link.owner_version as number,
+    methodVersion: link.owner_method_version as number,
+  };
+}
+
 export interface HumanAuthenticationSnapshot {
   readonly user: HumanAuthenticationUser;
   readonly proof: HumanAuthenticationProof;
@@ -1313,48 +1328,332 @@ export class PostgresHumanAuthentication {
       if (account.disabled !== false) {
         throw new ResourceStateConflictError("The authentication account is disabled.");
       }
-      const [existing] = await this.query(
-        unit,
-        `SELECT id, user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2 FOR SHARE`,
-        [providerId, subject],
-      );
       await this.guardAuthority(unit, actor, account.principal_id as string);
-      if (existing !== undefined) {
-        // The route admits only an Installation administrator covering the target Principal
-        // (controller humanAccountActor), who can already list every account's sign-in
-        // methods, so naming the conflict discloses nothing new. Keep that gate in front.
-        if (existing.user_id !== userId || existing.identity_only !== true) {
-          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-        }
-        return { methodId: existing.id as string, created: false };
+      return this.insertExternal(
+        unit,
+        userId,
+        providerId,
+        subject,
+        actor.principalId,
+        account.principal_id as string,
+      );
+    });
+  }
+
+  private async insertExternal(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    providerId: string,
+    subject: string,
+    actorId: string,
+    principalId: string,
+    details: Readonly<Record<string, unknown>> = {},
+  ): Promise<{ methodId: string; created: boolean }> {
+    const [existing] = await this.query(
+      unit,
+      `SELECT id, user_id, identity_only FROM occ.account WHERE provider_id = $1 AND account_id = $2 FOR SHARE`,
+      [providerId, subject],
+    );
+    if (existing !== undefined) {
+      // Both callers establish authority before attaching: administrator scope or
+      // fresh ownership proofs. Never transfer an identity from another account.
+      if (existing.user_id !== userId || existing.identity_only !== true) {
+        throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
       }
-      const methodId = randomUUID();
-      try {
-        await this.query(
-          unit,
-          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-          [methodId, subject, providerId, userId],
-        );
-      } catch (error) {
-        // A concurrent attach of the same identity committed first.
-        if (isExternalIdentityConflict(error)) {
-          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
-        }
-        throw error;
-      }
+      return { methodId: existing.id as string, created: false };
+    }
+    const methodId = randomUUID();
+    try {
       await this.query(
         unit,
-        `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
-        [userId],
+        `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+        [methodId, subject, providerId, userId],
       );
-      await this.query(unit, `DELETE FROM occ.session WHERE user_id = $1`, [userId]);
-      await this.audit(unit, "authentication.method.attach", actor.principalId, {
-        userId,
-        methodId,
-        principalId: account.principal_id,
-      });
-      return { methodId, created: true };
+    } catch (error) {
+      // A concurrent attach of the same identity committed first.
+      if (isExternalIdentityConflict(error)) {
+        throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
+      }
+      throw error;
+    }
+    await this.query(
+      unit,
+      `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
+      [userId],
+    );
+    await this.query(unit, `DELETE FROM occ.session WHERE user_id = $1`, [userId]);
+    await this.audit(unit, "authentication.method.attach", actorId, {
+      userId,
+      methodId,
+      principalId,
+      ...details,
     });
+    return { methodId, created: true };
+  }
+
+  /** Browser-bound linking state is never sufficient authority without both fresh proofs. */
+  async startLink(
+    browserHash: string,
+    policyId: string,
+    providerId: string,
+    previousHash?: string,
+  ) {
+    return this.state.transact(async (unit) => {
+      await this.reserveAttempt(unit);
+      if (previousHash !== undefined) {
+        await this.query(
+          unit,
+          `DELETE FROM occ.human_authentication_links WHERE browser_hash = $1 AND installation_id = $2`,
+          [previousHash, this.installationId],
+        );
+      }
+      const [row] = await this.query(
+        unit,
+        `INSERT INTO occ.human_authentication_links
+        (id, browser_hash, installation_id, policy_id, provider_id, created_at, expires_at)
+        SELECT $1, $2, $3, $4, $5, t.now, t.now + interval '5 minutes'
+        FROM (SELECT clock_timestamp() AS now) t RETURNING created_at, expires_at`,
+        [randomUUID(), browserHash, this.installationId, policyId, providerId],
+      );
+      return { createdAt: row!.created_at as Date, expiresAt: row!.expires_at as Date };
+    });
+  }
+
+  async cancelLink(browserHash: string): Promise<void> {
+    await this.state.transact(async (unit) => {
+      await this.query(
+        unit,
+        `DELETE FROM occ.human_authentication_links WHERE browser_hash = $1 AND installation_id = $2`,
+        [browserHash, this.installationId],
+      );
+    });
+  }
+
+  private async liveLink(
+    unit: PlatformUnitOfWork,
+    browserHash: string,
+    policyId: string,
+  ): Promise<Row> {
+    const [link] = await this.query(
+      unit,
+      `SELECT * FROM occ.human_authentication_links
+      WHERE browser_hash = $1 AND installation_id = $2 AND policy_id = $3
+      AND expires_at > clock_timestamp()
+      AND (owner_expires_at IS NULL OR owner_expires_at > clock_timestamp())
+      AND (candidate_expires_at IS NULL OR candidate_expires_at > clock_timestamp()) FOR UPDATE`,
+      [browserHash, this.installationId, policyId],
+    );
+    if (link === undefined) {
+      throw new ResourceStateConflictError("The linking attempt is no longer valid. Start again.");
+    }
+    return link;
+  }
+
+  private async linkOwner(
+    unit: PlatformUnitOfWork,
+    proof: LinkOwnerProof,
+  ): Promise<HumanAuthenticationSnapshot> {
+    const user = await this.lockUser(unit, proof.userId);
+    const [method] = await this.query(
+      unit,
+      `SELECT provider_id, account_id FROM occ.account WHERE id = $1 AND user_id = $2`,
+      [proof.methodId, proof.userId],
+    );
+    const current =
+      method === undefined
+        ? undefined
+        : await this.snapshot(
+            unit,
+            user,
+            method.provider_id as string,
+            method.account_id as string,
+          );
+    if (
+      current === undefined ||
+      current.proof.principalId !== proof.principalId ||
+      current.proof.methodId !== proof.methodId ||
+      current.proof.version !== proof.version ||
+      current.proof.methodVersion !== proof.methodVersion ||
+      (current.proof.providerId !== "credential" &&
+        !this.externalProviderIds.includes(current.proof.providerId))
+    ) {
+      throw new ResourceStateConflictError("The account changed. Start linking again.");
+    }
+    return current;
+  }
+
+  async readLink(browserHash: string, policyId: string) {
+    return this.state.transact(async (unit) => {
+      const link = await this.liveLink(unit, browserHash, policyId);
+      const owner =
+        link.owner_user_id === null ? undefined : await this.linkOwner(unit, storedLinkOwner(link));
+      let stage: "owner" | "candidate" | "confirm" = "confirm";
+      if (owner === undefined) {
+        stage = "owner";
+      } else if (link.candidate_subject === null) {
+        stage = "candidate";
+      }
+      return {
+        stage,
+        expiresAt: (link.expires_at as Date).getTime(),
+        ...(owner === undefined
+          ? {}
+          : { account: { id: owner.user.id, email: owner.user.email, name: owner.user.name } }),
+        ...(link.candidate_subject === null
+          ? {}
+          : {
+              candidate: {
+                providerId: link.provider_id as string,
+                subject: link.candidate_subject as string,
+              },
+            }),
+      };
+    });
+  }
+
+  async proveLinkOwner(
+    browserHash: string,
+    policyId: string,
+    proof: HumanAuthenticationProof,
+    expiresAt?: Date,
+  ): Promise<void> {
+    await this.state.transact(async (unit) => {
+      const link = await this.liveLink(unit, browserHash, policyId);
+      if (link.owner_user_id !== null) {
+        throw new ResourceStateConflictError("Account ownership was already proved.");
+      }
+      // Revalidate the pre-verification snapshot: password/method changes during verification invalidate it.
+      await this.linkOwner(unit, proof);
+      await this.query(
+        unit,
+        `UPDATE occ.human_authentication_links SET owner_user_id = $2,
+        owner_principal_id = $3, owner_method_id = $4, owner_version = $5, owner_method_version = $6,
+        owner_expires_at = LEAST(expires_at, COALESCE($7::timestamptz, expires_at))
+        WHERE browser_hash = $1`,
+        [
+          browserHash,
+          proof.userId,
+          proof.principalId,
+          proof.methodId,
+          proof.version,
+          proof.methodVersion,
+          expiresAt ?? null,
+        ],
+      );
+    });
+  }
+
+  async proveLinkCandidate(
+    browserHash: string,
+    policyId: string,
+    providerId: string,
+    subject: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await this.state.transact(async (unit) => {
+      const link = await this.liveLink(unit, browserHash, policyId);
+      if (
+        link.owner_user_id === null ||
+        link.candidate_subject !== null ||
+        link.provider_id !== providerId
+      ) {
+        throw new ResourceStateConflictError("The linking attempt is not ready for this identity.");
+      }
+      await this.linkOwner(unit, storedLinkOwner(link));
+      await this.query(
+        unit,
+        `UPDATE occ.human_authentication_links SET candidate_subject = $2,
+        candidate_expires_at = LEAST(expires_at, $3::timestamptz) WHERE browser_hash = $1`,
+        [browserHash, subject, expiresAt],
+      );
+    });
+  }
+
+  async confirmLink(
+    browserHash: string,
+    policyId: string,
+    passwordPolicy: "all" | "recovery-only",
+  ) {
+    return this.state.transact(async (unit) => {
+      const link = await this.liveLink(unit, browserHash, policyId);
+      if (
+        link.owner_user_id === null ||
+        link.candidate_subject === null ||
+        !this.externalProviderIds.includes(link.provider_id as string)
+      ) {
+        throw new ResourceStateConflictError("The linking proofs are incomplete.");
+      }
+      const owner = await this.linkOwner(unit, storedLinkOwner(link));
+      if (owner.proof.providerId === "credential" && passwordPolicy === "recovery-only") {
+        const [recovery] = await this.query(
+          unit,
+          `SELECT user_id FROM occ.human_authentication_recovery WHERE installation_id = $1 FOR SHARE`,
+          [this.installationId],
+        );
+        if (recovery?.user_id !== owner.user.id) {
+          throw new ResourceStateConflictError("Password proof is not permitted for this account.");
+        }
+      }
+      const result = await this.insertExternal(
+        unit,
+        owner.user.id,
+        link.provider_id as string,
+        link.candidate_subject as string,
+        owner.proof.principalId,
+        owner.proof.principalId,
+        { source: "self-service", linkAttemptId: link.id },
+      );
+      // Account and unique-identity locks can outlast the proofs. Roll back the
+      // attachment too if either proof expired while those locks were acquired.
+      await this.liveLink(unit, browserHash, policyId);
+      await this.query(unit, `DELETE FROM occ.human_authentication_links WHERE browser_hash = $1`, [
+        browserHash,
+      ]);
+      return result;
+    });
+  }
+
+  private async reserveAttempt(unit: PlatformUnitOfWork): Promise<void> {
+    await this.query(unit, `SELECT pg_advisory_xact_lock(1868785006, hashtext($1))`, [
+      this.installationId,
+    ]);
+    await this.query(
+      unit,
+      `DELETE FROM occ.human_authentication_links WHERE browser_hash IN
+       (SELECT browser_hash FROM occ.human_authentication_links WHERE installation_id = $1
+        AND expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 100)`,
+      [this.installationId],
+    );
+    await this.query(
+      unit,
+      `DELETE FROM occ.human_authentication_attempts WHERE state_hash IN
+       (SELECT state_hash FROM occ.human_authentication_attempts WHERE installation_id = $1
+        AND expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 100)`,
+      [this.installationId],
+    );
+    const rows = await this.query(
+      unit,
+      `SELECT id, kind FROM (
+      SELECT browser_hash AS id, 'link' AS kind, expires_at FROM occ.human_authentication_links WHERE installation_id = $1
+      UNION ALL SELECT state_hash, 'login', expires_at FROM occ.human_authentication_attempts WHERE installation_id = $1
+      ) attempts ORDER BY expires_at DESC, id DESC OFFSET $2`,
+      [this.installationId, pendingAttemptCapacity - 1],
+    );
+    for (const row of rows) {
+      if (row.kind === "link") {
+        await this.query(
+          unit,
+          `DELETE FROM occ.human_authentication_links WHERE browser_hash = $1`,
+          [row.id],
+        );
+      } else {
+        await this.query(
+          unit,
+          `DELETE FROM occ.human_authentication_attempts WHERE state_hash = $1`,
+          [row.id],
+        );
+      }
+    }
   }
 
   /** Removes one external identity; the password method and recovery credential stay. */
@@ -1573,40 +1872,31 @@ export class PostgresHumanAuthentication {
 
   async createAttempt(
     attempt: Omit<HumanAuthenticationAttempt, "expiresAt">,
+    link?: { policyId: string; purpose: "owner" | "candidate" },
   ): Promise<{ createdAt: Date; expiresAt: Date }> {
     return this.state.transact(async (unit) => {
-      await this.query(unit, `SELECT pg_advisory_xact_lock(1868785006, hashtext($1))`, [
-        this.installationId,
-      ]);
-      await this.query(
-        unit,
-        `DELETE FROM occ.human_authentication_attempts WHERE state_hash IN
-         (SELECT state_hash FROM occ.human_authentication_attempts WHERE installation_id = $1
-          AND expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 100)`,
-        [this.installationId],
-      );
-      const [capacity] = await this.query(
-        unit,
-        `SELECT count(*)::integer AS count FROM occ.human_authentication_attempts WHERE installation_id = $1`,
-        [this.installationId],
-      );
-      // Any client can start an attempt, so a full table must not refuse new starts: that would
-      // let one client block provider sign-in for everyone. Evict the oldest pending attempts.
-      const excess = (capacity!.count as number) - (pendingAttemptCapacity - 1);
-      if (excess > 0) {
+      await this.reserveAttempt(unit);
+      if (link !== undefined) {
+        const parent = await this.liveLink(unit, attempt.browserHash, link.policyId);
+        if (
+          (link.purpose === "owner" && parent.owner_user_id !== null) ||
+          (link.purpose === "candidate" &&
+            (parent.owner_user_id === null || parent.candidate_subject !== null))
+        ) {
+          throw new ResourceStateConflictError("The linking attempt is not ready for this proof.");
+        }
+        // One outstanding redirect per browser; starting a new proof invalidates the old one.
         await this.query(
           unit,
-          `DELETE FROM occ.human_authentication_attempts WHERE state_hash IN
-           (SELECT state_hash FROM occ.human_authentication_attempts WHERE installation_id = $1
-            ORDER BY expires_at, state_hash LIMIT $2)`,
-          [this.installationId, excess],
+          `DELETE FROM occ.human_authentication_attempts WHERE link_hash = $1`,
+          [attempt.browserHash],
         );
       }
       const [row] = await this.query(
         unit,
         `INSERT INTO occ.human_authentication_attempts
-         (state_hash, browser_hash, installation_id, provider_id, callback_url, code_verifier, created_at, expires_at)
-         SELECT $1, $2, $3, $4, $5, $6, t.now, t.now + interval '5 minutes'
+         (state_hash, browser_hash, installation_id, provider_id, callback_url, code_verifier, created_at, expires_at, link_hash, link_purpose)
+         SELECT $1, $2, $3, $4, $5, $6, t.now, t.now + interval '5 minutes', $7, $8
          FROM (SELECT clock_timestamp() AS now) t RETURNING created_at, expires_at`,
         [
           attempt.stateHash,
@@ -1615,6 +1905,8 @@ export class PostgresHumanAuthentication {
           attempt.providerId,
           attempt.callbackURL,
           attempt.codeVerifier,
+          link === undefined ? null : attempt.browserHash,
+          link?.purpose ?? null,
         ],
       );
       return { createdAt: row!.created_at as Date, expiresAt: row!.expires_at as Date };
@@ -1623,7 +1915,10 @@ export class PostgresHumanAuthentication {
 
   async consumeAttempt(
     key: HumanAuthenticationAttemptKey,
-  ): Promise<(HumanAuthenticationAttempt & { createdAt: Date }) | undefined> {
+  ): Promise<
+    | (HumanAuthenticationAttempt & { createdAt: Date; linkPurpose?: "owner" | "candidate" })
+    | undefined
+  > {
     return this.state.transact(async (unit) => {
       const [row] = await this.query(
         unit,
@@ -1638,6 +1933,9 @@ export class PostgresHumanAuthentication {
             codeVerifier: row.code_verifier as string,
             expiresAt: row.expires_at as Date,
             createdAt: row.created_at as Date,
+            ...(row.link_purpose === null
+              ? {}
+              : { linkPurpose: row.link_purpose as "owner" | "candidate" }),
           };
     });
   }

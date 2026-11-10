@@ -22,6 +22,7 @@ import {
 export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
 
 export interface OidcLoginConfiguration {
+  readonly linking?: { readonly enabled: boolean };
   readonly enrollment?: OidcEnrollmentPolicy | undefined;
   // The exact `iss` value, compared byte for byte.
   readonly issuer: string;
@@ -59,6 +60,7 @@ const optionalVariables = [
   "OCC_AUTH_OIDC_TOKEN_AUTH",
   "OCC_AUTH_OIDC_DISPLAY_NAME",
   "OCC_AUTH_OIDC_ENROLLMENT",
+  "OCC_AUTH_OIDC_LINKING_ENABLED",
 ] as const;
 
 const dnsName =
@@ -100,6 +102,10 @@ export function oidcLoginConfiguration(
   ) {
     return undefined;
   }
+  const linking = environment.OCC_AUTH_OIDC_LINKING_ENABLED;
+  if (linking !== undefined && linking !== "true" && linking !== "false") {
+    throw new Error("OCC_AUTH_OIDC_LINKING_ENABLED must be true or false.");
+  }
   const values = Object.fromEntries(
     requiredVariables.map((name) => [name, environment[name]?.trim() ?? ""]),
   ) as Record<(typeof requiredVariables)[number], string>;
@@ -139,6 +145,7 @@ export function oidcLoginConfiguration(
     throw new Error("OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters.");
   }
   return {
+    ...(linking === undefined ? {} : { linking: { enabled: linking === "true" } }),
     ...(environment.OCC_AUTH_OIDC_ENROLLMENT === undefined
       ? {}
       : {
@@ -203,6 +210,7 @@ export async function exchangeOidcSubject(
   redirectURI: string,
   nonce: string,
   deadlineMs = 10_000,
+  authenticationStartedAt?: number,
 ): Promise<ProviderExchange> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deadlineMs);
@@ -235,6 +243,7 @@ export async function exchangeOidcSubject(
       nonce,
       jwks,
       now: Date.now(),
+      ...(authenticationStartedAt === undefined ? {} : { authenticationStartedAt }),
     });
     if (claims === undefined) {
       return { denial: "EXTERNAL_IDENTITY_REJECTED" };
@@ -251,6 +260,9 @@ export async function exchangeOidcSubject(
       }
       return {
         subject: claims.sub as string,
+        ...(authenticationStartedAt === undefined
+          ? {}
+          : { expiresAt: (claims.exp as number) * 1000 }),
         enrollment: {
           groupIds: policy.groupIds,
           createAccount: policy.createAccount,
@@ -259,7 +271,12 @@ export async function exchangeOidcSubject(
         },
       };
     }
-    return { subject: claims.sub as string };
+    return {
+      subject: claims.sub as string,
+      ...(authenticationStartedAt === undefined
+        ? {}
+        : { expiresAt: (claims.exp as number) * 1000 }),
+    };
   } catch (error) {
     // Never expose provider response bodies, token values or request credentials.
     return providerExchangeFailure(error, controller.signal);

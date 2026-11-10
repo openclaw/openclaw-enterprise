@@ -411,6 +411,10 @@ spec:
             {{- end }}
             {{- end }}
             {{- if and $.Values.auth.oidc $.Values.auth.oidc.enabled }}
+            {{- if dig "linking" "enabled" false $.Values.auth.oidc }}
+            - name: OCC_AUTH_OIDC_LINKING_ENABLED
+              value: "true"
+            {{- end }}
             {{- if hasKey $.Values.auth.oidc "enrollment" }}
             - name: OCC_AUTH_OIDC_ENROLLMENT
               value: {{ toJson $.Values.auth.oidc.enrollment | quote }}

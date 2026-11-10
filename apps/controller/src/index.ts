@@ -3575,6 +3575,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             properties: {
               google: { type: "boolean" },
               oidc: { type: "boolean" },
+              oidcLinking: { type: "boolean" },
               oidcSignIn: {
                 type: "object",
                 description:
@@ -3605,6 +3606,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           data: {
             google,
             oidc,
+            ...(options.auth.oidcLinkingEnabled === true ? { oidcLinking: true } : {}),
             ...(oidc && options.auth.oidcSignIn !== undefined
               ? { oidcSignIn: options.auth.oidcSignIn }
               : {}),
@@ -3615,6 +3617,115 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         };
       },
     );
+    const linkStageSchema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["stage", "expiresAt"],
+      properties: {
+        stage: { type: "string", enum: ["owner", "candidate", "confirm"] },
+        expiresAt: { type: "integer", description: "Expiry as Unix epoch milliseconds." },
+        account: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "email", "name"],
+          properties: {
+            id: { type: "string" },
+            email: { type: "string" },
+            name: { type: "string" },
+          },
+        },
+        candidate: {
+          type: "object",
+          additionalProperties: false,
+          required: ["providerId", "subject"],
+          properties: { providerId: { type: "string" }, subject: { type: "string" } },
+        },
+      },
+    };
+    const linkRedirectSchema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["url", "attemptId"],
+      properties: { url: { type: "string", format: "uri" }, attemptId: { type: "string" } },
+    };
+    const linkResponses = {
+      start: linkStageSchema,
+      status: linkStageSchema,
+      owner: linkRedirectSchema,
+      candidate: linkRedirectSchema,
+      password: {
+        type: "object",
+        additionalProperties: false,
+        required: ["linking"],
+        properties: { linking: { const: true } },
+      },
+      cancel: {
+        type: "object",
+        additionalProperties: false,
+        required: ["cancelled"],
+        properties: { cancelled: { const: true } },
+      },
+      confirm: {
+        type: "object",
+        additionalProperties: false,
+        required: ["methodId", "created"],
+        properties: { methodId: { type: "string" }, created: { type: "boolean" } },
+      },
+    };
+    for (const action of [
+      "start",
+      "status",
+      "password",
+      "owner",
+      "candidate",
+      "confirm",
+      "cancel",
+    ] as const) {
+      routes.post(
+        `/api/auth/oidc/link/${action}`,
+        {
+          schema: {
+            operationId: `oidcLink${action[0]!.toUpperCase()}${action.slice(1)}`,
+            summary: `Account linking: ${action}`,
+            description:
+              "Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.",
+            tags: ["Authentication"],
+            security: [],
+            ...(action === "password"
+              ? {
+                  body: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["email", "password"],
+                    properties: {
+                      email: { type: "string", maxLength: 254 },
+                      password: { type: "string", minLength: 12, maxLength: 128 },
+                    },
+                  },
+                }
+              : {}),
+            response: {
+              ...responses(linkResponses[action]),
+              ...(action === "password"
+                ? { ...bodyErrors, 400: { description: "Bad Request", ...error } }
+                : {}),
+              409: { description: "Conflict", ...error },
+              429: { description: "Too Many Requests", ...error },
+              403: { description: "Forbidden", ...error },
+            },
+          },
+        },
+        async (request, reply) => {
+          if (options.auth.oidcLink === undefined) {
+            return reply.code(403).send({
+              error: { code: "FORBIDDEN", message: "Account linking is unavailable." },
+              meta: { requestId: request.id },
+            });
+          }
+          await options.auth.oidcLink(request, reply, action);
+        },
+      );
+    }
     // Handlers resolve on each request, as before: options.auth is read lazily.
     const externalSignInProviders = [
       { name: "google", label: "Google", article: "a", operation: "Google" },

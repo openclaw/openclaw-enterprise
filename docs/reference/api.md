@@ -81,7 +81,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 23 operations |
+| [Authentication](#authentication) | 30 operations |
 | [Backends](#backends) | 1 operation |
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
@@ -113,6 +113,13 @@ the paths.
 | [`POST /api/auth/accounts/{userId}/providers/google`](#post-apiauthaccountsuseridprovidersgoogle) | Attach an exact Google identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/oidc`](#post-apiauthaccountsuseridprovidersoidc) | Attach an exact OIDC identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/revoke`](#post-apiauthaccountsuseridrevoke) | Revoke all sessions for a human account |
+| [`POST /api/auth/oidc/link/cancel`](#post-apiauthoidclinkcancel) | Account linking: cancel |
+| [`POST /api/auth/oidc/link/candidate`](#post-apiauthoidclinkcandidate) | Account linking: candidate |
+| [`POST /api/auth/oidc/link/confirm`](#post-apiauthoidclinkconfirm) | Account linking: confirm |
+| [`POST /api/auth/oidc/link/owner`](#post-apiauthoidclinkowner) | Account linking: owner |
+| [`POST /api/auth/oidc/link/password`](#post-apiauthoidclinkpassword) | Account linking: password |
+| [`POST /api/auth/oidc/link/start`](#post-apiauthoidclinkstart) | Account linking: start |
+| [`POST /api/auth/oidc/link/status`](#post-apiauthoidclinkstatus) | Account linking: status |
 | [`GET /api/auth/providers`](#get-apiauthproviders) | List configured browser sign-in methods |
 | [`GET /api/auth/providers/google/callback`](#get-apiauthprovidersgooglecallback) | Complete an enrolled Google sign-in |
 | [`POST /api/auth/providers/google/result`](#post-apiauthprovidersgoogleresult) | Confirm which session a Google sign-in created |
@@ -771,6 +778,355 @@ Example response
 }
 ```
 
+#### `POST /api/auth/oidc/link/cancel`
+
+<span id="post-apiauthoidclinkcancel"></span>
+
+Account linking: cancel
+
+**Operation ID:** `oidcLinkCancel`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.cancelled` | `true` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "cancelled": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/candidate`
+
+<span id="post-apiauthoidclinkcandidate"></span>
+
+Account linking: candidate
+
+**Operation ID:** `oidcLinkCandidate`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.attemptId` | `string` | Yes | — |
+| `data.url` | `string (uri)` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://identity.example.com/authorize?max_age=0&state=example-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/confirm`
+
+<span id="post-apiauthoidclinkconfirm"></span>
+
+Account linking: confirm
+
+**Operation ID:** `oidcLinkConfirm`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.created` | `boolean` | Yes | — |
+| `data.methodId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "created": true,
+    "methodId": "method-member-oidc"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/owner`
+
+<span id="post-apiauthoidclinkowner"></span>
+
+Account linking: owner
+
+**Operation ID:** `oidcLinkOwner`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.attemptId` | `string` | Yes | — |
+| `data.url` | `string (uri)` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://identity.example.com/authorize?max_age=0&state=example-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/password`
+
+<span id="post-apiauthoidclinkpassword"></span>
+
+Account linking: password
+
+**Operation ID:** `oidcLinkPassword`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `email` | `string` | Yes | max length: 254 |
+| `password` | `string` | Yes | min length: 12; max length: 128 |
+
+Example request
+```json
+{
+  "email": "member@example.test",
+  "password": "example-password-replace-me"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.linking` | `true` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "linking": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/start`
+
+<span id="post-apiauthoidclinkstart"></span>
+
+Account linking: start
+
+**Operation ID:** `oidcLinkStart`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.account` | `object` | No | — |
+| `data.account.email` | `string` | Yes | — |
+| `data.account.id` | `string` | Yes | — |
+| `data.account.name` | `string` | Yes | — |
+| `data.candidate` | `object` | No | — |
+| `data.candidate.providerId` | `string` | Yes | — |
+| `data.candidate.subject` | `string` | Yes | — |
+| `data.expiresAt` | `integer` | Yes | Expiry as Unix epoch milliseconds. |
+| `data.stage` | `"owner" or "candidate" or "confirm"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "expiresAt": 1794299000000,
+    "stage": "owner"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/oidc/link/status`
+
+<span id="post-apiauthoidclinkstatus"></span>
+
+Account linking: status
+
+**Operation ID:** `oidcLinkStatus`
+
+**Permissions:** Requires the exact browser Origin and the browser-bound linking cookie after start. Linking proves both identities before explicit confirmation; it never creates a user or grants access.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `409` | Conflict |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.account` | `object` | No | — |
+| `data.account.email` | `string` | Yes | — |
+| `data.account.id` | `string` | Yes | — |
+| `data.account.name` | `string` | Yes | — |
+| `data.candidate` | `object` | No | — |
+| `data.candidate.providerId` | `string` | Yes | — |
+| `data.candidate.subject` | `string` | Yes | — |
+| `data.expiresAt` | `integer` | Yes | Expiry as Unix epoch milliseconds. |
+| `data.stage` | `"owner" or "candidate" or "confirm"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "account": {
+      "email": "member@example.test",
+      "id": "user-member",
+      "name": "Member"
+    },
+    "candidate": {
+      "providerId": "oidc:example-provider",
+      "subject": "member-subject"
+    },
+    "expiresAt": 1794299000000,
+    "stage": "confirm"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /api/auth/providers`
 
 <span id="get-apiauthproviders"></span>
@@ -796,6 +1152,7 @@ List configured browser sign-in methods
 | `data` | `object` | Yes | — |
 | `data.google` | `boolean` | Yes | — |
 | `data.oidc` | `boolean` | Yes | — |
+| `data.oidcLinking` | `boolean` | No | — |
 | `data.oidcSignIn` | `object` | No | Present only when OIDC sign-in is configured: the Console's button label and the configured authorization endpoint that the start URL must use. |
 | `data.oidcSignIn.authorizationUrl` | `string (uri)` | Yes | — |
 | `data.oidcSignIn.label` | `string` | Yes | min length: 1; max length: 40 |

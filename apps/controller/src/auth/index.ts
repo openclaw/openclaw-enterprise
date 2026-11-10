@@ -326,6 +326,12 @@ export interface ControllerAuth {
   googleCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   googleResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   readonly oidcEnabled: boolean;
+  readonly oidcLinkingEnabled?: boolean;
+  oidcLink?(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    action: "start" | "status" | "password" | "owner" | "candidate" | "confirm" | "cancel",
+  ): Promise<void>;
   /** Provider-instance key for OIDC identities; set only while OIDC sign-in is configured. */
   readonly oidcProviderId?: string;
   /** What the Console needs to offer OIDC sign-in; set only while it is configured. */
@@ -1309,10 +1315,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
-        if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
+        if (
+          (path === "/oce/password" || path === "/oce/link/password") &&
+          (await deniedWithoutAudit(response))
+        ) {
           throw new DenialAuditUnavailable(failure);
         }
         throw failure;
+      }
+      if (response.status === 409) {
+        throw APIError.fromStatus("CONFLICT", {
+          message: "Linking could not be completed. Start again.",
+        });
       }
       const refusal = path.endsWith("/callback") ? await callbackRefusal(response) : undefined;
       throw (
@@ -1356,7 +1370,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           }
           const result = await runPrivateEndpoint(request, `/oce/providers/${name}/callback`);
           setAuthHeaders(reply, result.headers);
-          reply.redirect("/console/");
+          reply.redirect(
+            (result.response as { linking?: boolean }).linking === true
+              ? "/console/?link=1"
+              : "/console/",
+          );
         } catch (error) {
           // A refusal keeps its reason. A callback that failed inside OCE (its database or
           // audit store) is an outage, not a refusal of this identity. Every other refusal,
@@ -1367,6 +1385,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
               : error instanceof AuthDependencyUnavailable
                 ? "unavailable"
                 : undefined;
+          const cookies = new Map(
+            (request.headers.cookie ?? "").split(";").map((part) => {
+              const split = part.indexOf("=");
+              return [part.slice(0, split).trim(), part.slice(split + 1)];
+            }),
+          );
+          const prefix = expectedBrowserOrigin.startsWith("https:") ? "__Host-" : "";
+          const link = cookies.get(`${prefix}occ_account_link`);
+          if (link && link === cookies.get(`${prefix}occ_login_attempt`)) {
+            reply.redirect(`/console/?link=1&authError=${name}`);
+            return;
+          }
           reply.redirect(
             reason === undefined
               ? `/console/?authError=${name}`
@@ -1399,13 +1429,21 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   const googleRoutes = externalProviderRoutes("google", "Google");
   const oidcRoutes = externalProviderRoutes("oidc", "OIDC");
 
-  async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  async function signInEmail(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    linking = false,
+  ): Promise<void> {
     await sendAuthEndpoint(
       request,
       reply,
       async () => {
         // Better Auth server API calls skip origin middleware without a Request context.
-        requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
+        if (linking) {
+          requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
+        } else {
+          requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
+        }
         const input = authBody(request);
         const body = ensureEmailPassword(input);
         // Read from the validated input, not the credential pair, so the admission key
@@ -1464,7 +1502,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
               }
               throw unstorableEmail;
             }
-            return runPrivateEndpoint(request, "/oce/password", body);
+            return runPrivateEndpoint(
+              request,
+              linking ? "/oce/link/password" : "/oce/password",
+              body,
+            );
           });
         }
         return passwordAdmission.admit(attempt, async () => {
@@ -1526,6 +1568,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         });
       },
       (response) => {
+        if (linking) {
+          return { linking: true };
+        }
         const sessionKey = (response as { readonly sessionKey?: unknown } | null)?.sessionKey;
         return isNonEmptyString(sessionKey)
           ? { authenticated: true, sessionKey }
@@ -1535,6 +1580,32 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         refused: "The caller did not provide valid authentication credentials.",
         action: "Sign-in",
       },
+    );
+  }
+
+  async function oidcLink(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    action: "start" | "status" | "password" | "owner" | "candidate" | "confirm" | "cancel",
+  ): Promise<void> {
+    if (action === "password" && humanLogin?.linkingEnabled === true) {
+      return signInEmail(request, reply, true);
+    }
+    await sendAuthEndpoint(
+      request,
+      reply,
+      async () => {
+        requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
+        if (humanLogin?.linkingEnabled !== true) {
+          throw new AdmissionFailure(403, "FORBIDDEN", "Account linking is unavailable.");
+        }
+        if (action === "owner" || action === "candidate") {
+          return runPrivateEndpoint(request, "/oce/providers/oidc/start", { linkPurpose: action });
+        }
+        return runPrivateEndpoint(request, `/oce/link/${action}`);
+      },
+      (value) => value,
+      { refused: "Linking could not be completed. Start again.", action: "Account linking" },
     );
   }
 
@@ -1657,6 +1728,8 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     googleCallback: googleRoutes.callback,
     googleResult: googleRoutes.result,
     oidcEnabled: humanLogin?.oidcProviderId !== undefined,
+    oidcLinkingEnabled: humanLogin?.linkingEnabled === true,
+    oidcLink,
     ...(humanLogin?.oidcSignIn === undefined ? {} : { oidcSignIn: humanLogin.oidcSignIn }),
     oidcStart: oidcRoutes.start,
     oidcCallback: oidcRoutes.callback,

@@ -458,6 +458,7 @@ async function configureInClusterOidc({
     OCC_AUTH_OIDC_JWKS_URL: `${oidc.issuer}/protocol/openid-connect/certs`,
     OCC_AUTH_OIDC_CLIENT_ID: oidc.clientId,
     OCC_AUTH_OIDC_DISPLAY_NAME: "Keycloak",
+    ...(oidc.linking === true ? { OCC_AUTH_OIDC_LINKING_ENABLED: "true" } : {}),
     ...(oidc.enrollment === undefined
       ? {}
       : { OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(oidc.enrollment) }),

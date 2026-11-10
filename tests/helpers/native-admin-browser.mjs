@@ -1389,7 +1389,7 @@ async function assertChatAdministrationDenied(nativePage) {
 }
 
 /** The QA matrix reuses the native browser harness with a real, prepared OIDC provider. */
-export async function runOidcAgentChatScenario(context) {
+export async function runOidcAgentChatScenario(context, { createAccounts = false } = {}) {
   const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
   const secrets = JSON.parse(await readFile(process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE, "utf8"));
   const caCert = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT, "utf8");
@@ -1464,7 +1464,11 @@ export async function runOidcAgentChatScenario(context) {
     workspaceGateway: true,
     oidc: {
       issuer,
-      enrollment: { admission: { groupsClaim: "groups", anyOf: [groupName] } },
+      linking: true,
+      enrollment: {
+        admission: { groupsClaim: "groups", anyOf: [groupName] },
+        createAccount: createAccounts ? { enabled: true, role: null } : { enabled: false },
+      },
       clientId,
       clientSecret,
       caCert,
@@ -1493,22 +1497,45 @@ export async function runOidcAgentChatScenario(context) {
   // The supported account API enrolls both people in the configured Default
   // user group, which permits creation in this fresh default Namespace.
   const enroll = async (username, subject) => {
+    const password = randomUUID() + randomUUID();
     const account = await topology.adminRequest("POST", "/api/auth/accounts", {
       email: `${username}@example.test`,
-      password: randomUUID() + randomUUID(),
+      password,
     });
     assert.equal(account.status, 201, JSON.stringify(account.error));
     const current = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
     assert.equal(current.status, 200);
-    const attached = await topology.adminRequest(
-      "POST",
-      `/api/auth/accounts/${account.data.id}/providers/oidc`,
-      {
-        subject,
-        expectedVersion: current.data.version,
-      },
-    );
-    assert.equal(attached.status, 200, JSON.stringify(attached.error));
+    // A default user proves the existing password and a real fresh Keycloak identity.
+    // The account is attached through the public Console flow, with no administrator attach.
+    const ownerContext = await browser.newContext();
+    try {
+      const page = await ownerContext.newPage();
+      await page.goto(ingress.origin + "/console/");
+      await page.getByRole("button", { name: "Link OIDC to an existing account" }).click();
+      await page.getByLabel("Account email", { exact: true }).fill(`${username}@example.test`);
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Verify existing account" }).click();
+      await page.getByRole("button", { name: "Authenticate with Keycloak" }).click();
+      await page.waitForURL((url) => url.origin === new URL(issuer).origin);
+      await page.locator("#username").fill(username);
+      await page.locator("#password").fill(secrets.users[username].password);
+      await page.locator("#kc-login").click();
+      await page.getByRole("button", { name: "Confirm link" }).waitFor();
+      assert.ok(await page.getByText(`Subject: ${subject}`, { exact: true }).isVisible());
+      const confirmation = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/auth/oidc/link/confirm",
+      );
+      await page.getByRole("button", { name: "Confirm link" }).click();
+      assert.equal((await confirmation).status(), 200);
+      await page.getByRole("button", { name: "Continue with Keycloak" }).waitFor();
+      const attached = await topology.adminRequest("GET", `/api/auth/accounts/${account.data.id}`);
+      assert.equal(attached.status, 200);
+      assert.equal(attached.data.principalId, current.data.principalId);
+      assert.equal(attached.data.version, current.data.version + 1);
+      assert.ok(attached.data.methods.some((method) => method.subject === subject));
+    } finally {
+      await ownerContext.close();
+    }
     return account.data;
   };
   const alice = await enroll("alice", "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001");
@@ -1647,6 +1674,7 @@ export async function runOidcAgentChatScenario(context) {
   const nativePage = await openNativeAdminConsole(operatorPage, status.data.origin, "chat");
   const initialMarker = `oidc-chat-${randomUUID()}`;
   let initialReply;
+  let lifecycle;
   try {
     initialReply = await submitChatTurnWithAssistantProof(
       nativePage,
@@ -1654,18 +1682,18 @@ export async function runOidcAgentChatScenario(context) {
       frames,
       waitFor,
     );
+    lifecycle = await assertChatStreamStopAndResume({
+      page: nativePage,
+      initialReply,
+      initialMarker,
+      receivedFrames: frames,
+      sentFrames,
+      waitFor,
+    });
   } catch (error) {
     await nativePage.screenshot({ path: join(artifacts, "oidc-chat-failure.png"), fullPage: true });
     throw error;
   }
-  const lifecycle = await assertChatStreamStopAndResume({
-    page: nativePage,
-    initialReply,
-    initialMarker,
-    receivedFrames: frames,
-    sentFrames,
-    waitFor,
-  });
   context.diagnostic(
     `OIDC chat: ${lifecycle.deltaCount} incremental model frames, exact-run Stop acknowledged and aborted, same persisted session reconnected and completed another real reply.`,
   );

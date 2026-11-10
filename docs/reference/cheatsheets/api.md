@@ -60,6 +60,13 @@
 - [`getAuthRecovery`](../api.md#get-apiauthrecovery): Inspect the recovery account designation.
 - [`confirmGoogleSignIn`](../api.md#post-apiauthprovidersgoogleresult): Confirm which session a Google sign-in created.
 - [`confirmOidcSignIn`](../api.md#post-apiauthprovidersoidcresult): Confirm which session an OIDC sign-in created.
+- [`oidcLinkCancel`](../api.md#post-apiauthoidclinkcancel): Account linking: cancel.
+- [`oidcLinkCandidate`](../api.md#post-apiauthoidclinkcandidate): Account linking: candidate.
+- [`oidcLinkConfirm`](../api.md#post-apiauthoidclinkconfirm): Account linking: confirm.
+- [`oidcLinkOwner`](../api.md#post-apiauthoidclinkowner): Account linking: owner.
+- [`oidcLinkPassword`](../api.md#post-apiauthoidclinkpassword): Account linking: password.
+- [`oidcLinkStart`](../api.md#post-apiauthoidclinkstart): Account linking: start.
+- [`oidcLinkStatus`](../api.md#post-apiauthoidclinkstatus): Account linking: status.
 - [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another Installation administrator.
 - [`startGoogleSignIn`](../api.md#post-apiauthprovidersgooglestart): Start Google sign-in for an enrolled account.
 - [`startOidcSignIn`](../api.md#post-apiauthprovidersoidcstart): Start OIDC sign-in for an enrolled account.

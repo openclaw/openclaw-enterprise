@@ -43,9 +43,19 @@
     },
     {
       "path": "tests/integration/oidc-agent-chat-k3d-real.test.ts",
-      "expectedTests": [
-        "OIDC owner creates an Agent and a shared operator chats without administrative access"
+      "expectedTests": ["OIDC linking preserves Agent access with account creation disabled"],
+      "requiredEnv": [
+        "OCC_TEST_KEYCLOAK_ISSUER",
+        "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+        "OCC_TEST_KEYCLOAK_CA_CERT",
+        "OCC_TEST_KEYCLOAK_CONTAINER",
+        "NODE_EXTRA_CA_CERTS"
       ],
+      "optionalEnv": ["OCC_TEST_KEYCLOAK_STATE"]
+    },
+    {
+      "path": "tests/integration/oidc-linking-enrollment-k3d-real.test.ts",
+      "expectedTests": ["OIDC linking preserves Agent access with account creation enabled"],
       "requiredEnv": [
         "OCC_TEST_KEYCLOAK_ISSUER",
         "OCC_TEST_KEYCLOAK_SECRETS_FILE",

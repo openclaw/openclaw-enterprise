@@ -92,6 +92,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
     oidcEnabled?: boolean;
+    oidcLinkStage?: "owner" | "candidate" | "confirm";
     googleEnabled?: boolean;
     passwordRecoveryOnly?: boolean;
     namespaceDeleteDenied?: boolean;
@@ -420,11 +421,13 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     candidateRevisionId,
     seedAgent: () => lifecycle.seedAgent(),
   });
+  let linkStage = scenario.oidcLinkStage ?? "owner";
   const answer = async (url: URL, method: string, body: unknown): Promise<Response> => {
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
         oidc: scenario.oidcEnabled === true,
+        oidcLinking: scenario.oidcLinkStage !== undefined,
         ...(scenario.oidcEnabled
           ? {
               oidcSignIn: {
@@ -436,6 +439,36 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         google: scenario.googleEnabled === true,
         password: scenario.passwordRecoveryOnly !== true,
         sessionBinding: scenario.oidcEnabled === true || scenario.googleEnabled === true,
+      });
+    }
+    if (path.startsWith("/api/auth/oidc/link/") && method === "POST") {
+      const action = path.split("/").at(-1);
+      if (action === "start") {
+        linkStage = "owner";
+      }
+      if (action === "password") {
+        linkStage = "candidate";
+        return response({ linking: true });
+      }
+      if (action === "confirm") {
+        return response({ methodId: "demo-oidc-method", created: true });
+      }
+      if (action === "cancel") {
+        return response({ cancelled: true });
+      }
+      if (action === "owner" || action === "candidate") {
+        // The story cannot establish real provider proofs; review those in the live walkthrough.
+        return error(503);
+      }
+      return response({
+        stage: linkStage,
+        expiresAt: Date.now() + 300_000,
+        ...(linkStage === "owner"
+          ? {}
+          : { account: { id: "demo-user", email: "member@example.test", name: "Demo member" } }),
+        ...(linkStage === "confirm"
+          ? { candidate: { providerId: "oidc:demo-provider", subject: "demo-member-subject" } }
+          : {}),
       });
     }
     if (

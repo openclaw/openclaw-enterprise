@@ -79,6 +79,8 @@ auth:
   # host, with no query or fragment. The API never runs discovery.
   oidc:
     enabled: false
+    linking:
+      enabled: false
     # The exact "iss" value, trailing slash included where the IdP uses one.
     issuer: ""
     authorizationUrl: ""

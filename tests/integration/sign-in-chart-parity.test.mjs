@@ -1620,6 +1620,7 @@ test(
   async () => {
     const objects = await render(
       oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, {
+        "linking.enabled": "true",
         "enrollment.admission.groupsClaim": "groups",
         "enrollment.admission.anyOf[0]": "example:engineering",
         "enrollment.additionalScopes[0]": "groups",
@@ -1630,6 +1631,20 @@ test(
       }),
     );
     const environment = resolveSecrets(signInSettings(deploymentEnv(objects, "api")));
+    assert.deepEqual(humanLoginConfiguration(environment).oidc.linking, { enabled: true });
+    assert.ok(
+      !deploymentEnv(objects, "worker").some(
+        ({ name }) => name === "OCC_AUTH_OIDC_LINKING_ENABLED",
+      ),
+    );
+    assert.match(
+      await refusal({ "auth.oidc.linking.enabled": "true" }),
+      /requires auth.oidc.enabled/,
+    );
+    assert.throws(
+      () => humanLoginConfiguration({ ...environment, OCC_AUTH_OIDC_LINKING_ENABLED: "yes" }),
+      /true or false/,
+    );
     assert.deepEqual(humanLoginConfiguration(environment).oidc.enrollment, {
       admission: { groupsClaim: "groups", anyOf: ["example:engineering"] },
       additionalScopes: ["groups"],

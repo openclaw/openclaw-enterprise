@@ -228,8 +228,8 @@ are not required. A future archive reorganization requires a separate change.
 ## Renumbered RFCs
 
 The 18 existing RFCs were renumbered from `0001` through `0018`.
-This lookup maps their original paths to the current IDs. New RFCs take the next
-number; unmerged proposals must reconcile their IDs before merging.
+This lookup maps earlier paths to current IDs, including proposals renumbered
+before merge. New RFCs take the next number; unmerged proposals must reconcile their IDs before merging.
 Plan filenames and historical commit links retain their original names.
 
 | Previous RFC path                             | Current RFC                                                              |
@@ -255,6 +255,8 @@ Plan filenames and historical commit links retain their original names.
 | `0021-driver-configuration-contributions.md`  | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md)  |
 | `0027-shared-model-provider.md`               | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)               |
 | `0031-repository-worker-restart-preflight.md` | [RFC-0033](../../specs/rfcs/0033-repository-worker-restart-preflight.md) |
+
+| `0033-oidc-account-linking.md` | [RFC-0034](../../specs/rfcs/0034-oidc-account-linking.md) |
 
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.

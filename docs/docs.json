@@ -241,6 +241,10 @@
                         "label": "External Sign-In"
                       },
                       {
+                        "page": "reference/authentication/account-linking",
+                        "label": "Account Linking"
+                      },
+                      {
                         "page": "reference/authentication/team-enrollment",
                         "label": "OIDC Account Enrollment"
                       },
@@ -1252,6 +1256,7 @@
               "flows/configuration-driver",
               "flows/configuration-driver/persistence-and-revisions",
               "flows/local-password-authentication",
+              "flows/oidc-account-linking",
               "flows/namespace-iam-policy",
               "flows/native-service-account-credential-delivery",
               "flows/secret-storage-and-delivery",

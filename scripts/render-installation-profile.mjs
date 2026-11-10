@@ -963,6 +963,13 @@ function renderOidc(source, diagnostics) {
   if (displayName !== undefined) {
     rendered.displayName = displayName;
   }
+  if (source.linking !== undefined) {
+    const linking = section(source, "linking", diagnostics, false);
+    closed(linking, "controlPlane.oidc.linking", ["enabled"], diagnostics);
+    rendered.linking = {
+      enabled: asBoolean(linking, ["controlPlane", "oidc", "linking", "enabled"], diagnostics),
+    };
+  }
   if (source.enrollment !== undefined) {
     try {
       rendered.enrollment = oidcEnrollmentPolicy(source.enrollment);
@@ -1229,6 +1236,7 @@ function buildInput(rawInput, diagnostics) {
     "controlPlane.oidc",
     [
       "enrollment",
+      "linking",
       "issuer",
       "authorizationUrl",
       "tokenUrl",

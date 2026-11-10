@@ -32,8 +32,9 @@ sign in. Account creation remains available after activation.
 A human administrator explicitly attaches the provider's immutable subject to an
 existing OCE account. Attachment keeps its user ID, Principal and grants, advances
 its account version, and invalidates sessions and pending proofs. An identity
-already held by another account returns `409 RESOURCE_CONFLICT`. Email association,
-identity transfer and self-service linking are unsupported. Opt-in
+already held by another account returns `409 RESOURCE_CONFLICT`. Email association and identity transfer are unsupported. Opt-in
+[self-service linking](account-linking.md) requires fresh proof of both the existing
+account and the candidate OIDC identity. Opt-in
 [OIDC enrollment](team-enrollment.md) can create unknown identities and assign
 initial access; it never links them by email.
 

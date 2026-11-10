@@ -209,6 +209,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
+{{- if hasKey $oidcCa "linking" -}}
+{{- if not (kindIs "map" $oidcCa.linking) -}}{{- fail "auth.oidc.linking must be an object" -}}{{- end -}}
+{{- range $key, $value := $oidcCa.linking -}}
+{{- if ne $key "enabled" -}}{{- fail "auth.oidc.linking supports only enabled" -}}{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" $oidcCa.linking.enabled) -}}{{- fail "auth.oidc.linking.enabled must be a boolean" -}}{{- end -}}
+{{- if and $oidcCa.linking.enabled (not $oidcCa.enabled) -}}{{- fail "auth.oidc.linking requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- end -}}
 {{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
 {{- range $key := list "caSecretName" "caSecretKey" -}}
 {{- if hasKey $oidcCa $key -}}{{- include "openclaw.requireString" (dict "label" (printf "auth.oidc.%s" $key) "value" (index $oidcCa $key)) -}}{{- end -}}
