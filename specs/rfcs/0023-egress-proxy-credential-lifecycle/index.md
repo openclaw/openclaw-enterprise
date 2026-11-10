@@ -26,6 +26,11 @@ The [proposed protected Codex artifact amendment](contracts.md#protected-codex-a
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
 
+The [proposed finite Git worker-transfer amendment](finite-worker-transfer.md)
+requires durable original release acknowledgment and independent recipient verification
+before a replacement worker may use the same unexpired finite admission. It is not
+implemented and requires human review before implementation.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.
