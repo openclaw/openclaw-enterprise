@@ -3022,6 +3022,90 @@ if (args[0] === "pull") {
     }
   });
 
+  test("OpenShell prepares the source selection once and passes the resulting inputs to a gateway file", async (t) => {
+    const root = await fixture(t);
+    const lane = "openshell";
+    const file = "tests/integration/openshell-refresh-real.test.ts";
+    const sourceRevision = "a".repeat(40);
+    const baseEnv = {
+      CODEX_ACCESS_TOKEN: "synthetic-fixture-credential",
+      OCC_TEST_OPENAI_MODEL: "fixture-model",
+      OCC_HELM_BIN: join(root, "must-not-run-helm"),
+      OCC_DOCKER_BIN: join(root, "must-not-run-docker"),
+    };
+    const invalidState = join(root, "incomplete.json");
+    const incomplete = await runProgram(
+      `const { prepareLane } = await import(process.argv[1]);
+       await prepareLane({ lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(file)}, statePath: process.argv[2] });`,
+      invalidState,
+      { ...baseEnv, OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision },
+      10_000,
+    );
+    assert.equal(incomplete.status, 1);
+    assert.match(
+      incomplete.stderr,
+      /requires a source revision, all three images, and both Helm charts/,
+    );
+    await assert.rejects(() => stat(invalidState), { code: "ENOENT" });
+
+    // Model the already-prepared state and GITHUB_ENV export. The file copies
+    // its database but must not reacquire or reinspect the lane's source inputs.
+    const postgres = await laneFakePostgres(t);
+    const server = composePostgres("openshell_handoff", postgres.port);
+    const template = {
+      id: "postgres-database-openshell_handoff",
+      kind: "postgres-database",
+      owner: server.owner,
+      status: "ready",
+      name: "openclaw_k8s_openshell_handoff",
+      composeProject: server.name,
+      port: server.port,
+      laneTemplate: "k8s",
+    };
+    const preparedInputs = {
+      OCC_TEST_OPENSHELL_HELM_CHART: join(root, "prepared-gateway-chart"),
+      OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART: join(root, "prepared-workspace-chart"),
+      OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
+      OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
+      OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
+    };
+    for (const [name, version] of [
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.6" }],
+      ["candidate", { OCC_TEST_OPENSHELL_SOURCE_REVISION: sourceRevision }],
+    ]) {
+      const statePath = join(root, name + ".json");
+      const env = { ...preparedInputs, ...version };
+      await writeState(statePath, {
+        version: 1,
+        repositoryRoot,
+        lane,
+        prefix: server.owner,
+        statePath,
+        selectedFile: file,
+        resources: [server, template],
+        env,
+      });
+      const result = await runProgram(
+        `import assert from "node:assert/strict";
+         const { prepareFile } = await import(process.argv[1]);
+         const prepared = await prepareFile({
+           lane: ${JSON.stringify(lane)}, file: ${JSON.stringify(file)}, statePath: process.argv[2],
+         });
+         for (const [key, value] of Object.entries(${JSON.stringify(env)})) {
+           assert.equal(prepared.env[key], value);
+         }
+         assert.equal(new URL(prepared.env.OCC_TEST_DATABASE_URL).username, "occ_app");
+         await prepared.cleanup();`,
+        statePath,
+        { ...baseEnv, ...env },
+        10_000,
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const settled = JSON.parse(await readFile(statePath, "utf8"));
+      assert.deepEqual(settled.resources, [server, template]);
+    }
+  });
+
   test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
     const root = await fixture(t);
     for (const [lane, file] of [

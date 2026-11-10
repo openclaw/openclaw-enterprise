@@ -923,9 +923,6 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   }
   assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
   assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
-  if (isOpenShellLane(name)) {
-    await validateOpenShellSelection(effectiveEnv, execFile);
-  }
   const runtimeImageInputs = [
     "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
     "OCC_TEST_KUBERNETES_AGENT_IMAGE",
@@ -3054,6 +3051,11 @@ async function prepareLane({ lane, statePath, file }) {
     }
   }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
+  // The lane receives source inputs. File preparation later receives its
+  // chart paths and imported image references through the prepared environment.
+  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+    await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
+  }
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
