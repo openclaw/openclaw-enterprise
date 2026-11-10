@@ -37,6 +37,7 @@
     "../scripts/console/record-walkthrough.ts",
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
+    "helpers/configuration-controller-fixture.ts",
     "helpers/temporary-directory.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
