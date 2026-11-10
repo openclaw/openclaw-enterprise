@@ -196,6 +196,9 @@ failure, return validated `runtimeFailure` evidence for this revision:
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
 explains which failures end deployment immediately and which wait until its deadline.
+A runtime container that its platform keeps restarting after unexplained exits is a
+held failure too; Kubernetes Compute reports it as check `crash-loop` (see its
+[troubleshooting](kubernetes-compute.md#troubleshooting)).
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
 The worker records the failed deployment and queues `stopRevision` for that

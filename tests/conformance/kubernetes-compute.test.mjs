@@ -4002,6 +4002,117 @@ test("a pending dedicated deploy names a container image pull failure", async ()
   assert.equal((await prepare()).pendingReason, undefined);
 });
 
+// A Gateway or Harness container that exits at every start fails startup once the kubelet
+// backs off its third restart, instead of waiting for the convergence deadline (finding 3041).
+// Only the role's own container on a live Pod of the revision counts, and a wrapper's
+// deliberate restart (exit 75) keeps the wait as before.
+for (const embedded of [true, false]) {
+  test(`a pending ${embedded ? "embedded" : "dedicated"} deploy fails a crash-looping runtime container`, async () => {
+    const { state, clients, prepare } = dedicatedFirstDeployFixture({
+      clock: { now: 0 },
+      ...(embedded
+        ? {
+            revision: {
+              harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+              configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+              plugins: undefined,
+            },
+          }
+        : {}),
+    });
+    // The kubelet's view of each role's Pod, merged into the fixture's running Pod.
+    let observed = {};
+    const list = clients.core.listNamespacedPod;
+    clients.core.listNamespacedPod = async (request) => {
+      const response = await list(request);
+      for (const pod of response.items) {
+        const status = observed[pod.metadata.labels["openclaw.dev/workload-role"]];
+        if (status !== undefined) {
+          pod.status = { ...pod.status, ...status };
+        }
+      }
+      return response;
+    };
+    const finishedAt = "2026-11-10T00:00:00Z";
+    const container = (
+      name,
+      { exitCode = 1, restartCount = 3, waiting = "CrashLoopBackOff" } = {},
+    ) => ({
+      name,
+      ready: false,
+      restartCount,
+      state:
+        waiting === undefined
+          ? { running: { startedAt: finishedAt } }
+          : { waiting: { reason: waiting, message: "back-off 40s restarting failed container" } },
+      lastState: { terminated: { exitCode, reason: "Error", finishedAt } },
+    });
+    const runtimeFailureWith = async (statuses) => {
+      observed = statuses;
+      const pass = await prepare();
+      observed = {};
+      assert.equal(pass.ready, false);
+      return pass;
+    };
+    for (const role of embedded ? ["gateway"] : ["gateway", "agent"]) {
+      // An unexplained exit, or an out-of-memory kill, at every start.
+      for (const exitCode of [1, 137]) {
+        const failed = await runtimeFailureWith({
+          [role]: { containerStatuses: [container(role, { exitCode })] },
+        });
+        assert.deepEqual(failed.runtimeFailure, {
+          component: role,
+          check: "crash-loop",
+          code: "UNAVAILABLE",
+          checkedAt: finishedAt,
+        });
+        assert.equal(Object.hasOwn(failed, "pendingReason"), false);
+      }
+      for (const [scenario, statuses] of [
+        // A wrapper that stops its container on purpose, as for a changed Harness peer.
+        ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+        ["two restarts", { containerStatuses: [container(role, { restartCount: 2 })] }],
+        ["a running restart", { containerStatuses: [container(role, { waiting: undefined })] }],
+        [
+          "a pull back-off",
+          { containerStatuses: [container(role, { waiting: "ImagePullBackOff" })] },
+        ],
+        [
+          "an init container or sidecar",
+          {
+            initContainerStatuses: [container(role), container("prepare-private-state")],
+            containerStatuses: [
+              container("workspace-node"),
+              container(role, { waiting: undefined }),
+            ],
+          },
+        ],
+      ]) {
+        const pass = await runtimeFailureWith({ [role]: statuses });
+        assert.equal(pass.runtimeFailure, undefined, `${role}: ${scenario}`);
+      }
+      // A Pod being deleted, as an old revision's during a rollout, never counts.
+      state.terminatingRole = role;
+      const terminating = await runtimeFailureWith({
+        [role]: { containerStatuses: [container(role)] },
+      });
+      state.terminatingRole = undefined;
+      assert.equal(terminating.runtimeFailure, undefined, `${role}: terminating`);
+    }
+    // A crash-looping container serves no runtime status: a refused status read still
+    // reports the crash loop.
+    const connect = clients.core.connectGetNamespacedPodProxyWithPath;
+    clients.core.connectGetNamespacedPodProxyWithPath = async () => {
+      throw Object.assign(new Error("container is not running"), { statusCode: 400 });
+    };
+    const unread = await runtimeFailureWith({
+      gateway: { containerStatuses: [container("gateway")] },
+    });
+    clients.core.connectGetNamespacedPodProxyWithPath = connect;
+    assert.equal(unread.runtimeFailure?.check, "crash-loop");
+  });
+}
+
 // A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
 // bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
 // ReplicaFailure condition onto the Deployment, which the driver reads, and the refused

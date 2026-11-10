@@ -166,7 +166,9 @@ outstanding. Activation of a dedicated version reports
 was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
 the code is `REVISION_INCOMPLETE`. The version stays pending until it is ready,
 a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
-deadline passes. The worker rechecks an unready
+deadline passes. On Kubernetes, a gateway or Harness container that keeps exiting at
+start fails with `RUNTIME_STARTUP_FAILED` after 3 restarts (check
+[`crash-loop`](../drivers/kubernetes-compute.md#troubleshooting)). The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never

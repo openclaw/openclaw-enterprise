@@ -18,6 +18,7 @@ import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
+  DELIBERATE_RESTART_EXIT_STATUS,
   gatewayManagedModeEnvironment,
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
@@ -3185,6 +3186,7 @@ let respawning = false;
 let waitingForPeerDuringOutage = false;
 let verifyingServingReplacement = false;
 let stoppingContainer = false;
+const DELIBERATE_RESTART_EXIT_STATUS = ${DELIBERATE_RESTART_EXIT_STATUS};
 let gatewayGeneration = 0;
 
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
@@ -3248,30 +3250,43 @@ function startGatewayProcess() {
       if (spawned === child) childRunning = false;
       resolve();
       if (stoppingContainer) {
-        process.exit(1);
+        process.exit(DELIBERATE_RESTART_EXIT_STATUS);
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+        // A native exit never passes as a deliberate restart, which Compute does not count
+        // toward a crash loop.
+        process.exit(code === DELIBERATE_RESTART_EXIT_STATUS ? 1 : (code ?? (signal === "SIGTERM" ? 0 : 1)));
       }
     });
   });
   return Date.now();
 }
 
-// Fall back to a container restart, which the kubelet backs off.
-function stopContainer() {
+// Fall back to a container restart, which the kubelet backs off. The wrapper exits
+// DELIBERATE_RESTART_EXIT_STATUS, which Kubernetes Compute never counts toward a crash loop
+// (finding 3041), and names the reason in its log and in the container's termination message.
+function stopContainer(reason) {
   if (stoppingContainer) return;
   stoppingContainer = true;
+  logStartupPhase("container-restart", startupPhaseOrigin, "failed", reason);
+  try {
+    // Kubernetes' default terminationMessagePath. r+ writes only a file the kubelet created.
+    require("node:fs").writeFileSync(
+      "/dev/termination-log",
+      "deliberate restart: " + reason.toLowerCase().replaceAll("_", "-"),
+      { flag: "r+" },
+    );
+  } catch {}
   if (!childRunning) {
-    process.exit(1);
+    process.exit(DELIBERATE_RESTART_EXIT_STATUS);
     return;
   }
   stopNativeGateway(child, "SIGTERM");
-  setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
+  setTimeout(() => process.exit(DELIBERATE_RESTART_EXIT_STATUS), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
 }
 
 let pluginResult;
@@ -3350,7 +3365,7 @@ if (workspaceNodeBindingPath !== undefined) {
       stoppingForChangedWorkspaceNode = true;
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
-      stopContainer();
+      stopContainer("WORKSPACE_NODE_CHANGED");
       return;
     }
     firstSeenAt ??= Date.now();
@@ -3535,7 +3550,7 @@ if (followsPeerStatus) {
       if (holdGatewayToolPolicyFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
-        stopContainer();
+        stopContainer("HARNESS_PEER_CHANGED");
       }
     } finally {
       waitingForPeerDuringOutage = false;

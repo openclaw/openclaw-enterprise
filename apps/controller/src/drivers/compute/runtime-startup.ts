@@ -3,6 +3,16 @@
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
+/**
+ * The exit status of a Kubernetes Gateway wrapper that stops its container on purpose so the
+ * kubelet starts it again: EX_TEMPFAIL from sysexits.h ("temporary failure, retry"). A
+ * deliberate restart is not a crash, so Kubernetes Compute never counts it toward a crash loop
+ * (finding 3041). The wrapper reports a native Gateway exit with this status as 1. It sits
+ * with WORKSPACE_SETUP_REFUSED_EXIT_STATUS in spirit, but the runtime entrypoints load this
+ * module without workspace packages, which workspace-setup-runtime.ts imports.
+ */
+export const DELIBERATE_RESTART_EXIT_STATUS = 75;
+
 // Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
 export function gatewayManagedModeEnvironment(managedMode: boolean): string {
   return JSON.stringify(

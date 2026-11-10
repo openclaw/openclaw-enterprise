@@ -238,6 +238,7 @@ import {
   type ModelProviderConfiguration,
 } from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { DELIBERATE_RESTART_EXIT_STATUS } from "../runtime-startup.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
@@ -2210,6 +2211,10 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
   "ErrImagePull",
   "ImagePullBackOff",
 ]);
+
+// A runtime container restarted this often, and waiting in the kubelet's crash-loop backoff,
+// fails startup (finding 3041). A slow start, an image pull or one exit cannot reach it.
+const CRASH_LOOP_RESTARTS = 3;
 
 // True when one of a Pod's containers or init containers waits on an image pull.
 function podWaitsOnImagePull(pod: unknown): boolean {
@@ -11205,6 +11210,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return typeof value === "string" && RUNTIME_STATUS_IDENTIFIER.test(value);
   }
 
+  // When a terminated container instance finished, else now: the kubelet's time as served, or
+  // as the SDK decodes it into a Date.
+  private terminatedAt(terminated: Record<string, unknown>): string {
+    return typeof terminated.finishedAt === "string" &&
+      this.validIsoTimestamp(terminated.finishedAt)
+      ? terminated.finishedAt
+      : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+  }
+
   private validIsoTimestamp(value: unknown): value is string {
     if (typeof value !== "string") {
       return false;
@@ -11267,11 +11281,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? undefined
               : asRecord(asRecord(initialized?.lastState)?.terminated));
           if (typeof terminated?.exitCode === "number" && terminated.exitCode !== 0) {
-            const checkedAt =
-              typeof terminated.finishedAt === "string" &&
-              this.validIsoTimestamp(terminated.finishedAt)
-                ? terminated.finishedAt
-                : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+            const checkedAt = this.terminatedAt(terminated);
             // The kubelet restarts a failed init container (these Pods restart Always), which
             // can pass after an I/O or native setup failure. A refusal fails every restart the
             // same way (finding 1677).
@@ -11299,6 +11309,56 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
         if (failure !== undefined) {
           return failure;
+        }
+      }
+    } catch {
+      if (ownerSignal?.aborted) {
+        throw ownerSignal.reason;
+      }
+    }
+    // A crash-looping container serves no status, so a failed status read cannot hide it.
+    return await this.safeCrashLoopObservation(revision, namespace);
+  }
+
+  // Evidence for a runtime container the kubelet keeps restarting after unexplained exits
+  // (finding 3041): on a live Pod of this revision, the role's own container (the Gateway, or
+  // a Harness that runs in a Deployment) waits in CrashLoopBackOff after CRASH_LOOP_RESTARTS
+  // restarts, and its last exit was not a deliberate restart. Init containers and sidecars
+  // never count. A wrapper that stops its container on purpose exits
+  // DELIBERATE_RESTART_EXIT_STATUS, which keeps the wait. Like failure evidence, an
+  // unavailable observation reports nothing.
+  private async safeCrashLoopObservation(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<RuntimeFailureEvidence | undefined> {
+    const ownerSignal = currentComputeAbortSignal();
+    try {
+      const roles = this.runtimeStatusContainers(revision).filter(
+        (role) =>
+          role === "gateway" ||
+          this.sandboxDriverForRevision(revision)?.provisionHarness === undefined,
+      );
+      for (const role of roles) {
+        const target = role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
+        for (const pod of await this.revisionPods(revision, target, role)) {
+          if (asRecord(pod.metadata)?.deletionTimestamp !== undefined) {
+            continue;
+          }
+          const statuses = asRecord(pod.status)?.containerStatuses;
+          const status = Array.isArray(statuses)
+            ? statuses.map(asRecord).find((item) => item?.name === role)
+            : undefined;
+          const terminated = asRecord(asRecord(status?.lastState)?.terminated);
+          if (
+            asRecord(asRecord(status?.state)?.waiting)?.reason === "CrashLoopBackOff" &&
+            typeof status?.restartCount === "number" &&
+            status.restartCount >= CRASH_LOOP_RESTARTS &&
+            typeof terminated?.exitCode === "number" &&
+            terminated.exitCode !== DELIBERATE_RESTART_EXIT_STATUS
+          ) {
+            const checkedAt = this.terminatedAt(terminated);
+            return { component: role, check: "crash-loop", code: "UNAVAILABLE", checkedAt };
+          }
         }
       }
       return undefined;

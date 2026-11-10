@@ -157,6 +157,13 @@ state after admission.
   one, and never a value. Fix or remove those settings, then deploy again.
   A dedicated Gateway's tool policy step holds the same check before OpenClaw
   starts when no invalid setting belongs to the tool policy.
+- A `crash-loop` check with code `UNAVAILABLE` is one Kubernetes Compute builds
+  from Pod status, not a runtime hold
+  (`apps/controller/src/drivers/compute/kubernetes/index.ts:safeCrashLoopObservation`):
+  the role's container waits in `CrashLoopBackOff` after 3 restarts and its last
+  exit status is not 75, the Gateway wrapper's deliberate restart
+  (`runtime-entrypoints.ts:stopContainer`). The deployment fails with
+  `RUNTIME_STARTUP_FAILED`; the runtime description keeps the exit code.
 - When a Codex startup check returns `model_not_found`, the worker saves that
   code. Codex can omit the code from its error event. In that case, the probe
   recognizes the provider’s HTTP 404 missing-model message for the requested model.
@@ -204,6 +211,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:00: Fail a Kubernetes runtime container in a crash loop as check `crash-loop`; deliberate Gateway restarts exit 75. (crashloop-fail-fast, finding 3041)
 
 - 2026-11-04 07:41: Move the first-admission trace to the Configuration persistence owner and retain its diagnostics link. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
 

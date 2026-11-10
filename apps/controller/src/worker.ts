@@ -1098,7 +1098,8 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
 // approver configuration. Kubernetes Compute reports a workspace setup refusal
-// that every init container restart repeats (finding 1677). Unknown codes stay
+// that every init container restart repeats (finding 1677), and a runtime
+// container in a crash loop as UNAVAILABLE (finding 3041). Unknown codes stay
 // pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",

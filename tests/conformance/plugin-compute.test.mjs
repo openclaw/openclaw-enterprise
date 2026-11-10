@@ -3629,6 +3629,32 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
   );
 });
 
+// EX_TEMPFAIL: the status a Kubernetes Gateway wrapper exits with when it restarts its own
+// container on purpose (finding 3041).
+const DELIBERATE_RESTART = 75;
+
+// The wrapper names a deliberate restart once: in a startup phase line, which the runtime
+// logs API keeps, and in the container's termination message.
+function assertDeliberateRestart(gateway, code) {
+  const restarts = gateway.logs.flatMap((line) => {
+    try {
+      const entry = JSON.parse(line);
+      return entry.event === "runtime.startup_phase" && entry.phase === "container-restart"
+        ? [entry]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  assert.equal(restarts.length, 1, JSON.stringify(gateway.logs));
+  assert.equal(restarts[0].container, "gateway");
+  assert.equal(restarts[0].code, code);
+  assert.equal(
+    gateway.files.get("/dev/termination-log"),
+    `deliberate restart: ${code.toLowerCase().replaceAll("_", "-")}`,
+  );
+}
+
 function startCodexGatewaySupervisor(t, options) {
   return startGatewaySupervisor(
     t,
@@ -3693,7 +3719,7 @@ for (const after of [false, true]) {
     await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
     first.exit(null, "SIGTERM");
     await respawn;
-    assert.deepEqual(previous.exits, [1]);
+    assert.deepEqual(previous.exits, [DELIBERATE_RESTART]);
     const gateway = await startCodexGatewaySupervisor(t, {
       writableConfig: true,
       savedFiles: previous.files,
@@ -3726,7 +3752,7 @@ test("Codex gateway supervisor keeps its peer bridge record usable after an inte
   await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
   first.exit(null, "SIGTERM");
   await respawn;
-  assert.deepEqual(previous.exits, [1]);
+  assert.deepEqual(previous.exits, [DELIBERATE_RESTART]);
   assert.equal(previous.tearWrite, undefined, "the record write should have been interrupted");
   assert.equal(previous.files.get(record), kept);
   assert.equal(previous.files.has(`${record}.pending`), false);
@@ -4022,7 +4048,7 @@ test("Codex gateway supervisor refuses a native edit back to an older generated 
   replacement.exit(null, "SIGTERM");
   await refused;
   assert.equal(gateway.children.length, 2);
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
   assert.equal(
     JSON.parse(gateway.files.get(path)).plugins.entries.codex.config.codexPlugins.plugins.linear
       .enabled,
@@ -4054,7 +4080,7 @@ test("Codex gateway supervisor retains refusal of a native-edited managed bridge
       .name,
     "Native edit",
   );
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
   // The record lists only bridges the wrapper generated. Were the operator's bridge in it, the
   // container restart that follows would treat the edit as generated and overwrite it.
   const { bridges } = JSON.parse(gateway.files.get(`${path}.oce-peer-bridge.json`));
@@ -4208,6 +4234,32 @@ test("Codex gateway supervisor re-applies the workspace node binding on respawn"
   assert.deepEqual(gateway.exits, []);
 });
 
+// A Gateway whose revision gets another workspace node restarts its container for a clean
+// start. The restart is deliberate: the wrapper exits 75 (EX_TEMPFAIL), which Kubernetes
+// Compute never counts toward a crash loop, and names the reason (finding 3041).
+test("Codex gateway supervisor restarts its container deliberately for another workspace node", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, { bindingDeviceId: "a".repeat(64) });
+  const [first] = gateway.children;
+  gateway.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: gateway.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
+  assert.deepEqual(first.killed, ["SIGTERM"]);
+  assert.deepEqual(gateway.exits, [], "the wrapper waits for OpenClaw to stop");
+  first.exit(null, "SIGTERM");
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+  assertDeliberateRestart(gateway, "WORKSPACE_NODE_CHANGED");
+});
+
+// Only the wrapper's own deliberate restart exits 75: an OpenClaw exit with that status is
+// reported as 1, so a native crash always counts toward a crash loop (finding 3041).
+test("Kubernetes Gateway reports a native exit with the deliberate restart status as 1", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t);
+  gateway.children[0].exit(DELIBERATE_RESTART, null);
+  assert.deepEqual(gateway.exits, [1]);
+});
+
 test("Codex gateway supervisor rejects changed plugin successes while its replacement starts", async (t) => {
   const gateway = await startCodexGatewaySupervisor(t);
   const first = gateway.children[0];
@@ -4243,7 +4295,7 @@ test("Codex gateway supervisor rejects changed plugin successes while its replac
   } finally {
     replacement.exit(null, "SIGTERM");
   }
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
 });
 
 for (const [changedField, change] of [
@@ -4278,7 +4330,7 @@ for (const [changedField, change] of [
       }),
     );
     replacement.exit(null, "SIGTERM");
-    assert.deepEqual(gateway.exits, [1]);
+    assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
   });
 }
 
@@ -4299,7 +4351,7 @@ test("Codex gateway supervisor fails closed if peer status disappears during rep
   assert.equal(gateway.status().phase, "starting");
   assert.deepEqual(replacement.killed, ["SIGTERM"]);
   replacement.exit(null, "SIGTERM");
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
 });
 
 for (const termination of ["crash", "SIGTERM", "SIGINT"]) {
@@ -4359,7 +4411,8 @@ test("Codex gateway supervisor bounds respawn retries and falls back to a contai
   }
   await respawn;
   assert.equal(gateway.children.length, 4);
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+  assertDeliberateRestart(gateway, "HARNESS_PEER_CHANGED");
   assert.equal(gateway.status().phase, "starting");
 });
 
@@ -4383,7 +4436,8 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.deepEqual(last.killed, ["SIGTERM"]);
   assert.equal(gateway.status().phase, "starting");
   last.exit(null, "SIGTERM");
-  assert.deepEqual(gateway.exits, [1]);
+  assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+  assertDeliberateRestart(gateway, "HARNESS_PEER_CHANGED");
   assert.equal(gateway.children.length, 6);
 });
 
