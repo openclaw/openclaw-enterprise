@@ -118,7 +118,11 @@ export type SelectedReadJourney = Pick<
     readonly keys: { readonly publicKey: KeyObject; readonly privateKey: KeyObject };
     readonly ca: string;
   };
-  evaluateRequest: (input: object, timeoutMs?: number) => ReturnType<typeof invoke>;
+  evaluateRequest: (
+    input: object,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ) => ReturnType<typeof invoke>;
   waitForIssuance: () => Promise<unknown>;
   finishIssuance: () => void;
 };
@@ -1333,13 +1337,14 @@ async function repositoryGitJourney(
             keys: grantKeys,
             ca: tls.caBundle,
           },
-          evaluateRequest: (input, timeoutMs) =>
+          evaluateRequest: (input, timeoutMs, signal) =>
             invoke(
               middleware,
               "EvaluateHttpRequest",
               input,
               token(keys, "supervisor", wire.world.id, "repository-set"),
               timeoutMs,
+              signal,
             ),
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),

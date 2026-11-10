@@ -32,13 +32,30 @@ export function token(keys, kind, sandboxId, audience = "online-authorizer") {
   return `Bearer ${signed}.${sign(null, Buffer.from(signed), keys.privateKey).toString("base64url")}`;
 }
 
-export function invoke(client, method, request, bearer, timeoutMs = 5000) {
+export function invoke(client, method, request, bearer, timeoutMs = 5000, signal) {
   const metadata = new grpc.Metadata();
   metadata.set("authorization", bearer);
   return new Promise((resolve, reject) => {
-    client[method](request, metadata, { deadline: Date.now() + timeoutMs }, (error, result) =>
-      error ? reject(error) : resolve(result),
+    let call;
+    const cancel = () => call?.cancel();
+    call = client[method](
+      request,
+      metadata,
+      { deadline: Date.now() + timeoutMs },
+      (error, result) => {
+        signal?.removeEventListener("abort", cancel);
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      },
     );
+    if (signal?.aborted) {
+      cancel();
+    } else {
+      signal?.addEventListener("abort", cancel, { once: true });
+    }
   });
 }
 

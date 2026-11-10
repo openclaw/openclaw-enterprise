@@ -418,6 +418,28 @@ test(
         value: undefined,
       });
 
+      const cancelled = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
+      const cancelledId = cancelled.context.request_id;
+      await holdQuota(async () => {
+        const sawContention = expectContention(cancelledId);
+        const abort = new AbortController();
+        const refusal = second.evaluateRequest(cancelled, 5000, abort.signal).then(
+          () => assert.fail("cancellation must terminate the original RPC"),
+          (error: { code: number }) =>
+            assert.equal(error.code, 1, "original gRPC request cancelled"),
+        );
+        await sawContention();
+        abort.abort();
+        await refusal;
+      });
+      // Give an already scheduled retry enough time to wake after the lock is free.
+      await delay(60);
+      assert.deepEqual(await approvals(cancelledId), []);
+      assert.deepEqual(await b.grant(cancelledId, b.assertion()), {
+        status: 403,
+        value: undefined,
+      });
+
       const inputA = first.peer.input(a.bindingId, first.sandboxId, false, first.workspace);
       const inputB = second.peer.input(b.bindingId, second.sandboxId, false, second.workspace);
       const requestA = inputA.context.request_id;
