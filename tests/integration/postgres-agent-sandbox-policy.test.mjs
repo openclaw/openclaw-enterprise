@@ -129,11 +129,13 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
   });
   assert.equal(updated.statusCode, 200, updated.body);
   const revisions = [initial];
+  const compute = { ...controller.selectedDriver("compute"), publicNetworkEgress: true };
   for (const mode of ["public", "restricted"]) {
     const restarted = new OpenClawController(controller.installation, {
       state,
       recordOperations: true,
       networkEgressMode: mode,
+      namespaceLifecycleBindings: [sandboxNamespaceLifecycleBinding(compute, sandboxDriver)],
       driverConfigurations: [
         {
           capability: "sandbox",
@@ -144,9 +146,7 @@ test("Agent deployment freezes the selected network egress mode", requiresPostgr
       ],
     });
     for (const capability of ["iam", "configuration", "compute", "secret"]) {
-      const selected = controller.selectedDriver(capability);
-      const driver =
-        capability === "compute" ? { ...selected, publicNetworkEgress: true } : selected;
+      const driver = capability === "compute" ? compute : controller.selectedDriver(capability);
       restarted.registerDriver(driver);
       restarted.selectDriver(capability, driver.id);
     }
