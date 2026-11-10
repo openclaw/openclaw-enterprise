@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 
 const imageRoles = ["gateway", "sandbox", "supervisor"] as const;
@@ -20,6 +30,7 @@ interface CandidateCommands {
   execFile: ExecuteFile;
   docker: string;
   helm: string;
+  snapshotParent?: string;
 }
 
 type GitMode = "040000" | "100644" | "100755";
@@ -94,6 +105,7 @@ async function verifyChart(
   revision: string,
   chartPath: string,
   relativePath: string,
+  snapshotPath?: string,
 ): Promise<void> {
   const output = await readCommand(
     execFile,
@@ -137,6 +149,9 @@ async function verifyChart(
 
   // Compare physical files, including ignored extras and executable bits. Git status
   // alone can omit files that Helm reads or tracked files marked assume-unchanged.
+  if (snapshotPath) {
+    await mkdir(snapshotPath, { mode: 0o700 });
+  }
   const visit = async (directory: string, relative: string): Promise<void> => {
     for (const name of await readdir(directory)) {
       const path = join(directory, name);
@@ -146,9 +161,13 @@ async function verifyChart(
         throw new Error("OpenShell candidate chart contains files outside the selected commit.");
       }
       expected.delete(key);
+      const destination = snapshotPath ? join(snapshotPath, key) : undefined;
       if (entry.mode === "040000") {
         if (!(await lstat(path)).isDirectory()) {
           throw new Error("OpenShell candidate chart contains a symlink or unsupported file type.");
+        }
+        if (destination) {
+          await mkdir(destination, { mode: 0o700 });
         }
         await visit(path, key);
         continue;
@@ -173,6 +192,12 @@ async function verifyChart(
         if (oid !== entry.oid || ((info.mode & 0o100) !== 0) !== (entry.mode === "100755")) {
           throw new Error("OpenShell candidate chart files differ from the selected commit.");
         }
+        if (destination) {
+          // Publish the checked buffer into the private snapshot without reopening the source.
+          const mode = entry.mode === "100755" ? 0o700 : 0o600;
+          await writeFile(destination, content, { flag: "wx", mode });
+          await chmod(destination, mode);
+        }
       } finally {
         await file.close();
       }
@@ -186,7 +211,7 @@ async function verifyChart(
 
 export async function verifyOpenShellCandidate(
   candidate: OpenShellCandidate,
-  { execFile, docker, helm }: CandidateCommands,
+  { execFile, docker, helm, snapshotParent }: CandidateCommands,
 ): Promise<OpenShellCandidate & { gatewayAppVersion: string }> {
   const { sourceRevision, gatewayChart, workspaceChart, images } = candidate;
   const root = dirname(dirname(dirname(gatewayChart)));
@@ -225,52 +250,76 @@ export async function verifyOpenShellCandidate(
       "OpenShell candidate chart checkout does not match the selected source revision.",
     );
   }
-  for (const [path, name] of [
-    [gatewayChart, "openshell"],
-    [workspaceChart, "openshell-workspace"],
-  ] as const) {
-    try {
-      await verifyChart(execFile, root, sourceRevision, path, `deploy/helm/${name}`);
-    } catch {
-      throw new Error(
-        "OpenShell candidate chart contents do not match the selected source revision.",
-      );
+  const snapshot = snapshotParent
+    ? await mkdtemp(join(snapshotParent, "openshell-candidate-charts-"))
+    : undefined;
+  const preparedGateway = snapshot ? join(snapshot, "openshell") : gatewayChart;
+  const preparedWorkspace = snapshot ? join(snapshot, "openshell-workspace") : workspaceChart;
+  try {
+    for (const [path, name, preparedPath] of [
+      [gatewayChart, "openshell", preparedGateway],
+      [workspaceChart, "openshell-workspace", preparedWorkspace],
+    ] as const) {
+      try {
+        await verifyChart(
+          execFile,
+          root,
+          sourceRevision,
+          path,
+          `deploy/helm/${name}`,
+          snapshot ? preparedPath : undefined,
+        );
+      } catch {
+        throw new Error(
+          "OpenShell candidate chart contents do not match the selected source revision.",
+        );
+      }
     }
-  }
-  // OCI labels establish consistency with the selected source, not independent
-  // build provenance. Candidate images must already exist in the local engine.
-  for (const role of imageRoles) {
-    const revision = await readCommand(
+    // OCI labels establish consistency with the selected source, not independent
+    // build provenance. Candidate images must already exist in the local engine.
+    for (const role of imageRoles) {
+      const revision = await readCommand(
+        execFile,
+        docker,
+        [
+          "image",
+          "inspect",
+          "--format",
+          '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+          images[role],
+        ],
+        "OpenShell candidate images must exist locally and expose their source revision.",
+      );
+      if (revision.trim() !== sourceRevision) {
+        throw new Error(
+          "OpenShell candidate image revision does not match the selected source revision.",
+        );
+      }
+    }
+    const metadata = await readCommand(
       execFile,
-      docker,
-      [
-        "image",
-        "inspect",
-        "--format",
-        '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
-        images[role],
-      ],
-      "OpenShell candidate images must exist locally and expose their source revision.",
+      helm,
+      ["show", "chart", preparedGateway],
+      "OpenShell candidate gateway chart metadata could not be read.",
     );
-    if (revision.trim() !== sourceRevision) {
-      throw new Error(
-        "OpenShell candidate image revision does not match the selected source revision.",
-      );
+    // Helm reads the chart's YAML and prints normalized metadata. The gateway
+    // chart uses appVersion as a Kubernetes label, so require a usable label value.
+    const gatewayAppVersion = metadata.match(
+      /^appVersion: (["']?)([A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)\1$/mu,
+    )?.[2];
+    if (!gatewayAppVersion) {
+      throw new Error("OpenShell candidate gateway chart must set a label-safe appVersion.");
     }
+    return {
+      ...candidate,
+      gatewayChart: preparedGateway,
+      workspaceChart: preparedWorkspace,
+      gatewayAppVersion,
+    };
+  } catch (error) {
+    if (snapshot) {
+      await rm(snapshot, { recursive: true, force: true });
+    }
+    throw error;
   }
-  const metadata = await readCommand(
-    execFile,
-    helm,
-    ["show", "chart", gatewayChart],
-    "OpenShell candidate gateway chart metadata could not be read.",
-  );
-  // Helm reads the chart's YAML and prints normalized metadata. The gateway
-  // chart uses appVersion as a Kubernetes label, so require a usable label value.
-  const gatewayAppVersion = metadata.match(
-    /^appVersion: (["']?)([A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?)\1$/mu,
-  )?.[2];
-  if (!gatewayAppVersion) {
-    throw new Error("OpenShell candidate gateway chart must set a label-safe appVersion.");
-  }
-  return { ...candidate, gatewayAppVersion };
 }

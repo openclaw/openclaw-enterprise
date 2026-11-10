@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createRequire } from "node:module";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -1327,21 +1327,37 @@ test("prepareOpenShell rejects incomplete candidate tuples before commands or im
 
 test("OpenShell candidate selection verifies committed chart bytes and all image revisions", async (t) => {
   const { env } = await candidateCheckout(t);
+  const snapshotParent = await fixture(t);
   const inspected = [];
-  const candidate = await validateOpenShellSelection(env, async (command, args) => {
-    if (command === "git") {
-      return execFileAsync(command, args);
-    }
-    if (command === "helm") {
-      assert.deepEqual(args, ["show", "chart", env.OCC_TEST_OPENSHELL_HELM_CHART]);
-      return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
-    }
-    // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
-    assert.equal(command, "docker");
-    assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
-    inspected.push(args.at(-1));
-    return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
-  });
+  const candidate = await validateOpenShellSelection(
+    env,
+    async (command, args) => {
+      if (command === "git") {
+        return execFileAsync(command, args);
+      }
+      if (command === "helm") {
+        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+        return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
+      }
+      // Docker reports fixture metadata. Git tree and on-disk chart comparisons run for real.
+      assert.equal(command, "docker");
+      assert.deepEqual(args.slice(0, 2), ["image", "inspect"]);
+      if (inspected.length === 0) {
+        // The checkout can change after chart validation and before Helm consumes it.
+        await writeFile(
+          join(env.OCC_TEST_OPENSHELL_HELM_CHART, "Chart.yaml"),
+          "appVersion: 9.9.9\n",
+        );
+        await writeFile(
+          join(env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART, "values.yaml"),
+          "replicaCount: 99\n",
+        );
+      }
+      inspected.push(args.at(-1));
+      return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
+    },
+    snapshotParent,
+  );
   assert.deepEqual(
     new Set(inspected),
     new Set([
@@ -1351,9 +1367,13 @@ test("OpenShell candidate selection verifies committed chart bytes and all image
     ]),
   );
   assert.equal(candidate.sourceRevision, env.OCC_TEST_OPENSHELL_SOURCE_REVISION);
-  assert.equal(candidate.gatewayChart, env.OCC_TEST_OPENSHELL_HELM_CHART);
-  assert.equal(candidate.workspaceChart, env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART);
   assert.equal(candidate.gatewayAppVersion, "0.0.0");
+  assert.equal(dirname(dirname(candidate.gatewayChart)), snapshotParent);
+  assert.equal(dirname(candidate.workspaceChart), dirname(candidate.gatewayChart));
+  assert.equal(
+    await readFile(join(candidate.workspaceChart, "values.yaml"), "utf8"),
+    "replicaCount: 1\n",
+  );
 });
 
 test("prepareOpenShell rejects a verified gateway chart without an application version", async (t) => {
@@ -1371,7 +1391,8 @@ test("prepareOpenShell rejects a verified gateway chart without an application v
           return { stdout: `${env.OCC_TEST_OPENSHELL_SOURCE_REVISION}\n` };
         }
         assert.equal(command, "helm");
-        assert.deepEqual(args, ["show", "chart", env.OCC_TEST_OPENSHELL_HELM_CHART]);
+        assert.deepEqual(args.slice(0, 2), ["show", "chart"]);
+        assert.equal(dirname(dirname(args[2])), root);
         return { stdout: await readFile(join(args[2], "Chart.yaml"), "utf8") };
       },
       registerImage: async () => assert.fail("invalid candidate must not register images"),
@@ -1379,6 +1400,7 @@ test("prepareOpenShell rejects a verified gateway chart without an application v
     }),
     /must set a label-safe appVersion/,
   );
+  assert.deepEqual(await readdir(root), [], "a failed candidate must leave no partial snapshot");
 });
 
 test("prepareOpenShell rejects source, chart, and image mismatches before cluster commands", async (t) => {

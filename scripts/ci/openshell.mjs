@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
@@ -601,7 +601,7 @@ async function prepareOpenShellClusterBootstrap({
   };
 }
 
-async function validateOpenShellSelection(env, execFile) {
+async function validateOpenShellSelection(env, execFile, snapshotParent) {
   const releasedImages = {
     gateway: openShellGatewayImage,
     sandbox: openShellSandboxImage,
@@ -617,6 +617,7 @@ async function validateOpenShellSelection(env, execFile) {
       execFile,
       docker: env.OCC_DOCKER_BIN ?? "docker",
       helm: env.OCC_HELM_BIN ?? "helm",
+      snapshotParent,
     });
   }
   return candidate;
@@ -631,9 +632,9 @@ async function prepareOpenShell({ cluster, execFile, registerImage, env = proces
     throw new Error("OpenShell bootstrap requires a registerImage callback.");
   }
 
-  // Verify candidate inputs before creating files or changing the selected cluster.
-  const candidate = await validateOpenShellSelection(env, execFile);
-  await assertPrivateDirectory(await stat(selectedCluster.directory), selectedCluster.directory);
+  // Keep verified candidate charts under the owned cluster directory for lane cleanup.
+  assertPrivateDirectory(await lstat(selectedCluster.directory), selectedCluster.directory);
+  const candidate = await validateOpenShellSelection(env, execFile, selectedCluster.directory);
   const directory = join(selectedCluster.directory, "openshell");
   await ensurePrivateDirectory(directory);
 
