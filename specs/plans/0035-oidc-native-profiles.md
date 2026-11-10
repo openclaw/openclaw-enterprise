@@ -5,7 +5,7 @@ rfc: ../rfcs/0035-oidc-native-profiles.md
 # Implementation plan: Native profiles for OIDC users
 
 - **ID:** RFC-0035
-- **Delivery status:** Planned
+- **Delivery status:** In progress; runtime qualification pending
 - **Authority:** [Native profile proposal](../rfcs/0035-oidc-native-profiles.md)
 - **Source baseline:** OCE `c14307588e886e417f750dc3cd43fef1524af3ec`; native OpenClaw `513c12703ad9a9161cc123e0b8ed4ecb811aa6b3`
 
@@ -25,7 +25,7 @@ writing this plan.
 
 ## Identity and transport contract
 
-The proposed subject is `oce:v1:` followed by lowercase hexadecimal SHA-256 of
+The subject is `oce:v1:` followed by lowercase hexadecimal SHA-256 of
 UTF-8 `JSON.stringify([installationId, principalId])`. Use the server-resolved
 IDs exactly; do not lowercase OIDC subjects or concatenate ambiguous strings.
 Every supporting Compute implementation must use this encoding. Native binding
@@ -33,43 +33,47 @@ uniqueness uses the fixed authority namespace `oce` plus that subject, independe
 of revision, credential, and proxy address. Use native persistence constraints
 to resolve concurrent first use to one profile.
 
-Propose this optional asynchronous Compute method:
+The optional asynchronous Compute method replaces `getGatewayChatEndpoint`:
 
 ```typescript
 getGatewayBrowserRequest(
   revision: AgentRevision,
   access: {
+    installationId: string;
     principalId: string;
     mode: "chat" | "admin";
-    displayName?: string;
   },
   signal: AbortSignal,
-): Promise<GatewayBrowserRequest | undefined>;
+): Promise<{
+  endpoint: string;
+  subject: string;
+  headers: Readonly<Record<string, string>>;
+} | undefined>;
 ```
 
-Its private result carries the endpoint and sensitive request headers, never a
-browser-visible API response. Call it only after exact-Agent authorization and
+Installation and Principal IDs are server-owned inputs. The result carries the
+endpoint, non-secret delegated `subject` for audit attribution, and sensitive
+request headers. It is never a browser-visible API response. Call it only after exact-Agent authorization and
 revision ownership checks. Absence means unsupported; dependency errors propagate
 to the existing unavailable response. It must not create or update native profiles
 or credentials; profile creation belongs to authenticated Gateway admission.
 
 Kubernetes prepares a random 32-byte credential in an AgentRevision-owned Secret.
-The API-side adapter reads it; only the selected Gateway mounts it. The proposed
+The API-side adapter reads it; only the selected Gateway mounts it. The
 headers are `x-occ-browser-key`, `x-occ-identity`, and `x-openclaw-scopes`.
 Require an exact supported scope set and constant-time credential comparison.
 Reject duplicate, malformed, or wrong-revision inputs without fallback. Use no
 model credential, session secret, workspace password, or shared routing key.
 
-An optional account display name initializes a new profile but does not overwrite
-native edits. Otherwise use a neutral label with a short subject suffix. Forward
-neither email addresses nor remote avatar URLs. Display names never select an
-binding. No OIDC tokens, provider credentials, or OCE cookies enter this transport.
+The first implementation uses a neutral native label; it does not transport an
+account display name, email address, or remote avatar URL. No OIDC tokens,
+provider credentials, or OCE cookies enter this transport.
 
 ## Contract and source touchpoints
 
 | Owner              | Current source and planned change                                                                                                                                                                                                                                                                                                 |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Authentication     | [OIDC provider](../../apps/controller/src/auth/oidc.ts) and [authentication](../../apps/controller/src/auth/index.ts): reuse verified account/Principal resolution; expose optional account presentation without forwarding token claims.                                                                                         |
+| Authentication     | [OIDC provider](../../apps/controller/src/auth/oidc.ts) and [authentication](../../apps/controller/src/auth/index.ts): reuse verified account/Principal resolution without forwarding token claims.                                                                                                                               |
 | OCC                | [Agent browser authorization](../../packages/occ/src/index.ts): retain exact-resource mode selection and revision ownership; call the new contract only after authorization.                                                                                                                                                      |
 | Compute contract   | [Compute Driver](../../packages/contracts/src/drivers/compute/index.ts), [public exports](../../packages/contracts/src/index.ts), and [core Driver contract](../../packages/occ/src/driver-contract.ts): declare optional delegated-browser capability and internal transport result.                                             |
 | API and proxy      | [Native HTTP](../../apps/controller/src/http/native-admin.ts), [proxy](../../apps/controller/src/gateway/native-admin-proxy.ts), and [browser configuration](../../apps/controller/src/gateway/native-admin.ts): propagate server-selected authority, sanitize headers, retain socket leases, and remove admin device enrollment. |
@@ -112,7 +116,7 @@ Native sources inspected at the pinned revision:
 ### 2. Deliver the contract through Compute
 
 - [ ] Add the method above and typed private result; export public types
-      through the top-level index. Core passes Principal and mode, while Compute
+      through the top-level index. Core passes Installation, Principal, and mode, while Compute
       owns native subject encoding, headers, credential loading, and endpoint
       construction. Unsupported Drivers return no capability.
 - [ ] During revision preparation, create or reuse the owned delegation Secret,
@@ -166,16 +170,17 @@ cheat sheets; generate API documentation only if a public schema changes.
 ## Verification
 
 Extend existing meaningful suites; register any new integration file as
-`*.test.ts` in its owning CI lane. None of these runtime checks ran for this draft.
+`*.test.ts` in its owning CI lane. Record source revisions and per-scenario
+results; partial checks do not complete a criterion.
 
-| Criteria         | Real check and required evidence                                                                                                                                                                                                                                                                                                                                      | Remaining proof |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| AC-1, AC-2       | Extend `oidc-agent-chat-k3d-real.test.ts`: real Keycloak, PostgreSQL, disposable enforcing k3d, qualified native image, two enrolled users, ordinary owner creation/deployment, operator/admin model turns, native creator/sender IDs, reconnect and restart with retained storage. Exercise existing authenticated linking only when available.                      | Not run         |
-| AC-1             | Parameterize provider-independent OIDC claim verification: stable `sub` with changed email, equal subjects under different provider instances, distinct case-sensitive subjects, and two methods attached to one Principal. Use the real account/session persistence path; no email-based association.                                                                | Not run         |
-| AC-2, AC-3, AC-5 | Extend `runtime-image-native-listener.test.mjs` with real native HTTP/WebSocket requests: scope limits, typed identity binding collision/concurrency, denied admin methods, native roles, wrong or absent credentials, duplicate/spoofed headers, existing paired devices, and static external-human access. Prove no reusable delegated device credential is issued. | Not run         |
-| AC-3             | Extend `native-admin-k3d-real.test.mjs`: browser and external-ingress spoofing, wrong Agent/revision credentials, direct network denial, exact route selection, and machine workspace access with real route and workload dependencies.                                                                                                                               | Not run         |
-| AC-4             | Use the real OCE sharing and session APIs to grant, remove, regrant, expire, and change mode while sockets are open. Measure closure within 30 seconds; verify new native RPCs and protected events stop. Separately change native roles/configuration and verify native invalidation, then replace the revision.                                                     | Not run         |
-| AC-5             | Fail actual credential lookup, native profile persistence, IAM access, and revision availability at their owning integration boundaries. Verify refusal, no machine fallback, preserved profile after recovery, and cleanup limited to owned revision resources.                                                                                                      | Not run         |
+| Criteria         | Real check and required evidence                                                                                                                                                                                                                                                                                                                                      | Remaining proof                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| AC-1, AC-2       | Extend `oidc-agent-chat-k3d-real.test.ts`: real Keycloak, PostgreSQL, disposable enforcing k3d, qualified native image, two enrolled users, ordinary owner creation/deployment, operator/admin model turns, native creator/sender IDs, reconnect and restart with retained storage. Exercise existing authenticated linking only when available.                      | Not run                                               |
+| AC-1             | Parameterize provider-independent OIDC claim verification: stable `sub` with changed email, equal subjects under different provider instances, distinct case-sensitive subjects, and two methods attached to one Principal. Use the real account/session persistence path; no email-based association.                                                                | PostgreSQL passed; native linked-method proof pending |
+| AC-2, AC-3, AC-5 | Extend `runtime-image-native-listener.test.mjs` with real native HTTP/WebSocket requests: scope limits, typed identity binding collision/concurrency, denied admin methods, native roles, wrong or absent credentials, duplicate/spoofed headers, existing paired devices, and static external-human access. Prove no reusable delegated device credential is issued. | Not run                                               |
+| AC-3             | Extend `native-admin-k3d-real.test.mjs`: browser and external-ingress spoofing, wrong Agent/revision credentials, direct network denial, exact route selection, and machine workspace access with real route and workload dependencies.                                                                                                                               | Not run                                               |
+| AC-4             | Use the real OCE sharing and session APIs to grant, remove, regrant, expire, and change mode while sockets are open. Measure closure within 30 seconds; verify new native RPCs and protected events stop. Separately change native roles/configuration and verify native invalidation, then replace the revision.                                                     | Not run                                               |
+| AC-5             | Fail actual credential lookup, native profile persistence, IAM access, and revision availability at their owning integration boundaries. Verify refusal, no machine fallback, preserved profile after recovery, and cleanup limited to owned revision resources.                                                                                                      | Not run                                               |
 
 Register the complete journey in the existing `gateway-routing` lane and
 applicable QA matrix selection. Keep fixtures distinct from live model proof.
@@ -190,9 +195,20 @@ is implied. New enrollment policies remain RFC-0032's responsibility.
 
 ## Delivery record
 
-Specification only. Native contract, Compute implementation, credential lifecycle,
-browser integration, image qualification, and all acceptance proof remain pending.
-No public reference claims are changed by this draft.
+The RFC was submitted for human review in [PR #5320](https://github.com/openclaw/openclaw-enterprise/pull/5320)
+before implementation. The working implementation adds the Compute browser
+transport, revision Secret lifecycle, `/native-browser/` route, proxy integration,
+and live-browser assertions. Current [native access](../../docs/reference/agent-native-admin.md)
+and [Compute](../../docs/reference/drivers/compute.md) documentation describe these paths.
+
+The public HTTP API, OCE database schema, IAM actions, and environment variables
+are unchanged. The native Gateway adds its own external-identity binding; it is
+not an OCE database entity or user-managed alias API.
+
+Completion remains pending. Native build and image qualification, live
+OIDC/native-browser execution, and publication evidence remain required.
+Independent reviews and the PostgreSQL identity/session suites pass. Checkboxes
+remain open until their required proof passes; no end-to-end pass is claimed here.
 
 Documentation review keeps this plan in one page because the native extension,
 Compute transport, browser admission, and proof form one dependent delivery
@@ -204,6 +220,8 @@ sequence. The shorter RFC owns the decision. Both pages remain below the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10: Record submitted RFC and in-progress implementation; pass server-owned Installation ID, omit display-name transport, and replace the chat endpoint with delegated browser transport.
 
 - 2026-11-10: Drafted the delegated native-profile contract and implementation sequence from OCE `c14307588e` and native `513c12703a`.
 - 2026-11-10: Moved wire and interface details from the RFC into this plan; clarified provider-independent account identity, Gateway-local profile IDs, and read-only transport resolution.

@@ -86,6 +86,11 @@ operation was not authorized.`
 
 ## Additional checks
 
+- [Native browser access](../agent-native-admin.md#native-authority-and-drift)
+  delegates `operator.sessions.write` for exact-Agent `operate`, or
+  `operator.admin` for `administer`, under the person's native profile. Native
+  roles can narrow either grant. Agent `read` alone and service keys do not
+  admit a browser session.
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
   `agent:update` for an existing Agent. Start also requires `secret:create` and

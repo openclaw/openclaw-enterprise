@@ -36,7 +36,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    sha256: "42644fa51d0ef22b01ed5e26d1bb8fdac0aa096c375d06b0eeb3e177387e7ca9",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
@@ -48,7 +48,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+    sha256: "6336dbcc941d082a52860099bf0e77e915fbf24efa46ac3c1af6ef0a51af64f7",
   },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);

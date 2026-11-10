@@ -166,8 +166,19 @@ test(
           [principalId, roles.admin.id],
         );
         const priorGrants = await grants(principalId);
-        await assertConsoleSignIn(app, (await login("new-member")).callback, memberId);
-        assert.equal((await authRowCounts(pool)).users, before.users);
+        // Once attached, the subject owns identity even if profile claims disappear,
+        // change, or name an email already used by another account.
+        for (const claims of [
+          {},
+          { email: "renamed-enrollment@example.test", email_verified: true },
+          { email: accounts.existing.email, email_verified: true },
+        ]) {
+          await assertConsoleSignIn(app, (await login("new-member", claims)).callback, memberId);
+          assert.equal(await accountPrincipalId(pool, memberId), principalId);
+        }
+        const after = await authRowCounts(pool);
+        assert.equal(after.users, before.users);
+        assert.equal(after.methods, before.methods);
         assert.deepEqual(await grants(principalId), priorGrants);
         assert.equal(
           (
@@ -180,6 +191,32 @@ test(
         );
       },
     );
+    await t.test("case-distinct subjects enroll and sign in as separate people", async () => {
+      const before = await authRowCounts(pool);
+      const people = [];
+      for (const [subject, email] of [
+        ["Case-sensitive-member", "case-upper@example.test"],
+        ["case-sensitive-member", "case-lower@example.test"],
+      ] as const) {
+        const { callback } = await login(subject, { email, email_verified: true });
+        assert.equal(callback.headers.location, "/console/", callback.body);
+        const session = await currentSession(
+          app,
+          cookieHeaderFromSetCookie(callback.headers["set-cookie"]),
+        );
+        const userId = session.user.id;
+        people.push({ subject, userId, principalId: await accountPrincipalId(pool, userId) });
+      }
+      assert.equal(new Set(people.map((person) => person.userId)).size, 2);
+      assert.equal(new Set(people.map((person) => person.principalId)).size, 2);
+      assert.equal((await authRowCounts(pool)).users, before.users + 2);
+      // Repeat without profile claims so each persisted identity must resolve by
+      // its exact subject; enrollment email cannot conceal a case-folded lookup.
+      for (const person of people) {
+        await assertConsoleSignIn(app, (await login(person.subject)).callback, person.userId);
+        assert.equal(await accountPrincipalId(pool, person.userId), person.principalId);
+      }
+    });
     await t.test(
       "explicit attachment preserves the existing account and refuses missing admission",
       async () => {

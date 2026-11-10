@@ -51,9 +51,23 @@ Keycloak state variable.
 The browser signs in at the real Keycloak server, returns through the OCC
 callback, verifies the original account ID, and opens an Agent with the resulting
 shared session. A disposable IdP Group supplies the signed admission claim. The journey
-checks chat with `agent:operate`, administration denial, and a real model
-response. Related native browser cases cover administrator access, Agent
-boundaries, permission withdrawal, and session expiry.
+checks owner creation/deployment and real owner/operator model responses. Native
+`users.self`, `sessions.list`, and `chat.history` must show distinct profiles
+with matching session creator and transcript sender identities. The owner's
+attached password method must resolve the same native profile as OIDC.
+
+The operator requests administrator scopes and sends forged reserved identity
+and browser-key headers. HTTP and WebSocket administrative operations must
+still fail. Reconnect and replacement of the test Agent's Gateway Pod with
+retained storage must preserve both profiles and their attribution.
+
+Related `native-admin-k3d-real.test.mjs` cases cover administrator access, Agent
+boundaries, workspace persistence, and dedicated redeployment. They require
+withdrawal to close the affected real stream within 30 seconds while another
+person completes a model turn. Regrant as an operator must retain the profile
+with reduced scopes; session expiry and sign-in must retain the other profile.
+Delegated stock-UI connections must neither enroll devices nor receive reusable
+device tokens. Existing static-human device behavior is a separate native test.
 
 The existing topology starts production controller and worker entrypoints in
 Kubernetes. Its test ingress terminates local browser TLS. The API reaches the
@@ -68,6 +82,62 @@ or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
 a model turn is not a pass. Inspect the test result and captured browser/runtime
 evidence before reporting success.
 
+Browser spoof checks prove OCC sanitization, not every native admission path.
+Wrong-revision credentials, direct external ingress, concurrent profile creation,
+native role/credential changes, and profile-store failure need their owning
+native listener tests. OIDC email changes and provider-subject separation also
+need authentication persistence coverage. Keep these results separate from the
+browser journey and record the exact runtime image used.
+
 Cleanup removes the test namespaces and its temporary network attachments.
 It preserves attachments that existed before the test; lane cleanup owns the
 prepared server and cluster resources.
+
+## Collect CI browser evidence
+
+On an eligible same-repository PR, the `full-qa` label selects the advisory
+**native Agent browser** job. It runs the complete `gateway-routing` lane:
+workspace routing, dedicated native administration, embedded sharing, and OIDC
+owner/operator chat. The existing protected environment and credential gates
+still apply. See [QA advisory triggers](ci/qa-advisory.md#when-it-runs).
+
+This job builds runtime images from the checked-out
+`deploy/runtime/openclaw-source.json` and its patches. Before running a proposed
+native change, pin that source manifest to the intended native commit. The
+ordinary PR CI matrix does not run this live lane. A passing advisory job does
+not replace review of the exact source and image digests.
+
+The job sets the test-only `OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR` to a
+runner-temporary directory. CI installs the pinned Playwright FFmpeg encoder
+when this variable is set, including when it uses host Chrome. Each browser
+scenario writes into its own child
+directory. Screenshots show synthetic chat or an access denial. WebM clips
+start on the authenticated chat composer and show a real submitted model turn;
+they stop after the turn or 60 seconds. A slow response can therefore appear
+only in the final screenshot. The raw configuration screenshot and private
+ingress keys remain outside this directory and are not uploaded.
+
+Download these artifacts from the same run and attempt:
+
+- `attempt-<attempt>-qa-advisory-oidc-agent-chat-gateway-routing`: the lane result
+  JSON, including source SHA, per-file counts, and immutable runtime image digests.
+- `diagnostics-qa-advisory-oidc-agent-chat-gateway-routing-attempt-<attempt>`:
+  preparation and runtime failure diagnostics, when available.
+- `native-browser-media-<run-id>-<attempt>`: only PNG screenshots and WebM clips.
+
+For example, after replacing the run and attempt values:
+
+```sh
+run=123456789
+attempt=1
+gh run view "$run" --repo openclaw/openclaw-enterprise --json headSha,event,jobs,url
+gh run download "$run" --repo openclaw/openclaw-enterprise \
+  --name "native-browser-media-$run-$attempt" --dir /tmp/native-browser-review
+```
+
+Verify that the PR merge commit contains the intended head, the result has full
+lane scope, and all four selected cases pass without skips. Open the images and
+play the clips before attaching them to the PR. These captures are raw E2E
+footage, not a paced Console walkthrough. Label the exact tested revision and
+runtime images, and state any missing or truncated visual proof. An artifact
+upload alone does not establish that the requested behavior passed.

@@ -63,6 +63,41 @@ Configuration without it ([Compute admission](../compute-admission.md#kubernetes
 }
 ```
 
+## OCC browser delegation
+
+OCC browser access uses a separate delegated identity for each OCE Principal.
+Compute encodes the subject as `oce:v1:` followed by the lowercase hexadecimal
+SHA-256 of UTF-8 `JSON.stringify([installationId, principalId])`. Both IDs come
+from authenticated server state. The Gateway binds authority `oce` and that
+exact subject to a native profile, independently of email aliases.
+
+For a browser-enabled revision, Compute renders
+`gateway.auth.trustedProxy.delegation` with `authority: "oce"`,
+`subjectPrefix: "oce:v1:"`, and
+`credentialFile: "/var/run/openclaw/browser-delegation/browser-key"`.
+The immutable revision-owned Secret holds a random 32-byte credential encoded
+as lowercase hex in `browser-key`. Preparation retries reuse it; admission only
+reads it. The Gateway mounts it read-only. Retirement removes it without
+removing retained profiles. Missing, malformed, terminating, or incorrectly
+owned Secrets fail closed.
+
+Configurations may omit this setting or retain that exact generated value;
+conflicting values fail admission. Native profiles persist in
+[Gateway storage](storage-and-credentials.md#gateway-storage).
+
+The private browser route preserves `x-occ-identity`, `x-occ-browser-key`, and
+`x-openclaw-scopes` after OCC replaces browser-supplied values. Native
+authentication requires the credential, reserved subject, and permitted scope
+together. It rejects a reserved subject through static, password, or device
+authentication without valid delegation. Missing profile storage or credentials
+refuse access instead of selecting a machine identity.
+
+The delegated scope is `operator.admin` or `operator.sessions.write` according
+to current [OCE Agent access](../../agent-native-admin.md#native-authority-and-drift).
+Native roles can narrow it. Delegated connections neither enroll devices nor
+issue reusable device tokens; static and device grants cannot expand this scope.
+Native policy and credential checks also protect subsequent RPCs and events.
+
 ## Human ingress
 
 Human ingress is operator-managed; OCE deploys neither the route nor its
@@ -70,7 +105,9 @@ identity provider. Humans need no OCE account. The ingress must authenticate
 humans, authorize access to the exact Gateway, and overwrite client-supplied
 identity and authority headers. Use stable, namespaced human identities, such
 as an issuer-qualified OIDC subject. Reserve `occ-workspace-files` for OCC:
-the human ingress must never emit that identity.
+the human ingress must never emit that identity. It must also strip
+`x-occ-browser-key` and never emit a subject with the reserved `oce:v1:` prefix.
+Use OCC browser access for OCE-managed people.
 
 The ingress must also set `x-openclaw-scopes` on every request, HTTP and WebSocket
 upgrade, to that person's granted scopes, replacing any client value. To grant none,
@@ -86,9 +123,9 @@ the route removes), and the Gateway refuses any trusted-proxy request without it
 requirement proves the header is present, not who set it: an ingress that forwards
 a client's `x-openclaw-scopes` still lets a person claim `operator.admin` on those
 APIs. The administration HTTPRoute sets the header to `operator.admin` for the
-machine identity. The [OCC browser chat route](../../agent-native-admin.md) uses
-the same identity with `operator.sessions.write`, which includes session reads.
-On WebSocket upgrades the header caps the union of device and identity grants.
+machine identity. [OCC browser delegation](#occ-browser-delegation) uses its
+separate person identity and scope. On static-user WebSocket upgrades the
+header caps the union of device and identity grants.
 
 Private routing can remain enabled. Its operator HTTPRoute always replaces
 `x-occ-identity` with the machine identity, so human traffic needs a separate
@@ -104,6 +141,9 @@ OCE does not provision or reconcile it. The existing OCC route retains machine
 identity, which native roles must allow to administer.
 
 ## Device grants
+
+This section applies to static human ingress. OCC delegated browser access does
+not use these grants.
 
 Human allowlists forbid `operator.admin` in `deviceAutoApprove.scopes`, including
 surrounding whitespace. Device grants are unioned with `identityScopes`; grant

@@ -243,10 +243,15 @@ async function openNativeAdminSocketScenario(t, label, options = {}) {
   assert.equal(upstream.upgrades.length, 1);
   assert.equal(
     upstream.upgrades[0].url,
-    `${options.mode === "chat" ? "/native-chat" : ""}/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
+    `/native-browser/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
   );
   assert.equal(upstream.upgrades[0].headers.origin, native.origin);
   assert.equal(upstream.upgrades[0].headers["x-api-key"], nativeGatewayApiKey);
+  assert.equal(
+    upstream.upgrades[0].headers["x-openclaw-scopes"],
+    options.mode === "chat" ? "operator.sessions.write" : "operator.admin",
+  );
+  assert.equal(upstream.upgrades[0].headers["x-occ-browser-key"], "server-browser-credential");
   await waitForAuditActions(apiA.pool, namespace.id, agent.id, [
     "openclaw.agents.native_admin.websocket.connect",
   ]);
@@ -349,7 +354,7 @@ test(
     assert.equal(upstream.requests.length, 1);
     assert.equal(
       upstream.requests[0].url,
-      `/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
+      `/native-browser/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
     );
     assert.equal(upstream.requests[0].headers.origin, native.origin);
     assert.equal(upstream.requests[0].headers["x-api-key"], nativeGatewayApiKey);
@@ -743,6 +748,7 @@ test(
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "admin-downgrade");
+    const nativeSubject = scenario.upstream.upgrades[0].headers["x-occ-identity"];
     await assertSocketClosesAfterMutation(scenario.socket, () =>
       scenario.apiA.pool.query(
         `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
@@ -755,7 +761,14 @@ test(
     t.after(() => socket.destroy());
     assert.equal(
       scenario.upstream.upgrades.at(-1).url,
-      `/native-chat/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/session/socket`,
+      `/native-browser/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/session/socket`,
+    );
+    const reconnected = scenario.upstream.upgrades.at(-1);
+    assert.equal(reconnected.headers["x-openclaw-scopes"], "operator.sessions.write");
+    assert.equal(
+      reconnected.headers["x-occ-identity"],
+      nativeSubject,
+      "downgrade changes authority, not the native identity",
     );
   },
 );

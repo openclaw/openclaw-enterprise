@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-10
-last_updated_session: authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620
+last_updated_session: authoring-run/a88e2937-bfa9-4cff-8dfd-d108048d60d6
 ---
 
 # Agent Native Admin UI Flow
@@ -16,7 +16,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
+- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayBrowserRequest` for both browser modes.
 
 ## Flow
 
@@ -55,9 +55,11 @@ graph TD
   M -->|no| N["Return unsupported with derived origin"]
   M -->|yes| CO{"Compute owner matches?"}
   CO -->|no| CF["Return 503 dependency error"]
-  CO -->|yes| EP{"Private gateway endpoint supported?"}
+  CO -->|yes| EP{"Delegated browser transport supported?"}
   EP -->|no| N
-  EP -->|yes| O["Return available Agent URL"]
+  EP -->|yes| BC["Read revision credential<br/>and derive Principal subject"]
+  BC -->|dependency failure| CF
+  BC -->|ready| O["Return available Agent URL<br/>without private headers"]
   O --> OPEN["Open Agent host directly or exchange<br/>a challenge for a host-only handle"]
   OPEN -->|HTTP| Q["Resolve host to Agent"]
   OPEN -->|WebSocket| V["OCC guards client socket during admission"]
@@ -66,7 +68,8 @@ graph TD
   R -->|no| S["Reject request; audit exact-Agent authorization denial"]
   R -->|yes| T["Resolve current version, native config and Compute owner"]
   T -->|owner mismatch| RF["Refuse before key lookup or gateway connection"]
-  T -->|matching owner| U["Strip browser credentials;<br/>proxy to private Gateway"]
+  T -->|matching owner| U["Replace browser identity and credentials;<br/>send delegated subject and scope"]
+  U --> NP["Gateway verifies delegation<br/>and resolves native profile"]
   T -->|WebSocket client reset| VB["Stop before gateway connection"]
   T -->|WebSocket client connected with matching owner and exact Origin| VC["Proxy 101 upgrade with version lease"]
   U -->|shared-cookie mode and sandbox routing enabled| W["Load separate preview origin"]
@@ -104,10 +107,20 @@ plan and identity. The worker creates and deploys the Agent.
 
 With launcher-owned Compose/OpenShell browser state, the helper saves disabled
 Configuration generation 1, creates the Agent, then derives its origin. Before
-deployment, generation 2 enables `controlUi`, pins origins, and grants
-`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
-Identity grants supply admin independently of device scopes.
+deployment, generation 2 enables `controlUi`, pins origins, and preserves
+`occ-workspace-files` trusted-proxy `operator.admin` for machine access.
 An existing helper-owned name cannot change this selection.
+
+### 0b. Compute prepares delegated browser transport
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:browserDelegationCredential`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayConfiguration`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayRouteHeaderFilter`
+
+Preparation creates or reuses the revision's immutable browser Secret, mounted
+only in the Gateway. Generated configuration names its file and authority.
+`/native-browser/` preserves delegated headers; machine/node routes remove the
+credential. Retirement removes the Secret, retaining native profiles.
 
 ### 1. Console renders native admin availability
 
@@ -151,9 +164,9 @@ admission remains in `apps/controller/src/index.ts`.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
-Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
+Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Both modes call `getGatewayBrowserRequest` with server-owned Installation and Principal IDs, mode, and an abort signal. Missing support or an unclean private `wss:` endpoint returns `unsupported`; credential failures propagate as dependencies. The result carries `gatewayBase`, non-secret `subject`, and private headers, omitted from browser responses by `nativeAdminAvailabilityData`. No machine fallback is permitted.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -209,21 +222,17 @@ Attributable IAM denials receive one audit attempt, including after the
 five-second admission wait, disconnect or shutdown. Timely HTTP denials await
 that append before returning `403`; append failures or admission timeouts return `503`.
 
-Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
-`/chat/main/<session>`, optionally with a trailing slash, gets a `302` to the
-console; session segments accept letters, digits, hyphens and underscores. The
-fragment carries only the opaque host key. Without
-`Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
-Link previews, APIs, writes and WebSockets keep their refusal.
+Without a session, eligible user-activated HTML navigations get a `302` to the
+Console with only the opaque host key. Other requests remain refused; HTML
+loads without `Sec-Fetch-User: ?1`, including Safari, offer **Sign in**.
+See [eligible paths](../reference/agent-native-admin.md#authorization-and-availability).
 
 When admission refuses a different version, eligible document navigations receive
 an HTTP 403 **Agent version changed** page with a Console return link. Other
 refusals keep their normal handling; no cookie changes or automatic relaunch occur.
 
-Denied browser permissions produce an HTTP 403 page linking to `/console/agents`
-on the configured public origin without naming the Agent. JSON refusals name
-the required permission, not the Agent; unknown hosts receive the same text.
-WebSocket refusals stay unchanged.
+Permission-denied HTML returns 403 with a `/console/agents` link and no Agent
+name. JSON names the required permission; unknown hosts receive the same text.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
@@ -234,17 +243,17 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy normalizes URLs (maximum 4,096 characters), requires exact `Origin` except for GET/HEAD, and strips cookies, service keys, forwarding/identity/scope headers and upstream `Set-Cookie`. It blocks service-worker scripts, rewrites same-upstream redirects to the Agent origin, adds CSP `worker-src 'none'`, and forwards to private HTTPS. Avatar `502`s become empty `404`s, preserving the initials fallback. Both modes use `occ-workspace-files`; chat overwrites `x-openclaw-scopes` with `operator.sessions.write`. Runtime authority intersects that ceiling with identity/device grants; client headers cannot widen it.
+The proxy limits URLs to 4,096 characters, requires exact `Origin` except for GET/HEAD, and strips credentials, forwarding/identity/scope headers and upstream `Set-Cookie`. It rewrites same-upstream redirects, blocks service workers with CSP, and maps avatar `502`s to empty `404`s. It then adds Compute's delegated subject, revision credential, and scope. The Gateway resolves the native person before access; native roles narrow delegated authority, while device grants cannot widen it. Profile or credential failure refuses access.
 
 ### 7. OCC proxies native WebSocket upgrades
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. It handles socket errors before awaiting admission, preventing uncaught errors on TCP reset. Refused sockets close without waiting for denial audits, which still run after reset. Admission checks client destruction and shutdown before and after transport resolution; late success cannot connect. Accepted clients use the selected version.
+Before Fastify routing, the API tracks derived-host upgrades for `preClose` and handles socket errors before admission to survive TCP reset. Refused sockets close without waiting for denial audits, which still run after reset. Admission checks client destruction and shutdown before and after transport resolution; late success cannot connect. Accepted clients use the selected version.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
+The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with matching `connectionId` and `details.nativeAdmin.subject`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
 
 Bridge requests, admission and close audits share one five-second shutdown drain. Bridge handlers stop before subsequent phases or secret delivery after shutdown or client disconnect. Work still pending
 afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
@@ -258,21 +267,18 @@ guarantees durable delivery; process exit can prevent or interrupt an audit atte
 
 In shared-cookie mode with sandbox routing configured, preparation and activation render the
 Agent's stable preview origin and adjacent sandbox port in its native document.
-The worker reconciles its GET/HEAD route, public-shell SecurityPolicy and
-Agent-scoped backend ingress policy under the serving version. A separate Helm listener admits only configured ingress
-peers, and the backend targets the sandbox port instead of the admin port.
-The preview domain is outside the shared session cookie scope. Native UI still
+The worker reconciles GET/HEAD routing and SecurityPolicy under the serving
+version. The Helm listener admits configured ingress peers to the sandbox port.
+The preview domain remains outside session-cookie scope. Native UI still
 reads private file content through its authenticated connection, then delivers
 it to the runtime's isolated iframe. The sandbox listener serves public shell
 and registered renderer assets; runtime CSP and nested frame isolation remain
 responsible for executing generated content. See the [routing contract](../reference/gateway-routing.md#public-preview-routing).
 
-For opted-in Kubernetes gateways, `KubernetesComputeDriver.privateStateInitContainer`
-copies the admitted configuration from `/etc/openclaw-managed/openclaw.json` to
-`/runtime-state/home/.openclaw/openclaw.json` on the init container's writable
-volume. The gateway mounts that same home subdirectory at `/home/node`, so native
-edits remain Pod-local and the next Pod starts from the admitted configuration.
-The init container cannot write through the gateway's later mount path.
+`KubernetesComputeDriver.privateStateInitContainer` copies
+`/etc/openclaw-managed/openclaw.json` to
+`/runtime-state/home/.openclaw/openclaw.json`. The Gateway mounts that home at
+`/home/node`; native edits remain Pod-local. A new Pod restores managed configuration.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:configureNativeWorkerProfile`
 reuses only the exact generated worker profile after a container restart;
@@ -290,7 +296,7 @@ admin Configuration remains Pod-local.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - WebSocket connect and close audits share `connectionId`; close audits add a `closeReason` category from step 7.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warnings, availability, and URL opening. Integration proof covers shared-cookie admission, denied service keys and unknown hosts, assets, WebSocket leases and reconnects, and a reversible native edit.
+- [Native browser tests](../testing/native-agent-browser.md) check distinct profiles, creator/sender attribution, reconnect/regrant, retained-storage restart, and delegated scope limits through the real browser workflow. Source and passing unit checks do not establish runtime qualification.
 
 ## Related docs
 
@@ -305,6 +311,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-10 12:28: Describe delegated profiles, revision credentials, and private browser routing in accompanying implementation. Runtime qualification pending. (authoring-run/a88e2937-bfa9-4cff-8dfd-d108048d60d6 - eff92cc67c38da5f9f4b86a839fb3ce4281a28b6)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

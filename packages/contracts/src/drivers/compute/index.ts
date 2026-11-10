@@ -393,11 +393,28 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

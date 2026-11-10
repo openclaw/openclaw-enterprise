@@ -680,7 +680,7 @@ function nativeConfiguration(
                 trustedProxy: {
                   userHeader: "x-occ-identity",
                   allowUsers: ["occ-workspace-files"],
-                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+                  requiredHeaders: ["x-openclaw-scopes"],
                 },
                 identityScopes: { "occ-workspace-files": ["operator.admin"] },
               }),

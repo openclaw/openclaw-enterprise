@@ -213,7 +213,7 @@ RUN echo '5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494  /tmp
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo '21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo '42644fa51d0ef22b01ed5e26d1bb8fdac0aa096c375d06b0eeb3e177387e7ca9  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
@@ -228,7 +228,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '6336dbcc941d082a52860099bf0e77e915fbf24efa46ac3c1af6ef0a51af64f7  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
@@ -243,9 +243,14 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    src/gateway/server.auth.delegation.test.ts src/gateway/trusted-proxy-delegation.test.ts \
+    src/state/user-profile-delegation.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
+    src/node-host/openclaw-id-join.test.ts src/node-host/openclaw-id-transport.test.ts \
+    src/node-host/openclaw-id-enrollment.test.ts src/node-host/openclaw-id-target.test.ts \
+    src/node-host/openclaw-id-connection.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
     src/cli/node-cli/register.test.ts \
