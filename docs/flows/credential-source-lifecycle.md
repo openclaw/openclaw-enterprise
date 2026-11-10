@@ -276,10 +276,10 @@ changes. Static sources validate replacement references, authorize each
 `secret:operate`, and read through `withValue`. Gateway `updateSource` runs with
 Compute's placement while the source lock is held; OpenShell requires matching
 ownership and nonempty values because `UpdateProvider` merges credentials.
-Only subsequently started processes receive the update.
+Only later-started processes receive the update.
 
 It retains each replacement (`credential_source_retained_secrets`, a consumer)
-and sets `update_attempt_id`. A second requires that fence, writes the gateway,
+and sets `update_attempt_id`. A second transaction requires that fence, writes the gateway,
 commits references, clears both, audits. Failing early while fenced releases
 only its additions; lost commits and crashes release nothing. Adoption meanwhile
 returns `409`; an absent/failed source, `503`. Refresh
