@@ -283,7 +283,7 @@ test("installed Skipper failure summary reads the actual runner result without e
       if (scenario === "captured subprocess rejection") {
         assert.equal(
           diagnostic,
-          "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat, exit=7",
+          "location unavailable, ERR_TEST_FAILURE, operation=gateway-chat, child-exit=7",
         );
         assert.deepEqual(summary.files[0].tests[0].error.diagnostic, {
           kind: "skipper-operation",
@@ -318,6 +318,35 @@ test("installed Skipper failure summary reads the actual runner result without e
       const error =
         summary.files[0].tests.find((entry) => entry.status === "failed")?.error ??
         summary.files[0].fileFailure.error;
+      if (scenario === "captured subprocess rejection") {
+        // Mutate the serialized result after the reporter. The public summary must validate
+        // its own input even when another producer or a damaged file supplied private fields.
+        const prefix = "location unavailable, ERR_TEST_FAILURE";
+        const privateValue = "private-diagnostic-must-not-be-published";
+        for (const [fields, expected] of [
+          [{ operation: privateValue }, prefix],
+          [
+            { exitCode: privateValue, signal: privateValue, code: privateValue },
+            prefix + ", operation=gateway-chat",
+          ],
+          [
+            { exitCode: -1, signal: "SIGTERM", code: "ENOENT" },
+            prefix + ", operation=gateway-chat, signal=SIGTERM, code=ENOENT",
+          ],
+          [{ exitCode: 256 }, prefix + ", operation=gateway-chat"],
+          [{ exitCode: 1.5 }, prefix + ", operation=gateway-chat"],
+        ]) {
+          error.diagnostic = {
+            kind: "skipper-operation",
+            operation: "gateway-chat",
+            exitCode: 7,
+            command: privateValue,
+            stderr: privateValue,
+            ...fields,
+          };
+          assert.equal(skipperFailureSummary(JSON.stringify(summary), root, "bwrap"), expected);
+        }
+      }
       // The remaining cases exercise location/category fallback without an operation receipt.
       delete error.diagnostic;
       if (scenario === "rejection") {

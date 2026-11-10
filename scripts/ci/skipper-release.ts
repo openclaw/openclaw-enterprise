@@ -194,7 +194,7 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
     if (diagnostic) {
       operationDetail = [
         `operation=${diagnostic.operation}`,
-        diagnostic.exitCode === undefined ? undefined : `exit=${diagnostic.exitCode}`,
+        diagnostic.exitCode === undefined ? undefined : `child-exit=${diagnostic.exitCode}`,
         diagnostic.signal === undefined ? undefined : `signal=${diagnostic.signal}`,
         diagnostic.code === undefined ? undefined : `code=${diagnostic.code}`,
       ]
