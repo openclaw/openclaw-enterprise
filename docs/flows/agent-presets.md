@@ -88,7 +88,7 @@ rendering copy the native policy of the [standard Codex artifact](../../deploy/p
 the deployed Codex plugin enforces it. `loadBundledPresetVersions` also loads every shipped version
 listed in `deploy/presets/archive/versions.json`, whether or not defaults are
 enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
-`tests/conformance/presets.test.mjs` fails when a bundled file changes without
+`tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
 `packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`

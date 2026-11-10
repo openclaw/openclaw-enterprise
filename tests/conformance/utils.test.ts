@@ -38,7 +38,13 @@ test("immutableCopy detaches and deeply freezes resource snapshots", () => {
 
 test("freezeSnapshot freezes a new value in place and records it like immutableSnapshot", () => {
   const permissions = Object.freeze([Object.freeze({ action: "read", resourceKind: "agent" })]);
-  const state = { roles: [{ id: "role-a", permissions }], groups: [{ id: "group-a" }] };
+  const state: {
+    roles: [{ id: string; permissions: typeof permissions }];
+    groups: [{ id: string }];
+  } = {
+    roles: [{ id: "role-a", permissions }],
+    groups: [{ id: "group-a" }],
+  };
   const snapshot = freezeSnapshot(state);
 
   // No copy: the snapshot is the value, and its already frozen parts stay shared.
@@ -67,7 +73,7 @@ test("freezeSnapshot freezes a new value in place and records it like immutableS
 
 test("asRecord preserves object identity without accepting null, arrays, or primitives", () => {
   const object = { status: "ready" };
-  const withoutPrototype = Object.create(null);
+  const withoutPrototype: unknown = Object.create(null);
   const date = new Date(0);
   assert.equal(asRecord(object), object);
   assert.equal(asRecord(withoutPrototype), withoutPrototype);
@@ -160,7 +166,10 @@ test("Cookie headers retain name-value pairs and discard Set-Cookie attributes",
 });
 
 test("deepFreeze freezes nested event data in place and handles cycles", () => {
-  const event = { actor: { id: "principal-a" }, details: { values: [1, 2] } };
+  const event: { actor: { id: string }; details: { values: number[] }; self?: typeof event } = {
+    actor: { id: "principal-a" },
+    details: { values: [1, 2] },
+  };
   event.self = event;
   assert.equal(deepFreeze(event), event);
   assert.equal(Object.isFrozen(event.actor), true);
@@ -176,7 +185,7 @@ test("deepFreeze freezes nested event data in place and handles cycles", () => {
 for (const [owner, check] of [
   ["@openclaw-enterprise/utils", hasControlCharacter],
   ["repository-credentials client-contracts", clientHasControlCharacter],
-]) {
+] as const) {
   test(`${owner} hasControlCharacter flags exactly C0 controls and DEL`, () => {
     for (let code = 0; code <= 0xffff; code += 1) {
       const character = String.fromCharCode(code);

@@ -4,6 +4,7 @@ import { cp, readdir, readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
+  type PresetDraftTemplate,
   normalizePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
@@ -17,6 +18,11 @@ import { registerTopologyLaunchCases } from "./topology-launch-cases.ts";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 const secretId = "sec_00000000-0000-4000-8000-000000000001";
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
 
 test("preset admission reports repositoryBindings paths and rejects duplicate refs", () => {
   assert.throws(
@@ -61,19 +67,19 @@ test("preset variables produce typed launch values and native model keys without
         },
       },
     },
-  };
+  } satisfies PresetDraftTemplate;
   const rendered = renderPresetTemplate(template, {
     name: 'quoted"{{ vars.model }}',
     limit: 0,
     enabled: false,
     suffix: "",
   });
-  assert.equal(rendered.agent.name, 'agent-quoted"{{ vars.model }}');
-  assert.deepEqual(rendered.configuration.values.agents.defaults, {
+  assert.equal(rendered.agent?.name, 'agent-quoted"{{ vars.model }}');
+  assert.deepEqual(record(rendered.configuration?.values?.agents).defaults, {
     model: "openai/example",
     models: { "openai/example": {} },
   });
-  assert.deepEqual(rendered.configuration.values.settings, {
+  assert.deepEqual(rendered.configuration?.values?.settings, {
     limit: 0,
     enabled: false,
     suffix: "",
@@ -83,7 +89,10 @@ test("preset variables produce typed launch values and native model keys without
 
 test("preset agent plugin approvers preserve inheritance, denial, and rendered identities", () => {
   assert.equal(
-    Object.hasOwn(renderPresetTemplate({ agent: { name: "omitted" } }).agent, "pluginApprovers"),
+    Object.hasOwn(
+      record(renderPresetTemplate({ agent: { name: "omitted" } }).agent),
+      "pluginApprovers",
+    ),
     false,
   );
   assert.deepEqual(renderPresetTemplate({ agent: { pluginApprovers: [] } }).agent, {
@@ -98,8 +107,8 @@ test("preset agent plugin approvers preserve inheritance, denial, and rendered i
     agent: {
       pluginApprovers: [{ channel: "slack", id: "team:{{ vars.team }}:user:{{ vars.user }}" }],
     },
-  };
-  assert.deepEqual(renderPresetTemplate(template, { user: "U456" }).agent.pluginApprovers, [
+  } satisfies PresetDraftTemplate;
+  assert.deepEqual(renderPresetTemplate(template, { user: "U456" }).agent?.pluginApprovers, [
     { channel: "slack", id: "team:T123:user:U456" },
   ]);
   assert.deepEqual(normalizePresetTemplate(template, namespaceId), template);
@@ -120,8 +129,8 @@ test("preset workspace files render editable seed text and enforce create-time l
         "USER.md": "{{ vars.required }}",
       },
     },
-  };
-  assert.deepEqual(presetTemplateDefaults(template).agent.initialWorkspaceFiles, {
+  } satisfies PresetDraftTemplate;
+  assert.deepEqual(presetTemplateDefaults(template).agent?.initialWorkspaceFiles, {
     "AGENTS.md": "# {{ vars.name }}\n",
     "SOUL.md": "Tone: ",
     "IDENTITY.md": "",
@@ -129,7 +138,7 @@ test("preset workspace files render editable seed text and enforce create-time l
   });
   assert.deepEqual(
     renderPresetTemplate(template, { name: "Workspace Agent", required: "Remember me" }).agent
-      .initialWorkspaceFiles,
+      ?.initialWorkspaceFiles,
     {
       "AGENTS.md": "# Workspace Agent\n",
       "SOUL.md": "Tone: ",
@@ -157,7 +166,9 @@ test("preset workspace files render editable seed text and enforce create-time l
       { secret: "raw" },
       /password variables/,
     ],
-  ]) {
+  ] satisfies Array<
+    [PresetDraftTemplate, NonNullable<Parameters<typeof renderPresetTemplate>[1]>, RegExp]
+  >) {
     assert.throws(
       () => renderPresetTemplate(invalid, inputs),
       (error) => error instanceof PresetValidationError && message.test(error.message),
@@ -183,7 +194,7 @@ test("runtime placeholders, SecretRefs, escaped tokens, and unrelated template s
         BOT_TOKEN: { source: { kind: "secret", namespaceId, id: "{{ vars.id }}" } },
       },
     },
-  };
+  } satisfies PresetDraftTemplate;
   assert.deepEqual(renderPresetTemplate(template).configuration, {
     values: {
       env: "${APP_SERVER_TOKEN}",
@@ -226,11 +237,12 @@ test("Preset defaults locate only the text a placeholder was inserted into", () 
         models: [{ baseUrl: "{{ vars.url }}:{{ vars.h }}" }],
       },
     },
-  };
+  } satisfies PresetDraftTemplate;
   const { settings, unresolved } = presetTemplateDefaultsWithPlaceholders(template);
   assert.deepEqual(settings, presetTemplateDefaults(template));
-  const { values } = settings.configuration;
-  assert.deepEqual(Object.keys(values.headers), [
+  const values = record(settings.configuration?.values);
+  const headers = record(values.headers);
+  assert.deepEqual(Object.keys(headers), [
     "{{ vars.h }}",
     "Authorization-{{ vars.h }}",
     "{{ vars.url }}",
@@ -240,12 +252,12 @@ test("Preset defaults locate only the text a placeholder was inserted into", () 
     "{{ vars.h }}-x",
   ]);
   // The literal text around each placeholder; an escaped token beside one is part of it.
-  const located = {
+  const located: Record<string, readonly string[]> = {
     "{{ vars.h }}": ["", ""],
     "Authorization-{{ vars.h }}": ["Authorization-", ""],
     "{{ vars.url }}-{{ vars.h }}": ["{{ vars.url }}-", ""],
   };
-  for (const name of Object.keys(values.headers)) {
+  for (const name of Object.keys(headers)) {
     assert.deepEqual(unresolved(["headers", name], true), located[name], name);
     // A header value at the same path is not its key.
     assert.equal(unresolved(["headers", name]), undefined, name);
@@ -261,7 +273,7 @@ test("Preset defaults locate only the text a placeholder was inserted into", () 
   assert.equal(unresolved(["models", "0", "baseUrl"]), undefined);
   // Filled, only the located text changes; the rest renders exactly as admission saw it.
   const filled = renderPresetTemplate(template, { h: "X-Real", url: "models.example.test" });
-  assert.deepEqual(Object.keys(filled.configuration.values.headers), [
+  assert.deepEqual(Object.keys(record(filled.configuration?.values?.headers)), [
     "X-Real",
     "Authorization-X-Real",
     "{{ vars.url }}",
@@ -270,12 +282,15 @@ test("Preset defaults locate only the text a placeholder was inserted into", () 
     "{{ vars.url }}-X-Real",
     "{{ vars.h }}-x",
   ]);
-  assert.equal(filled.configuration.values.escapedUrl, "{{ vars.url }}");
-  assert.equal(filled.configuration.values.api, "{{ vars.h }}");
+  assert.equal(filled.configuration?.values?.escapedUrl, "{{ vars.url }}");
+  assert.equal(filled.configuration?.values?.api, "{{ vars.h }}");
 });
 
 test("invalid variable programs and inputs fail before producing launch settings", () => {
-  const base = { variables: { value: { type: "string" } }, agent: { name: "{{ vars.value }}" } };
+  const base = {
+    variables: { value: { type: "string" } },
+    agent: { name: "{{ vars.value }}" },
+  } satisfies PresetDraftTemplate;
   for (const [template, inputs, message] of [
     [base, {}, /requires a value/],
     [base, { other: "x" }, /undeclared/],
@@ -332,9 +347,10 @@ test("invalid variable programs and inputs fail before producing launch settings
       { value: "owner/app" },
       /requires a repository selector/,
     ],
-  ]) {
+  ] satisfies Array<[unknown, NonNullable<Parameters<typeof renderPresetTemplate>[1]>, RegExp]>) {
     assert.throws(
-      () => renderPresetTemplate(template, inputs),
+      // Deliberately invalid drafts must reach the runtime validator.
+      () => renderPresetTemplate(template as PresetDraftTemplate, inputs),
       (error) => error instanceof PresetValidationError && message.test(error.message),
     );
   }
@@ -344,13 +360,15 @@ test("native key substitution rejects collisions and preserves special keys as i
   const template = {
     variables: { key: { type: "string" } },
     configuration: { values: { "{{ vars.key }}": { safe: true }, existing: {} } },
-  };
+  } satisfies PresetDraftTemplate;
   assert.throws(() => renderPresetTemplate(template, { key: "existing" }), /duplicate object keys/);
   const rendered = renderPresetTemplate(template, { key: "__proto__" });
-  assert.equal(Object.getPrototypeOf(rendered.configuration.values), Object.prototype);
-  assert.equal(Object.hasOwn(rendered.configuration.values, "__proto__"), true);
-  assert.deepEqual(rendered.configuration.values.__proto__, { safe: true });
-  assert.equal({}.safe, undefined);
+  const values = record(rendered.configuration?.values);
+  assert.equal(Object.getPrototypeOf(values), Object.prototype);
+  assert.equal(Object.hasOwn(values, "__proto__"), true);
+  assert.deepEqual(values.__proto__, { safe: true });
+  const emptyObject: Record<string, unknown> = {};
+  assert.equal(emptyObject.safe, undefined);
 });
 
 test("preset admission preserves credential structure and literal and default scope", () => {
@@ -371,7 +389,7 @@ test("preset admission preserves credential structure and literal and default sc
         BOT_TOKEN: { source: { kind: "secret", namespaceId, id: "{{ vars.secret }}" } },
       },
     },
-  };
+  } satisfies PresetDraftTemplate;
   const normalized = normalizePresetTemplate(template, namespaceId);
   assert.deepEqual(normalized, template);
   assert.notEqual(normalized, template);
@@ -426,10 +444,9 @@ test("preset admission preserves credential structure and literal and default sc
     );
   }
 
-  assert.equal(
-    presetTemplateDefaults(template).configuration.secretBindings.BOT_TOKEN.source.id,
-    secretId,
-  );
+  const bindings = record(presetTemplateDefaults(template).configuration?.secretBindings);
+  const token = record(bindings.BOT_TOKEN);
+  assert.equal(record(token.source).id, secretId);
   for (const invalid of [
     { agent: { configurationId: "forbidden" } },
     {
@@ -528,14 +545,16 @@ test("preset admission preserves credential structure and literal and default sc
       { ...managedPat.source, kind: "secret" },
       { ...managedPat.source, id: secretId },
       { ...managedPat.source, name: "extra" },
-    ].map((source) => [
+    ].map((source): [unknown, RegExp] => [
       { agent: { harnessAuth: { ...managedPat, source } } },
       /Harness authentication requires/,
     ]),
-    ...["1TOKEN", "TOKEN-NAME", "T".repeat(254), "HOME", "otel_exporter"].map((name) => [
-      { configuration: { secretBindings: { [name]: binding } } },
-      /reserved or invalid environment destination/,
-    ]),
+    ...["1TOKEN", "TOKEN-NAME", "T".repeat(254), "HOME", "otel_exporter"].map(
+      (name): [unknown, RegExp] => [
+        { configuration: { secretBindings: { [name]: binding } } },
+        /reserved or invalid environment destination/,
+      ],
+    ),
     [
       {
         configuration: {
@@ -546,7 +565,7 @@ test("preset admission preserves credential structure and literal and default sc
       },
       /at most 64 bindings/,
     ],
-  ]) {
+  ] satisfies Array<[unknown, RegExp]>) {
     assert.throws(() => normalizePresetTemplate(invalid, namespaceId), message);
   }
 });
@@ -563,7 +582,7 @@ test("preset admission and rendering bound stored and expanded JSON", () => {
   const template = {
     variables: { text: { type: "string" } },
     configuration: { values: { first: "{{ vars.text }}", second: "{{ vars.text }}" } },
-  };
+  } satisfies PresetDraftTemplate;
   assert.throws(
     () => renderPresetTemplate(template, { text: "x".repeat(600_000) }),
     /maximum size/,
@@ -572,31 +591,43 @@ test("preset admission and rendering bound stored and expanded JSON", () => {
 
 // A Preset version is the SHA-256 of its canonical JSON (sorted keys, no whitespace),
 // so reformatting a bundled file is not a new version.
-function canonicalJson(value) {
+function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
   }
   if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value)
+    const object = record(value);
+    return `{${Object.keys(object)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
       .join(",")}}`;
   }
-  return JSON.stringify(value);
+  const serialized = JSON.stringify(value);
+  assert.ok(typeof serialized === "string");
+  return serialized;
 }
 
-function presetVersion(document) {
+function presetVersion(document: unknown): string {
   return createHash("sha256").update(canonicalJson(document)).digest("hex").slice(0, 16);
 }
 
-async function readJson(url) {
-  return JSON.parse(await readFile(url, "utf8"));
+async function readJson(url: URL): Promise<unknown> {
+  return JSON.parse(await readFile(url, "utf8")) as unknown;
+}
+
+async function readVersions(url: URL): Promise<Record<string, string[]>> {
+  const versions = record(await readJson(url));
+  for (const history of Object.values(versions)) {
+    assert.ok(Array.isArray(history));
+    assert.ok(history.every((version: unknown) => typeof version === "string"));
+  }
+  return versions as Record<string, string[]>;
 }
 
 /** Problems that would let a bundled default change without its previous version archived. */
-async function bundledPresetArchiveProblems(presetDirectory) {
+async function bundledPresetArchiveProblems(presetDirectory: URL): Promise<string[]> {
   const archive = new URL("archive/", presetDirectory);
-  const versions = await readJson(new URL("versions.json", archive));
+  const versions = await readVersions(new URL("versions.json", archive));
   const problems = [];
   for (const [file, history] of Object.entries(versions)) {
     const stem = file.replace(/\.json$/, "");
@@ -646,13 +677,15 @@ async function bundledPresetArchiveProblems(presetDirectory) {
 test("every superseded bundled default Preset is archived as a valid template", async () => {
   const presetDirectory = new URL("../../deploy/presets/", import.meta.url);
   assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), []);
-  const versions = await readJson(new URL("archive/versions.json", presetDirectory));
+  const versions = await readVersions(new URL("archive/versions.json", presetDirectory));
   // Startup refreshes and deletes copies by comparing them with these templates,
   // so each must still pass the current Preset admission.
   for (const [file, history] of Object.entries(versions)) {
     for (const version of history.slice(0, -1)) {
-      const document = await readJson(
-        new URL(`archive/${file.replace(/\.json$/, "")}/${version}.json`, presetDirectory),
+      const document = record(
+        await readJson(
+          new URL(`archive/${file.replace(/\.json$/, "")}/${version}.json`, presetDirectory),
+        ),
       );
       assert.deepEqual(Object.keys(document).sort(), ["name", "template"]);
       normalizePresetTemplate(document.template, namespaceId);
@@ -665,20 +698,23 @@ test("the archive guard fails when a bundled default changes without archiving i
   await cp(new URL("../../deploy/presets/", import.meta.url), copy, { recursive: true });
   const presetDirectory = pathToFileURL(`${copy}/`);
   const codex = new URL("default-codex.json", presetDirectory);
-  const versions = await readJson(new URL("archive/versions.json", presetDirectory));
-  const shipped = versions["default-codex.json"].at(-1);
+  const versions = await readVersions(new URL("archive/versions.json", presetDirectory));
+  const history = versions["default-codex.json"];
+  assert.ok(history);
+  const shipped = history.at(-1);
   // Reformatting is not a change.
   await writeFile(codex, JSON.stringify(await readJson(codex)));
   assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), []);
 
-  const changed = await readJson(codex);
-  changed.template.agent.name = "Changed default";
+  const changed = record(await readJson(codex));
+  record(record(changed.template).agent).name = "Changed default";
   await writeFile(codex, JSON.stringify(changed, null, 2));
   const [problem] = await bundledPresetArchiveProblems(presetDirectory);
+  assert.ok(problem);
   assert.match(problem, new RegExp(`records ${shipped} as current`));
   assert.match(problem, new RegExp(`archive/default-codex/${shipped}\\.json`));
   // Recording the new version without the archived file still fails.
-  versions["default-codex.json"].push(presetVersion(changed));
+  history.push(presetVersion(changed));
   await writeFile(new URL("archive/versions.json", presetDirectory), JSON.stringify(versions));
   assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), [
     `archive/default-codex/${shipped}.json is missing for a superseded default-codex.json.`,

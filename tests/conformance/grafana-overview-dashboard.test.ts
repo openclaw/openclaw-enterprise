@@ -5,12 +5,37 @@ import test from "node:test";
 const demoPath = "deploy/helm/openclaw-observability-demo/files/overview-dashboard.json";
 const developmentPath = "deploy/metrics/development/grafana/overview-dashboard.json";
 
-async function dashboard(path) {
-  return JSON.parse(await readFile(path, "utf8"));
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function markdownLinks(content) {
-  return [...content.matchAll(/\]\(([^)]*)\)/gu)].map((match) => match[1]);
+function isPanel(value: unknown): value is { options?: { content?: string | null } | null } {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const options = value.options;
+  return (
+    options == null ||
+    (isRecord(options) && (options.content == null || typeof options.content === "string"))
+  );
+}
+
+async function dashboard(path: string) {
+  const overview: unknown = JSON.parse(await readFile(path, "utf8"));
+  assert.ok(isRecord(overview));
+  const panels: unknown = overview.panels;
+  assert.ok(Array.isArray(panels));
+  const entries: unknown[] = panels;
+  assert.ok(entries.every(isPanel));
+  return { uid: overview.uid, panels: entries };
+}
+
+function markdownLinks(content: string) {
+  return [...content.matchAll(/\]\(([^)]*)\)/gu)].map((match) => {
+    const link = match[1];
+    assert.ok(link !== undefined);
+    return link;
+  });
 }
 
 test("overview dashboard links resolve under a Grafana sub-path", async () => {

@@ -3,33 +3,34 @@ import { once } from "node:events";
 import { lstat, mkdir, readdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { withEnvironment } from "../helpers/environment.ts";
 import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An owner whose cleanups the test runs itself, so it can observe the removal.
-function ownerFor(t) {
-  const cleanups = [];
+function ownerFor(t: TestContext) {
+  const cleanups: Array<() => void | Promise<void>> = [];
   const close = async () => {
-    while (cleanups.length > 0) {
-      await cleanups.pop()();
+    let cleanup: (() => void | Promise<void>) | undefined;
+    while ((cleanup = cleanups.pop()) !== undefined) {
+      await cleanup();
     }
   };
   t.after(close);
-  return { after: (cleanup) => cleanups.push(cleanup), close };
+  return { after: (cleanup: () => void | Promise<void>) => cleanups.push(cleanup), close };
 }
 
-function withTemporaryRoot(directory, body) {
+function withTemporaryRoot<T>(directory: string, body: () => T | PromiseLike<T>) {
   return withEnvironment({ TMPDIR: directory }, body);
 }
 
-async function assertBinds(path) {
+async function assertBinds(path: string) {
   const server = createServer();
   server.listen(path);
   await once(server, "listening");
   assert.equal((await lstat(path)).isSocket(), true);
-  await new Promise((resolve) => server.close(resolve));
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 test("socket directories stay under a TMPDIR that leaves room for the socket", async (t) => {
