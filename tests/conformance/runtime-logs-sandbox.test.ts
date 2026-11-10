@@ -4,12 +4,35 @@ import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
+import { Check } from "typebox/value";
+import type {
+  ComputeDriver,
+  Namespace,
+  RuntimeDiagnosticCheck,
+  RuntimeLogStream,
+} from "../../packages/contracts/src/index.ts";
+import {
+  AgentDeploymentDiagnosticsSchema,
+  AgentRuntimeDescriptionSchema,
+  AgentRuntimeLogPageSchema,
+  AgentReadSchema,
+  NamespaceSchema,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { AgentRuntimeLogPageWire } from "../../packages/contracts/src/api/resources.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import {
   GrpcOpenShellGatewayClient,
   openShellSandboxLogReader,
   openShellSandboxObserver,
+  type OpenShellGatewayClient,
+  type OpenShellSandboxDeleteRequest,
+  type OpenShellSandboxLogLine,
+  type OpenShellSandboxLogReader,
+  type OpenShellSandboxLogsRequest,
+  type OpenShellSandboxObserver,
+  type OpenShellSandboxResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   harnessObservation,
@@ -29,11 +52,15 @@ import {
 const SANDBOX_NAMESPACE = "tenant-logs";
 const SANDBOX_ID = "7c0e5d4a-1b2c-4d3e-8f90-a1b2c3d4e5f6";
 
-function lineTime(second, nanos = 0) {
+function lineTime(second: number, nanos = 0) {
   return `2026-09-30T12:00:${String(second).padStart(2, "0")}.${String(nanos).padStart(9, "0")}Z`;
 }
 
-function sandboxLine(second, message, extra = {}) {
+function sandboxLine(
+  second: number,
+  message: string,
+  extra: Partial<OpenShellSandboxLogLine> = {},
+): OpenShellSandboxLogLine {
   return {
     sandboxId: SANDBOX_ID,
     time: lineTime(second),
@@ -47,15 +74,19 @@ function sandboxLine(second, message, extra = {}) {
 }
 
 /** An allowed connection to `<host>.example.com:443`. */
-function allowed(second, host, extra) {
+function allowed(second: number, host: string, extra?: Partial<OpenShellSandboxLogLine>) {
   return sandboxLine(second, `NET:OPEN [INFO] ALLOWED curl(1) -> ${host}.example.com:443`, extra);
 }
 
 /** Each record's destination host, or its gap reason. */
-const hosts = (data) => data.records.map((record) => record.fields?.dst_host ?? record.reason);
+const hosts = (data: AgentRuntimeLogPageWire) =>
+  data.records.map((record) => (record.type === "line" ? record.fields?.dst_host : record.reason));
 
 /** An OpenShell Sandbox record owned by `revisionId`. */
-function sandboxRecord(revisionId, fields) {
+function sandboxRecord(
+  revisionId: string,
+  fields: Partial<OpenShellSandboxResponse>,
+): OpenShellSandboxResponse {
   return {
     name: "sb-x",
     labels: {},
@@ -70,48 +101,56 @@ function sandboxRecord(revisionId, fields) {
  * `state.sandbox`, absent by default). Every other member is recorded and fails.
  */
 function logOnlyGatewayClient() {
-  const state = {
+  const state: {
+    lines: OpenShellSandboxLogLine[];
+    bufferTotal: number | undefined;
+    error: unknown;
+    sandbox: OpenShellSandboxResponse | undefined;
+    sandboxError: unknown;
+  } = {
     lines: [],
     bufferTotal: undefined,
     error: undefined,
     sandbox: undefined,
     sandboxError: undefined,
   };
-  const requests = [];
-  const touched = [];
-  const target = {
+  const requests: (OpenShellSandboxLogsRequest | { getSandbox: OpenShellSandboxDeleteRequest })[] =
+    [];
+  const touched: string[] = [];
+  const target: OpenShellSandboxLogReader & OpenShellSandboxObserver = {
     async getSandboxLogs(request, signal) {
       assert.ok(signal instanceof AbortSignal);
       requests.push(structuredClone(request));
       if (state.error !== undefined) {
         throw state.error;
       }
+      const sinceTime = request.sinceTime;
       const matching =
-        request.sinceTime === undefined
+        sinceTime === undefined
           ? state.lines
-          : state.lines.filter((line) => line.time >= request.sinceTime);
+          : state.lines.filter((line) => line.time !== null && line.time >= sinceTime);
       const tail = state.lines.slice(-request.lines);
       return {
         lines: matching.filter((line) => tail.includes(line)).slice(-request.lines),
         bufferTotal: state.bufferTotal ?? tail.length,
       };
     },
+    async getSandbox(request, signal) {
+      assert.ok(signal instanceof AbortSignal);
+      requests.push({ getSandbox: structuredClone(request) });
+      if (state.sandboxError !== undefined) {
+        throw state.sandboxError;
+      }
+      return state.sandbox;
+    },
   };
-  target.getSandbox = async (request, signal) => {
-    assert.ok(signal instanceof AbortSignal);
-    requests.push({ getSandbox: structuredClone(request) });
-    if (state.sandboxError !== undefined) {
-      throw state.sandboxError;
-    }
-    return state.sandbox;
-  };
-  const client = new Proxy(target, {
-    get(object, property) {
+  const client = new Proxy(new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:1" }), {
+    get(_object, property): unknown {
       if (typeof property === "string") {
         touched.push(property);
       }
       if (property === "getSandboxLogs" || property === "getSandbox") {
-        return object[property];
+        return target[property];
       }
       return () => {
         throw new Error(`The log path reached the OpenShell ${String(property)} RPC.`);
@@ -121,11 +160,14 @@ function logOnlyGatewayClient() {
   return { client, state, requests, touched };
 }
 
-function openShellSandboxDriver(gatewayClient) {
-  const namespaceProtocol = openShellWorkspaceProtocol();
+function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
+  const namespaceProtocol: unknown = openShellWorkspaceProtocol();
+  assert.ok(namespaceProtocol !== null && typeof namespaceProtocol === "object");
   const client = new Proxy(gatewayClient, {
-    get: (target, property) =>
-      property in namespaceProtocol ? namespaceProtocol[property] : target[property],
+    get: (target, property): unknown =>
+      property in namespaceProtocol
+        ? Reflect.get(namespaceProtocol, property)
+        : Reflect.get(target, property),
   });
   return new OpenShellSandboxDriver(
     {
@@ -166,7 +208,7 @@ function openShellSandboxDriver(gatewayClient) {
 }
 
 // Match production composition: policy-capable Drivers require their configuration definition.
-function driverConfigurations(driver) {
+function driverConfigurations(driver: OpenShellSandboxDriver) {
   return [
     {
       capability: "sandbox",
@@ -180,8 +222,8 @@ function driverConfigurations(driver) {
 /** The shared app's cursor key; tests that forge earlier cursor formats sign with it. */
 const CURSOR_SECRET = "disposable-runtime-log-cursor-secret-32";
 /** The running test's gateway client and Driver identity override. */
-let current;
-let sharedApp;
+let current: { client: OpenShellSandboxLogReader; sandboxName: string | undefined };
+let sharedApp: ReturnType<typeof createRuntimeLogFixture> | undefined;
 
 /**
  * One controller app serves every `sandboxFixture()`: its construction, admin sign-in and
@@ -192,7 +234,9 @@ let sharedApp;
 function sandboxApp() {
   sharedApp ??= (async () => {
     const sandboxDriver = openShellSandboxDriver(
-      new Proxy({}, { get: (_, property) => current.client[property] }),
+      new Proxy(new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:1" }), {
+        get: (_, property): unknown => Reflect.get(current.client, property),
+      }),
     );
     const read = sandboxDriver.readSandboxLogs.bind(sandboxDriver);
     // Exercise the core's accepted Driver identity width without replacing paging.
@@ -212,31 +256,129 @@ function sandboxApp() {
   return sharedApp;
 }
 
-async function sandboxFixture({ client, sandboxName } = {}) {
+async function sandboxFixture({
+  client,
+  sandboxName,
+}: { client?: OpenShellSandboxLogReader; sandboxName?: string } = {}) {
   const gateway = logOnlyGatewayClient();
   // Set before the first build, so even a read while the app starts reaches this test.
   current = { client: client ?? gateway.client, sandboxName };
   const fixture = await sandboxApp();
-  const auditFrom = fixture.auditSink.events.length;
-  const target = await fixture.deployAgent("sandbox-logs");
+  const auditSink: unknown = fixture.auditSink;
+  assert.ok(auditSink instanceof InMemoryAuditSink);
+  const auditFrom = auditSink.events.length;
+  const target = checkedTarget(await fixture.deployAgent("sandbox-logs"));
   return {
     ...fixture,
     /** GETs this Agent's log route; a cursor is appended to the query. */
-    read: (query, cursor) =>
-      fixture.request(
+    read: async (query: string, cursor?: string | null) => {
+      const response = await fixture.request(
         "GET",
         target.logsPath(
-          cursor === undefined ? query : `${query}&cursor=${encodeURIComponent(cursor)}`,
+          cursor === undefined ? query : `${query}&cursor=${encodeURIComponent(String(cursor))}`,
         ),
-      ),
+      );
+      return {
+        ...response,
+        get data() {
+          const data: unknown = response.data;
+          assert.ok(Check(AgentRuntimeLogPageSchema, data), "expected a runtime log page");
+          return data;
+        },
+      };
+    },
     auditSink: {
       get events() {
-        return fixture.auditSink.events.slice(auditFrom);
+        return auditSink.events.slice(auditFrom);
       },
     },
     gateway,
     target,
   };
+}
+
+function checkedTarget(
+  target: Awaited<ReturnType<Awaited<ReturnType<typeof createRuntimeLogFixture>>["deployAgent"]>>,
+) {
+  const namespace: unknown = target.namespace;
+  const agent: unknown = target.agent;
+  const revisionId: unknown = target.revisionId;
+  assert.ok(Check(NamespaceSchema, namespace));
+  assert.ok(Check(AgentReadSchema, agent));
+  assert.ok(typeof revisionId === "string");
+  return { ...target, namespace, agent, revisionId };
+}
+
+function runtimeData(response: { data: unknown }) {
+  assert.ok(Check(AgentRuntimeDescriptionSchema, response.data));
+  return response.data;
+}
+
+function diagnosticsData(response: { data: unknown }) {
+  assert.ok(Check(AgentDeploymentDiagnosticsSchema, response.data));
+  return response.data;
+}
+
+type LogResponse = Awaited<ReturnType<Awaited<ReturnType<typeof sandboxFixture>>["read"]>>;
+type LogRecord = AgentRuntimeLogPageWire["records"][number];
+type LogLine = Extract<LogRecord, { type: "line" }>;
+type LogGap = Extract<LogRecord, { type: "gap" }>;
+
+function required<T>(value: T | undefined): T {
+  assert.ok(value !== undefined);
+  return value;
+}
+
+function logRequest(
+  value: ReturnType<typeof logOnlyGatewayClient>["requests"][number] | undefined,
+) {
+  assert.ok(value !== undefined && "sandbox" in value);
+  return value;
+}
+
+function sandboxRequest(
+  value: ReturnType<typeof logOnlyGatewayClient>["requests"][number] | undefined,
+) {
+  assert.ok(value !== undefined && "getSandbox" in value);
+  return value.getSandbox;
+}
+
+function logLine(value: LogRecord | undefined): LogLine {
+  assert.ok(value?.type === "line");
+  return value;
+}
+
+function logGap(value: LogRecord | undefined): LogGap {
+  assert.ok(value?.type === "gap");
+  return value;
+}
+
+function withFields(value: LogRecord | undefined) {
+  const line = logLine(value);
+  assert.ok(line.fields !== undefined);
+  return { ...line, fields: line.fields };
+}
+
+function stringValue(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function isPromise(value: unknown): value is Promise<unknown> {
+  return value instanceof Promise;
 }
 
 function canaries() {
@@ -301,7 +443,7 @@ test("sandbox log pages never contain planted credentials from command lines or 
 
   const runtime = await request("GET", target.runtimePath);
   assert.equal(runtime.status, 200, runtime.text);
-  const source = runtime.data.sources.find(({ id }) => id === "sandbox");
+  const source = required(runtimeData(runtime).sources.find(({ id }) => id === "sandbox"));
   assert.deepEqual(
     { ...source, retention: undefined },
     { id: "sandbox", kind: "sandbox", pods: [], available: true, retention: undefined },
@@ -329,26 +471,37 @@ test("sandbox log pages never contain planted credentials from command lines or 
   // The route reached OpenShell only through the log RPC, for the revision's own Sandbox.
   assert.deepEqual([...new Set(gateway.touched)], ["getSandboxLogs"]);
   assert.equal(gateway.requests.length, 2);
-  const [first] = gateway.requests;
+  const first = logRequest(gateway.requests[0]);
   assert.equal(first.workspace, kubernetesNamespaceName(target.namespace.id));
   assert.match(first.sandbox, /^sb-[0-9a-f]+$/);
   assert.equal(first.lines, 1000);
-  assert.equal(logs.data.stream.sandbox, first.sandbox);
+  assert.equal(logs.data.stream?.sandbox, first.sandbox);
   assert.deepEqual(logs.data.stream, { source: "sandbox", sandbox: first.sandbox });
 
   // One view audit before the read, naming the source but no Sandbox text.
   const views = auditSink.events
     .slice(auditBefore)
-    .filter((event) => event.details?.runtimeLogs?.source === "sandbox");
+    .filter(
+      (event) =>
+        event.details?.runtimeLogs !== undefined &&
+        recordValue(event.details.runtimeLogs).source === "sandbox",
+    );
   assert.equal(views.length, 2, "the view and the download are audited");
-  assert.equal(views[0].details.runtimeLogs.revisionId, target.revisionId);
+  assert.equal(recordValue(required(views[0]).details?.runtimeLogs).revisionId, target.revisionId);
 
   const lines = logs.data.records.filter((record) => record.type === "line");
   assert.equal(lines.length, 8);
   assert.ok(
     lines.every((record) => record.kind === "sandbox" && record.contentClass === "activity"),
   );
-  const [clone, curl, http, denied, tracing, long, curlUser, sshpass] = lines;
+  const clone = withFields(lines[0]);
+  const curl = withFields(lines[1]);
+  const http = withFields(lines[2]);
+  const denied = withFields(lines[3]);
+  const tracing = withFields(lines[4]);
+  const long = withFields(lines[5]);
+  const curlUser = withFields(lines[6]);
+  const sshpass = withFields(lines[7]);
   assert.equal(curlUser.fields.cmd_line, "curl -u [redacted:argv] https://a.example.com");
   assert.equal(sshpass.fields.cmd_line, "sshpass -p [redacted:argv] ssh build@host");
   assert.equal(
@@ -359,7 +512,7 @@ test("sandbox log pages never contain planted credentials from command lines or 
   assert.equal(clone.fields.pid, "4242");
   assert.equal(clone.fields.activity, "PROC:LAUNCH");
   assert.equal(clone.message, "PROC:LAUNCH [INFO] git(4242)");
-  assert.match(curl.fields.cmd_line, /Authorization: \[redacted:header\]/);
+  assert.match(stringValue(curl.fields.cmd_line), /Authorization: \[redacted:header\]/);
   assert.deepEqual(
     {
       method: http.fields.method,
@@ -383,12 +536,12 @@ test("sandbox log pages never contain planted credentials from command lines or 
   assert.equal(denied.level, "warn");
   assert.equal(denied.fields.dst_host, "blocked.example.com");
   assert.equal(denied.fields.dst_port, "443");
-  assert.match(denied.fields.reason, /not in policy default/);
+  assert.match(stringValue(denied.fields.reason), /not in policy default/);
   assert.equal(tracing.level, "warn");
   assert.equal(tracing.subsystem, "openshell_supervisor::proxy");
   assert.deepEqual(Object.keys(tracing.fields).sort(), ["action", "dst_host", "source", "url"]);
-  assert.ok(Buffer.byteLength(long.fields.cmd_line) <= 1024);
-  assert.match(long.fields.cmd_line, /…\[truncated\]$/);
+  assert.ok(Buffer.byteLength(stringValue(long.fields.cmd_line)) <= 1024);
+  assert.match(stringValue(long.fields.cmd_line), /…\[truncated\]$/);
   assert.deepEqual(
     logs.data.records
       .filter((record) => record.type === "withheld")
@@ -402,8 +555,8 @@ test("sandbox cursors from before keyed line hashes expire into a new audited vi
   gateway.state.lines = [allowed(1, "a"), allowed(2, "b")];
   const first = await read("source=sandbox");
   assert.equal(first.status, 200, first.text);
-  assert.match(first.data.cursor, /^v2\./);
-  const payload = first.data.cursor.split(".")[1];
+  assert.match(stringValue(first.data.cursor), /^v2\./);
+  const payload = stringValue(first.data.cursor).split(".")[1];
   // The previous release signed v1 envelopes without the version in the MAC.
   const mac = createHmac("sha256", CURSOR_SECRET)
     .update(`occ-runtime-logs-cursor\0${payload}`)
@@ -423,7 +576,7 @@ test("sandbox cursors from before keyed line hashes expire into a new audited vi
     "c.example.com",
   ]);
   assert.equal(views(), viewsBefore + 1);
-  assert.match(legacy.data.cursor, /^v2\./);
+  assert.match(stringValue(legacy.data.cursor), /^v2\./);
 });
 
 test("sandbox follow resumes after the anchor and labels buffer loss and a full window", async () => {
@@ -440,16 +593,16 @@ test("sandbox follow resumes after the anchor and labels buffer loss and a full 
   assert.equal(second.status, 200, second.text);
   assert.deepEqual(hosts(second.data), ["c.example.com"]);
   // The resume re-reads a 5 s overlap behind the newest delivered line.
-  assert.equal(gateway.requests.at(-1).sinceTime, "2026-09-30T11:59:57.000000000Z");
+  assert.equal(logRequest(gateway.requests.at(-1)).sinceTime, "2026-09-30T11:59:57.000000000Z");
   assert.equal(auditSink.events.length, auditAfterFirst, "cursor polls are not re-audited");
 
   // The gateway restarted and lost its ring: the anchor and everything older are gone.
   gateway.state.lines = [allowed(9, "d")];
   const lost = await read("source=sandbox", second.data.cursor);
   assert.equal(lost.status, 200, lost.text);
-  assert.equal(lost.data.records[0].type, "gap");
-  assert.equal(lost.data.records[0].reason, "buffer_lost");
-  assert.equal(lost.data.records[1].fields.dst_host, "d.example.com");
+  assert.equal(required(lost.data.records[0]).type, "gap");
+  assert.equal(logGap(lost.data.records[0]).reason, "buffer_lost");
+  assert.equal(withFields(lost.data.records[1]).fields.dst_host, "d.example.com");
 
   // More new lines than the window: the anchor fell out of the requested tail.
   gateway.state.lines = [
@@ -460,9 +613,9 @@ test("sandbox follow resumes after the anchor and labels buffer loss and a full 
   ];
   const full = await read("source=sandbox&tailLines=2", lost.data.cursor);
   assert.equal(full.status, 200, full.text);
-  assert.equal(full.data.records[0].reason, "window_exceeded");
+  assert.equal(logGap(full.data.records[0]).reason, "window_exceeded");
   assert.deepEqual(
-    full.data.records.slice(1).map((record) => record.fields.dst_host),
+    full.data.records.slice(1).map((record) => withFields(record).fields.dst_host),
     ["f.example.com", "g.example.com"],
   );
 
@@ -485,7 +638,7 @@ test("sandbox follow resumes after the anchor and labels buffer loss and a full 
   ];
   const replaced = await read("source=sandbox", continuous.data.cursor);
   assert.equal(replaced.status, 200, replaced.text);
-  assert.equal(replaced.data.records[0].reason, "stream_replaced");
+  assert.equal(logGap(replaced.data.records[0]).reason, "stream_replaced");
 });
 
 test("sandbox follow after an empty first window reads no older lines", async () => {
@@ -495,13 +648,13 @@ test("sandbox follow after an empty first window reads no older lines", async ()
   const first = await read("source=sandbox&sinceSeconds=60");
   assert.equal(first.status, 200, first.text);
   assert.deepEqual(first.data.records, []);
-  const windowStart = gateway.requests.at(-1).sinceTime;
+  const windowStart = logRequest(gateway.requests.at(-1)).sinceTime;
   assert.ok(windowStart);
   // `occ agent logs --follow` polls send only the cursor.
   const next = await read("source=sandbox", first.data.cursor);
   assert.equal(next.status, 200, next.text);
   assert.deepEqual(next.data.records, []);
-  assert.equal(gateway.requests.at(-1).sinceTime, windowStart);
+  assert.equal(logRequest(gateway.requests.at(-1)).sinceTime, windowStart);
 });
 
 test("sandbox follow delivers a remembered line rewritten in place, with no gap, while older lines remain", async () => {
@@ -524,14 +677,14 @@ test("a first sandbox read of a full tail in one millisecond leads with a window
   const first = await read("source=sandbox&tailLines=5");
   assert.equal(first.status, 200, first.text);
   assert.deepEqual(
-    first.data.records.map((record) => record.reason ?? record.type),
+    first.data.records.map((record) => (record.type === "line" ? record.type : record.reason)),
     ["window_exceeded", "line", "line", "line", "line", "line"],
   );
 });
 
 test("sandbox follow delivers late-stamped lines and counts repeats in one millisecond", async () => {
   const { gateway, read } = await sandboxFixture();
-  const page = async (cursor) => {
+  const page = async (cursor: string | null) => {
     const response = await read("source=sandbox", cursor);
     assert.equal(response.status, 200, response.text);
     return response.data;
@@ -586,7 +739,7 @@ test("sandbox follow drops a whole timestamp group at the cursor capacity bounda
   gateway.state.lines.push(allowed(8, "new"));
   const next = await read("source=sandbox", first.data.cursor);
   assert.equal(next.status, 200, next.text);
-  assert.equal(gateway.requests.at(-1).sinceTime, lineTime(8));
+  assert.equal(logRequest(gateway.requests.at(-1)).sinceTime, lineTime(8));
   assert.deepEqual(hosts(next.data), ["new.example.com"]);
 });
 
@@ -597,16 +750,16 @@ test("sandbox follow reports a gap when one millisecond holds more lines than th
   assert.equal(first.status, 200, first.text);
   const lines = first.data.records.filter((record) => record.type === "line");
   assert.equal(lines.length, 60);
-  const gap = first.data.records.at(-1);
+  const gap = logGap(first.data.records.at(-1));
   assert.equal(gap.type, "gap");
   assert.equal(gap.reason, "window_exceeded");
   assert.equal(gap.time, lineTime(8));
   // The next read resumes strictly after that millisecond, so nothing is shown twice.
   const next = await read("source=sandbox", first.data.cursor);
   assert.equal(next.status, 200, next.text);
-  assert.equal(gateway.requests.at(-1).sinceTime, lineTime(8, 1));
+  assert.equal(logRequest(gateway.requests.at(-1)).sinceTime, lineTime(8, 1));
   assert.deepEqual(next.data.records, []);
-  assert.ok(first.data.cursor.length <= 2048);
+  assert.ok(stringValue(first.data.cursor).length <= 2048);
 });
 
 test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and map denials", async () => {
@@ -658,9 +811,9 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
  * An app of its own, as these tests replace Driver methods: Compute's diagnostics
  * report `checks`, and one Agent is deployed under the OpenShell Sandbox Driver.
  */
-async function harnessFixture(label, checks) {
+async function harnessFixture(label: string, checks: RuntimeDiagnosticCheck[]) {
   const gateway = logOnlyGatewayClient();
-  const computeDriver = createRuntimeLogComputeDriver({
+  const computeDriver: ComputeDriver = createRuntimeLogComputeDriver({
     sandboxNamespaceName: kubernetesNamespaceName,
   });
   computeDriver.diagnoseAgentDeployment = async (binding) => ({
@@ -674,13 +827,13 @@ async function harnessFixture(label, checks) {
     sandboxDriver,
     driverConfigurations: driverConfigurations(sandboxDriver),
   });
-  const target = await fixture.deployAgent(label);
+  const target = checkedTarget(await fixture.deployAgent(label));
   const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
   return { gateway, sandboxDriver, fixture, target, diagnosticsPath };
 }
 
 test("a lost OpenShell Harness Sandbox is reported by the runtime description and diagnostics", async () => {
-  const computeChecks = [
+  const computeChecks: RuntimeDiagnosticCheck[] = [
     {
       component: "agent",
       check: "runtime-status",
@@ -693,17 +846,18 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
     "harness-lost",
     computeChecks,
   );
-  const record = (phase, revisionId = target.revisionId) => sandboxRecord(revisionId, { phase });
+  const record = (phase: string, revisionId = target.revisionId) =>
+    sandboxRecord(revisionId, { phase });
   // Before activation the revision is a candidate that may not have its Sandbox yet.
   gateway.state.sandbox = undefined;
   const candidate = await fixture.request("GET", target.runtimePath);
   assert.equal(candidate.status, 200, candidate.text);
-  assert.deepEqual(candidate.data.harness, { state: "unknown" });
+  assert.deepEqual(runtimeData(candidate).harness, { state: "unknown" });
   // A terminal record is OpenShell's own state, reported for any revision (a failed candidate).
   gateway.state.sandbox = record("SANDBOX_PHASE_COMPLETED");
   const exited = await fixture.request("GET", target.runtimePath);
   assert.equal(exited.status, 200, exited.text);
-  assert.deepEqual(exited.data.harness, { state: "lost", code: "HARNESS_EXITED" });
+  assert.deepEqual(runtimeData(exited).harness, { state: "lost", code: "HARNESS_EXITED" });
   await fixture.activate(target);
 
   // The full phase table is unit-tested below; the routes are checked on representative
@@ -737,23 +891,24 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
       { state: "unknown", code: "UNAVAILABLE" },
       { state: "unknown", code: "UNAVAILABLE" },
     ],
-  ]) {
+  ] as const) {
     gateway.state.sandbox = sandbox;
     const runtime = await fixture.request("GET", target.runtimePath);
     assert.equal(runtime.status, 200, runtime.text);
-    assert.deepEqual(runtime.data.harness, harness, JSON.stringify(sandbox));
+    assert.deepEqual(runtimeData(runtime).harness, harness, JSON.stringify(sandbox));
     const diagnostics = await fixture.request("POST", diagnosticsPath);
     assert.equal(diagnostics.status, 200, diagnostics.text);
-    const [first, ...rest] = diagnostics.data.checks;
+    const [first, ...rest] = diagnosticsData(diagnostics).checks;
+    assert.ok(first !== undefined);
     assert.deepEqual(
       { ...first, checkedAt: undefined },
       { component: "agent", check: "sandbox", checkedAt: undefined, ...check },
       JSON.stringify(sandbox),
     );
-    assert.match(first.checkedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.match(stringValue(first.checkedAt), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.deepEqual(rest, computeChecks);
   }
-  const read = gateway.requests.find((request) => request.getSandbox !== undefined).getSandbox;
+  const read = sandboxRequest(gateway.requests.find((request) => "getSandbox" in request));
   assert.equal(read.workspace, kubernetesNamespaceName(target.namespace.id));
   assert.match(read.name, /^sb-[0-9a-f]+$/);
 
@@ -763,11 +918,11 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   });
   const runtime = await fixture.request("GET", target.runtimePath);
   assert.equal(runtime.status, 200, runtime.text);
-  assert.deepEqual(runtime.data.harness, { state: "unknown", code: "UNAVAILABLE" });
+  assert.deepEqual(runtimeData(runtime).harness, { state: "unknown", code: "UNAVAILABLE" });
   assert.equal(runtime.text.includes("sandbox:read"), false);
   const diagnostics = await fixture.request("POST", diagnosticsPath);
   assert.equal(diagnostics.status, 200, diagnostics.text);
-  assert.equal(diagnostics.data.checks[0].code, "UNAVAILABLE");
+  assert.equal(required(diagnosticsData(diagnostics).checks[0]).code, "UNAVAILABLE");
   assert.equal(diagnostics.text.includes("sandbox:read"), false);
 
   // The lead check never pushes the description past the 32-check cap.
@@ -776,7 +931,7 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   computeChecks.splice(
     0,
     computeChecks.length,
-    ...Array.from({ length: 32 }, (_, index) => ({
+    ...Array.from({ length: 32 }, (_, index): RuntimeDiagnosticCheck => ({
       component: "gateway",
       check: `check-${index}`,
       state: "succeeded",
@@ -785,8 +940,8 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   );
   const capped = await fixture.request("POST", diagnosticsPath);
   assert.equal(capped.status, 200, capped.text);
-  assert.equal(capped.data.checks.length, 32);
-  assert.equal(capped.data.checks[0].code, "SANDBOX_FAILED");
+  assert.equal(diagnosticsData(capped).checks.length, 32);
+  assert.equal(required(diagnosticsData(capped).checks[0]).code, "SANDBOX_FAILED");
   // A stopped Agent's Sandbox is removed by design; its absence is not a lost Harness.
   gateway.state.sandbox = undefined;
   const stop = await fixture.request(
@@ -796,11 +951,11 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   assert.equal(stop.status, 202, stop.text);
   const stopped = await fixture.request("GET", target.runtimePath);
   assert.equal(stopped.status, 200, stopped.text);
-  assert.deepEqual(stopped.data.harness, { state: "unknown" });
+  assert.deepEqual(runtimeData(stopped).harness, { state: "unknown" });
   const stoppedDiagnostics = await fixture.request("POST", diagnosticsPath);
   assert.equal(stoppedDiagnostics.status, 200, stoppedDiagnostics.text);
   assert.deepEqual(
-    { ...stoppedDiagnostics.data.checks[0], checkedAt: undefined },
+    { ...diagnosticsData(stoppedDiagnostics).checks[0], checkedAt: undefined },
     { component: "agent", check: "sandbox", state: "unknown", checkedAt: undefined },
   );
 
@@ -815,9 +970,13 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
 test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is unknown", async () => {
   const { gateway, fixture, target } = await harnessFixture("harness-status", []);
   const statusPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/harness-status`;
-  const observed = (harness) => ({ status: "observed", revisionId: target.revisionId, harness });
-  const record = (phase) => sandboxRecord(target.revisionId, { phase });
-  const read = async (session) => {
+  const observed = (harness: unknown) => ({
+    status: "observed",
+    revisionId: target.revisionId,
+    harness,
+  });
+  const record = (phase: string) => sandboxRecord(target.revisionId, { phase });
+  const read = async (session?: Awaited<ReturnType<typeof fixture.createPrincipal>>["session"]) => {
     const response = await fixture.request("GET", statusPath, { session });
     assert.equal(response.status, 200, response.text);
     return response;
@@ -838,7 +997,7 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
     [undefined, { state: "lost", code: "SANDBOX_MISSING" }],
     // A healthy Sandbox carries no lost code.
     [record("SANDBOX_PHASE_READY"), { state: "running" }],
-  ]) {
+  ] as const) {
     gateway.state.sandbox = sandbox;
     assert.deepEqual((await read(reader.session)).data, observed(harness), JSON.stringify(sandbox));
   }
@@ -856,7 +1015,13 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
 
   // A revision is read only through the Compute Driver it was placed on: with another one
   // selected, even a ready Sandbox is unknown and OpenShell is not read.
-  const placed = fixture.computeDriver;
+  const placed: unknown = fixture.computeDriver;
+  assert.ok(
+    placed !== null &&
+      typeof placed === "object" &&
+      "id" in placed &&
+      typeof placed.id === "string",
+  );
   const replacement = createRuntimeLogComputeDriver({
     id: "replacement-compute",
     sandboxNamespaceName: kubernetesNamespaceName,
@@ -880,7 +1045,9 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   assert.equal(gateway.requests.length, reads);
   // The reader's grant names this Agent: a second Agent of the Namespace is refused to it,
   // audited once for that Agent, before any Sandbox read.
-  const sibling = await fixture.deployAgent("harness-sibling", { namespace: target.namespace });
+  const sibling = checkedTarget(
+    await fixture.deployAgent("harness-sibling", { namespace: target.namespace }),
+  );
   const siblingReads = gateway.requests.length;
   const { response: siblingDenied, denials } = await denialsDuring(fixture.auditSink, () =>
     fixture.request(
@@ -914,7 +1081,7 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
     [],
   );
   await fixture.activate(target);
-  const starting = (restart) =>
+  const starting = (restart: Pick<OpenShellSandboxResponse, "exitCode" | "restartCount">) =>
     sandboxRecord(target.revisionId, { phase: "SANDBOX_PHASE_STARTING", ...restart });
   for (const [sandbox, harness, check] of [
     // Restart policy ALWAYS, in backoff after the Harness was killed (finding 1043).
@@ -931,15 +1098,15 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
       { state: "starting" },
       { state: "unknown", code: "STARTING" },
     ],
-  ]) {
+  ] as const) {
     gateway.state.sandbox = sandbox;
     const runtime = await fixture.request("GET", target.runtimePath);
     assert.equal(runtime.status, 200, runtime.text);
-    assert.deepEqual(runtime.data.harness, harness, JSON.stringify(sandbox));
+    assert.deepEqual(runtimeData(runtime).harness, harness, JSON.stringify(sandbox));
     const diagnostics = await fixture.request("POST", diagnosticsPath);
     assert.equal(diagnostics.status, 200, diagnostics.text);
     assert.deepEqual(
-      { ...diagnostics.data.checks[0], checkedAt: undefined },
+      { ...diagnosticsData(diagnostics).checks[0], checkedAt: undefined },
       { component: "agent", check: "sandbox", checkedAt: undefined, ...check },
       JSON.stringify(sandbox),
     );
@@ -947,9 +1114,9 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
 
   // OCC bounds what any Sandbox Driver reports: a malformed restart reads as a plain start.
   // A second Agent keeps these reads under the per-Agent runtime route rate limit.
-  const other = await fixture.deployAgent("harness-malformed");
+  const other = checkedTarget(await fixture.deployAgent("harness-malformed"));
   await fixture.activate(other);
-  const restart = (exitCode, restarts) =>
+  const restart = (exitCode: number, restarts: number | string) =>
     Object.freeze({ state: "starting", code: "HARNESS_RESTARTING", exitCode, restarts });
   for (const observed of [
     restart(1, 0),
@@ -959,16 +1126,16 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
     restart(-(2 ** 31) - 1, 1),
     { state: "starting", code: "HARNESS_RESTARTING" },
   ]) {
-    sandboxDriver.observeHarness = async () => observed;
+    Reflect.set(sandboxDriver, "observeHarness", async () => observed);
     const runtime = await fixture.request("GET", other.runtimePath);
     assert.equal(runtime.status, 200, runtime.text);
-    assert.deepEqual(runtime.data.harness, { state: "starting" }, JSON.stringify(observed));
+    assert.deepEqual(runtimeData(runtime).harness, { state: "starting" }, JSON.stringify(observed));
   }
   // A negative exit code within int32 is reported as is.
-  sandboxDriver.observeHarness = async () => restart(-1, 2);
+  Reflect.set(sandboxDriver, "observeHarness", async () => restart(-1, 2));
   const negative = await fixture.request("GET", other.runtimePath);
   assert.equal(negative.status, 200, negative.text);
-  assert.deepEqual(negative.data.harness, restart(-1, 2));
+  assert.deepEqual(runtimeData(negative).harness, restart(-1, 2));
 });
 
 test("OpenShell Sandbox phases map to a Harness observation by name and number", () => {
@@ -986,7 +1153,7 @@ test("OpenShell Sandbox phases map to a Harness observation by name and number",
       ["SANDBOX_PHASE_UNKNOWN", 5, "SANDBOX_PHASE_UNSPECIFIED", 0, undefined, "NEW"],
       { state: "unknown" },
     ],
-  ]) {
+  ] as const) {
     for (const phase of phases) {
       assert.deepEqual(
         harnessObservation(phase === undefined ? {} : { phase }),
@@ -1039,10 +1206,26 @@ test("a Harness the gateway restarts is told apart from a first start", () => {
  * The OpenShell Sandbox Driver alone with one dedicated revision, and contexts naming another
  * Driver, another Namespace and an embedded Harness.
  */
-function driverUnderTest(revisionFields) {
+// Preserve the existing abbreviated fixture inputs while calling the real typed implementation.
+function invokeFixture(
+  receiver: object | undefined,
+  method: (...args: never[]) => Promise<unknown>,
+  ...args: unknown[]
+): Promise<unknown> {
+  const result: unknown = Reflect.apply(method, receiver, args);
+  assert.ok(isPromise(result));
+  return result;
+}
+
+function driverUnderTest(revisionFields: { harness?: undefined } = {}) {
   const gateway = logOnlyGatewayClient();
   const driver = openShellSandboxDriver(gateway.client);
-  const namespace = { id: "ns_1", name: SANDBOX_NAMESPACE, status: "ready", createdAt: "x" };
+  const namespace: Namespace = {
+    id: "ns_1",
+    name: SANDBOX_NAMESPACE,
+    status: "ready",
+    createdAt: "x",
+  };
   const revision = {
     id: "rev_00000000-0000-4000-8000-000000000001",
     namespaceId: namespace.id,
@@ -1063,14 +1246,20 @@ function driverUnderTest(revisionFields) {
 test("the OpenShell Sandbox Driver observes only its own dedicated revisions", async () => {
   const { gateway, driver, namespace, revision, signal, foreign } = driverUnderTest();
   for (const context of foreign) {
-    await assert.rejects(driver.observeHarness(context), /outside its selected dedicated/);
+    await assert.rejects(
+      invokeFixture(driver, driver.observeHarness, context),
+      /outside its selected dedicated/,
+    );
   }
   assert.deepEqual(gateway.requests, [], "a refused observation reads nothing");
   gateway.state.sandbox = sandboxRecord(revision.id, { phase: "SANDBOX_PHASE_COMPLETED" });
-  assert.deepEqual(await driver.observeHarness({ namespace, revision, signal }), {
-    state: "lost",
-    code: "HARNESS_EXITED",
-  });
+  assert.deepEqual(
+    await invokeFixture(driver, driver.observeHarness, { namespace, revision, signal }),
+    {
+      state: "lost",
+      code: "HARNESS_EXITED",
+    },
+  );
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
 
@@ -1080,30 +1269,43 @@ test("the OpenShell Sandbox Driver observes only its own dedicated revisions", a
 test("the OpenShell Sandbox Driver names only its own revision's supervisor as the workspace-node peer", async () => {
   const { gateway, driver, namespace, revision, signal, foreign } = driverUnderTest();
   for (const context of foreign) {
-    await assert.rejects(driver.workspaceNodePeerLabels(context), /outside its selected dedicated/);
+    await assert.rejects(
+      invokeFixture(driver, driver.workspaceNodePeerLabels, context),
+      /outside its selected dedicated/,
+    );
   }
   assert.deepEqual(gateway.requests, [], "a refused lookup reads nothing");
   // No Sandbox yet: no peer.
-  assert.equal(await driver.workspaceNodePeerLabels({ namespace, revision, signal }), undefined);
-  const name = gateway.requests[0].getSandbox.name;
-  assert.equal(name, driver.harnessResource({ namespace, revision }).resourceName);
+  assert.equal(
+    await invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
+    undefined,
+  );
+  const name = sandboxRequest(gateway.requests[0]).name;
+  assert.equal(
+    name,
+    recordValue(Reflect.apply(driver.harnessResource, driver, [{ namespace, revision }]))
+      .resourceName,
+  );
   const sandboxId = "0f4c1d0e-7b7e-4a55-9a64-3c1e0f5d2b11";
   gateway.state.sandbox = sandboxRecord(revision.id, {
     name,
     id: sandboxId,
     phase: "SANDBOX_PHASE_READY",
   });
-  assert.deepEqual(await driver.workspaceNodePeerLabels({ namespace, revision, signal }), {
-    "openshell.ai/sandbox-id": sandboxId,
-    "openshell.ai/boundary-role": "supervisor",
-  });
+  assert.deepEqual(
+    await invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
+    {
+      "openshell.ai/sandbox-id": sandboxId,
+      "openshell.ai/boundary-role": "supervisor",
+    },
+  );
   // Another revision's Sandbox, or one without a usable ID, is refused.
   gateway.state.sandbox = {
     ...gateway.state.sandbox,
     annotations: { "openclaw.dev/revision-id": "rev_other" },
   };
   await assert.rejects(
-    driver.workspaceNodePeerLabels({ namespace, revision, signal }),
+    invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
     /without exact AgentRevision ownership/,
   );
   for (const id of [undefined, "", "not a label value", "x".repeat(64)]) {
@@ -1112,7 +1314,7 @@ test("the OpenShell Sandbox Driver names only its own revision's supervisor as t
       ...(id === undefined ? {} : { id }),
     });
     await assert.rejects(
-      driver.workspaceNodePeerLabels({ namespace, revision, signal }),
+      invokeFixture(driver, driver.workspaceNodePeerLabels, { namespace, revision, signal }),
       /no ID usable as a supervisor Pod label/,
     );
   }
@@ -1121,14 +1323,18 @@ test("the OpenShell Sandbox Driver names only its own revision's supervisor as t
 
 test("without a log-reading Sandbox Driver the sandbox source is absent", async () => {
   const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("no-sandbox");
+  const target = checkedTarget(await fixture.deployAgent("no-sandbox"));
   const runtime = await fixture.request("GET", target.runtimePath);
   assert.equal(runtime.status, 200, runtime.text);
   assert.equal(
-    runtime.data.sources.some(({ id }) => id === "sandbox"),
+    runtimeData(runtime).sources.some(({ id }) => id === "sandbox"),
     false,
   );
-  assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
+  assert.equal(
+    "harness" in runtimeData(runtime),
+    false,
+    "an embedded Agent has no Harness Sandbox",
+  );
   const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
   assertApiError(logs, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
   await fixture.activate(target);
@@ -1171,21 +1377,29 @@ test("the OpenShell Sandbox Driver reads logs only for its own revisions", async
     harness: undefined,
   });
   gateway.state.lines = [sandboxLine(1, "hello", { level: "INFO" })];
-  const chunk = await driver.readSandboxLogs({ namespace, revision, signal }, { lines: 5 });
-  assert.equal(chunk.sandbox, gateway.requests[0].sandbox);
+  const chunk = recordValue(
+    await invokeFixture(
+      driver,
+      driver.readSandboxLogs,
+      { namespace, revision, signal },
+      { lines: 5 },
+    ),
+  );
+  assert.equal(chunk.sandbox, logRequest(gateway.requests[0]).sandbox);
   assert.equal(chunk.bufferTotal, 1);
-  assert.equal(chunk.lines[0].message, "hello");
+  assert.ok(isUnknownArray(chunk.lines));
+  assert.equal(recordValue(chunk.lines[0]).message, "hello");
 
   // Reads check the Driver and the Namespace (the first two foreign contexts).
   for (const context of foreign.slice(0, 2)) {
     await assert.rejects(
-      driver.readSandboxLogs(context, { lines: 5 }),
+      invokeFixture(driver, driver.readSandboxLogs, context, { lines: 5 }),
       /outside its selected AgentRevision/,
     );
   }
   gateway.state.error = Object.assign(new Error("unauthenticated"), { code: 16 });
   await assert.rejects(
-    driver.readSandboxLogs({ namespace, revision, signal }, { lines: 5 }),
+    invokeFixture(driver, driver.readSandboxLogs, { namespace, revision, signal }, { lines: 5 }),
     RuntimeLogsForbiddenByClusterError,
   );
   assert.deepEqual([...new Set(gateway.touched)], ["getSandboxLogs"]);
@@ -1194,7 +1408,7 @@ test("the OpenShell Sandbox Driver reads logs only for its own revisions", async
 test("sandbox sanitization masks credentials passed as command-line arguments", async () => {
   const { sanitizeSandboxLogLines } = await import("../../packages/occ/src/runtime-logs/index.ts");
   const secret = `Zx9${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  const cases = [
+  const cases: [string, string][] = [
     [`curl -u alice:${secret} https://a`, "curl -u [redacted:argv] https://a"],
     [`curl --user alice:${secret} https://a`, "curl --user [redacted:argv] https://a"],
     [`curl --user=alice:${secret} https://a`, "curl --user=[redacted:argv] https://a"],
@@ -1242,9 +1456,9 @@ test("sandbox sanitization masks credentials passed as command-line arguments", 
         sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
       ].map(openShellLogDecision),
     );
-    assert.equal(records[0].fields.cmd_line, expected, command);
-    assert.equal(records[1].message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
-    assert.equal(records[2].fields.cmd_line, expected, command);
+    assert.equal(withFields(records[0]).fields.cmd_line, expected, command);
+    assert.equal(logLine(records[1]).message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
+    assert.equal(withFields(records[2]).fields.cmd_line, expected, command);
     assert.equal(JSON.stringify(records).includes(secret), false, command);
   }
 });
@@ -1265,7 +1479,7 @@ test("sandbox sanitization stays linear on hostile 32 KiB OCSF lines", async () 
   ];
   const budgetMs = 250;
   for (const message of hostile) {
-    let records;
+    let records: ReturnType<typeof sanitizeSandboxLogLines>["records"] = [];
     const elapsed = cpuTimeMs(
       () => {
         ({ records } = sanitizeSandboxLogLines({ source: "sandbox", sandbox: "sb-1" }, [
@@ -1294,7 +1508,7 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
   );
   // The Driver decorates before the provider-neutral OCC page budget is measured.
   const decorated = lines.map(openShellLogDecision);
-  const stream = { source: "sandbox", sandbox: "sb-0123" };
+  const stream: RuntimeLogStream = { source: "sandbox", sandbox: "sb-0123" };
   const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, decorated));
   const binding = {
     principalId: "synthetic-person",
@@ -1303,9 +1517,9 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
     source: "sandbox",
   };
   const codec = createRuntimeLogCursorCodec(randomUUID().repeat(2));
-  let page;
+  let page: unknown;
   const cut = await cpuTimeMsAsync(async () => {
-    page = await readSandboxLogPage({
+    page = await invokeFixture(undefined, readSandboxLogPage, {
       description: {
         revisionId: binding.revisionId,
         sources: [{ id: "sandbox", kind: "sandbox", available: true }],
@@ -1318,8 +1532,12 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
       readLogs: async () => ({ sandbox: "sb-0123", lines: decorated, bufferTotal: 1000 }),
     });
   });
-  const delivered = page.records.filter(({ type }) => type === "line").length;
-  assert.equal(page.truncated, true);
+  const checkedPage = recordValue(page);
+  assert.ok(isUnknownArray(checkedPage.records));
+  const delivered = checkedPage.records.filter(
+    (record) => recordValue(record).type === "line",
+  ).length;
+  assert.equal(checkedPage.truncated, true);
   assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
   // Policy decisions sanitize cheaply, so the cut's fixed per-line work (validation,
@@ -1332,7 +1550,7 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
 });
 
 /** A supervisor diagnostic as the gateway returns it; `time` is null for an unstamped line. */
-function wireRow(message, time = null) {
+function wireRow(message: string, time: string | null = null): OpenShellSandboxLogLine {
   return {
     sandboxId: SANDBOX_ID,
     time,
@@ -1345,13 +1563,16 @@ function wireRow(message, time = null) {
 }
 
 /** A line time with nanosecond digits, as OpenShell stamps it. */
-const nanoTime = (milliseconds) => new Date(milliseconds).toISOString().replace("Z", "000000Z");
+const nanoTime = (milliseconds: number) =>
+  new Date(milliseconds).toISOString().replace("Z", "000000Z");
 const QUOTED = '"a" '.repeat(1000);
-const linesOf = (response) => response.data.records.filter(({ type }) => type === "line");
-const rowNumbers = (lines) => lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1]));
-const hasGap = (response, ...reasons) =>
-  response.data.records.some(({ type, reason }) => type === "gap" && reasons.includes(reason));
-const withinPageBudget = (response) =>
+const linesOf = (response: LogResponse): LogLine[] =>
+  response.data.records.filter((record): record is LogLine => record.type === "line");
+const rowNumbers = (lines: readonly LogLine[]) =>
+  lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)![1]));
+const hasGap = (response: LogResponse, ...reasons: string[]) =>
+  response.data.records.some((record) => record.type === "gap" && reasons.includes(record.reason));
+const withinPageBudget = (response: Pick<LogResponse, "text">) =>
   assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
 
 /**
@@ -1359,9 +1580,23 @@ const withinPageBudget = (response) =>
  * `check(response, lines, page)` runs on every page; `advance` requires a truncated
  * page to deliver lines.
  */
-async function drain(fixture, query, { cursor, pages = 10, advance = false, check } = {}) {
-  const lines = [];
-  const gaps = [];
+async function drain(
+  fixture: Awaited<ReturnType<typeof sandboxFixture>>,
+  query: string,
+  {
+    cursor,
+    pages = 10,
+    advance = false,
+    check,
+  }: {
+    cursor?: string | null;
+    pages?: number;
+    advance?: boolean;
+    check?: (response: LogResponse, lines: LogLine[], page: number) => void;
+  } = {},
+) {
+  const lines: LogLine[] = [];
+  const gaps: LogGap[] = [];
   let page = 0;
   while (page < pages) {
     const response = await fixture.read(query, cursor);
@@ -1369,7 +1604,7 @@ async function drain(fixture, query, { cursor, pages = 10, advance = false, chec
     const delivered = linesOf(response);
     check?.(response, delivered, page);
     lines.push(...delivered);
-    gaps.push(...response.data.records.filter(({ type }) => type === "gap"));
+    gaps.push(...response.data.records.filter((record): record is LogGap => record.type === "gap"));
     cursor = response.data.cursor;
     page += 1;
     if (!response.data.truncated) {
@@ -1382,7 +1617,7 @@ async function drain(fixture, query, { cursor, pages = 10, advance = false, chec
   return { lines, gaps, cursor, pages: page };
 }
 
-const range = (length, from = 0) => Array.from({ length }, (_, index) => from + index);
+const range = (length: number, from = 0) => Array.from({ length }, (_, index) => from + index);
 
 test("sandbox wire pages include escaped diagnostics and resume without losing records", async () => {
   const fixture = await sandboxFixture();
@@ -1428,7 +1663,8 @@ test("sandbox wire pages include escaped diagnostics and resume without losing r
 test("sandbox wire budgeting handles empty, single and grouped withheld pages", async () => {
   const fixture = await sandboxFixture();
   const started = Date.now() - 1000;
-  const row = (message, index = 0) => wireRow(message, new Date(started + index).toISOString());
+  const row = (message: string, index = 0) =>
+    wireRow(message, new Date(started + index).toISOString());
   for (const lines of [[], [row(`single 网络🙂 ${'--option="value" '.repeat(500)}`)]]) {
     fixture.gateway.state.lines = lines;
     const response = await fixture.read("source=sandbox&tailLines=200");
@@ -1444,7 +1680,14 @@ test("sandbox wire budgeting handles empty, single and grouped withheld pages", 
   assert.equal(withheld.status, 200);
   assert.equal(withheld.data.truncated, false);
   assert.equal(withheld.data.withheld, 80);
-  assert.equal(withheld.data.records.filter(({ type }) => type === "withheld")[0].count, 80);
+  assert.equal(
+    required(
+      withheld.data.records.filter(
+        (record): record is Extract<LogRecord, { type: "withheld" }> => record.type === "withheld",
+      )[0],
+    ).count,
+    80,
+  );
   withinPageBudget(withheld);
   const replay = await fixture.read("source=sandbox", withheld.data.cursor);
   assert.deepEqual(
@@ -1456,7 +1699,7 @@ test("sandbox wire budgeting handles empty, single and grouped withheld pages", 
 for (const [name, timed] of [
   ["sandbox wire-cut timestamp groups drain before advancing beyond their time", true],
   ["sandbox wire-cut prefixes without timestamps drain and suppress an unchanged snapshot", false],
-]) {
+] as const) {
   test(name, async () => {
     const fixture = await sandboxFixture();
     const time = timed ? nanoTime(Date.now() - 1000) : null;
@@ -1521,7 +1764,8 @@ test("sandbox checkpoint loss records one window notice for an unremembered orde
   const fixture = await sandboxFixture();
   const early = nanoTime(Date.now() - 5_000);
   const later = nanoTime(Date.now() - 1_000);
-  const row = (index, time) => wireRow(`row=${index}; quoted diagnostic ${QUOTED}`, time);
+  const row = (index: number, time: string) =>
+    wireRow(`row=${index}; quoted diagnostic ${QUOTED}`, time);
   fixture.gateway.state.lines = range(100).map((index) => row(index, later));
   const first = await fixture.read("source=sandbox&tailLines=100");
   assert.equal(first.status, 200);
@@ -1533,8 +1777,9 @@ test("sandbox checkpoint loss records one window notice for an unremembered orde
   const next = await fixture.read("source=sandbox&tailLines=100", first.data.cursor);
   assert.equal(next.status, 200);
   const gaps = next.data.records.filter(
-    ({ type, reason }) =>
-      type === "gap" && (reason === "window_exceeded" || reason === "buffer_lost"),
+    (record): record is LogGap =>
+      record.type === "gap" &&
+      (record.reason === "window_exceeded" || record.reason === "buffer_lost"),
   );
   assert.deepEqual(
     gaps.map(({ reason }) => reason),
@@ -1632,7 +1877,7 @@ for (const wideIdentity of [false, true]) {
   test(`sandbox full overlap cuts keep ${wideIdentity ? "maximum Driver identities" : "legacy cursors"} within admission limits`, async () => {
     const fixture = await sandboxFixture(wideIdentity ? { sandboxName: "s".repeat(253) } : {});
     const start = Date.now() - 1000;
-    const row = (i, message) => ({
+    const row = (i: number, message: string) => ({
       ...wireRow(message, nanoTime(start + i)),
       sandboxId: wideIdentity ? "i".repeat(128) : SANDBOX_ID,
     });
@@ -1649,8 +1894,12 @@ for (const wideIdentity of [false, true]) {
     let cursor = prime.data.cursor;
     if (!wideIdentity) {
       // Earlier cursors stored overlap hashes as an array; retain route decoding.
-      const decoded = JSON.parse(Buffer.from(cursor.split(".")[1], "base64url"));
-      decoded.h = decoded.h.match(/.{16}/g);
+      const decoded = recordValue(
+        JSON.parse(
+          Buffer.from(required(stringValue(cursor).split(".")[1]), "base64url").toString("utf8"),
+        ),
+      );
+      decoded.h = stringValue(decoded.h).match(/.{16}/g);
       const payload = Buffer.from(JSON.stringify(decoded)).toString("base64url");
       const mac = createHmac("sha256", CURSOR_SECRET)
         .update(`occ-runtime-logs-cursor\0v2\0${payload}`)
@@ -1664,8 +1913,11 @@ for (const wideIdentity of [false, true]) {
           lines.every(({ message }) => message.startsWith("row=")),
           "partial checkpoints retain the anchor baseline",
         );
-        assert.ok(response.data.cursor.length <= 2048);
-        assert.match(response.data.cursor, /^v2\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$/);
+        assert.ok(stringValue(response.data.cursor).length <= 2048);
+        assert.match(
+          stringValue(response.data.cursor),
+          /^v2\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$/,
+        );
       },
     });
     assert.deepEqual(rowNumbers(drained.lines), range(150));
@@ -1679,9 +1931,23 @@ for (const wideIdentity of [false, true]) {
  * Polls `query` `polls` times; `grow()` runs before every poll but the first. Returns
  * each poll's delivered lines and the final cursor.
  */
-async function follow(fixture, query, { polls, grow, check, firstTruncated = false }) {
-  const delivered = [];
-  let cursor;
+async function follow(
+  fixture: Awaited<ReturnType<typeof sandboxFixture>>,
+  query: string,
+  {
+    polls,
+    grow,
+    check,
+    firstTruncated = false,
+  }: {
+    polls: number;
+    grow?: () => void;
+    check?: (response: LogResponse, lines: LogLine[], poll: number) => void;
+    firstTruncated?: boolean;
+  },
+) {
+  const delivered: LogLine[][] = [];
+  let cursor: string | null | undefined;
   for (let poll = 0; poll < polls; poll += 1) {
     if (poll > 0) {
       grow?.();
@@ -1703,7 +1969,7 @@ async function follow(fixture, query, { polls, grow, check, firstTruncated = fal
 test("sandbox follows a growing full wire-cut tail without replaying its delivered prefix", async () => {
   const fixture = await sandboxFixture();
   const start = Date.now() - 120_000;
-  const row = (index) =>
+  const row = (index: number) =>
     wireRow(`row=${index}; ${"ordinary diagnostic ".repeat(350)}`, nanoTime(start + index * 1000));
   const { lines } = fixture.gateway.state;
   lines.push(...range(100).map(row));
@@ -1733,16 +1999,16 @@ for (const { tailLines, identical } of [
     // Deterministic 2–3-line millisecond groups model the supported timestamp
     // precision. A full moving source must resume inside a partly delivered group.
     let seed = 1;
-    const offsets = [];
+    const offsets: number[] = [];
     for (let offset = 0; offsets.length < total; offset += 1) {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       const count = 2 + (seed >>> 31);
       offsets.push(...Array.from({ length: count }, () => offset));
     }
-    const row = (index) =>
+    const row = (index: number) =>
       wireRow(
         `row=${identical ? offsets[index] : index}; ${"ordinary diagnostic ".repeat(tailLines === 200 ? 350 : 105)}`,
-        nanoTime(start + offsets[index]),
+        nanoTime(start + required(offsets[index])),
       );
     const { state } = fixture.gateway;
     state.lines = range(tailLines).map(row);
@@ -1757,12 +2023,12 @@ for (const { tailLines, identical } of [
       check(response, lines) {
         const indices = rowNumbers(lines);
         if (response.data.truncated && indices.length > 0) {
-          const last = indices.at(-1);
+          const last = required(indices.at(-1));
           splitGroup ||= identical
-            ? lines.filter(({ message }) => message === lines.at(-1).message).length <
+            ? lines.filter(({ message }) => message === required(lines.at(-1)).message).length <
               state.lines
                 .slice(-tailLines)
-                .filter(({ message }) => message === lines.at(-1).message).length
+                .filter(({ message }) => message === required(lines.at(-1)).message).length
             : offsets[last] === offsets[last + 1];
         }
       },
@@ -1789,7 +2055,7 @@ test("sandbox full wire-cut pages retain already-delivered untimed prefixes", as
   // This supported raw-null-time response cannot be ordered by the request floor.
   // Keep the observed unknown row alongside the matching timed rows.
   const gatewayClient = {
-    async getSandboxLogs(request) {
+    async getSandboxLogs(request: OpenShellSandboxLogsRequest) {
       const tail = rows.slice(-request.lines);
       return {
         lines: tail.filter(
@@ -1913,7 +2179,7 @@ test("sandbox retains witnesses for unread copies of incoming overlap hashes", a
 });
 
 /** A row at `start + offset` ms; large rows carry an 8000-quote diagnostic. */
-const cutRow = (start, index, offset, large) =>
+const cutRow = (start: number, index: number, offset: number, large: boolean) =>
   wireRow(
     `row=${index}; ${large ? '"'.repeat(8000) : "ordinary diagnostic"}`,
     new Date(start + offset).toISOString(),
@@ -1937,7 +2203,7 @@ test("sandbox cut witnesses retain copies arriving after a distinct partial grou
   // The original fetched suffix had no equal hash, so only retained window
   // evidence can disclose the changed snapshot and keep this new occurrence.
   fixture.gateway.state.lines.push(
-    original[0],
+    required(original[0]),
     ...range(delivered - 1, 42).map((index) => cutRow(start, index, 2, false)),
   );
   fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
@@ -1969,7 +2235,7 @@ test("sandbox cut recovery does not infer history order from a surviving ordered
   // The out-of-order delivered prefix rolls into a currently ordered tail.
   // That surviving order does not identify the new copy of an evicted row.
   fixture.gateway.state.lines.push(
-    original[0],
+    required(original[0]),
     ...range(19, 100).map((index) => cutRow(start, index, 0, false)),
   );
   fixture.gateway.state.bufferTotal = fixture.gateway.state.lines.length;
