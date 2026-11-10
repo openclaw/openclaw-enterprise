@@ -102,6 +102,7 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
     const password = page.getByLabel("Password", { exact: true });
     if (discovery) {
       await discovery.requested;
+      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
     } else {
       await google.waitFor();
     }
@@ -791,7 +792,43 @@ test("a session reply missing its binding blocks private reads until Retry", asy
   assert.ok((await account.innerText()).includes(fixture.credentials.email));
 });
 
-test("recovery-only discovery keeps focus on the empty sign-in form", async (t) => {
+for (const status of [200, 503]) {
+  test(`discovery ${status} preserves keyboard focus when revealing passwords`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture, { browser });
+    const discovery = await holdRequests(t, page, "**/api/auth/providers", {
+      method: "GET",
+      once: true,
+      fulfill:
+        status === 503
+          ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sign-in discovery is unavailable.")
+          : {
+              status,
+              json: {
+                data: { google: true, oidc: false, password: true, sessionBinding: true },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+              },
+            },
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await discovery.requested;
+    const recovery = page.getByRole("button", { name: "Recovery sign-in", exact: true });
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(recovery), true);
+
+    // Both ordinary password discovery and its failure fallback replace the
+    // focused recovery action with the form. Keyboard entry must remain usable.
+    discovery.release();
+    const email = page.getByLabel("Email", { exact: true });
+    await email.waitFor();
+    assert.equal(await hasFocus(email), true);
+    await page.keyboard.type("recovery@example.com");
+    assert.equal(await email.inputValue(), "recovery@example.com");
+  });
+}
+
+test("recovery-only discovery preserves explicitly opened recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
@@ -812,8 +849,10 @@ test("recovery-only discovery keeps focus on the empty sign-in form", async (t) 
   await page.goto(`${fixture.origin}/console/login`);
   await discovery.requested;
   const email = page.getByLabel("Email", { exact: true });
-  await email.waitFor();
-  await page.keyboard.press("Tab");
+  // Do not expose ordinary password sign-in before its policy is known. The
+  // recovery path remains available even if discovery never answers.
+  assert.equal(await email.isVisible(), false);
+  await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
   assert.equal(await hasFocus(email), true);
   assert.equal(await email.inputValue(), "");
 
