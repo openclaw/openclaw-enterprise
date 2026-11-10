@@ -18,7 +18,6 @@ import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { createInterface } from "node:readline";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
 import { stopCleanupCommands } from "./cleanup.mjs";
@@ -32,7 +31,7 @@ import {
 } from "./failure-redaction.mjs";
 import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
-import { openShellProgress } from "./reporter.mjs";
+import { boundedProgressLines, openShellProgress } from "./openshell-progress.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
@@ -904,13 +903,9 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
     }
     child.stdin.end();
     child.stderr.resume();
-    const lines = createInterface({ input: child.stdout });
-    lines.on("line", (line) => {
+    const readProgress = boundedProgressLines((line) => {
       // Only this small closed record reaches the live log. Ordinary reporter
       // output still waits for final accounting and failure redaction below.
-      if (line.length > 256) {
-        return;
-      }
       try {
         const event = JSON.parse(line);
         const progress =
@@ -927,13 +922,16 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
         return;
       }
       if (bytes + chunk.length > maxReporterBytes) {
-        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        const admitted = chunk.subarray(0, maxReporterBytes - bytes);
+        chunks.push(admitted);
         bytes = maxReporterBytes;
+        readProgress(admitted.toString("utf8"));
         stop("ENOBUFS");
         return;
       }
       chunks.push(chunk);
       bytes += chunk.length;
+      readProgress(chunk.toString("utf8"));
     });
     const finish = (status, signal) => {
       if (settled) {
@@ -942,7 +940,6 @@ function runNode(args, { cwd, env, timeout, onProgress }) {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
-      lines.close();
       resolvePromise({
         status,
         signal,

@@ -742,7 +742,11 @@ test(
       join(root, file),
       `import { watch } from "node:fs";
 import test from "node:test";
-test("live progress", async (context) => {
+import { emitOpenShellProgress, openShellProgressPrefix } from ${JSON.stringify(pathToFileURL(join(repositoryRoot, "scripts/ci/openshell-progress.mjs")).href)};
+const write = (text) => new Promise((resolve, reject) => process.stdout.write(text, (error) => error ? reject(error) : resolve()));
+const record = (value) => openShellProgressPrefix + JSON.stringify(value) + "\\n";
+// The legitimate start/pass record also crosses many reporter pipe chunks.
+test("live progress " + "x".repeat(1024 * 1024), async (context) => {
   const stage = { kind: "openshell-stage", stage: "installation", outcome: "started" };
   for (const invalid of [
     { ...stage, kind: "private-kind-canary" },
@@ -753,10 +757,15 @@ test("live progress", async (context) => {
     { ...stage, file: "private-file-canary" },
     null,
     [stage],
-  ]) context.log("openclaw-ci-progress", invalid);
-  context.log("private-message-canary", stage);
-  context.log("openclaw-ci-progress", { ...stage, stage: "private-oversized-canary".repeat(100) });
-  // Subscribe before logging: only the parent observing live progress can release this test.
+  ]) await write(record(invalid));
+  // A prefix and invalid payload can span writes; oversized lines must be dropped through newline.
+  const split = record({ ...stage, detail: "private-fragment-canary" });
+  await write(split.slice(0, 8));
+  await write(split.slice(8));
+  await write(openShellProgressPrefix + "private-oversized-canary".repeat(50000));
+  await write(record(stage));
+  await write(openShellProgressPrefix + "private-malformed-canary\\n");
+  // Subscribe before the actual producer runs: only live progress releases the test.
   let watcher;
   const released = new Promise((resolve) => {
     watcher = watch(${JSON.stringify(root)}, (_event, name) => {
@@ -764,15 +773,19 @@ test("live progress", async (context) => {
     });
   });
   context.after(() => watcher.close());
-  context.log("openclaw-ci-progress", stage);
+  emitOpenShellProgress("installation", "started");
   await released;
-  context.log("openclaw-ci-progress", { ...stage, outcome: "passed" });
+  emitOpenShellProgress("installation", "passed");
   context.diagnostic('openclaw-ci-measurement ' + JSON.stringify({ ...stage, outcome: "passed", elapsedMs: 123 }));
 });
-test("failed stage", (context) => {
-  context.log("openclaw-ci-progress", { kind: "openshell-stage", stage: "initial-model", outcome: "started" });
+test("failed stage", async () => {
+  emitOpenShellProgress("initial-model", "started");
   try { throw new Error("expected stage failure"); }
-  finally { context.log("openclaw-ci-progress", { kind: "openshell-stage", stage: "initial-model", outcome: "failed" }); }
+  finally {
+    emitOpenShellProgress("initial-model", "failed");
+    // An unterminated record is neither live progress nor raw failure output.
+    await write(record({ kind: "openshell-stage", stage: "replacement", outcome: "started" }).slice(0, -1));
+  }
 });
 `,
     );
@@ -844,6 +857,58 @@ test("failed stage", (context) => {
     }
   },
 );
+
+test("run finishes file accounting and cleanup after a reporter pipe read error", async (t) => {
+  const root = await fixture(t);
+  await writePrepare(root);
+  const file = "tests/integration/pipe.test.mjs";
+  const state = join(root, "state/pipe.jsonl");
+  const resultPath = join(root, "results/pipe.json");
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { pipe: { files: [{ path: file }] } },
+    groups: {},
+  });
+  await writeFile(join(root, file), 'import test from "node:test"; test("case", () => {});\n');
+  const injected = join(root, "injected");
+  const preload = join(root, "pipe-error.mjs");
+  // Fault the real child pipe; spawning, reporting, result accounting and cleanup stay real.
+  await writeFile(
+    preload,
+    `import cp from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const spawn = cp.spawn;
+cp.spawn = (...args) => {
+  const child = spawn(...args);
+  if (args[1]?.includes("--test-reporter")) {
+    child.stdout.once("data", () => {
+      writeFileSync(${JSON.stringify(injected)}, "faulted");
+      child.stdout.destroy(Object.assign(new Error("private-pipe-canary"), { code: "EIO" }));
+    });
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["--import", preload, runnerPath, ...laneArgs(root, "pipe", state, resultPath)],
+    {
+      cwd: repositoryRoot,
+      env: runnerEnv(),
+      encoding: "utf8",
+      timeout: 15_000,
+    },
+  );
+  assert.equal(await readFile(injected, "utf8"), "faulted");
+  const summary = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.equal(summary.files[0].cleanup.status, "passed");
+  assert.equal(await readFile(state, "utf8"), `${file}\n`);
+  assert.equal(result.status, summary.status === "passed" ? 0 : 1);
+  assert.doesNotMatch(result.stderr, /private-pipe-canary|Unhandled.*error/);
+});
 
 test("run records a sanitized file failure after all reported cases pass", async (t) => {
   const root = await fixture(t);

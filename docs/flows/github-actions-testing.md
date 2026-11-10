@@ -160,12 +160,12 @@ both commits.
 
 The runner verifies one lane per active file and runs whole files with scoped environments. Different prerequisites require separate files. Its Node reporter publishes case names, locations and outcomes. Failure lines retain messages (600 characters) and top stack frames (240). Redaction removes repository paths, replaces nonpublic job and child environment values of eight or more characters with `[env:NAME]`, and masks common tokens, keys, URL passwords and `password=` values as `[redacted]`. The job log uses the same lines. Generated values are masked only when they match those shapes. HTTP assertions retain numeric actual/expected statuses, an allowlisted OCC error code and available upstream ChatGPT operation/status. Denied-traffic failures retain only an allowlisted category. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
 
-OpenShell lifecycle stages use `tests/helpers/openshell-sandbox-workflows.mjs:measureOpenShellStage`
-to send immediate `TestContext.log` events before and after each measured operation.
-`reporter.mjs:openShellProgress` accepts only the fixed kind, stage and outcome;
-unknown values or extra fields are discarded. `run-tests.mjs:runNode` forwards
-these records while the child runs, adding the lane and file labels from its own
-selection. Final timing receipts and case accounting remain separate.
+OpenShell lifecycle stages call `scripts/ci/openshell-progress.mjs:emitOpenShellProgress`
+before and after each measured operation. The reporter accepts only complete
+stdout markers with fixed kind, stage and outcome; extra fields are rejected.
+`run-tests.mjs:runNode` forwards them live with runner-owned lane/file labels.
+Both readers bound partial records; the parent enforces its byte budget first.
+Timing receipts and case accounting remain separate.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -260,7 +260,7 @@ awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-10 09:54: Trace bounded live OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 551eec254b132fc490c8a4ceaefafa166541e7ef)
+- 2026-11-10 09:54: Trace portable, bounded OpenShell progress through the reporter and runner. (authoring-run/d839dc55-f4be-4689-85a1-3ab9527ad4c4 - 551eec254b132fc490c8a4ceaefafa166541e7ef)
 
 - 2026-11-08 08:28: Preserve matrix failure attribution alongside admitted CI reuse. (authoring-run/7219e3b9-3091-4a5b-8712-c543ff5f0c68 - 006cf6288913ff8eb56d0fbc2283885bd551ecc9)
 

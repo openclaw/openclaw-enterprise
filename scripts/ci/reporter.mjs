@@ -1,3 +1,8 @@
+import {
+  boundedProgressLines,
+  openShellProgress,
+  openShellProgressPrefix,
+} from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.mjs";
 import {
   openShellGitRetentionKind,
@@ -157,40 +162,6 @@ const openShellSandboxStages = new Set([
   "native-policy-scopes",
 ]);
 
-const openShellStages = new Set([
-  "installation",
-  "initial-model",
-  "filesystem-network",
-  "network-policy",
-  "credential-route",
-  "replacement",
-  "untrusted-upstream",
-  "tool-outage",
-  "model-outage",
-  "gateway-outage",
-  "oauth-refresh",
-  "non-model-source",
-  "credential-absence",
-  "credential-withdrawal",
-  "embedded-refusal",
-  "native-policy",
-]);
-
-// A live log carries only fixed categories. Reject extra fields rather than
-// accidentally turning this channel into an arbitrary diagnostic transport.
-export function openShellProgress(value) {
-  if (
-    !isRecord(value) ||
-    Object.keys(value).length !== 3 ||
-    value.kind !== "openshell-stage" ||
-    (!openShellStages.has(value.stage) && value.stage !== "exposure-auth") ||
-    !["started", "passed", "failed"].includes(value.outcome)
-  ) {
-    return undefined;
-  }
-  return { kind: value.kind, stage: value.stage, outcome: value.outcome };
-}
-
 function parseMeasurement(message) {
   if (!message.startsWith(measurementPrefix)) {
     return undefined;
@@ -229,7 +200,8 @@ function safeMeasurement(value) {
   }
   if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
-      !openShellStages.has(value.stage) ||
+      !openShellProgress({ kind: value.kind, stage: value.stage, outcome: value.outcome }) ||
+      value.stage === "exposure-auth" ||
       !["passed", "failed"].includes(value.outcome) ||
       !Number.isInteger(value.elapsedMs) ||
       value.elapsedMs < 0 ||
@@ -1662,6 +1634,9 @@ function outputTail() {
     }
   };
   const push = (line) => {
+    if (line.startsWith(`stdout: ${openShellProgressPrefix}`)) {
+      return;
+    }
     lines.push(line.slice(0, failureInputLimit));
     trim(2 * outputTailLines);
   };
@@ -1792,6 +1767,20 @@ function location(data = {}) {
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
   const output = outputTail();
+  const progress = [];
+  const readProgress = boundedProgressLines((line) => {
+    if (!line.startsWith(openShellProgressPrefix)) {
+      return;
+    }
+    try {
+      const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
+      if (value) {
+        progress.push(value);
+      }
+    } catch {
+      // Invalid progress never becomes raw failure output.
+    }
+  });
   let failed = false;
   let outputSent = false;
   // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
@@ -1799,16 +1788,6 @@ export default async function* jsonLinesReporter(source) {
   const running = new Map();
   const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
-    if (event.type === "test:log") {
-      const progress =
-        event.data?.message === "openclaw-ci-progress"
-          ? openShellProgress(event.data.data)
-          : undefined;
-      if (progress) {
-        yield `${JSON.stringify({ type: "test:progress", data: progress })}\n`;
-      }
-      continue;
-    }
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
       running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
@@ -1845,6 +1824,12 @@ export default async function* jsonLinesReporter(source) {
     }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
+        if (event.type === "test:stdout") {
+          readProgress(event.data.message);
+          for (const value of progress.splice(0)) {
+            yield `${JSON.stringify({ type: "test:progress", data: value })}\n`;
+          }
+        }
         output.add(event.type.slice(5), event.data.message);
       }
       continue;
