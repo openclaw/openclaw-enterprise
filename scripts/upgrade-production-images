@@ -986,8 +986,14 @@ preflight_startup() {
     items: map(select(.apiVersion == "cert-manager.io/v1" and .kind == "Certificate"))}' \
     "$evidence_dir/preflight-rendered.jsonl" >"$certificates" ||
     die "cannot select rendered Certificates for preflight; no OCC writer was stopped."
-  if jq -e '.items | length > 0' "$certificates" >/dev/null; then
+  local certificate_count
+  certificate_count=$(jq -er '.items | length' "$certificates") ||
+    die "cannot count rendered Certificates for preflight; no OCC writer was stopped."
+  if ((certificate_count > 0)); then
+    # Server-side apply sends even unchanged objects for admission. Ignore field
+    # ownership conflicts in the dry-run only; Helm does not use server-side apply.
     "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      --server-side --force-conflicts --field-manager=occ-upgrade-preflight \
       --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
       die "certificate admission preflight failed; no OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
   fi

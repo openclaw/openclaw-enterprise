@@ -680,12 +680,25 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
     }
   } else if (tool === "kubectl") {
     if (args.includes("apply") && args.includes("--dry-run=server")) {
+      assert.ok(args.includes("--server-side"));
+      assert.ok(args.includes("--force-conflicts"));
+      assert.ok(args.includes("--field-manager=occ-upgrade-preflight"));
       assert.equal(fileArg("--namespace"), "system");
       const submitted = JSON.parse(readFileSync(fileArg("--filename"), "utf8"));
-      assert.deepEqual(submitted, { apiVersion: "v1", kind: "List", items: [testCertificate] });
+      assert.equal(submitted.apiVersion, "v1");
+      assert.equal(submitted.kind, "List");
+      assert.ok(submitted.items.length > 0);
       assert.equal(state.api, 1);
       assert.equal(state.worker, 1);
-      log("certificate-admission");
+      if (state.realChart) {
+        for (const item of submitted.items) {
+          assert.equal(item.apiVersion, "cert-manager.io/v1");
+          assert.equal(item.kind, "Certificate");
+        }
+      } else {
+        assert.deepEqual(submitted.items, [testCertificate]);
+        log("certificate-admission");
+      }
       if (take("refuse-certificate-admission")) {
         return fail(1, "certificate webhook refused dry-run");
       }
