@@ -4042,7 +4042,7 @@ for (const embedded of [true, false]) {
       ready: false,
       restartCount,
       state:
-        waiting === undefined
+        waiting === null
           ? { running: { startedAt: finishedAt } }
           : { waiting: { reason: waiting, message: "back-off 40s restarting failed container" } },
       lastState: { terminated: { exitCode, reason: "Error", finishedAt } },
@@ -4072,7 +4072,7 @@ for (const embedded of [true, false]) {
         // A wrapper that stops its container on purpose, as for a changed Harness peer.
         ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
         ["two restarts", { containerStatuses: [container(role, { restartCount: 2 })] }],
-        ["a running restart", { containerStatuses: [container(role, { waiting: undefined })] }],
+        ["a running restart", { containerStatuses: [container(role, { waiting: null })] }],
         [
           "a pull back-off",
           { containerStatuses: [container(role, { waiting: "ImagePullBackOff" })] },
@@ -4081,10 +4081,7 @@ for (const embedded of [true, false]) {
           "an init container or sidecar",
           {
             initContainerStatuses: [container(role), container("prepare-private-state")],
-            containerStatuses: [
-              container("workspace-node"),
-              container(role, { waiting: undefined }),
-            ],
+            containerStatuses: [container("workspace-node"), container(role, { waiting: null })],
           },
         ],
       ]) {
