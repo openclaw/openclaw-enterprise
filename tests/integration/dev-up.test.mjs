@@ -280,10 +280,7 @@ test("dev-down from a fresh shell in another checkout refuses the recorded Kuber
   }
   assert.equal(refused.stdout, "");
   assert.equal(await readFile(join(directory, "state.json"), "utf8"), recordedState);
-  assert.deepEqual(
-    (await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length),
-    [],
-  );
+  assert.deepEqual((await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length), []);
 
   // An explicit Kubernetes selection still stops the recorded stack from here.
   const stopped = await runCommand(fixture.cli, ["dev", "down"], {
