@@ -14,7 +14,7 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
+- `.github/workflows/full-integration.yml:jobs`: scheduled and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
 
@@ -85,12 +85,13 @@ evidence is reported as unavailable.
 
 For full-mode PRs, `affected-packages` verifies the checkout and reports dependents; it does not select tests or gate CI. Base-loaded policy cannot prevent PR changes to the workflow itself.
 
-Full Integration checks out `github.sha`. Verified docs-only main pushes omit runtime lanes; other pushes select `all`. Manual dispatches
-require `integration-main-approval` and verified dispatcher, team and environment policy.
-A push may reuse same-SHA CI results after the [bounded admission and publication checks](../testing/ci/full-integration.md#results-and-limits);
-otherwise it runs fresh. Credentialed lanes do not wait for reuse.
+Full Integration checks out `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
+checks current main, previous run timing and exact execution evidence. Approved
+manual dispatches retain dispatcher, team and environment checks.
 
-Main pushes share a queue; dispatches await approval separately. Slack Live serializes channel/app access. Installation and installed Skipper Git serialize per branch. These queues retain waiting jobs. Jobs verify repository, branch and event. Push retries retain their source; manual retries require a new [approved dispatch](../testing/ci/configuration.md#environments).
+Automatic runs share a queue. Manual approval waits separately. Slack Live
+serializes channel/app access. Installation and installed Skipper Git serialize
+per branch. Retry through a new [approved dispatch](../testing/ci/configuration.md#environments).
 
 `all` selects every suite. QA waits for Slack even after failure. Cancellation
 stops QA. Aggregation requires the selected results.

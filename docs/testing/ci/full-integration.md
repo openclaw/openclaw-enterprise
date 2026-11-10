@@ -17,18 +17,22 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Verified documentation-only main pushes select no runtime lanes. Other pushes
-to `main` select `all`. Missing history or uncertain impact retains full execution. Manual dispatch selects one supported `lane` or
-`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
-A scheduled advisory run does not run the Full Integration workflow.
+Quarter-hour ticks can admit a full run on the current main commit. Automatic
+starts are at least 60 minutes apart and at least 15 minutes after the preceding
+full run finishes. A stale tick or a revision with verified full execution
+selects no lanes. Missing admission metadata fails preflight visibly. An
+admitted tick must confirm its admission receipt before starting the full suite.
+
+Manual dispatch selects one supported `lane` or `all` on `main` and requires
+the dispatcher's [team approval](configuration.md#environments). The ordinary
+PR and merge-group checks still provide targeted premerge feedback. QA Advisory
+has its own schedule.
 
 ## Scenarios
 
-For main pushes, `pr-safe-same-sha` can reuse successful [CI suite](required-checks.md#scenarios)
-results at the same commit. Manual dispatch runs fresh. Runtime Image Fixture,
-image lanes, Repository Credentials, and [Demo Observability Smoke](observability-demo.md)
-always run fresh. Dispatch Preflight checks policy; Full Integration Aggregate
-requires selected results. QA waits for Slack to finish, including after Slack failure.
+Scheduled and manual dispatches run the selected lanes fresh. Dispatch Preflight
+checks environment policy; Full Integration Aggregate requires selected results.
+QA waits for Slack to finish, including after Slack failure.
 Some lanes are also selected by [CI](required-checks.md) or
 [QA Advisory](qa-advisory.md); those pages own automatic selection rules.
 
@@ -90,7 +94,7 @@ gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Manual runs require the same
 team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
-Jobs triggered by a main push can retry at the original commit.
+Retry a scheduled failure through a new approved manual dispatch.
 
 ## Results and limits
 
