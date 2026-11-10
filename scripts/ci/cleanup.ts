@@ -2,7 +2,7 @@ import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
 import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import {
   access,
   chmod,
@@ -440,7 +440,7 @@ async function cleanupComposePostgres(
     },
   });
   if (resource.directory !== undefined) {
-    let entries;
+    let entries: Dirent<string>[];
     try {
       if (!(await lstat(resource.directory)).isDirectory()) {
         throw new Error(`Refusing unexpected PostgreSQL bootstrap contents: ${resource.directory}`);
@@ -497,7 +497,7 @@ async function cleanupK3dCluster(resource: CleanupResource, state: CleanupState)
 // already present (never pulled here), with no network.
 async function emptyK3dSharedStorage(resource: CleanupResource & { directory: string }) {
   const storage = join(resource.directory, "storage");
-  let entries;
+  let entries: string[];
   try {
     entries = await readdir(storage);
   } catch (error) {
@@ -786,7 +786,7 @@ async function cleanupResourceIds(
 // template stays on the locked path: prepareFile finds it through the state and copies it.
 async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
   const results = new Map<unknown, DropResult>();
-  let state;
+  let state: CleanupState;
   try {
     state = await readState(path);
   } catch (error) {
