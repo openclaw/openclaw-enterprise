@@ -127,19 +127,18 @@ or restore registry connectivity. Preserve image versions and TLS verification.
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
-dedicated Codex sandbox during startup. On Ubuntu 24.04,
-`kernel.apparmor_restrict_unprivileged_userns=1` denies the user namespace
-Codex bubblewrap needs. Startup reports `kubectl failed` while verifying that
-sandbox and rolls the owned cluster back. The preparation step does not print
-the bubblewrap error.
+dedicated Codex sandbox. Retain startup errors and bubblewrap diagnostics if
+that check fails.
 
-Set that host sysctl to `0`, wait until the failed startup exits, and start
-again. The setting applies to the whole host. The launcher does not change it,
-and the sandbox check still runs. Do not skip the check.
+Follow [Identify the restriction](../deploy/codex-sandbox.md#identify-the-restriction)
+to distinguish container seccomp policy from host user-namespace, AppArmor, or
+SELinux restrictions. `Operation not permitted` alone does not identify the cause
+or justify a host-wide sysctl change. Correct the confirmed restriction, wait for
+startup and cleanup to finish, then retry. Keep the sandbox check enabled.
 
-A production node uses the separate
-[Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
-sysctl change onto a shared cluster.
+The local launcher prepares the profile only inside its owned k3d nodes.
+Production and shared-cluster profile installation belongs to node provisioning;
+use the [Codex sandbox profile](../deploy/codex-sandbox.md) procedure there.
 
 ## Source build fails TLS certificate verification
 
