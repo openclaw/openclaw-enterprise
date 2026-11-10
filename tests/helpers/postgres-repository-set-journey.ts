@@ -107,7 +107,7 @@ type NarrowPreparation = Pick<
   "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
 >;
 
-type SelectedReadJourney = Pick<
+export type SelectedReadJourney = Pick<
   NarrowJourney,
   "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
 > & {
@@ -141,6 +141,56 @@ export async function selectedReadGitJourney(
     exercise,
     sharedGitIssuance,
   );
+}
+
+type SelectedWorkerJourney = SelectedReadJourney & {
+  fixture: NarrowJourney["maintenance"]["fixture"];
+};
+
+export async function selectedReadGitTwoWorkerJourney(
+  t: TestContext,
+  testUrl: string,
+  exercise: (first: SelectedReadJourney, second: SelectedReadJourney) => Promise<void>,
+) {
+  const run = (
+    selectedRead: (journey: SelectedWorkerJourney) => Promise<void>,
+    previousWorker?: SelectedWorkerJourney,
+  ) =>
+    repositoryGitJourney(
+      t,
+      testUrl,
+      undefined,
+      {},
+      undefined,
+      false,
+      undefined,
+      undefined,
+      selectedRead,
+      true,
+      previousWorker,
+    );
+
+  await run(async (first) => {
+    // Admission uses the real ControllerWorker loop. Hold A's pending lifecycle
+    // work while B admits, then pause B too. This fixture selects each recipient's
+    // listener directly and keeps both original listeners running.
+    await first.fixture.stopWorkerLoop();
+    const parking = await first.pool.connect();
+    try {
+      await parking.query("BEGIN");
+      await parking.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE revision_id=$1 AND state='queued' FOR UPDATE",
+        [first.revision.id],
+      );
+      await run(async (second) => {
+        await second.fixture.stopWorkerLoop();
+        await parking.query("ROLLBACK");
+        await exercise(first, second);
+      }, first);
+    } finally {
+      parking.release(true);
+    }
+  });
 }
 
 export async function beforeNarrowGitPreparation(
@@ -233,8 +283,9 @@ async function repositoryGitJourney(
     | "expired-original-pods"
     | "expired-replaced-supervisor",
   startupOptions?: NarrowStartupOptions,
-  selectedRead?: (journey: SelectedReadJourney) => Promise<void>,
+  selectedRead?: (journey: SelectedWorkerJourney) => Promise<void>,
   sharedGitIssuance?: true,
+  previousWorker?: SelectedWorkerJourney,
 ) {
   const narrowProfile =
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
@@ -279,7 +330,9 @@ async function repositoryGitJourney(
   const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
   const grantPort = selectedRead ? await reservePort() : undefined;
-  const grantKeys = selectedRead ? generateKeyPairSync("ed25519") : undefined;
+  const grantKeys = selectedRead
+    ? (previousWorker?.grant.keys ?? generateKeyPairSync("ed25519"))
+    : undefined;
   const grantIssuer = "openshell-gateway:git-fixture";
   const grantBundlePath = join(tls.directory, "gateway-jwks.json");
   const grantEndpoint = grantPort && `https://localhost:${grantPort.port}/token`;
@@ -444,51 +497,63 @@ async function repositoryGitJourney(
     },
   ];
   const f =
-    startupOptions?.maxAttempts === undefined
+    !previousWorker && startupOptions?.maxAttempts === undefined
       ? await standingExecutionPlatform(t, testUrl, { sandbox: selected }, backends)
       : await createWorkerRevisionFixtures(testUrl).setup(t, {
           driverSelections: { sandbox: selected },
           backends,
-          maxAttempts: startupOptions.maxAttempts,
+          maxAttempts: startupOptions?.maxAttempts,
+          ...(previousWorker && {
+            database: previousWorker.fixture.database,
+            existingNamespace: previousWorker.fixture.namespace,
+          }),
         });
   let admitted: AgentRevision | undefined;
   let issuanceStarted = false;
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
-  const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    prepareGitOnDemand: !!selectedRead,
-    ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
-    driver: owner.ref,
-    tokenLifetimeMs: 600_000,
-    ...(narrowProfile
-      ? { ...policy, draftPull: policy.draftPull ?? true }
-      : {
-          selection: {
-            entries: repositorySet,
-            permissions: selectedPermissions,
-            selectedRepositoryIds: selectedRepositories.map((entry) => entry.repositoryId),
-            ...(standing && { allowStandingApproval: true }),
-          },
-        }),
-    beforeIssue: async () => {
-      assert.ok(admitted);
-      const { rows } = await f.observerPool.query(
-        "SELECT active_revision_id FROM occ.agents WHERE namespace_id=$1 AND id=$2",
-        [admitted.namespaceId, admitted.agentId],
-      );
-      assert.equal(
-        rows[0].active_revision_id,
-        admitted.id,
-        "issuance follows committed activation",
-      );
-      order.push("issue-after-activation");
-      if (checkingIssuerPolicy) {
-        return;
-      }
-      issuanceStarted = true;
-      await issuanceRelease.promise;
-    },
-  });
+  const peer = await createPeer();
+  async function createPeer() {
+    if (previousWorker) {
+      const prepared = await previousWorker.peer.startOwner(undefined, f.observerPool);
+      t.after(() => prepared.close());
+      return { ...previousWorker.peer, prepared };
+    }
+    return preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
+      prepareGitOnDemand: !!selectedRead,
+      ...(sharedGitIssuance && { sharedGitIssuanceGeneration: 1 }),
+      driver: owner.ref,
+      tokenLifetimeMs: 600_000,
+      ...(narrowProfile
+        ? { ...policy, draftPull: policy.draftPull ?? true }
+        : {
+            selection: {
+              entries: repositorySet,
+              permissions: selectedPermissions,
+              selectedRepositoryIds: selectedRepositories.map((entry) => entry.repositoryId),
+              ...(standing && { allowStandingApproval: true }),
+            },
+          }),
+      beforeIssue: async () => {
+        assert.ok(admitted);
+        const { rows } = await f.observerPool.query(
+          "SELECT active_revision_id FROM occ.agents WHERE namespace_id=$1 AND id=$2",
+          [admitted.namespaceId, admitted.agentId],
+        );
+        assert.equal(
+          rows[0].active_revision_id,
+          admitted.id,
+          "issuance follows committed activation",
+        );
+        order.push("issue-after-activation");
+        if (checkingIssuerPolicy) {
+          return;
+        }
+        issuanceStarted = true;
+        await issuanceRelease.promise;
+      },
+    });
+  }
   const events: NarrowJourney["maintenance"]["events"] = [];
   const stopped: string[] = [];
   runtime.connectRouteStore(f.observerPool, recordTransport);
@@ -1250,6 +1315,7 @@ async function repositoryGitJourney(
       assert.ok(grantPort && grantEndpoint && grantKeys);
       try {
         await selectedRead({
+          fixture: f,
           runtime,
           revision,
           workspace,
