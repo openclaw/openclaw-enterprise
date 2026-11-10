@@ -109,8 +109,9 @@ type NarrowPreparation = Pick<
 
 type SelectedGrantJourney = Pick<
   NarrowJourney,
-  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision" | "removeBinding"
+  "runtime" | "peer" | "pool" | "workspace" | "sandboxId" | "revision"
 > & {
+  removeBinding(repositoryRef?: string): Promise<unknown>;
   readonly grant: {
     readonly endpoint: string;
     readonly port: number;
@@ -135,11 +136,11 @@ export async function selectedGrantGitJourney(
   t: TestContext,
   testUrl: string,
   exercise: (journey: SelectedGrantJourney) => Promise<void>,
-  writeProfile?: "read" | "write",
+  scope?: { readonly contents: "read" | "write"; readonly set?: true },
 ) {
   await repositoryGitJourney(t, testUrl, undefined, {}, undefined, false, undefined, undefined, {
     exercise,
-    ...(writeProfile === undefined ? {} : { writeProfile }),
+    ...(scope === undefined ? {} : { scope }),
   });
 }
 
@@ -235,7 +236,7 @@ async function repositoryGitJourney(
   startupOptions?: NarrowStartupOptions,
   selectedGrant?: {
     exercise: (journey: SelectedGrantJourney) => Promise<void>;
-    writeProfile?: "read" | "write";
+    scope?: { readonly contents: "read" | "write"; readonly set?: true };
   },
 ) {
   const selectedRead = selectedGrant?.exercise;
@@ -243,9 +244,13 @@ async function repositoryGitJourney(
     narrow !== undefined || beforePrepare !== undefined || startupOptions !== undefined;
   const podContinuity = pendingSuccessor?.startsWith("expired-") === true;
   const coldWorker = pendingSuccessor === "cold-worker" || podContinuity;
-  const selectedRepositories = repositorySet.slice(0, standing || selectedRead ? 1 : 2);
+  const set = selectedGrant?.scope?.set;
+  const grantProfile = set
+    ? "selected-repository-set"
+    : selectedGrant?.scope && "selected-repository-write";
+  const selectedRepositories = repositorySet.slice(0, standing || (selectedRead && !set) ? 1 : 2);
   const selectedPermissions = selectedRead
-    ? ({ metadata: "read", contents: selectedGrant?.writeProfile ?? "read" } as const)
+    ? ({ metadata: "read", contents: selectedGrant?.scope?.contents ?? "read" } as const)
     : repositorySetPermissions;
   const codex = !narrowProfile && !standing && process.env.OCC_TEST_STANDING_GIT_CODEX;
   const conversation = codex ? await standingGitConversation(t, codex) : undefined;
@@ -362,9 +367,7 @@ async function repositoryGitJourney(
           privateKeyPath: tls.keyPath,
           issuerPublicKeyPath,
         },
-        ...(selectedGrant?.writeProfile && {
-          grantRedemptionProfile: "selected-repository-write" as const,
-        }),
+        ...(grantProfile && { grantRedemptionProfile: grantProfile }),
         ...(grantEndpoint &&
           grantPort && {
             grantRedemption: {
@@ -462,7 +465,7 @@ async function repositoryGitJourney(
   let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
-    prepareGitOnDemand: selectedGrant?.writeProfile ? "selected-repository-write" : !!selectedRead,
+    prepareGitOnDemand: grantProfile ?? !!selectedRead,
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
@@ -645,7 +648,7 @@ async function repositoryGitJourney(
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(
     revision.repositoryCredentials!.bindings.length,
-    narrowProfile || standing || selectedRead ? 1 : 2,
+    narrowProfile ? 1 : selectedRepositories.length,
   );
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.executionAdmission.mode, "protected");
@@ -1278,12 +1281,16 @@ async function repositoryGitJourney(
           waitForIssuance: () =>
             waitFor("the controlled provider entered issuance", () => issuanceStarted || undefined),
           finishIssuance: () => issuanceRelease.resolve(),
-          removeBinding: () =>
+          removeBinding: (repositoryRef) =>
             f.controller.updateAgent(f.actor.id, {
               namespaceId: f.namespace.id,
               agentId: agent.id,
               configurationId: configuration.id,
-              repositoryBindings: [],
+              repositoryBindings: repositoryRef
+                ? selectedRepositories
+                    .filter((member) => member.repositoryRef !== repositoryRef)
+                    .map((member) => ({ repositoryRef: member.repositoryRef }))
+                : [],
             }),
         });
       } finally {

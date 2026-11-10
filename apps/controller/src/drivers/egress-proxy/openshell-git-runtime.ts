@@ -29,9 +29,9 @@ import type {
   RepositoryGitDeliveryBinding,
 } from "../repo/access/delivery.ts";
 import {
-  allowsPreparedGitGrantRead,
-  allowsPreparedGitGrantWrite,
+  preparedGitGrantContents,
   preparedGitRedemption,
+  type PreparedGitGrantProfile,
   type PreparedGitRedemption,
 } from "../repo/github/access/prepared-git-redemption.ts";
 import {
@@ -53,6 +53,7 @@ import {
 import {
   deleteOpenShellPreparedGitProvider,
   OpenShellPreparedGitProvider,
+  type OpenShellPreparedGitScope,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitBinding,
   type OpenShellPreparedGitDelivery,
@@ -108,7 +109,7 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly authority: EgressAuthorityConfiguration;
   /** Opt-in redemption for one selected repository. Existing configurations allow reads. */
   readonly grantRedemption?: OpenShellGatewayTokenGrantConfiguration;
-  readonly grantRedemptionProfile?: "selected-repository-write";
+  readonly grantRedemptionProfile?: PreparedGitGrantProfile;
 }
 /** Only the worker that witnessed a held launch can authorize its next Git session. */
 function requiresOriginalLauncher(revision: Readonly<AgentRevision>, profile: string): boolean {
@@ -383,11 +384,7 @@ function gitProvider(
   executionId: string,
   delivery: OpenShellPreparedGitDelivery,
   observedHookPreview?: true,
-  tokenGrant?: {
-    readonly endpoint: string;
-    readonly audience: string;
-    readonly repository: string;
-  },
+  tokenGrant?: OpenShellPreparedGitScope["tokenGrant"],
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -519,16 +516,15 @@ export class OpenShellGitRuntime {
     }
     if (
       this.configuration.grantRedemption &&
-      (state.bindings.length !== 1 ||
-        !("scope" in scope.delivery) ||
-        (!allowsPreparedGitGrantRead(scope.delivery) &&
-          !(
-            this.configuration.grantRedemptionProfile === "selected-repository-write" &&
-            allowsPreparedGitGrantWrite(scope.delivery)
-          )))
+      (!("scope" in scope.delivery) ||
+        state.bindings.length !== scope.delivery.repositories.length ||
+        !preparedGitGrantContents(
+          scope.delivery,
+          this.configuration.grantRedemptionProfile ?? true,
+        ))
     ) {
       throw new Error(
-        "OpenShell Git grant redemption requires one selected repository at the configured permission level.",
+        "OpenShell Git grant redemption requires explicitly selected repositories at the configured permission level.",
       );
     }
     return scope;
@@ -573,18 +569,26 @@ export class OpenShellGitRuntime {
     }
   }
 
-  private grantProfile(delivery: RepositoryGitDeliveryBinding["delivery"], audience: string) {
+  private grantProfile(
+    delivery: RepositoryGitDeliveryBinding["delivery"],
+    audience: string,
+  ): OpenShellPreparedGitScope["tokenGrant"] {
     const endpoint = this.configuration.grantRedemption?.endpoint;
-    const repository = "scope" in delivery ? delivery.repositories[0]?.repository : undefined;
-    if (!endpoint || !repository || !("scope" in delivery)) {
-      return undefined;
+    if (!endpoint || !("scope" in delivery)) {
+      return;
+    }
+    const mode = this.configuration.grantRedemptionProfile ?? true;
+    const contents = preparedGitGrantContents(delivery, mode);
+    const repository = delivery.repositories[0]?.repository;
+    if (!contents || !repository) {
+      return;
     }
     return {
       endpoint,
       audience,
       repository,
-      ...(this.configuration.grantRedemptionProfile === "selected-repository-write" &&
-        allowsPreparedGitGrantWrite(delivery) && { allowPush: true as const }),
+      ...(mode === "selected-repository-set" && { selectedRepositories: delivery.repositories }),
+      ...(contents === "write" && { allowPush: true as const }),
     };
   }
 

@@ -11,6 +11,7 @@ import {
   selectedGrantGitJourney,
   selectedReadGitJourney,
 } from "../helpers/postgres-repository-set-journey.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import {
   cleanEnvironment,
@@ -22,6 +23,11 @@ import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import {
+  resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryScope,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { OpenShellProviderProfile } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
 
 const run: (
@@ -636,9 +642,21 @@ test(
 
 // Native Git drives discovery and receive-pack. The controlled sender only forwards a request
 // after the production middleware and the signed HTTPS grant listener both authorize it.
-for (const contents of ["read", "write"] as const) {
+const startOrigin: (
+  t: Parameters<typeof startGitSmartHttpFixture>[0],
+  options: object,
+) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
+
+for (const [contents, set] of [
+  ["read", false],
+  ["write", false],
+  ["read", true],
+  ["write", true],
+] as const) {
   test(
-    `selected ${contents} grant bounds ordinary Git push`,
+    set
+      ? `selected repository set authorizes native Git ${contents}`
+      : `selected ${contents} grant bounds ordinary Git push`,
     { ...requiresPostgres, timeout: 90_000 },
     async (t) => {
       await selectedGrantGitJourney(
@@ -668,6 +686,39 @@ for (const contents of ["read", "write"] as const) {
             bindingId,
             providerId,
           );
+          const outside = "fixture/unselected";
+          const secondRepository = "fixture/second";
+          const origins = new Map([[fixtureRepository, peer.origin]]);
+          if (set) {
+            for (const repository of [secondRepository, outside]) {
+              origins.set(
+                repository,
+                await startOrigin(t, {
+                  repository,
+                  tls: peer.origin.tls,
+                  authorize: peer.gh.authorize,
+                }),
+              );
+            }
+            const installed: OpenShellProviderProfile | undefined = runtime["states"].get(
+              revision.id,
+            )?.entry?.provider["profile"];
+            assert.ok(installed);
+            assert.equal(installed.endpoints.length, 1);
+            const [endpoint] = installed.endpoints;
+            assert.equal(endpoint?.host, "github.com");
+            const expectedPaths = [fixtureRepository, secondRepository].flatMap((repository) => [
+              `/${repository}.git/info/refs`,
+              `/${repository}.git/git-upload-pack`,
+              ...(contents === "write" ? [`/${repository}.git/git-receive-pack`] : []),
+            ]);
+            assert.deepEqual(
+              endpoint?.rules?.map(({ allow }) => allow.path),
+              [...expectedPaths, `/${fixtureRepository}.git/oce-observe-request/*/info/refs`],
+            );
+          }
+          const calls = () =>
+            [...origins.values()].reduce((total, origin) => total + origin.traffic().requests, 0);
           const refusals: string[] = [];
           const errors: unknown[] = [];
           const peerUrl = (
@@ -719,13 +770,17 @@ for (const contents of ["read", "write"] as const) {
                   }
                   assert.equal(status, 200);
                   assert.ok(value);
+                  const origin = [...origins].find(([repository]) =>
+                    target.pathname.startsWith(`/${repository}.git/`),
+                  )?.[1];
+                  assert.ok(origin, "a permitted request must match a selected origin");
                   await new Promise<void>((resolve, reject) => {
                     const upstream = peer.installationTransport.httpsRequest(
-                      peer.origin.origin,
+                      origin.origin,
                       {
                         path: target.pathname + target.search,
                         method: incoming.method,
-                        ca: peer.origin.tls.ca,
+                        ca: origin.tls.ca,
                         headers: {
                           ...Object.fromEntries(
                             headers.map(({ name, value: entry }) => [name, entry]),
@@ -782,17 +837,43 @@ for (const contents of ["read", "write"] as const) {
           const push = (repository: string, allowFailure = false) =>
             git(["push", `https://github.com/${repository}.git`, `HEAD:${ref}`], allowFailure);
           finishIssuance();
-          const before = peer.originCalls();
+          const before = calls();
+          const read = (repository: string, allowFailure = false) =>
+            git(
+              ["ls-remote", `https://github.com/${repository}.git`, "refs/heads/main"],
+              allowFailure,
+            );
           assert.equal(peer.gh.issuesOfTokens.length, 0, "the installed route starts cold");
+          if (set) {
+            assert.notEqual((await read(outside, true)).code, 0);
+            assert.equal(refusals.pop(), `/${outside}.git/info/refs`);
+            assert.equal(calls(), before);
+            assert.equal(peer.gh.issuesOfTokens.length, 0);
+          }
           if (contents === "read") {
             assert.notEqual((await push(fixtureRepository, true)).code, 0);
             assert.deepEqual(refusals, [`/${fixtureRepository}.git/info/refs`]);
-            assert.equal(peer.originCalls(), before);
+            assert.equal(calls(), before);
             assert.equal(peer.gh.issuesOfTokens.length, 0);
+            if (set) {
+              assert.notEqual((await push(secondRepository, true)).code, 0);
+              assert.equal(calls(), before);
+              assert.equal(peer.gh.issuesOfTokens.length, 0);
+              for (const repository of [fixtureRepository, secondRepository]) {
+                const sha = await origins.get(repository)!.ref("main");
+                assert.equal((await read(repository)).stdout.trim(), `${sha}	refs/heads/main`);
+              }
+              assert.equal(peer.gh.issuesOfTokens.length, 1);
+              assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73, 74]);
+              assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+                contents: "read",
+                metadata: "read",
+              });
+            }
           } else {
-            assert.notEqual((await push("fixture/unselected", true)).code, 0);
-            assert.deepEqual(refusals, ["/fixture/unselected.git/info/refs"]);
-            assert.equal(peer.originCalls(), before);
+            assert.notEqual((await push(outside, true)).code, 0);
+            assert.deepEqual(refusals, [`/${outside}.git/info/refs`]);
+            assert.equal(calls(), before);
             assert.equal(peer.gh.issuesOfTokens.length, 0);
             await push(fixtureRepository);
             assert.equal(
@@ -801,7 +882,7 @@ for (const contents of ["read", "write"] as const) {
               "read back the actual ref at the provider",
             );
             assert.equal(peer.gh.issuesOfTokens.length, 1);
-            assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+            assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, set ? [73, 74] : [73]);
             assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
               metadata: "read",
               contents: "write",
@@ -816,9 +897,27 @@ for (const contents of ["read", "write"] as const) {
             await push(fixtureRepository);
             assert.equal(await peer.origin.ref(ref), second);
             assert.equal(peer.gh.issuesOfTokens.length, 1, "a second push reuses the issued token");
+            let pendingRequestId: string | undefined;
+            if (set) {
+              await push(secondRepository);
+              assert.equal(await origins.get(secondRepository)!.ref(ref), second);
+              const afterSelected = calls();
+              assert.notEqual((await push(outside, true)).code, 0);
+              assert.equal(calls(), afterSelected);
+              assert.equal(peer.gh.issuesOfTokens.length, 1);
+              const pending = peer.input(bindingId, sandboxId, false, workspace);
+              pending.target.path = `/${secondRepository}.git/info/refs`;
+              assert.equal((await evaluateRequest(pending)).decision, 1);
+              pendingRequestId = pending.context.request_id;
+            }
             await commit("after withdrawal");
-            await removeBinding();
-            const afterWrite = peer.originCalls();
+            await removeBinding(set ? "A" : undefined);
+            const afterWrite = calls();
+            if (pendingRequestId) {
+              assert.equal((await grant(pendingRequestId, assertion())).status, 403);
+              assert.notEqual((await push(secondRepository, true)).code, 0);
+              assert.equal(await origins.get(secondRepository)!.ref(ref), second);
+            }
             assert.notEqual((await push(fixtureRepository, true)).code, 0);
             assert.equal(refusals.at(-1), `/${fixtureRepository}.git/info/refs`);
             assert.equal(
@@ -826,12 +925,42 @@ for (const contents of ["read", "write"] as const) {
               second,
               "withdrawal leaves the last authorized push unchanged",
             );
-            assert.equal(peer.originCalls(), afterWrite);
+            assert.equal(calls(), afterWrite);
             assert.equal(peer.gh.issuesOfTokens.length, 1);
+          }
+          if (set) {
+            assert.equal(origins.get(outside)!.traffic().requests, 0);
+            const mixedRegistry = {
+              ...peer.registry,
+              repositories: peer.registry.repositories.map((repository) =>
+                repository.repositoryRef === "B"
+                  ? {
+                      ...repository,
+                      namespaces: repository.namespaces.map((policy) => ({
+                        ...policy,
+                        permissions: {
+                          metadata: "read",
+                          contents: contents === "read" ? "write" : "read",
+                        },
+                      })),
+                    }
+                  : repository,
+              ),
+            };
+            const members = ["A", "B"].map((repositoryRef) =>
+              resolveGitHubRepositoryBinding(mixedRegistry, {
+                namespaceId: revision.namespaceId,
+                repositoryRef,
+              }),
+            );
+            assert.throws(
+              () => resolveSelectedRepositoryScope(mixedRegistry, revision.namespaceId, members),
+              { message: "selected-repository-permissions-differ" },
+            );
           }
           assert.deepEqual(errors, []);
         },
-        contents,
+        { contents, ...(set && { set: true }) },
       );
     },
   );

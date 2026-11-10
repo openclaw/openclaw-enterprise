@@ -362,7 +362,6 @@ export function createOpenShellOnlineGitAuthority(
             !binding.grantCredentialIdentity ||
             !("scope" in q) ||
             q.scope !== "github-repository" ||
-            q.repositories.length !== 1 ||
             !gitGrantOperationAllowed(operation, binding.grantAllowPush === true)
           ) {
             return deny("route_unsupported", operation);

@@ -8,6 +8,10 @@ import {
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
 import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  maxSelectedGitHubRepositories,
+  type GitHubRepositoryGrant,
+} from "../repo/github/access/repository-grant.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
   matchesOpenShellGatewayAssertionGrant,
@@ -39,6 +43,7 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
     readonly endpoint: string;
     readonly audience: string;
     readonly repository: string;
+    readonly selectedRepositories?: GitHubRepositoryGrant["repositories"];
     readonly allowPush?: true;
   };
 };
@@ -216,15 +221,24 @@ export class OpenShellPreparedGitProvider {
     const git = origin(scope.gitOrigin);
     const api = origin(scope.apiOrigin);
     const grant = scope.tokenGrant;
+    const selected = grant?.selectedRepositories;
+    const repositories =
+      selected?.map(({ repository }) => repository) ?? (grant ? [grant.repository] : []);
     const endpoint = grant && URL.canParse(grant.endpoint) ? new URL(grant.endpoint) : undefined;
     if (
       grant &&
       (!scope.installationId ||
         !scope.observedHookPreview ||
         !grant.audience.trim() ||
-        !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(grant.repository) ||
-        grant.repository.endsWith("/.") ||
-        grant.repository.endsWith("/..") ||
+        repositories[0] !== grant.repository ||
+        repositories.length > maxSelectedGitHubRepositories ||
+        new Set(repositories.map((repo) => repo.toLowerCase())).size !== repositories.length ||
+        repositories.some(
+          (repo) =>
+            !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
+            repo.endsWith("/.") ||
+            repo.endsWith("/.."),
+        ) ||
         endpoint?.href !== grant.endpoint ||
         endpoint.protocol !== "https:" ||
         endpoint.username ||
@@ -256,7 +270,7 @@ export class OpenShellPreparedGitProvider {
                 [
                   grant.endpoint,
                   grant.audience,
-                  grant.repository,
+                  selected ?? grant.repository,
                   ...(grant.allowPush ? ["write"] : []),
                 ],
               ]
@@ -308,13 +322,18 @@ export class OpenShellPreparedGitProvider {
               host: git.hostname,
               port: 443,
               protocol: "rest",
-              path: grantPath + "/**",
+              ...(repositories.length === 1 && { path: grantPath + "/**" }),
               rules: [
-                { allow: { method: "GET", path: grantPath + "/info/refs" } },
-                { allow: { method: "POST", path: grantPath + "/git-upload-pack" } },
-                ...(grant?.allowPush
-                  ? [{ allow: { method: "POST", path: grantPath + "/git-receive-pack" } }]
-                  : []),
+                ...repositories.flatMap((repository) => {
+                  const path = "/" + repository + ".git";
+                  return [
+                    { allow: { method: "GET", path: path + "/info/refs" } },
+                    { allow: { method: "POST", path: path + "/git-upload-pack" } },
+                    ...(grant?.allowPush
+                      ? [{ allow: { method: "POST", path: path + "/git-receive-pack" } }]
+                      : []),
+                  ];
+                }),
                 // The held launcher proves that the mandatory middleware denies this
                 // path before OpenShell obtains a token or dispatches the request.
                 {
