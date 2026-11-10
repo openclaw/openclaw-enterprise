@@ -1610,12 +1610,16 @@ export class PostgresHumanAuthentication {
     ]);
     await this.query(
       unit,
-      `DELETE FROM occ.human_authentication_links WHERE installation_id = $1 AND expires_at <= clock_timestamp()`,
+      `DELETE FROM occ.human_authentication_links WHERE browser_hash IN
+       (SELECT browser_hash FROM occ.human_authentication_links WHERE installation_id = $1
+        AND expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 100)`,
       [this.installationId],
     );
     await this.query(
       unit,
-      `DELETE FROM occ.human_authentication_attempts WHERE installation_id = $1 AND expires_at <= clock_timestamp()`,
+      `DELETE FROM occ.human_authentication_attempts WHERE state_hash IN
+       (SELECT state_hash FROM occ.human_authentication_attempts WHERE installation_id = $1
+        AND expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 100)`,
       [this.installationId],
     );
     const rows = await this.query(
