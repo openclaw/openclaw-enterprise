@@ -288,6 +288,9 @@
       "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
+      "path": "tests/conformance/openshell-plugin-policy.test.ts"
+    },
+    {
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {
