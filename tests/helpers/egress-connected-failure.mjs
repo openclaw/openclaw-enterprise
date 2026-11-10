@@ -4,6 +4,8 @@ const operations = new Set([
   "before-custody-supervisor-get",
   "before-custody-log-read",
   "before-custody-supervisor-recheck",
+  "gateway-selection-list",
+  "gateway-exec-target-get",
   "gateway-codex-exec",
   "gateway-turn-verification",
   "after-custody-observation",
@@ -63,12 +65,13 @@ export function appServerUrlShape(value) {
   }
 }
 
-export function describeGatewayAppServerDeclaration(pod) {
+export function describeGatewayAppServerDeclaration(pod, containerName) {
   const containers = pod.spec.containers;
-  const defaultContainer = pod.metadata.annotations?.["kubectl.kubernetes.io/default-container"];
+  const defaultContainer =
+    containerName ?? pod.metadata.annotations?.["kubectl.kubernetes.io/default-container"];
   const container =
     containers.find(({ name }) => name === defaultContainer) ??
-    (containers.length === 1 ? containers[0] : undefined);
+    (containerName === undefined && containers.length === 1 ? containers[0] : undefined);
   if (container === undefined) {
     return null;
   }

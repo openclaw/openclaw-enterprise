@@ -20,6 +20,10 @@ import { createCustodyTransitions } from "../helpers/egress-supplier-custody-tra
 import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  requestInstalledGatewayTurn,
+  waitForInstalledGateway,
+} from "../helpers/egress-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
@@ -1276,4 +1280,243 @@ test("connected gateway exec persists only the generated client's correlated fai
       assert.equal(raw.includes(sentinel), false, scenario);
     }
   });
+});
+
+const gatewayPlacement = "fixture-workspace";
+const gatewayAgent = "agt_fixture";
+const gatewayRevision = "rev_fixture";
+const gatewayImage = `fixture/gateway@sha256:${"a".repeat(64)}`;
+
+function gatewayPod(uid, changes = {}) {
+  const {
+    agent = gatewayAgent,
+    role = "gateway",
+    revision = gatewayRevision,
+    deleting,
+    pending,
+    image = gatewayImage,
+    podReady = !pending,
+    containerReady = !pending,
+  } = changes;
+  return {
+    metadata: {
+      name: "fixture-gateway",
+      uid,
+      labels: {
+        "openclaw.dev/agent": agent,
+        "openclaw.dev/workload-role": role,
+        "openclaw.dev/revision": revision,
+      },
+      ...(deleting && { deletionTimestamp: "2026-01-01T00:00:00Z" }),
+      annotations: { unretained: "private-pod-annotation" },
+    },
+    spec: {
+      containers: [
+        { name: "gateway", image },
+        { name: "sidecar", image: gatewayImage },
+      ],
+    },
+    status: {
+      phase: pending ? "Pending" : "Running",
+      conditions: [{ type: "Ready", status: podReady ? "True" : "False" }],
+      containerStatuses: [
+        {
+          name: "gateway",
+          ready: containerReady,
+          state: pending ? { waiting: { reason: "PodInitializing" } } : { running: {} },
+        },
+      ],
+    },
+  };
+}
+
+test("installed Gateway selection waits for a unique current ready Pod and retains terminal counts", async (t) => {
+  const ready = gatewayPod("ready");
+  const pending = gatewayPod("pending", { pending: true });
+  const stale = gatewayPod("old", { revision: "rev_old" });
+  const deleting = gatewayPod("deleting", { deleting: true });
+  const foreign = gatewayPod("foreign", { agent: "agt_other" });
+  const wrongRole = gatewayPod("wrong-role", { role: "agent" });
+  const wrongImage = gatewayPod("wrong-image", { image: "fixture/other" });
+  const podNotReady = gatewayPod("not-ready", { podReady: false });
+  const containerNotReady = gatewayPod("container-not-ready", { containerReady: false });
+  const readError = new Error("private Kubernetes transport error");
+  const scenarios = [
+    {
+      name: "converges after creation and rollout",
+      reads: [
+        [],
+        [stale, deleting],
+        [pending],
+        [wrongImage],
+        [podNotReady],
+        [containerNotReady],
+        [ready, pending],
+        [ready, stale, deleting, foreign, wrongRole],
+      ],
+      uid: "ready",
+      last: { owned: 3, deleting: 1, stale: 1, current: 1, wrongImage: 0, pending: 0, ready: 1 },
+    },
+    {
+      name: "times out with zero Pods",
+      reads: [[]],
+      last: { owned: 0, deleting: 0, stale: 0, current: 0, wrongImage: 0, pending: 0, ready: 0 },
+    },
+    {
+      name: "times out rather than choosing one ready Pod in an overlap",
+      reads: [[ready, pending, wrongImage]],
+      last: { owned: 3, deleting: 0, stale: 0, current: 3, wrongImage: 1, pending: 1, ready: 1 },
+    },
+    {
+      name: "propagates the list error after an observed Pending Pod",
+      reads: [[pending], readError],
+      last: { owned: 1, deleting: 0, stale: 0, current: 1, wrongImage: 0, pending: 1, ready: 0 },
+    },
+  ];
+  for (const { name, reads, uid, last } of scenarios) {
+    await t.test(name, async (t) => {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      let lists = 0;
+      const deadline = new Error("controlled poll deadline");
+      const f = {
+        async waitFor(_description, read, timeoutMs) {
+          assert.equal(timeoutMs, 120_000);
+          for (const _ of reads) {
+            const selected = await read();
+            if (selected !== undefined) {
+              return selected;
+            }
+          }
+          throw deadline;
+        },
+        async resources(kind, placement, flag, selector) {
+          assert.deepEqual(
+            [kind, placement, flag, selector],
+            [
+              "pods",
+              gatewayPlacement,
+              "--selector",
+              "openclaw.dev/agent=agt_fixture,openclaw.dev/workload-role=gateway",
+            ],
+          );
+          const entry = reads[lists++];
+          if (entry instanceof Error) {
+            throw entry;
+          }
+          return entry;
+        },
+      };
+      const select = waitForInstalledGateway(
+        f,
+        evidence,
+        gatewayPlacement,
+        gatewayAgent,
+        gatewayRevision,
+        gatewayImage,
+      );
+      if (uid) {
+        assert.equal((await select).metadata.uid, uid);
+      } else {
+        const failedRead = reads.at(-1) instanceof Error;
+        await assert.rejects(select, failedRead ? readError : deadline);
+        if (failedRead) {
+          const safe = await safeConnectedFailure(
+            readError,
+            "gateway-selection-failed",
+            evidence.recordFailure,
+          );
+          assert.match(safe.message, /gateway-selection-list/);
+        }
+      }
+      assert.equal(lists, reads.length);
+      await evidence.checkpoint("cleanup");
+      const raw = await readFile(evidence.directory + "/observations.json", "utf8");
+      const retained = JSON.parse(raw).phases.at(-2);
+      assert.equal(retained.phase, uid ? "gateway-selected" : "gateway-selection-failed");
+      assert.deepEqual(retained.last, last);
+      if (!uid) {
+        assert.equal(retained.outcome, reads.at(-1) instanceof Error ? "read-error" : "timeout");
+      }
+      assert.equal(raw.includes("private-pod-annotation"), false);
+      assert.equal(raw.includes("private Kubernetes transport error"), false);
+    });
+  }
+});
+
+test("installed Gateway turn rechecks the pinned UID after custody and sends at most one named exec", async (t) => {
+  const selected = gatewayPod("selected");
+  const readError = new Error("private read error");
+  const dispatchError = new Error("uncertain exec outcome");
+  const scenarios = [
+    { outcome: "absent", current: undefined },
+    { outcome: "replaced", current: gatewayPod("replacement") },
+    { outcome: "ineligible", current: gatewayPod("selected", { deleting: true }) },
+    { outcome: "ineligible", current: gatewayPod("selected", { containerReady: false }) },
+    { outcome: "read-error", current: readError, error: readError },
+    { outcome: "eligible", current: selected, error: dispatchError },
+  ];
+  for (const { outcome, current, error } of scenarios) {
+    await t.test(outcome, async (t) => {
+      const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
+      t.after(() => rm(evidence.directory, { recursive: true, force: true }));
+      const actions = [];
+      let serving = selected;
+      const f = {
+        async maybeResource(kind, name, placement) {
+          assert.deepEqual(
+            [kind, name, placement],
+            ["pod", selected.metadata.name, gatewayPlacement],
+          );
+          actions.push("read");
+          if (serving instanceof Error) {
+            throw serving;
+          }
+          return serving;
+        },
+        async requestCodexTurnFromGatewayPod(turn) {
+          actions.push("exec");
+          assert.deepEqual(turn, {
+            observeFailure: true,
+            namespace: gatewayPlacement,
+            gatewayPod: selected.metadata.name,
+            container: "gateway",
+          });
+          throw dispatchError;
+        },
+      };
+      const custodyTransitions = {
+        async snapshot() {
+          actions.push("snapshot");
+          serving = current;
+        },
+      };
+      await assert.rejects(
+        requestInstalledGatewayTurn(
+          f,
+          evidence,
+          {
+            placement: gatewayPlacement,
+            agentId: gatewayAgent,
+            revisionId: gatewayRevision,
+            image: gatewayImage,
+            gateway: selected,
+            phase: "fixture-turn",
+            custodyTransitions,
+          },
+          { observeFailure: true },
+        ),
+        error ?? { code: "ERR_ASSERTION" },
+      );
+      assert.deepEqual(
+        actions,
+        outcome === "eligible" ? ["snapshot", "read", "exec"] : ["snapshot", "read"],
+      );
+      await evidence.checkpoint("cleanup");
+      const retained = JSON.parse(
+        await readFile(evidence.directory + "/observations.json", "utf8"),
+      );
+      assert.deepEqual(retained.gatewayExecTarget, { phase: "fixture-turn", outcome });
+    });
+  }
 });

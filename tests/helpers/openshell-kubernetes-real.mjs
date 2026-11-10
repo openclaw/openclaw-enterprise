@@ -1968,6 +1968,7 @@ export function createOpenShellKubernetesFixture({
   async function requestCodexTurnFromGatewayPod({
     namespace,
     gatewayPod,
+    container,
     providerModel,
     prompt,
     observeFailure = false,
@@ -1976,6 +1977,7 @@ export function createOpenShellKubernetesFixture({
     return requestCodexFromPod({
       namespace,
       pod: gatewayPod,
+      container,
       gatewayTurn: true,
       providerModel,
       prompt,

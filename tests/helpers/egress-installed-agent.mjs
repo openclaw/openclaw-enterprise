@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { observeConnectedOperation } from "./egress-connected-failure.mjs";
 import { deleteInstalledResource } from "./egress-installed-resource-cleanup.mjs";
 import { createCustodyTransitions } from "./egress-supplier-custody-transitions.mjs";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
@@ -212,6 +213,139 @@ export async function registerCleanupAndStartProvider(
   return { provider, create, recordSandbox, recordPods };
 }
 
+const gatewayContainer = "gateway";
+
+function ownsGateway(pod, agentId) {
+  const labels = pod.metadata?.labels;
+  return (
+    labels?.["openclaw.dev/agent"] === agentId &&
+    labels?.["openclaw.dev/workload-role"] === "gateway"
+  );
+}
+
+function matchesGatewayRevision(pod, revisionId) {
+  return pod.metadata?.labels?.["openclaw.dev/revision"] === revisionId;
+}
+
+function gatewayImageMatches(pod, image) {
+  return pod.spec?.containers?.find(({ name }) => name === gatewayContainer)?.image === image;
+}
+
+function gatewayRunningAndReady(pod) {
+  const status = pod.status;
+  const container = status?.containerStatuses?.find(({ name }) => name === gatewayContainer);
+  return (
+    status?.phase === "Running" &&
+    container?.state?.running != null &&
+    container.ready === true &&
+    status.conditions?.some(({ type, status }) => type === "Ready" && status === "True")
+  );
+}
+
+export async function waitForInstalledGateway(f, evidence, placement, agentId, revisionId, image) {
+  let last = null;
+  let listing = false;
+  let gateway;
+  try {
+    gateway = await f.waitFor(
+      "one ready Gateway Pod for the installed Agent revision",
+      async () => {
+        listing = true;
+        const pods = await observeConnectedOperation("gateway-selection-list", () =>
+          f.resources(
+            "pods",
+            placement,
+            "--selector",
+            `openclaw.dev/agent=${agentId},openclaw.dev/workload-role=gateway`,
+          ),
+        );
+        const owned = pods.filter((pod) => ownsGateway(pod, agentId));
+        const live = owned.filter(({ metadata }) => !metadata.deletionTimestamp);
+        const current = live.filter((pod) => matchesGatewayRevision(pod, revisionId));
+        const matchingImage = current.filter((pod) => gatewayImageMatches(pod, image));
+        const ready = matchingImage.filter(gatewayRunningAndReady);
+        last = {
+          owned: owned.length,
+          deleting: owned.length - live.length,
+          stale: live.length - current.length,
+          current: current.length,
+          wrongImage: current.length - matchingImage.length,
+          pending: current.filter(({ status }) => status?.phase === "Pending").length,
+          ready: ready.length,
+        };
+        listing = false;
+        if (
+          current.length === 1 &&
+          ready.length === 1 &&
+          ready[0].metadata.uid &&
+          ready[0].metadata.name
+        ) {
+          return ready[0];
+        }
+        return undefined;
+      },
+      120_000,
+    );
+  } catch (error) {
+    // The outer failure formatter intentionally drops assertion text. Keep the
+    // last successful list summary separately, including when the next read fails.
+    await evidence
+      .checkpoint("gateway-selection-failed", {
+        outcome: listing ? "read-error" : "timeout",
+        last,
+      })
+      .catch(() => {});
+    throw error;
+  }
+  await evidence.checkpoint("gateway-selected", { last }, { gatewayUid: gateway.metadata.uid });
+  return gateway;
+}
+
+export async function requestInstalledGatewayTurn(
+  f,
+  evidence,
+  { placement, agentId, revisionId, image, gateway, phase, custodyTransitions },
+  turn,
+) {
+  const before = await custodyTransitions.snapshot();
+  const { name, uid } = gateway.metadata;
+  const observation = { phase, outcome: "read-error" };
+  evidence.ledger.gatewayExecTarget = observation;
+  const current = await observeConnectedOperation("gateway-exec-target-get", () =>
+    f.maybeResource("pod", name, placement),
+  );
+  if (!current) {
+    observation.outcome = "absent";
+  } else if (current.metadata?.uid !== uid) {
+    observation.outcome = "replaced";
+  } else if (
+    !ownsGateway(current, agentId) ||
+    !matchesGatewayRevision(current, revisionId) ||
+    current.metadata.deletionTimestamp ||
+    !gatewayImageMatches(current, image) ||
+    !gatewayRunningAndReady(current)
+  ) {
+    observation.outcome = "ineligible";
+  } else {
+    observation.outcome = "eligible";
+  }
+  if (observation.outcome !== "eligible") {
+    await evidence
+      .checkpoint("gateway-exec-blocked", { outcome: observation.outcome })
+      .catch(() => {});
+    assert.fail("the selected Gateway Pod changed or stopped serving before exec");
+  }
+  // Kubernetes exec addresses the Pod by name. This read narrows the race but
+  // cannot bind exec to a UID atomically. Propagate uncertainty without replay.
+  const result = await f.requestCodexTurnFromGatewayPod({
+    ...turn,
+    namespace: placement,
+    gatewayPod: name,
+    container: gatewayContainer,
+  });
+  return { before, result };
+}
+
 export async function observeInstalledProtection(
   setup,
   stack,
@@ -348,14 +482,16 @@ export async function observeInstalledProtection(
       ? "inert_runtime_provider_rule"
       : "source_equals_effective",
   });
-  const pods = await resources("pods", placement);
-  const gatewayPods = pods.filter(
-    ({ metadata }) =>
-      metadata.labels?.["openclaw.dev/agent"] === agent.id &&
-      metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+  const gateway = await waitForInstalledGateway(
+    f,
+    evidence,
+    placement,
+    agent.id,
+    revision.id,
+    input.images.gateway,
   );
-  assert.equal(gatewayPods.length, 1);
-  assert.ok(gatewayPods[0].spec.containers.some(({ image }) => image === input.images.gateway));
+  const gatewayPods = [gateway];
+  const pods = await resources("pods", placement);
   const supervisors = pods.filter(
     ({ metadata }) =>
       metadata.labels?.["openshell.ai/sandbox-id"] === installed.sandboxId &&
