@@ -14,11 +14,13 @@ import type {
 import {
   AgentDeploymentDiagnosticsSchema,
   AgentRuntimeDescriptionSchema,
+  AgentRuntimeLogsResponse,
   AgentRuntimeLogPageSchema,
   AgentReadSchema,
   NamespaceSchema,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AgentRuntimeLogPageWire } from "../../packages/contracts/src/api/resources.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
@@ -38,7 +40,10 @@ import {
   harnessObservation,
   OpenShellSandboxDriver,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
+import {
+  RuntimeLogsForbiddenByClusterError,
+  type ControllerOptions,
+} from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
@@ -208,7 +213,9 @@ function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
 }
 
 // Match production composition: policy-capable Drivers require their configuration definition.
-function driverConfigurations(driver: OpenShellSandboxDriver) {
+function driverConfigurations(
+  driver: OpenShellSandboxDriver,
+): NonNullable<ControllerOptions["driverConfigurations"]> {
   return [
     {
       capability: "sandbox",
@@ -317,6 +324,11 @@ function runtimeData(response: { data: unknown }) {
 function diagnosticsData(response: { data: unknown }) {
   assert.ok(Check(AgentDeploymentDiagnosticsSchema, response.data));
   return response.data;
+}
+
+function errorBody(response: { body: unknown }) {
+  assert.ok(Check(ErrorResponse, response.body), "expected an API error envelope");
+  return response.body;
 }
 
 type LogResponse = Awaited<ReturnType<Awaited<ReturnType<typeof sandboxFixture>>["read"]>>;
@@ -772,7 +784,12 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
   ];
   const mixed = await read("source=sandbox");
   assertApiError(mixed, 503, "RUNTIME_LOGS_UNAVAILABLE");
-  assert.equal(mixed.body.data, undefined, "a refused chunk returns no records");
+  const mixedBody = errorBody(mixed);
+  assert.equal(
+    "data" in mixedBody ? mixedBody.data : undefined,
+    undefined,
+    "a refused chunk returns no records",
+  );
 
   const pod = await read("source=sandbox&pod=gateway-x-0");
   assertApiError(pod, 400, "RUNTIME_LOGS_POD_INVALID");
@@ -792,7 +809,8 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
     gateway.state.error = Object.assign(new Error(message), { code: 5 });
     const missing = await read("source=sandbox");
     assertApiError(missing, 503, "RUNTIME_LOGS_SANDBOX_NOT_FOUND");
-    assert.equal(missing.body.data, undefined);
+    const missingBody = errorBody(missing);
+    assert.equal("data" in missingBody ? missingBody.data : undefined, undefined);
     assert.equal(missing.text.includes("member)"), false, "gateway error text never leaks");
   }
   gateway.state.error = undefined;
@@ -977,7 +995,11 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   });
   const record = (phase: string) => sandboxRecord(target.revisionId, { phase });
   const read = async (session?: Awaited<ReturnType<typeof fixture.createPrincipal>>["session"]) => {
-    const response = await fixture.request("GET", statusPath, { session });
+    const response = await fixture.request(
+      "GET",
+      statusPath,
+      session === undefined ? {} : { session },
+    );
     assert.equal(response.status, 200, response.text);
     return response;
   };
@@ -1058,7 +1080,7 @@ test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is 
   );
   assertApiError(siblingDenied, 403, "FORBIDDEN");
   assert.equal(
-    siblingDenied.body.error.message,
+    errorBody(siblingDenied).error.message,
     callerDenied("Agent read", `Agent ${sibling.agent.id}`),
   );
   assert.deepEqual(denials, [{ action: "read", kind: "agent", id: sibling.agent.id }]);
@@ -1631,10 +1653,12 @@ test("sandbox wire pages include escaped diagnostics and resume without losing r
   const { lines, cursor, pages } = await drain(fixture, "source=sandbox&tailLines=200", {
     advance: true,
     check(response, _, page) {
-      assert.equal(response.body.meta.requestId.length, 40);
+      const body = response.body;
+      assert.ok(Check(AgentRuntimeLogsResponse, body), "expected a runtime log response");
+      assert.equal(body.meta.requestId.length, 40);
       assert.equal(
         Buffer.byteLength(response.text, "utf8"),
-        Buffer.byteLength(JSON.stringify(response.body), "utf8"),
+        Buffer.byteLength(JSON.stringify(body), "utf8"),
       );
       withinPageBudget(response);
       if (page === 0) {
