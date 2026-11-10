@@ -21,6 +21,7 @@ import {
   newPage,
   nextFrames,
   pathRequests,
+  revokeMemberGrant,
   settlePageRequests,
   settledView,
   waitForEnabled,
