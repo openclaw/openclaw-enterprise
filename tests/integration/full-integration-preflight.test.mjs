@@ -216,10 +216,11 @@ test("full coverage receipts require real case evidence and retain approved same
     join(fixtureRoot, "scripts/ci/prepare.mjs"),
     [
       'import { writeFile, rm } from "node:fs/promises";',
+      'const ownedFile = new URL("../../owned-prepare-file", import.meta.url);',
       "export async function prepareFile({ lane }) {",
-      `  if (lane.name !== ${JSON.stringify(skipperLane)}) return {};`,
-      `  await writeFile(${JSON.stringify(ownedFile)}, "owned");`,
-      `  return { cleanup: () => rm(${JSON.stringify(ownedFile)}) };`,
+      '  if (lane.name !== "skipper-prepared-git-installed") return {};',
+      '  await writeFile(ownedFile, "owned");',
+      "  return { cleanup: () => rm(ownedFile) };",
       "}",
     ].join("\n"),
   );
