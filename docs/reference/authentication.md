@@ -228,25 +228,28 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 
 ## Native admin shared sessions
 
-Every browser session uses one shared cookie scope, including when native Agent
+By default, browser sessions use one shared cookie scope, including when native Agent
 access is disabled. Configure an HTTPS Console origin and an Agent DNS suffix.
 OCC derives their longest common DNS-label suffix and rejects IP literals,
 missing or unrelated hosts, public suffixes, and malformed DNS names. For
 `console.oce.example.com` and `agents.oce.example.com`, the scope is
-`oce.example.com`. There is no cookie-domain override or host-only mode.
+`oce.example.com`. There is no cookie-domain override. Guarded GitHub can instead select the
+[host-only exchange](agent-native-admin.md#host-only-session-exchange): the
+Console cookie stays on its host, and the Agent receives a revocable handle
+bound to the parent session. The exchange creates no account or grant.
 
 Every host that receives this domain cookie must be a trusted OCE ingress
 endpoint. Public preview hosts must remain outside it. The cookie uses
 `__Secure-openclaw_occ_shared.session_token`, `Secure`, `HttpOnly`, `Path=/`,
 and the existing SameSite and CSRF protections. Password, OIDC, GitHub and Google
-sign-in share this format. Duplicate session-cookie values are rejected.
+sign-in share this format in shared-cookie mode. Duplicate session-cookie values are rejected.
 
-Sign-out revokes the current session and expires its shared cookie. OCE does not
+Sign-out revokes the current session and expires its cookie. OCE does not
 clear obsolete cookie names or scopes. Remove stale OCE cookies in the browser
 if they cause duplicate-cookie refusals. External-provider attempt cookies
 remain host-only.
 
-Native-host requests authenticate the shared OCE session, resolve the exact
+Native-host requests authenticate the shared OCE session or host-only handle, resolve the exact
 Agent represented by the requested host, authorize exact Agent `operate` or `administer`, and
 validate the selected version and supported native configuration before
 proxying. OCC strips browser cookies, `Authorization`, API and session keys,

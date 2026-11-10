@@ -65,6 +65,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     pluginDiscoveryCredential?: string;
     agentPermissionSummary?: unknown;
     nativeAdmin?: string;
+    nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
     nativeAdminUrl?: string;
     harness?: unknown;
@@ -871,9 +872,19 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         if (suffix === "/permissions/secrets" && method === "GET") {
           return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
+        if (
+          suffix === "/native-admin/launch" &&
+          method === "POST" &&
+          scenario.nativeAdminSessionMode === "host-only-exchange"
+        ) {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
+            ...(scenario.nativeAdminSessionMode
+              ? { sessionMode: scenario.nativeAdminSessionMode }
+              : {}),
             mode: scenario.nativeAdminMode ?? "admin",
             url:
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??

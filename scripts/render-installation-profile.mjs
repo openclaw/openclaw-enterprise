@@ -1169,6 +1169,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
+      "agentNativeAdminSessionMode",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
       "nodeSelector",
@@ -1534,15 +1535,33 @@ function buildRendered(profile, parsed, diagnostics) {
       "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   }
+  const sessionMode =
+    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
+      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
+      description: "shared-cookie or host-only-exchange",
+    }) ?? "shared-cookie";
   const agentNativeAdminDomain = asString(
     controlPlane,
     ["controlPlane", "agentNativeAdminDomain"],
     diagnostics,
   );
   validateNativeAdminDomains(agentNativeAdminDomain, authBaseUrl, diagnostics);
+  if (
+    sessionMode === "host-only-exchange" &&
+    (controlPlane.github === undefined ||
+      controlPlane.google !== undefined ||
+      controlPlane.oidc !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
+    );
+  }
   const agentNativeAdmin = {
-    enabled: controlPlane.github === undefined && controlPlane.google === undefined,
+    enabled:
+      sessionMode === "host-only-exchange" ||
+      (controlPlane.github === undefined && controlPlane.google === undefined),
     domain: agentNativeAdminDomain.toLowerCase(),
+    ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}),
   };
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??

@@ -699,6 +699,7 @@ export type {
   HumanAuthenticationDenial,
   PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";
+export type { NativeBrowserAccess } from "./state/native-browser-access.ts";
 export {
   HumanAuthenticationMaintenanceRefusedError,
   PostgresHumanAuthenticationMaintenance,

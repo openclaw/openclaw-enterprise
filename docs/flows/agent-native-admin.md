@@ -1,22 +1,22 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-03
-last_updated_session: fix/native-admin-signed-out-html-fallback
+updated: 2026-11-06
+last_updated_session: authoring-run/43cf1307-6d25-4d9d-951e-55fe09a514b8
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-The console checks exact-Agent `operate` or `administer` and returns its stable browser URL. OCC rechecks the shared OCE session before proxying HTTP and WebSocket traffic.
+OCC authorizes exact-Agent browser access through the OCE session or a host-only handle, then proxies HTTP and WebSockets under the selected access mode.
 
 ## Entry Points
 
 - Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
-- Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+- Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin and Agent domain with a derived shared cookie domain. Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
+- Assumptions: A valid OCE session, enabled `agentNativeAdmin`, configured HTTPS Console origin, Agent domain and [session mode](../reference/agent-native-admin.md#host-only-session-exchange). Compute supplies `getGatewayChatEndpoint` for chat or `getGatewayEndpoint` for administration.
 
 ## Flow
 
@@ -30,9 +30,9 @@ graph TD
   O3 --> A
   C1 --> C2["Prepare exact origin and trusted-proxy policy"]
   C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
-  C2 -->|valid| C4["Save prepared plan, Configuration and first version"]
+  C2 -->|valid| C4["Save plan and first version"]
   C4 --> A
-  L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
+  L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive origin,<br/>save Configuration"]
   L2 --> A
   A["Console opens Agent detail tab"] --> P{"operate and administer<br/>answers both false?"}
   P -->|yes| PH["Hide card, no request"]
@@ -44,34 +44,34 @@ graph TD
   F -->|no| G["Return disabled"]
   F -->|yes| H["Call resolveNativeAdminAvailability"]
   H --> I{"Selected version available?"}
-  I -->|no| J{"Authorized stopped Agent without a selected version?"}
+  I -->|no| J{"Stopped without a version?"}
   J -->|yes| X["Return stopped without an origin"]
   J -->|no| Y["Return unavailable"]
   I -->|yes| K{"Agent desired running?"}
-  K -->|no| L["Return stopped with derived origin"]
-  K -->|yes| R2{"Newer version replacing it on an exclusive Compute Driver?"}
+  K -->|no| ST["Return stopped with derived origin"]
+  K -->|yes| R2{"Newer exclusive replacement?"}
   R2 -->|yes| Y
   R2 -->|no| M{"Native config supported?"}
   M -->|no| N["Return unsupported with derived origin"]
-  M -->|yes| CO{"Compute ID and implementation match selected version?"}
+  M -->|yes| CO{"Compute owner matches?"}
   CO -->|no| CF["Return 503 dependency error"]
   CO -->|yes| EP{"Private gateway endpoint supported?"}
   EP -->|no| N
   EP -->|yes| O["Return available Agent URL"]
-  O --> P["Browser opens derived Agent host with shared OCE session cookie"]
-  P -->|HTTP| Q["OCC resolves host to exact Agent using platform state"]
-  P -->|WebSocket| V["OCC guards client socket during admission"]
+  O --> OPEN["Open Agent host directly or exchange<br/>a challenge for a host-only handle"]
+  OPEN -->|HTTP| Q["Resolve host to Agent"]
+  OPEN -->|WebSocket| V["OCC guards client socket during admission"]
   V --> Q
-  Q --> R{"Shared session and selected Agent access mode<br/>still valid?"}
+  Q --> R{"Parent session and selected Agent access mode<br/>still valid?"}
   R -->|no| S["Reject request; audit exact-Agent authorization denial"]
   R -->|yes| T["Resolve current version, native config and Compute owner"]
   T -->|owner mismatch| RF["Refuse before key lookup or gateway connection"]
-  T -->|matching owner| U["OCC strips browser credentials and proxies HTTP to private gateway"]
+  T -->|matching owner| U["Strip browser credentials;<br/>proxy to private Gateway"]
   T -->|WebSocket client reset| VB["Stop before gateway connection"]
   T -->|WebSocket client connected with matching owner and exact Origin| VC["Proxy 101 upgrade with version lease"]
-  U -->|HTML preview with sandbox routing enabled| W["Browser loads public shell from separate preview origin"]
-  W --> Z["Envoy sandbox listener routes to Agent sandbox port"]
-  Z --> AA["Native UI delivers HTML into runtime-isolated iframe"]
+  U -->|shared-cookie mode and sandbox routing enabled| W["Load separate preview origin"]
+  W --> Z["Route to sandbox listener"]
+  Z --> AA["Deliver HTML in isolated iframe"]
 ```
 
 ## Execution Trace
@@ -111,14 +111,17 @@ An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
 
-`apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+`apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 
 Agent detail reads `${path}/native-admin` when `operate` or `administer` is allowed
 or unknown. Disabled/denied access stays hidden; other refusals explain why.
-Only `available` enables **Open chat** or **Open Agent UI**, with
-`noopener noreferrer`. An audited `403` in tab `sessionStorage` suppresses reads
+Only `available` enables **Open chat** or **Open Agent UI**. Shared-cookie mode
+uses `noopener noreferrer`. Host-only exchange opens a window and completes
+step 5a, accepting challenges only from that window and origin. Redemption
+clears `window.opener`; errors close the pending window. An audited `403` in tab `sessionStorage` suppresses reads
 until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
 changes refresh access; concurrent requests coalesce into one follow-up.
+Browsing a historical version does not change the selected destination.
 Stopped/unsupported states offer **Open draft**. Unavailable states offer
 **View deployment** for readable versions, otherwise **Refresh access**.
 
@@ -135,7 +138,7 @@ see [Gateway managed mode](../reference/agents/gateway-managed-mode.md).
 A getter supplies the initialized controller after bootstrap. Shared route
 admission remains in `apps/controller/src/index.ts`.
 
-`GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires a human session and exact-Agent `operate` or `administer` through the selected IAM Driver. `read` alone does not grant access. Administration takes precedence; otherwise OCC selects chat mode. Even `disabled` is returned only after authorization and existence checks.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires a human session and exact-Agent `operate` or `administer`, not `read`. Administration takes precedence over chat. Authorization and existence checks precede even `disabled`.
 
 <a id="3-shared-availability-resolver-checks-feature-and-active-revision-state" class="anchor-alias"></a>
 
@@ -145,7 +148,7 @@ admission remains in `apps/controller/src/index.ts`.
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getBrowserAccessibleActiveAgentRevision`
 
-`getAgentBrowserAccess` handles disabled access; `getBrowserAccessibleActiveAgentRevision` handles enabled access. Both select authority through `authorizeAgentAccess` and read the Agent once. Enabled access also requires the public origin, Agent domain and selected version. IAM failures propagate instead of selecting chat mode.
+`getAgentBrowserAccess` handles disabled access; `getBrowserAccessibleActiveAgentRevision` handles enabled access, requiring origin, domain and selected version. Both use `authorizeAgentAccess` and one Agent read. IAM failures propagate, never selecting chat.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
@@ -158,11 +161,9 @@ Compute `id` and `implementation` must match `revision.compute`; changing select
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
+`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs under the configured domain. `nativeAdminTarget` returns the origin’s `/`. Admission resolves this hash through State; unknown, deleted or ambiguous hosts fail closed.
 
-Native-host admission resolves the hash through platform state. Unknown, deleted or ambiguous Agent hosts fail closed.
-
-`nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
+`nativeAdminGatewayHttpBase` converts `wss:` to `https:`, preserving authority and Agent path, rejecting userinfo, query or hash. Workspace-file WSS is unchanged.
 
 ### 5. Shared cookie admits the Agent host
 
@@ -170,9 +171,30 @@ Native-host admission resolves the hash through platform state. Unknown, deleted
 
 `deriveSharedCookieDomain` computes the longest common DNS-label suffix of the
 HTTPS Console origin and Agent domain. It rejects IP addresses, missing hosts,
-and public suffixes. This shared cookie configuration applies even when native
+and public suffixes. In shared-cookie mode this applies even when native
 access is disabled and uses `__Secure-openclaw_occ_shared.session_token`.
 Sign-out revokes the current session and expires its shared cookie. There is no obsolete-cookie cleanup. See the [session contract](../reference/authentication.md#native-admin-shared-sessions).
+
+### 5a. Host-only exchange binds access to the parent session
+
+`apps/controller/src/http/native-admin.ts:launch`
+`apps/controller/src/http/native-admin.ts:confirm`
+`apps/controller/src/http/native-browser-bridge.ts:landingPage`
+`packages/occ/src/state/native-browser-access.ts:PostgresNativeBrowserAccess`
+
+Host-only launch requires the Console session, `x-occ-session-key`, Console
+Origin, and exact-Agent `operate` or `administer`. An intent binds that session, Principal,
+Agent, Namespace, revision and origin. The landing page sets its challenge
+cookie; the opener confirms it. Redemption checks challenge and exchange, consumes
+and audits the intent, and sets the access cookie. It reuses an unexpired handle
+only when Installation, parent session, Principal, Agent, Namespace, revision,
+origin and parent expiry match; otherwise it replaces it. Reuse preserves existing
+WebSockets without allocating another handle. Stored secrets are hashed; expired,
+replayed or mismatched exchanges fail closed.
+
+Human authentication owns parent-session currentness. Admission and renewal
+recheck that session, exact-Agent access and revision. The exchange creates no
+account or grant. See [session limits](../reference/agent-native-admin.md#host-only-session-exchange).
 
 ### 6. OCC intercepts native-host HTTP requests
 
@@ -180,7 +202,7 @@ Sign-out revokes the current session and expires its shared cookie. There is no 
 
 The `onRequest` hook intercepts the native admin domain before routing, so an
 Agent origin cannot expose console or controller routes. OCC authenticates the
-shared session, resolves the IAM identity and exact Agent, selects `admin` or `chat` from exact-Agent IAM grants,
+shared session or host-only handle, resolves the IAM identity and exact Agent, selects `admin` or `chat` from exact-Agent IAM grants,
 then checks the selected version and native configuration. An attributable IAM
 denial records the human and Agent in the denial audit.
 Admission owns one audit attempt per such denial, also when it arrives after the
@@ -208,19 +230,19 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy validates and normalizes the request URL, which must not exceed 4,096 characters, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from `/api/users/<id>/avatar` becomes an empty `404`, preserving the initials fallback when Gravatar is unreachable. Both administrative and chat routes use `occ-workspace-files`; the chat route overwrites `x-openclaw-scopes` with `operator.sessions.write`. The runtime intersects that ceiling with the identity and device grants. Client headers cannot widen it.
+The HTTP proxy normalizes URLs (maximum 4,096 characters), requires exact `Origin` except for GET/HEAD, and strips cookies, service keys, forwarding/identity/scope headers and upstream `Set-Cookie`. It blocks service-worker scripts, rewrites same-upstream redirects to the Agent origin, adds CSP `worker-src 'none'`, and forwards to private HTTPS. Avatar `502`s become empty `404`s, preserving the initials fallback. Both modes use `occ-workspace-files`; chat overwrites `x-openclaw-scopes` with `operator.sessions.write`. Runtime authority intersects that ceiling with identity/device grants; client headers cannot widen it.
 
 ### 7. OCC proxies native WebSocket upgrades
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API intercepts `upgrade` before Fastify routing, accepts only derived Agent hosts, and tracks sockets for `preClose` shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. A refused socket closes without waiting for its denial audit, which still runs after a reset. An allowed admission checks for client destruction and shutdown before and after resolving the private transport context, so late success cannot open a gateway connection. A connected client proceeds with the selected version.
+Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. It handles socket errors before awaiting admission, preventing uncaught errors on TCP reset. Refused sockets close without waiting for denial audits, which still run after reset. Admission checks client destruction and shutdown before and after transport resolution; late success cannot connect. Accepted clients use the selected version.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
+The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
 
-Admission and close audits share one five-second shutdown drain. Work still pending
+Bridge requests, admission and close audits share one five-second shutdown drain. Bridge handlers stop before subsequent phases or secret delivery after shutdown or client disconnect. Work still pending
 afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
 audit attempt while the process lives. The drain neither cancels producers nor
 guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
@@ -230,7 +252,7 @@ guarantees durable delivery; process exit can prevent or interrupt an audit atte
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewaySandboxConfiguration`
 `apps/controller/src/drivers/compute/kubernetes/index.ts:reconcileGatewayRoute`
 
-With operator sandbox routing configured, preparation and activation render the
+In shared-cookie mode with sandbox routing configured, preparation and activation render the
 Agent's stable preview origin and adjacent sandbox port in its native document.
 The worker reconciles its GET/HEAD route, public-shell SecurityPolicy and
 Agent-scoped backend ingress policy under the serving version. A separate Helm listener admits only configured ingress
@@ -256,10 +278,10 @@ admin Configuration remains Pod-local.
 
 ## Debugging and Verification
 
-- Check the required HTTPS Console and Agent DNS hosts before native access settings. A missing shared suffix or public suffix reports `AUTH_BASE_URL_INVALID`; removed cookie-domain inputs are rejected. Short auth secrets report `AUTH_SECRET_INVALID`, and a missing gateway API key path reports `GATEWAY_API_KEY_UNAVAILABLE`.
-- For `disabled`, `stopped`, `unavailable`, and `unsupported`, use the [availability status definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
-- Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
-- Browser requests use the shared session without Agent-specific exchange or cookies.
+- For startup failures, check the [configuration error codes](../reference/agent-native-admin.md#failure-behavior) against the selected session mode.
+- Use the [availability definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
+- Unknown Agent hosts fail before proxying. Check host derivation, Agent state, and `agentNativeAdmin.domain`.
+- Shared-cookie mode opens the Agent directly. Host-only exchange uses launch, challenge and redemption requests; verify the Console cookie is absent from Agent-host requests and both cookies are absent upstream.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - WebSocket connect and close audits share `connectionId`; close audits add a `closeReason` category from step 7.
@@ -283,6 +305,7 @@ admin Configuration remains Pod-local.
 - 2026-11-09 14:07: Consolidate browser authorization and document current-cookie logout. (authoring-run/f217fd51-af6b-4d6a-a888-b2be4880aa91 - e39be9803)
 
 - 2026-11-09 12:12: Added OIDC sessions and scoped chat. (codex/oidc-agent-chat - f1ebda062)
+- 2026-11-06 07:57: Integrate host-only exchange, repeat launches and current session ownership in accompanying changes. (authoring-run/43cf1307-6d25-4d9d-951e-55fe09a514b8 - a4c2191e73337d73ee27e7fe2c9a51cef40d99f5)
 
 - 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 

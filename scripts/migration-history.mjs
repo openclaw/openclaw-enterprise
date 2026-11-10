@@ -178,6 +178,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 74 && completedCount > 74) {
     return "preHumanAuthenticationResults";
   }
+  if (count === 75 && completedCount > 75) {
+    return "preNativeBrowserAccess";
+  }
   if (count === completedCount) {
     return "completed";
   }

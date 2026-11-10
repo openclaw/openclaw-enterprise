@@ -125,8 +125,12 @@ export async function composeProduction(
   }
 
   const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
+  if (
+    config.github !== undefined &&
+    config.nativeAdmin?.enabled === true &&
+    config.nativeAdmin.sessionMode !== "host-only-exchange"
+  ) {
+    throw new Error("GitHub sign-in requires host-only-exchange for native administration.");
   }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
@@ -165,6 +169,7 @@ export async function composeProduction(
       secret: config.authSecret,
       baseURL: config.authBaseURL,
       agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
       pool,
       state,
       iamDriver,

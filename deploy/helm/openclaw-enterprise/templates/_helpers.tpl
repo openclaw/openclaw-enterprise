@@ -213,6 +213,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
+{{- $nativeSessionMode := .Values.agentNativeAdmin.sessionMode -}}
+{{- if not (has $nativeSessionMode (list "shared-cookie" "host-only-exchange")) -}}{{- fail "agentNativeAdmin.sessionMode must be shared-cookie or host-only-exchange" -}}{{- end -}}
 {{- if and $github $github.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -220,7 +222,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientSecretKey" "value" $github.clientSecretKey) -}}
 {{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub native browser access is not supported" -}}{{- end -}}
+{{- if and .Values.agentNativeAdmin.enabled (ne (.Values.agentNativeAdmin.sessionMode) "host-only-exchange") -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false or explicit host-only-exchange; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $github.egressCidrs -}}
 {{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.github.egressCidrs" "cidr" $cidr) -}}
@@ -322,9 +324,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if hasKey .Values.agentNativeAdmin "sharedCookieDomain" -}}{{- fail "agentNativeAdmin.sharedCookieDomain is no longer supported; session cookie scope is derived from auth.baseUrl and agentNativeAdmin.domain" -}}{{- end -}}
 {{- if not .Values.agentNativeAdmin.domain -}}{{- fail "agentNativeAdmin.domain is required for shared browser sessions, including when native browser access is disabled" -}}{{- end -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.agentNativeAdmin.domain) -}}{{- fail "agentNativeAdmin.domain must be a DNS hostname without a wildcard, port, scheme, or path" -}}{{- end -}}
-{{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for shared browser sessions" -}}{{- end -}}
+{{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for browser sessions" -}}{{- end -}}
 {{- $cookieDomain := include "openclaw.sharedCookieDomain" . -}}
 {{- if lt (len (splitList "." $cookieDomain)) 2 -}}{{- fail "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix" -}}{{- end -}}
+{{- if eq $nativeSessionMode "host-only-exchange" -}}
+{{- if or (not .Values.auth.github.enabled) .Values.auth.google.enabled .Values.auth.oidc.enabled -}}{{- fail "agentNativeAdmin host-only-exchange requires guarded GitHub sign-in without Google or OIDC" -}}{{- end -}}
+{{- if .Values.gatewayRouting.sandbox.enabled -}}{{- fail "agentNativeAdmin host-only-exchange does not support sandbox preview" -}}{{- end -}}
+{{- /* API startup validates the registrable site with the public suffix list. */ -}}
+{{- end -}}
 {{- if and .Values.agentNativeAdmin.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "agentNativeAdmin.enabled requires gatewayRouting.enabled so the API can reach private Agent gateways" -}}{{- end -}}
 {{- /* The bootstrap Job refuses plain HTTP unless the host is 127.0.0.1, localhost, or ::1. Helm reads http://[::1] as hostname ::1. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost" "::1"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost or ::1; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}

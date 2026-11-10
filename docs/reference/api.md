@@ -86,7 +86,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 50 operations |
+| [Agents](#agents) | 52 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4012,6 +4012,8 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`](#post-namespacesnamespaceidagentsagentidnativeadminconfirm) | Confirm a native Agent browser challenge |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
@@ -6676,6 +6678,7 @@ Resolve native admin UI launch availability for one Agent
 | `data.host` | `string` | No | — |
 | `data.mode` | `"admin" or "chat"` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
 | `meta` | `object` | Yes | — |
@@ -6686,6 +6689,168 @@ Example response
 {
   "data": {
     "status": "stopped"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminconfirm"></span>
+
+Confirm a native Agent browser challenge
+
+**Operation ID:** `confirmAgentNativeAdmin`
+
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` | "sssssssssssssssssssssssssssssssssssssssssss" |
+| `origin` | header | `string` | Yes | — | "https://console.example.com" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `challenge` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `intentId` | `string (uuid)` | Yes | — |
+
+Example request
+```json
+{
+  "challenge": "ccccccccccccccccccccccccccccccccccccccccccc",
+  "intentId": "123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | Yes | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | No | — |
+| `data.origin` | `string` | No | — |
+| `data.redeemUrl` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "exchange": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "intentId": "123e4567-e89b-42d3-a456-426614174000",
+    "redeemUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/redeem"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminlaunch"></span>
+
+Create a browser-bound native Agent launch
+
+**Operation ID:** `launchAgentNativeAdmin`
+
+**Permissions:** Requires a human session with operate or administer permission on the exact Agent. Operate grants chat access; administer grants full native administration. Service API keys cannot launch or inspect native admin UI access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` (chat access) |
+| `administer` | `agent` | `requested` (full native administration, instead of `operate`) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` | "sssssssssssssssssssssssssssssssssssssssssss" |
+| `origin` | header | `string` | Yes | — | "https://console.example.com" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | No | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | Yes | — |
+| `data.origin` | `string` | Yes | — |
+| `data.redeemUrl` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "intentId": "123e4567-e89b-42d3-a456-426614174000",
+    "landingUrl": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com/__occ/native-admin/launch?intent=123e4567-e89b-42d3-a456-426614174000",
+    "origin": "https://agent-0123456789abcdef0123456789abcdef.agents.example.com"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

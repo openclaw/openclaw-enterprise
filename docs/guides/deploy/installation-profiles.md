@@ -32,17 +32,15 @@ Both profiles enable:
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
 
-Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
-tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway's
-startup model probe is a full agent turn of about 16 CPU-seconds on about one
-core (ready in 24 to 30 seconds at one core, 51 to 72 at `500m`). The CPU request sets the scheduling reservation,
-so the higher limit reserves no node capacity. The trade-off is overcommit:
-several busy runtimes on one node can each take up to four cores from their
-neighbors, and a `limits.cpu` namespace quota counts the whole limit.
+Both profiles set a `100m` CPU request and four-core (`"4"`) burst limit for
+Gateway Pods (embedded or dedicated), Harness Pods, and the tenant namespace
+container default. An embedded OpenClaw Gateway's startup model probe runs a
+full agent turn (~16 CPU-seconds on about one core). Readiness takes 24–30
+seconds at one core or 51–72 seconds at `500m`. Only the request reserves node
+capacity. Busy runtimes sharing a node can each consume four cores, and a
+`limits.cpu` namespace quota counts the full limit.
 
-Memory requests cover the use measured between turns, so the scheduler reserves
-what each Agent actually holds; limits cover measured peaks:
+Memory requests reserve measured usage between turns. Limits cover measured peaks:
 
 | Pod                             | Request  | Limit | Measured                                                                                                                                                                                                                                                                    |
 | ------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,17 +207,22 @@ refresh itself.
 
 ### External sign-in and trusted proxies
 
-Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
-later rerender. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
+GitHub, Google and OIDC activation is one-way. Keep these inputs when rerendering. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
 the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
 `authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
 `auth.github`, `auth.google` or `auth.oidc` with
-`enabled: true`. GitHub and Google disable native access; OIDC keeps it enabled.
+`enabled: true`. GitHub disables native access unless host-only exchange is selected; Google
+disables it, and OIDC keeps it enabled.
 `agentNativeAdminDomain`, `recoveryUserId` and an HTTPS `authBaseUrl` are required.
-Console and Agent hosts share a non-public suffix. Optional `passwordSignIn: "recovery-only"` renders
+Shared-cookie mode derives their non-public cookie suffix; host-only exchange
+requires same-site HTTPS. Optional `passwordSignIn: "recovery-only"` renders
 [`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
 preflight lists attaching every ordinary account's identity first. Follow
 [Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).
+For [GitHub-only native admin](native-admin.md#install-on-an-existing-cluster),
+set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and
+`controlPlane.agentNativeAdminDomain`; omit `controlPlane.sharedCookieDomain`.
+
 Behind a proxy that adds forwarded headers, such as ingress-nginx, set
 `trustedProxy` ([presets](../../reference/settings/production.md#github-sign-in-and-trusted-proxies));
 it works with or without external sign-in. Without it, preflight warns (it does

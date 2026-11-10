@@ -7,6 +7,7 @@ const namespaceId = id("ns");
 const agentId = id("agt");
 const configurationId = id("cfg");
 const revisionId = id("rev");
+const nativeBrowserOrigin = "https://agent-0123456789abcdef0123456789abcdef.agents.example.com";
 const secretRef = { kind: "secret", namespaceId, id: id("sec") };
 const harnessAuth = { method: "api_key", source: secretRef };
 
@@ -256,6 +257,8 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  "x-occ-session-key": "s".repeat(43),
+  origin: "https://console.example.com",
   oauthClientId,
   connectionTemplateId,
   key: "review-1",
@@ -301,6 +304,8 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  launchAgentNativeAdmin: {},
+  confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
   startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
@@ -547,6 +552,16 @@ export const responseExamples = {
   },
   getAgentHarnessStatus: { status: "unobserved" },
   getAgentNativeAdmin: { status: "stopped" },
+  launchAgentNativeAdmin: {
+    intentId: uuid,
+    origin: nativeBrowserOrigin,
+    landingUrl: `${nativeBrowserOrigin}/__occ/native-admin/launch?intent=${uuid}`,
+  },
+  confirmAgentNativeAdmin: {
+    intentId: uuid,
+    exchange: "e".repeat(43),
+    redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },
   provisionAgentRuntimeCredentials: { transportConfigured: true },

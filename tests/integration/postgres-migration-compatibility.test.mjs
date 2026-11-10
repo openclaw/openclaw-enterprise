@@ -2088,6 +2088,7 @@ test(
       [72, "preAccountAdministrationPolicy"],
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2580,6 +2581,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2771,21 +2773,26 @@ test(
       }
     }
 
-    // Tables created after restoring 0074 retain their native catalog spelling.
-    const previous = await historyDatabase(context, fixture, "withdrawal", { prefix: 74 });
-    const restored = await restoreHistoryArchive(
-      context,
-      fixture,
-      await dumpHistoryArchive(fixture, previous),
-    );
-    assert.deepEqual(await runHistoryMigration(restored, "production"), {
-      ok: true,
-      history: "preHumanAuthenticationResults",
-    });
-    assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-      ok: true,
-      history: "completed",
-    });
+    // Tables created after restoring a published prefix retain their native catalog spelling.
+    for (const [prefix, history] of [
+      [74, "preHumanAuthenticationResults"],
+      [75, "preNativeBrowserAccess"],
+    ]) {
+      const previous = await historyDatabase(context, fixture, "previous", { prefix });
+      const restored = await restoreHistoryArchive(
+        context,
+        fixture,
+        await dumpHistoryArchive(fixture, previous),
+      );
+      assert.deepEqual(await runHistoryMigration(restored, "production"), {
+        ok: true,
+        history,
+      });
+      assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
+        ok: true,
+        history: "completed",
+      });
+    }
   },
 );
 
@@ -2858,6 +2865,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [75, "preNativeBrowserAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2866,6 +2874,7 @@ test(
             preset: prefix >= 25,
             computeAdmission: prefix >= 55,
             executionAdmission: prefix >= 62,
+            harnessSettings: prefix >= 72,
           });
         }
         const before = await historySnapshot(db);
@@ -2878,7 +2887,9 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
+        // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
