@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/0035-durable-namespace-cleanup.md
+rfc: ../rfcs/0035-durable-namespace-cleanup/index.md
 ---
 
 # Implementation plan: durable Namespace cleanup
@@ -7,7 +7,8 @@ rfc: ../rfcs/0035-durable-namespace-cleanup.md
 - **ID:** RFC-0035
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0035](../rfcs/0035-durable-namespace-cleanup.md)
+- **Pending integration:** [OCC participants and gateway identities](../rfcs/0035-durable-namespace-cleanup/occ-participants.md).
+- **Authority:** [RFC-0035](../rfcs/0035-durable-namespace-cleanup/index.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope

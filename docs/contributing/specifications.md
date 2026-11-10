@@ -268,13 +268,14 @@ RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
 The unmerged durable Namespace cleanup proposal and its linked plan used a provisional
 number later assigned on main. Original submission commits retain their old paths.
 
-| Previous RFC path                   | Current RFC                                                    |
-| ----------------------------------- | -------------------------------------------------------------- |
-| `0026-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0027-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0028-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0029-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0030-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0031-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0032-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
-| `0034-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup.md) |
+| Previous RFC path                   | Current RFC                                                          |
+| ----------------------------------- | -------------------------------------------------------------------- |
+| `0026-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0027-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0028-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0029-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0030-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0031-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0032-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0034-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |
+| `0035-durable-namespace-cleanup.md` | [RFC-0035](../../specs/rfcs/0035-durable-namespace-cleanup/index.md) |

@@ -10,9 +10,11 @@ author: russellb
 - **Created:** 2026-10-30
 - **Last updated:** 2026-10-30
 - **RFC PR:** [PR #4088](https://github.com/openclaw/openclaw-enterprise/pull/4088)
-- **Implementation plan:** [implementation plan](../plans/0027-durable-namespace-cleanup.md)
+- **Implementation plan:** [implementation plan](../../plans/0027-durable-namespace-cleanup.md)
 
 Submitted as RFC-0026 in the [original review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103), then provisionally numbered RFC-0027, RFC-0028, RFC-0029, RFC-0030, RFC-0031, RFC-0032 and RFC-0034. Main assigned those IDs and RFC-0033 to other proposals. This proposal is now RFC-0035; the plan filename, original dates, submission commits and review links remain unchanged.
+
+The [OCC participant amendment](occ-participants.md) adapts this proposal to main’s new orchestration and gateway ownership; its new contract code has not started.
 
 ## Summary
 
@@ -27,9 +29,9 @@ resource identity, provider confirmation, and their journal payloads.
 
 ## Problem and current behavior
 
-The production [worker](../../apps/controller/src/worker.ts) calls
+The production [worker](../../../apps/controller/src/worker.ts) calls
 `ComputeDriver.deleteNamespace` and later commits lifecycle observation and queue
-completion. [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+completion. [Kubernetes Compute](../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 first calls Sandbox cleanup, then deletes the Gateway and execution Namespace.
 Neither `NamespaceDeleteResult` nor the Namespace repository retains intermediate
 cleanup evidence. `ControllerWork.resultData` is a terminal result, not a journal.
@@ -43,11 +45,11 @@ false completion; requiring another provider call can strand confirmed cleanup.
 
 The proposal also addresses configured OpenShell Kubernetes resources currently
 deleted by name. Labels alone do not protect a replacement between a read and a
-delete. The relevant contracts are [Compute](../../packages/contracts/src/drivers/compute/index.ts),
-[Sandbox](../../packages/contracts/src/drivers/sandbox/index.ts), and the
-[OpenShell client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts).
+delete. The relevant contracts are [Compute](../../../packages/contracts/src/drivers/compute/index.ts),
+[Sandbox](../../../packages/contracts/src/drivers/sandbox/index.ts), and the
+[OpenShell client](../../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts).
 This is a new Namespace lifecycle decision, not a revision of the historical
-[repository credential recovery decision](0015-repository-credential-recovery.md).
+[repository credential recovery decision](../0015-repository-credential-recovery.md).
 
 ## Outcomes and scope
 
@@ -279,7 +281,7 @@ an adversarial provider-side replacement between read and delete.
 
 ## Delivery and evidence
 
-The [plan](../plans/0027-durable-namespace-cleanup.md) connects the contract,
+The [plan](../../plans/0027-durable-namespace-cleanup.md) connects the contract,
 PostgreSQL repository, real worker, selected Drivers, documentation, and tests.
 Required proof includes successful and unknown checkpoint commits, restart and
 lease takeover, target drift, original versus replacement IDs, configured
@@ -287,7 +289,7 @@ Kubernetes resource preconditions, and a bare tenant-local gateway disappearing
 after a committed provider receipt.
 
 Extend the existing model-free
-[OpenShell installation test](../../tests/integration/dev-up-openshell-k3d-real.test.mjs)
+[OpenShell installation test](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)
 for real API/worker/PostgreSQL/Workspace cleanup after Namespace loss. A supported
 Agent preparation failure may exercise actual provider creation and subsequent
 stop/retirement without inference; its prerequisites and reached state must be
